@@ -15,16 +15,18 @@ export interface TableOptions {
 }
 
 const padString = (str: string, width: number, align: 'left' | 'right' | 'center' = 'left'): string => {
+  // eslint-disable-next-line no-control-regex
   const visibleLength = str.replace(/\x1b\[[0-9;]*m/g, '').length;
   const padding = Math.max(0, width - visibleLength);
 
   switch (align) {
     case 'right':
       return ' '.repeat(padding) + str;
-    case 'center':
+    case 'center': {
       const leftPad = Math.floor(padding / 2);
       const rightPad = padding - leftPad;
       return ' '.repeat(leftPad) + str + ' '.repeat(rightPad);
+    }
     default:
       return str + ' '.repeat(padding);
   }
@@ -41,6 +43,7 @@ export const createTable = (
     const headerWidth = col.header.length;
     const maxDataWidth = data.reduce((max, row) => {
       const value = col.format ? col.format(row[col.key]) : String(row[col.key] ?? '');
+      // eslint-disable-next-line no-control-regex
       const visibleLength = value.replace(/\x1b\[[0-9;]*m/g, '').length;
       return Math.max(max, visibleLength);
     }, 0);
