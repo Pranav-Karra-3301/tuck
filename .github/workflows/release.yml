@@ -275,58 +275,26 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           SHA256="${{ steps.sha.outputs.sha256 }}"
-
           cd homebrew-tap
-
-          # Update the formula file
-          cat > Formula/tuck.rb << 'FORMULA_EOF'
-# Homebrew Formula for tuck
-#
-# This formula is automatically updated by the tuck release workflow.
-# Manual updates should not be necessary.
-#
-# To install:
-#   brew tap pranav-karra-3301/tuck
-#   brew install tuck
-
-class Tuck < Formula
-  desc "Modern, beautiful dotfiles manager CLI"
-  homepage "https://github.com/Pranav-Karra-3301/tuck"
-  url "https://registry.npmjs.org/@prnv/tuck/-/tuck-VERSION_PLACEHOLDER.tgz"
-  sha256 "SHA256_PLACEHOLDER"
-  license "MIT"
-
-  depends_on "node@20"
-
-  def install
-    system "npm", "install", *std_npm_args
-    bin.install_symlink Dir["#{libexec}/bin/*"]
-  end
-
-  test do
-    assert_match version.to_s, shell_output("#{bin}/tuck --version")
-  end
-
-  def caveats
-    <<~EOS
-      tuck is a modern dotfiles manager. Get started with:
-
-        tuck init      # Initialize tuck in your home directory
-        tuck add       # Add files to track
-        tuck status    # Check status of tracked files
-        tuck sync      # Sync changes with your repository
-
-      For more information, visit: https://github.com/Pranav-Karra-3301/tuck
-    EOS
-  end
-end
-FORMULA_EOF
-
-          # Replace placeholders
+          cat > Formula/tuck.rb << 'EOF'
+          class Tuck < Formula
+            desc "Modern, beautiful dotfiles manager CLI"
+            homepage "https://github.com/Pranav-Karra-3301/tuck"
+            url "https://registry.npmjs.org/@prnv/tuck/-/tuck-VERSION_PLACEHOLDER.tgz"
+            sha256 "SHA256_PLACEHOLDER"
+            license "MIT"
+            depends_on "node@20"
+            def install
+              system "npm", "install", *std_npm_args
+              bin.install_symlink Dir["#{libexec}/bin/*"]
+            end
+            test do
+              assert_match version.to_s, shell_output("#{bin}/tuck --version")
+            end
+          end
+          EOF
           sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" Formula/tuck.rb
           sed -i "s/SHA256_PLACEHOLDER/${SHA256}/g" Formula/tuck.rb
-
-          echo "Updated formula:"
           cat Formula/tuck.rb
 
       - name: Commit and push
