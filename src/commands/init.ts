@@ -1360,6 +1360,7 @@ const runInteractiveInit = async (): Promise<void> => {
 
   let trackedCount = 0;
 
+  // Handle non-sensitive files
   if (nonSensitiveFiles.length > 0) {
     // Group by category and show summary
     const grouped: Record<string, DetectedFile[]> = {};
@@ -1442,6 +1443,49 @@ const runInteractiveInit = async (): Promise<void> => {
     } else {
       prompts.log.info("Run 'tuck scan' later to interactively add files");
     }
+  }
+
+  // Handle case where only sensitive files were found
+  if (nonSensitiveFiles.length === 0 && sensitiveFiles.length > 0) {
+    console.log();
+    prompts.log.warning(`Found ${sensitiveFiles.length} sensitive file(s):`);
+
+    for (const sf of sensitiveFiles) {
+      console.log(chalk.yellow(`  ! ${collapsePath(sf.path)} - ${sf.description || sf.category}`));
+    }
+
+    console.log();
+    const trackSensitive = await prompts.confirm(
+      'Would you like to review these sensitive files? (Ensure your repo is PRIVATE)',
+      false
+    );
+
+    if (trackSensitive) {
+      const filesToTrack: string[] = [];
+      for (const sf of sensitiveFiles) {
+        const track = await prompts.confirm(
+          `Track ${collapsePath(sf.path)}?`,
+          false
+        );
+        if (track) {
+          filesToTrack.push(sf.path);
+        }
+      }
+
+      if (filesToTrack.length > 0) {
+        // Track files with beautiful progress display
+        trackedCount = await trackFilesWithProgressInit(filesToTrack, tuckDir);
+      }
+    } else {
+      prompts.log.info("Run 'tuck scan' later to interactively add files");
+    }
+  }
+
+  // Handle case where no files were found
+  if (detectedFiles.length === 0) {
+    console.log();
+    prompts.log.info('No dotfiles detected on your system');
+    prompts.log.info("Run 'tuck add <path>' to manually track files");
   }
 
   // ========== STEP 3: Commit and Push ==========
