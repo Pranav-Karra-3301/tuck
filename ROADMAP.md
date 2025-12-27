@@ -47,7 +47,7 @@ tuck agent-setup [agent]
 # Supported agents:
 tuck agent-setup claude-code    # Claude Code by Anthropic
 tuck agent-setup cursor         # Cursor AI
-tuck agent-setup aider          # Aider.chat
+tuck agent-setup aider          # Aider
 tuck agent-setup windsurf       # Codeium Windsurf
 tuck agent-setup                # Auto-detect or generic setup
 
@@ -512,7 +512,7 @@ Validating 12 tracked files...
 
 ✗ ~/.gitconfig
   │ Line 15: Invalid section name '[alais]' (did you mean 'alias'?)
-  │ Line 23: Unknown config key 'autoCRLF' (did you mean 'autocrlf'?)
+  │ Line 23: Non-canonical casing for config key 'autoCRLF' (preferred: 'autocrlf')
   └─ 2 errors, 0 warnings
 
 ✓ ~/.config/starship.toml
@@ -520,8 +520,8 @@ Validating 12 tracked files...
   └─ Schema: valid Starship config
 
 ⚠ ~/.ssh/config
-  │ Line 8: Deprecated option 'DSAAuthentication'
-  │ Line 12: Weak key algorithm 'ssh-rsa' (recommend ed25519)
+  │ Line 8: Deprecated option 'RSAAuthentication'
+  │ Line 12: Weak key algorithm 'ssh-rsa' (recommend ssh-ed25519 or ecdsa-sha2-nistp256)
   └─ 0 errors, 2 warnings
 
 ───────────────────────────────────────────────────────────────────
@@ -540,7 +540,7 @@ Run 'tuck validate --fix' to auto-fix 2 issues
 | `.json` files | JSON parse, optional schema |
 | `.yaml`, `.yml` | YAML parse, optional schema |
 | `.toml` | TOML parse |
-| `.vimrc`, `init.vim` | vim -c 'source %' -c 'qa' |
+| `.vimrc` (Vim) or `init.vim`/`init.lua` (Neovim) | vim -c 'source %' -c 'qa' |
 | `.tmux.conf` | tmux source-file syntax |
 
 #### Auto-Fix Capabilities
