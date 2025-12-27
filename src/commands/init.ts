@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { join } from 'path';
+import { join, resolve, sep } from 'path';
 import { writeFile } from 'fs/promises';
 import { ensureDir } from 'fs-extra';
 import { banner, nextSteps, prompts, withSpinner, logger } from '../ui/index.js';
@@ -389,6 +389,17 @@ interface ImportResult {
 }
 
 /**
+ * Validate that a destination path stays within the tuck directory
+ * Prevents path traversal attacks via malicious manifest files
+ */
+const validateDestinationPath = (tuckDir: string, destination: string): boolean => {
+  const fullPath = resolve(join(tuckDir, destination));
+  const normalizedTuckDir = resolve(tuckDir);
+  // Ensure the resolved path starts with tuckDir + separator to prevent escaping
+  return fullPath.startsWith(normalizedTuckDir + sep) || fullPath === normalizedTuckDir;
+};
+
+/**
  * Import an existing GitHub dotfiles repository
  */
 const importExistingRepo = async (
@@ -419,6 +430,9 @@ const importExistingRepo = async (
     // Get file count
     const fileCount = Object.keys(analysis.manifest.files).length;
 
+    // Track how many files are actually applied to the system
+    let appliedCount = 0;
+
     // Apply dotfiles to system with merge strategy
     const shouldApply = await prompts.confirm(
       `Apply ${fileCount} dotfiles to your system?`,
@@ -434,7 +448,14 @@ const importExistingRepo = async (
         try {
           validateSafeSourcePath(file.source);
         } catch (error) {
-          prompts.log.warning(`Skipping unsafe path from manifest: ${file.source}`);
+          prompts.log.warning(`Skipping unsafe source path from manifest: ${file.source}`);
+          continue;
+        }
+
+        // Validate that the destination path stays within tuckDir
+        // This prevents path traversal attacks reading files from outside the repo
+        if (!validateDestinationPath(tuckDir, file.destination)) {
+          prompts.log.warning(`Skipping unsafe destination path from manifest: ${file.destination}`);
           continue;
         }
 
@@ -455,14 +476,20 @@ const importExistingRepo = async (
       const applySpinner = prompts.spinner();
       applySpinner.start('Applying dotfiles...');
 
-      let appliedCount = 0;
       for (const [_id, file] of Object.entries(analysis.manifest.files)) {
         // Validate that the source path is safe (within home directory)
         // This prevents malicious manifests from writing to arbitrary locations
         try {
           validateSafeSourcePath(file.source);
         } catch (error) {
-          prompts.log.warning(`Skipping unsafe path from manifest: ${file.source}`);
+          prompts.log.warning(`Skipping unsafe source path from manifest: ${file.source}`);
+          continue;
+        }
+
+        // Validate that the destination path stays within tuckDir
+        // This prevents path traversal attacks reading files from outside the repo
+        if (!validateDestinationPath(tuckDir, file.destination)) {
+          prompts.log.warning(`Skipping unsafe destination path from manifest: ${file.destination}`);
           continue;
         }
 
@@ -483,17 +510,24 @@ const importExistingRepo = async (
       applySpinner.stop(`Applied ${appliedCount} dotfiles`);
     }
 
-    return { success: true, filesImported: fileCount, remoteUrl };
+    // Return the actual number of files applied, not the total in manifest
+    // This ensures consistency with the "Applied X dotfiles" message
+    return { success: true, filesImported: appliedCount, remoteUrl };
   }
 
   if (analysis.type === 'plain-dotfiles') {
-    // Scenario B: Plain dotfiles repository
+    // Scenario B: Plain dotfiles repository - copy contents and initialize tuck
     prompts.log.step('Repository contains dotfiles but no tuck manifest');
-    prompts.log.info('Setting up tuck and detecting dotfiles on your system...');
+    prompts.log.info('Importing repository and setting up tuck...');
 
-    // Initialize tuck from scratch
-    await createDirectoryStructure(tuckDir);
-    await initRepo(tuckDir);
+    // Copy the repository contents to tuck directory first (preserving existing files)
+    const copySpinner = prompts.spinner();
+    copySpinner.start('Copying repository contents...');
+    await copy(repoDir, tuckDir, { overwrite: true });
+    copySpinner.stop('Repository contents copied');
+
+    // Now initialize git and create tuck config on top of the copied files
+    // Note: The .git directory was copied, so we don't need to reinitialize
     await setDefaultBranch(tuckDir, 'main');
 
     const hostname = (await import('os')).hostname();
@@ -505,17 +539,32 @@ const importExistingRepo = async (
       },
       tuckDir
     );
+
+    // Create directory structure for categories (if not already present)
+    await createDirectoryStructure(tuckDir);
     await createDefaultFiles(tuckDir, hostname);
 
-    // Set up remote
-    await addRemote(tuckDir, 'origin', remoteUrl);
+    // Update remote to use the correct URL (may differ from cloned URL)
+    try {
+      // Remove existing origin if present and add the correct one
+      const { removeRemote } = await import('../lib/git.js');
+      await removeRemote(tuckDir, 'origin').catch(() => { /* ignore if not exists */ });
+      await addRemote(tuckDir, 'origin', remoteUrl);
+    } catch {
+      // If removing fails, try adding anyway
+      await addRemote(tuckDir, 'origin', remoteUrl).catch(() => { /* ignore if already exists */ });
+    }
 
-    // Detect dotfiles on system
+    // Detect dotfiles on system that could be tracked
     const detected = analysis.files.filter((f) => !f.sensitive);
+
+    console.log();
+    prompts.log.success('Repository imported to ~/.tuck');
+    prompts.log.info("The repository's files are now in your tuck directory.");
 
     if (detected.length > 0) {
       console.log();
-      prompts.log.info(`Found ${detected.length} dotfiles on your system`);
+      prompts.log.info(`Found ${detected.length} dotfiles on your system that could be tracked`);
 
       const trackNow = await prompts.confirm('Would you like to add some of these to tuck?', true);
 
@@ -540,7 +589,31 @@ const importExistingRepo = async (
       }
     }
 
-    return { success: true, filesImported: 0, remoteUrl };
+    // Count the files that were copied (excluding .git and tuck config files)
+    let importedCount = 0;
+    const { readdir, stat } = await import('fs/promises');
+    try {
+      const countFiles = async (dir: string): Promise<number> => {
+        let count = 0;
+        const entries = await readdir(dir);
+        for (const entry of entries) {
+          if (entry === '.git' || entry === '.tuckmanifest.json' || entry === '.tuckrc.json') continue;
+          const fullPath = join(dir, entry);
+          const stats = await stat(fullPath).catch(() => null);
+          if (stats?.isDirectory()) {
+            count += await countFiles(fullPath);
+          } else if (stats?.isFile()) {
+            count++;
+          }
+        }
+        return count;
+      };
+      importedCount = await countFiles(tuckDir);
+    } catch {
+      // Ignore counting errors
+    }
+
+    return { success: true, filesImported: importedCount, remoteUrl };
   }
 
   // Scenario C: Messed up repository
@@ -732,8 +805,8 @@ const runInteractiveInit = async (): Promise<void> => {
             console.log();
             // Continue with normal flow
           } finally {
-            // Always clean up temp directory if clone succeeded
-            if (phase !== 'cloning' && await pathExists(tempDir)) {
+            // Always clean up temp directory if it exists
+            if (await pathExists(tempDir)) {
               try {
                 await rm(tempDir, { recursive: true, force: true });
               } catch (cleanupError) {

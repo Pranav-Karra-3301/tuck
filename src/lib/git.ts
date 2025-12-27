@@ -63,6 +63,15 @@ export const addRemote = async (dir: string, name: string, url: string): Promise
   }
 };
 
+export const removeRemote = async (dir: string, name: string): Promise<void> => {
+  try {
+    const git = createGit(dir);
+    await git.removeRemote(name);
+  } catch (error) {
+    throw new GitError('Failed to remove remote', String(error));
+  }
+};
+
 export const getRemotes = async (dir: string): Promise<{ name: string; url: string }[]> => {
   try {
     const git = createGit(dir);
