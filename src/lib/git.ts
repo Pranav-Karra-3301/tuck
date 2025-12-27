@@ -151,9 +151,9 @@ export const push = async (
     const branch = options?.branch;
 
     if (branch) {
-      await git.push([remote, branch, ...args]);
+      await git.push([...args, remote, branch]);
     } else {
-      await git.push([remote, ...args]);
+      await git.push([...args, remote]);
     }
   } catch (error) {
     throw new GitError('Failed to push', String(error));
@@ -245,9 +245,17 @@ export const getCurrentBranch = async (dir: string): Promise<string> => {
   try {
     const git = createGit(dir);
     const branch = await git.revparse(['--abbrev-ref', 'HEAD']);
-    return branch;
-  } catch (error) {
-    throw new GitError('Failed to get current branch', String(error));
+    return branch.trim();
+  } catch {
+    // Fallback for repos with no commits - read symbolic-ref directly
+    try {
+      const git = createGit(dir);
+      const ref = await git.raw(['symbolic-ref', '--short', 'HEAD']);
+      return ref.trim();
+    } catch {
+      // Last resort - return default branch name
+      return 'main';
+    }
   }
 };
 

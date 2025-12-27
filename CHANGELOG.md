@@ -1,4 +1,8 @@
-# [1.2.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.1.1...v1.2.0) (2025-12-27)
+<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
+
+# Changelog
+
+## [1.2.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.1.1...v1.2.0) (2025-12-27)
 
 
 ### Bug Fixes

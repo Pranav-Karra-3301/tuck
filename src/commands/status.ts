@@ -1,11 +1,13 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
+import boxen from 'boxen';
 import { prompts, formatStatus } from '../ui/index.js';
 import { getTuckDir, collapsePath, expandPath, pathExists } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import { getStatus, hasRemote, getRemoteUrl, getCurrentBranch } from '../lib/git.js';
 import { getFileChecksum } from '../lib/files.js';
 import { NotInitializedError } from '../errors.js';
+import { VERSION } from '../constants.js';
 import type { StatusOptions, FileChange } from '../types.js';
 
 interface TuckStatus {
@@ -16,6 +18,7 @@ interface TuckStatus {
   ahead: number;
   behind: number;
   trackedCount: number;
+  categoryCounts: Record<string, number>;
   changes: FileChange[];
   gitChanges: {
     staged: string[];
@@ -89,6 +92,12 @@ const getFullStatus = async (tuckDir: string): Promise<TuckStatus> => {
 
   const fileChanges = await detectFileChanges(tuckDir);
 
+  // Calculate category counts
+  const categoryCounts: Record<string, number> = {};
+  for (const file of Object.values(manifest.files)) {
+    categoryCounts[file.category] = (categoryCounts[file.category] || 0) + 1;
+  }
+
   return {
     tuckDir,
     branch,
@@ -97,6 +106,7 @@ const getFullStatus = async (tuckDir: string): Promise<TuckStatus> => {
     ahead: gitStatus.ahead,
     behind: gitStatus.behind,
     trackedCount: Object.keys(manifest.files).length,
+    categoryCounts,
     changes: fileChanges,
     gitChanges: {
       staged: gitStatus.staged,
@@ -107,38 +117,70 @@ const getFullStatus = async (tuckDir: string): Promise<TuckStatus> => {
 };
 
 const printStatus = (status: TuckStatus): void => {
-  prompts.intro('tuck status');
-
-  // Repository info
-  console.log();
-  console.log(chalk.dim('Repository:'), collapsePath(status.tuckDir));
-  console.log(chalk.dim('Branch:'), chalk.cyan(status.branch));
+  // Build header box content
+  const headerLines: string[] = [
+    `${chalk.bold.cyan('tuck')} ${chalk.dim(`v${VERSION}`)}`,
+    '',
+    `${chalk.dim('Repository:')} ${collapsePath(status.tuckDir)}`,
+    `${chalk.dim('Branch:')}     ${chalk.cyan(status.branch)}`,
+  ];
 
   if (status.remote) {
-    console.log(chalk.dim('Remote:'), status.remote);
+    // Shorten long URLs
+    const shortRemote = status.remote.length > 40
+      ? status.remote.replace(/^https?:\/\//, '').replace(/\.git$/, '')
+      : status.remote;
+    headerLines.push(`${chalk.dim('Remote:')}     ${shortRemote}`);
+  } else {
+    headerLines.push(`${chalk.dim('Remote:')}     ${chalk.yellow('not configured')}`);
+  }
 
+  console.log(boxen(headerLines.join('\n'), {
+    padding: { top: 0, bottom: 0, left: 1, right: 1 },
+    borderColor: 'cyan',
+    borderStyle: 'round',
+  }));
+
+  // Remote status
+  if (status.remote) {
     let remoteInfo = '';
     switch (status.remoteStatus) {
       case 'up-to-date':
-        remoteInfo = chalk.green('up to date');
+        remoteInfo = chalk.green('✓ Up to date with remote');
         break;
       case 'ahead':
-        remoteInfo = chalk.yellow(`${status.ahead} commit${status.ahead > 1 ? 's' : ''} ahead`);
+        remoteInfo = chalk.yellow(`↑ ${status.ahead} commit${status.ahead > 1 ? 's' : ''} ahead of remote`);
         break;
       case 'behind':
-        remoteInfo = chalk.yellow(`${status.behind} commit${status.behind > 1 ? 's' : ''} behind`);
+        remoteInfo = chalk.yellow(`↓ ${status.behind} commit${status.behind > 1 ? 's' : ''} behind remote`);
         break;
       case 'diverged':
-        remoteInfo = chalk.red(`diverged (${status.ahead} ahead, ${status.behind} behind)`);
+        remoteInfo = chalk.red(`⚠ Diverged (${status.ahead} ahead, ${status.behind} behind)`);
         break;
     }
-    console.log(chalk.dim('Status:'), remoteInfo);
-  } else {
-    console.log(chalk.dim('Remote:'), chalk.yellow('not configured'));
+    console.log('\n' + remoteInfo);
   }
 
+  // Tracked files with category breakdown
   console.log();
-  console.log(chalk.dim('Tracked files:'), status.trackedCount);
+  console.log(chalk.bold(`Tracked Files: ${status.trackedCount}`));
+
+  const categoryOrder = ['shell', 'git', 'editors', 'terminal', 'ssh', 'misc'];
+  const sortedCategories = Object.keys(status.categoryCounts).sort((a, b) => {
+    const aIdx = categoryOrder.indexOf(a);
+    const bIdx = categoryOrder.indexOf(b);
+    if (aIdx === -1 && bIdx === -1) return a.localeCompare(b);
+    if (aIdx === -1) return 1;
+    if (bIdx === -1) return -1;
+    return aIdx - bIdx;
+  });
+
+  if (sortedCategories.length > 0) {
+    for (const category of sortedCategories) {
+      const count = status.categoryCounts[category];
+      console.log(chalk.dim(`  ${category}: ${count} file${count > 1 ? 's' : ''}`));
+    }
+  }
 
   // File changes
   if (status.changes.length > 0) {
