@@ -47,15 +47,18 @@ export const prompts = {
       initialValues?: T[];
     }
   ): Promise<T[]> => {
+    // Always include hint property to ensure consistent object shape
     const mappedOptions = options.map((opt) => ({
       value: opt.value,
       label: opt.label,
-      ...(opt.hint && { hint: opt.hint }),
+      hint: opt.hint ?? undefined,
     }));
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // Type assertion needed: TypeScript's Option<T> conditional type doesn't correctly
+    // infer the type when T is generic. At runtime, the types match correctly.
     const result = await p.multiselect({
       message,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       options: mappedOptions as any,
       required: config?.required ?? false,
       initialValues: config?.initialValues,

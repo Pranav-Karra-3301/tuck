@@ -223,7 +223,7 @@ interface GitHubSetupResult {
  */
 const setupAlternativeAuth = async (tuckDir: string): Promise<GitHubSetupResult> => {
   console.log();
-  prompts.log.info('GitHub CLI not available. Let\'s set up authentication another way.');
+  prompts.log.info("GitHub CLI not available. Let's set up authentication another way.");
   console.log();
 
   // Check for existing credentials and test them
@@ -395,6 +395,8 @@ const setupTokenAuth = async (
   const username = await prompts.text('Enter your GitHub username:', {
     validate: (value) => {
       if (!value) return 'Username is required';
+      // GitHub username rules: start with alphanumeric, may contain hyphens
+      // (no consecutive or trailing hyphens), maximum length 39 characters.
       if (!/^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$/.test(value)) {
         return 'Invalid GitHub username';
       }
@@ -1070,7 +1072,6 @@ const runInteractiveInit = async (): Promise<void> => {
 
   // Flow control flags
   let skipExistingRepoQuestion = false;
-  let freshInitDone = false;
   let remoteUrl: string | null = null;
   let existingRepoToUseAsRemote: string | null = null;
 
@@ -1233,8 +1234,6 @@ const runInteractiveInit = async (): Promise<void> => {
       });
 
       await initFromRemote(tuckDir, repoUrl);
-      freshInitDone = true;
-      remoteUrl = repoUrl;
 
       prompts.log.success('Repository cloned successfully!');
 
@@ -1257,11 +1256,8 @@ const runInteractiveInit = async (): Promise<void> => {
     }
   }
 
-  // Initialize from scratch if not already done
-  if (!freshInitDone) {
-    await initFromScratch(tuckDir, {});
-    freshInitDone = true;
-  }
+  // Initialize from scratch
+  await initFromScratch(tuckDir, {});
 
   // If we have an existing repo to use as remote, set it up now
   if (existingRepoToUseAsRemote) {
