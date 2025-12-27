@@ -91,13 +91,13 @@ install_npm() {
     info "Installing via npm..."
 
     if command -v npm &> /dev/null; then
-        npm install -g tuck
+        npm install -g @prnv/tuck
         success "Installed tuck via npm"
     elif command -v pnpm &> /dev/null; then
-        pnpm add -g tuck
+        pnpm add -g @prnv/tuck
         success "Installed tuck via pnpm"
     elif command -v yarn &> /dev/null; then
-        yarn global add tuck
+        yarn global add @prnv/tuck
         success "Installed tuck via yarn"
     else
         error "No package manager found. Please install Node.js and npm first."

@@ -2,7 +2,7 @@
 
 > Modern dotfiles manager with a beautiful CLI
 
-[![npm version](https://img.shields.io/npm/v/tuck.svg)](https://www.npmjs.com/package/tuck)
+[![npm version](https://img.shields.io/npm/v/@prnv/tuck.svg)](https://www.npmjs.com/package/@prnv/tuck)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/Pranav-Karra-3301/tuck/actions/workflows/ci.yml/badge.svg)](https://github.com/Pranav-Karra-3301/tuck/actions/workflows/ci.yml)
 
@@ -19,13 +19,17 @@
 
 ```bash
 # npm
-npm install -g tuck
+npm install -g @prnv/tuck
 
 # pnpm
-pnpm add -g tuck
+pnpm add -g @prnv/tuck
 
 # yarn
-yarn global add tuck
+yarn global add @prnv/tuck
+
+# Homebrew (macOS)
+brew tap pranav-karra-3301/tuck
+brew install tuck
 ```
 
 ## Quick Start

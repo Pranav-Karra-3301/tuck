@@ -96,6 +96,9 @@ jobs:
     timeout-minutes: 20
     needs: check
     if: needs.check.outputs.should_release == 'true' || github.event_name == 'workflow_dispatch'
+    outputs:
+      new_release_version: ${{ steps.semantic.outputs.new_release_version }}
+      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -140,12 +143,24 @@ jobs:
             npx semantic-release
           fi
 
+          # Get the latest tag created by semantic-release
+          git fetch --tags
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LATEST_TAG" ]; then
+            VERSION="${LATEST_TAG#v}"
+            echo "new_release_version=$VERSION" >> $GITHUB_OUTPUT
+            echo "new_release_published=true" >> $GITHUB_OUTPUT
+            echo "Released version: $VERSION"
+          else
+            echo "new_release_published=false" >> $GITHUB_OUTPUT
+          fi
+
   build-binaries:
     name: Build Binary (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     needs: release
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !inputs.dry_run
+    if: needs.release.outputs.new_release_published == 'true' && !inputs.dry_run
     strategy:
       fail-fast: false
       matrix:
@@ -197,11 +212,10 @@ jobs:
           retention-days: 30
 
       - name: Upload to release
-        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.artifact }}
-          tag_name: ${{ github.ref_name }}
+          tag_name: v${{ needs.release.outputs.new_release_version }}
         continue-on-error: true
 
   update-homebrew:
@@ -209,7 +223,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: release
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !inputs.dry_run
+    if: needs.release.outputs.new_release_published == 'true' && !inputs.dry_run
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -219,17 +233,14 @@ jobs:
       - name: Get latest version
         id: version
         run: |
-          # Get the latest tag (semantic-release should have created it)
-          git fetch --tags
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ -z "$LATEST_TAG" ]; then
-            echo "No tags found, skipping homebrew update"
+          VERSION="${{ needs.release.outputs.new_release_version }}"
+          if [ -z "$VERSION" ]; then
+            echo "No version found, skipping homebrew update"
             echo "skip=true" >> $GITHUB_OUTPUT
             exit 0
           fi
-          VERSION="${LATEST_TAG#v}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
           echo "skip=false" >> $GITHUB_OUTPUT
           echo "Latest version: $VERSION"
 
@@ -240,8 +251,8 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           # Wait a bit for npm to propagate
           sleep 30
-          # Download the tarball from npm
-          curl -sL "https://registry.npmjs.org/tuck/-/tuck-${VERSION}.tgz" -o tuck.tgz
+          # Download the tarball from npm (scoped package URL format)
+          curl -sL "https://registry.npmjs.org/@prnv/tuck/-/tuck-${VERSION}.tgz" -o tuck.tgz
           # Compute SHA256
           SHA256=$(sha256sum tuck.tgz | awk '{print $1}')
           echo "sha256=$SHA256" >> $GITHUB_OUTPUT
@@ -262,47 +273,47 @@ jobs:
 
           # Update the formula file
           cat > Formula/tuck.rb << 'FORMULA_EOF'
-          # Homebrew Formula for tuck
-          #
-          # This formula is automatically updated by the tuck release workflow.
-          # Manual updates should not be necessary.
-          #
-          # To install:
-          #   brew tap pranav-karra-3301/tuck
-          #   brew install tuck
+# Homebrew Formula for tuck
+#
+# This formula is automatically updated by the tuck release workflow.
+# Manual updates should not be necessary.
+#
+# To install:
+#   brew tap pranav-karra-3301/tuck
+#   brew install tuck
 
-          class Tuck < Formula
-            desc "Modern, beautiful dotfiles manager CLI"
-            homepage "https://github.com/Pranav-Karra-3301/tuck"
-            url "https://registry.npmjs.org/tuck/-/tuck-VERSION_PLACEHOLDER.tgz"
-            sha256 "SHA256_PLACEHOLDER"
-            license "MIT"
+class Tuck < Formula
+  desc "Modern, beautiful dotfiles manager CLI"
+  homepage "https://github.com/Pranav-Karra-3301/tuck"
+  url "https://registry.npmjs.org/@prnv/tuck/-/tuck-VERSION_PLACEHOLDER.tgz"
+  sha256 "SHA256_PLACEHOLDER"
+  license "MIT"
 
-            depends_on "node@20"
+  depends_on "node@20"
 
-            def install
-              system "npm", "install", *std_npm_args
-              bin.install_symlink Dir["#{libexec}/bin/*"]
-            end
+  def install
+    system "npm", "install", *std_npm_args
+    bin.install_symlink Dir["#{libexec}/bin/*"]
+  end
 
-            test do
-              assert_match version.to_s, shell_output("#{bin}/tuck --version")
-            end
+  test do
+    assert_match version.to_s, shell_output("#{bin}/tuck --version")
+  end
 
-            def caveats
-              <<~EOS
-                tuck is a modern dotfiles manager. Get started with:
+  def caveats
+    <<~EOS
+      tuck is a modern dotfiles manager. Get started with:
 
-                  tuck init      # Initialize tuck in your home directory
-                  tuck add       # Add files to track
-                  tuck status    # Check status of tracked files
-                  tuck sync      # Sync changes with your repository
+        tuck init      # Initialize tuck in your home directory
+        tuck add       # Add files to track
+        tuck status    # Check status of tracked files
+        tuck sync      # Sync changes with your repository
 
-                For more information, visit: https://github.com/Pranav-Karra-3301/tuck
-              EOS
-            end
-          end
-          FORMULA_EOF
+      For more information, visit: https://github.com/Pranav-Karra-3301/tuck
+    EOS
+  end
+end
+FORMULA_EOF
 
           # Replace placeholders
           sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" Formula/tuck.rb
