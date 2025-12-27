@@ -4,6 +4,37 @@ import { GitHubCliError } from '../errors.js';
 
 const execFileAsync = promisify(execFile);
 
+// ============================================================================
+// Constants
+// ============================================================================
+
+/** API request timeout in milliseconds (10 seconds) */
+const API_REQUEST_TIMEOUT_MS = 10000;
+
+/** Git credential cache timeout in seconds (24 hours) */
+const CREDENTIAL_CACHE_TIMEOUT_SECONDS = 86400;
+
+/** Days threshold for warning about potentially expired tokens (85 days, before typical 90-day expiration) */
+const TOKEN_EXPIRATION_WARNING_DAYS = 85;
+
+/** Minimum length for a valid GitHub token */
+export const MIN_GITHUB_TOKEN_LENGTH = 20;
+
+/**
+ * Valid GitHub token prefixes for validation purposes.
+ * Note: detectTokenType() only distinguishes between fine-grained (github_pat_)
+ * and classic (ghp_) tokens, but GitHub issues other token types that should
+ * still be accepted as valid (gho_, ghu_, ghs_, ghr_).
+ */
+export const GITHUB_TOKEN_PREFIXES = [
+  'github_pat_', // Fine-grained PAT
+  'ghp_', // Classic PAT
+  'gho_', // OAuth token
+  'ghu_', // User token
+  'ghs_', // Server token
+  'ghr_', // Refresh token
+] as const;
+
 /**
  * Validate repository name/identifier to prevent command injection.
  * Valid formats: "owner/repo", "repo", or full URLs
@@ -716,6 +747,17 @@ export const getAuthMethods = (repoName?: string, email?: string): AuthMethodInf
 export const configureGitCredentialHelper = async (): Promise<void> => {
   const { platform } = process;
 
+  // Check if a credential helper is already configured
+  try {
+    const { stdout } = await execFileAsync('git', ['config', '--global', 'credential.helper']);
+    if (stdout.trim()) {
+      // User already has a credential helper configured, don't override it
+      return;
+    }
+  } catch {
+    // No credential helper configured, proceed with setup
+  }
+
   try {
     if (platform === 'darwin') {
       // macOS - use Keychain
@@ -725,7 +767,7 @@ export const configureGitCredentialHelper = async (): Promise<void> => {
       try {
         await execFileAsync('git', ['config', '--global', 'credential.helper', 'libsecret']);
       } catch {
-        await execFileAsync('git', ['config', '--global', 'credential.helper', 'cache --timeout=86400']);
+        await execFileAsync('git', ['config', '--global', 'credential.helper', `cache --timeout=${CREDENTIAL_CACHE_TIMEOUT_SECONDS}`]);
       }
     } else if (platform === 'win32') {
       // Windows - use credential manager
@@ -773,6 +815,14 @@ export const storeGitHubCredentials = async (
   // First, configure the credential helper
   await configureGitCredentialHelper();
 
+  // Validate that username and token do not contain newline characters,
+  // which would break the git credential helper protocol format.
+  if (/[\r\n]/.test(username) || /[\r\n]/.test(token)) {
+    throw new GitHubCliError('Username or token contains invalid newline characters.', [
+      'Newline characters are not allowed in GitHub usernames or tokens.',
+    ]);
+  }
+
   // Store the credential using git credential helper
   // This pipes the credential to git credential approve
   const credentialInput = `protocol=https\nhost=github.com\nusername=${username}\npassword=${token}\n`;
@@ -814,17 +864,32 @@ export const storeGitHubCredentials = async (
 
   try {
     await mkdir(dirname(credentialsPath), { recursive: true });
+    // Note: File permissions (0o600) protect this metadata file.
+    // The actual token is stored securely via git credential helper (e.g., osxkeychain,
+    // libsecret, manager) which uses OS-level secure storage. The security of the token
+    // depends on the credential helper implementation, not just this metadata file.
     await writeFile(credentialsPath, JSON.stringify(metadata, null, 2), {
       mode: 0o600, // Read/write only for owner
     });
   } catch (error) {
-    // Non-critical - metadata storage failed, but log a warning as this affects
-    // security-relevant file permissions/metadata.
-    console.warn(
-      `Warning: Failed to store GitHub credential metadata at "${credentialsPath}". ` +
-        'The credentials file may not have restricted permissions (0o600).',
-      error
-    );
+    // Non-critical - metadata storage failed, but surface a warning as this affects
+    // security-relevant file permissions/metadata and token expiration tracking.
+    const warningMessage =
+      `Failed to store GitHub credential metadata at "${credentialsPath}". ` +
+      'Token expiration tracking and verification of restricted file permissions ' +
+      '(0o600) may not work as expected.';
+
+    // Emit a process warning so this is visible to the user in a non-blocking way.
+    try {
+      process.emitWarning(warningMessage, {
+        code: 'GITHUB_CREDENTIAL_METADATA_WRITE_FAILED',
+      });
+    } catch {
+      // Fallback: emitting a warning should never break the main flow.
+    }
+
+    // Also log to console for environments that rely on standard output logging.
+    console.warn(`Warning: ${warningMessage}`, error);
   }
 };
 
@@ -965,7 +1030,7 @@ export const testStoredCredentials = async (): Promise<{
     // Create Basic Auth header
     const auth = Buffer.from(`${username}:${password}`).toString('base64');
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+    const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
 
     try {
       const response = await fetch('https://api.github.com/user', {
@@ -989,6 +1054,7 @@ export const testStoredCredentials = async (): Promise<{
           return { valid: true, username: apiUsername };
         } catch {
           // Even if we can't parse, 200 OK means auth succeeded
+          // Use username from credentials, fall back to metadata username if available
           return { valid: true, username: username || metadata.username };
         }
       }
@@ -1002,7 +1068,7 @@ export const testStoredCredentials = async (): Promise<{
           );
 
           // Fine-grained tokens often expire in 90 days, classic can vary
-          if (daysSinceCreation > 85) {
+          if (daysSinceCreation > TOKEN_EXPIRATION_WARNING_DAYS) {
             return { valid: false, reason: 'expired', username: metadata.username };
           }
         }
@@ -1136,18 +1202,15 @@ export const updateStoredCredentials = async (
   const tokenType = type ?? metadata?.type ?? detectedType;
 
   // Ensure we have a valid token type (not 'unknown')
-  if (tokenType === 'unknown') {
+  if (tokenType !== 'fine-grained' && tokenType !== 'classic') {
     throw new Error('Could not determine GitHub token type. Please run `tuck init` to set up authentication.');
   }
-
-  // TypeScript now knows tokenType is 'fine-grained' | 'classic' after the check above
-  const validTokenType: 'fine-grained' | 'classic' = tokenType;
 
   // Remove old credentials first
   await removeStoredCredentials();
 
   // Store new credentials
-  await storeGitHubCredentials(username, token, validTokenType);
+  await storeGitHubCredentials(username, token, tokenType);
 };
 
 /**

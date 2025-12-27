@@ -38,6 +38,8 @@ import {
   configureGitCredentialHelper,
   testStoredCredentials,
   diagnoseAuthIssue,
+  MIN_GITHUB_TOKEN_LENGTH,
+  GITHUB_TOKEN_PREFIXES,
 } from '../lib/github.js';
 import chalk from 'chalk';
 import { detectDotfiles, DetectedFile, DETECTION_CATEGORIES } from '../lib/detect.js';
@@ -395,8 +397,8 @@ const setupTokenAuth = async (
   const username = await prompts.text('Enter your GitHub username:', {
     validate: (value) => {
       if (!value) return 'Username is required';
-      // GitHub username rules: start with alphanumeric, may contain hyphens
-      // (no consecutive or trailing hyphens), maximum length 39 characters.
+      // GitHub username rules: 1-39 characters total, start with alphanumeric, may contain hyphens
+      // (no consecutive or trailing hyphens).
       if (!/^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$/.test(value)) {
         return 'Invalid GitHub username';
       }
@@ -410,6 +412,23 @@ const setupTokenAuth = async (
   if (!token) {
     prompts.log.warning('No token provided');
     return { remoteUrl: null, pushed: false };
+  }
+
+  // Basic token format validation
+  if (token.length < MIN_GITHUB_TOKEN_LENGTH) {
+    prompts.log.error('Invalid token: Token appears too short');
+    return { remoteUrl: null, pushed: false };
+  }
+
+  // Check if token starts with expected GitHub token prefixes
+  const hasValidPrefix = GITHUB_TOKEN_PREFIXES.some((prefix) => token.startsWith(prefix));
+
+  if (!hasValidPrefix) {
+    const prefixList = GITHUB_TOKEN_PREFIXES.join(', ');
+    prompts.log.warning(
+      `Warning: Token does not start with a recognized GitHub prefix (${prefixList}). ` +
+        'This may cause authentication to fail.'
+    );
   }
 
   // Auto-detect token type
