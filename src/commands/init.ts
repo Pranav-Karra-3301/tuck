@@ -12,6 +12,7 @@ import {
   pathExists,
   expandPath,
   collapsePath,
+  validateSafeSourcePath,
 } from '../lib/paths.js';
 import { saveConfig } from '../lib/config.js';
 import { createManifest } from '../lib/manifest.js';
@@ -428,6 +429,15 @@ const importExistingRepo = async (
       // Create backup before applying
       const existingPaths: string[] = [];
       for (const file of Object.values(analysis.manifest.files)) {
+        // Validate that the source path is safe (within home directory)
+        // This prevents malicious manifests from writing to arbitrary locations
+        try {
+          validateSafeSourcePath(file.source);
+        } catch (error) {
+          prompts.log.warning(`Skipping unsafe path from manifest: ${file.source}`);
+          continue;
+        }
+
         const destPath = expandPath(file.source);
         if (await pathExists(destPath)) {
           existingPaths.push(destPath);
@@ -447,6 +457,15 @@ const importExistingRepo = async (
 
       let appliedCount = 0;
       for (const [_id, file] of Object.entries(analysis.manifest.files)) {
+        // Validate that the source path is safe (within home directory)
+        // This prevents malicious manifests from writing to arbitrary locations
+        try {
+          validateSafeSourcePath(file.source);
+        } catch (error) {
+          prompts.log.warning(`Skipping unsafe path from manifest: ${file.source}`);
+          continue;
+        }
+
         const repoFilePath = join(tuckDir, file.destination);
         const destPath = expandPath(file.source);
 
@@ -648,22 +667,30 @@ const runInteractiveInit = async (): Promise<void> => {
           const tempDir = join(tmpdir(), `tuck-import-${Date.now()}`);
           const cloneSpinner = prompts.spinner();
           cloneSpinner.start('Cloning repository...');
+          let phase: 'cloning' | 'analyzing' | 'importing' = 'cloning';
 
           try {
             await ghCloneRepo(existingRepoName, tempDir);
             cloneSpinner.stop('Repository cloned');
+            phase = 'analyzing';
 
             // Analyze the repository
             const analysisSpinner = prompts.spinner();
             analysisSpinner.start('Analyzing repository...');
-            const analysis = await analyzeRepository(tempDir);
-            analysisSpinner.stop('Analysis complete');
+            let analysis: RepositoryAnalysis;
+            try {
+              analysis = await analyzeRepository(tempDir);
+              analysisSpinner.stop('Analysis complete');
+            } catch (error) {
+              analysisSpinner.stop('Analysis failed');
+              throw new Error(
+                `Failed to analyze repository: ${error instanceof Error ? error.message : String(error)}`
+              );
+            }
 
+            phase = 'importing';
             // Import based on analysis
             const result = await importExistingRepo(tuckDir, existingRepoName, analysis, tempDir);
-
-            // Clean up temp directory
-            await rm(tempDir, { recursive: true, force: true });
 
             if (result.success) {
               console.log();
@@ -686,12 +713,36 @@ const runInteractiveInit = async (): Promise<void> => {
             // User cancelled - continue with normal flow
             console.log();
           } catch (error) {
-            cloneSpinner.stop('Clone failed');
-            prompts.log.warning(
-              `Could not clone repository: ${error instanceof Error ? error.message : String(error)}`
-            );
+            // Only stop clone spinner if we're still in cloning phase
+            if (phase === 'cloning') {
+              cloneSpinner.stop('Clone failed');
+            }
+
+            // Provide accurate error messages based on which phase failed
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            if (phase === 'analyzing') {
+              prompts.log.warning(errorMessage);
+            } else if (phase === 'importing') {
+              prompts.log.warning(errorMessage);
+            } else {
+              prompts.log.warning(
+                `Could not clone repository: ${errorMessage}`
+              );
+            }
             console.log();
             // Continue with normal flow
+          } finally {
+            // Always clean up temp directory if clone succeeded
+            if (phase !== 'cloning' && await pathExists(tempDir)) {
+              try {
+                await rm(tempDir, { recursive: true, force: true });
+              } catch (cleanupError) {
+                // Log but don't throw - cleanup failure shouldn't break the flow
+                prompts.log.warning(
+                  `Failed to clean up temporary directory: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+                );
+              }
+            }
           }
         }
       } else {
