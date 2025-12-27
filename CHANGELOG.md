@@ -1,3 +1,17 @@
+# [1.2.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.1.1...v1.2.0) (2025-12-27)
+
+
+### Bug Fixes
+
+* **init:** validate destination paths and copy plain-dotfiles repo contents ([8f61bca](https://github.com/Pranav-Karra-3301/tuck/commit/8f61bca849cc8f7e10cf918d1b7bf7ab267c7ce8))
+* preserve existing .gitignore and README.md in plain-dotfiles import ([d32dd96](https://github.com/Pranav-Karra-3301/tuck/commit/d32dd96bc8657ecf9175384a2a44d25fec52e121))
+* validate source paths in importExistingRepo to prevent path traversal ([b8e5d26](https://github.com/Pranav-Karra-3301/tuck/commit/b8e5d2633ca56a2accfa65831489e3c59c4ed06e))
+
+
+### Features
+
+* **init:** auto-detect existing GitHub dotfiles repository ([423d9a6](https://github.com/Pranav-Karra-3301/tuck/commit/423d9a66ff67d81f3c6e73702e08f65486d22304))
+
 ## [1.1.1](https://github.com/Pranav-Karra-3301/tuck/compare/v1.1.0...v1.1.1) (2025-12-27)
 
 
