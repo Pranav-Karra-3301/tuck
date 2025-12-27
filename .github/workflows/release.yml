@@ -163,7 +163,7 @@ jobs:
           fi
 
       - name: Preserve changelog header
-        if: inputs.dry_run != 'true'
+        if: inputs.dry_run != true
         run: |
           # Preserve the changelog image header after semantic-release updates it
           node scripts/preserve-changelog-header.js
