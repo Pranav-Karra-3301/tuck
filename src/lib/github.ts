@@ -588,7 +588,7 @@ To create a Fine-grained Personal Access Token (recommended):
 8. Configure git to use the token:
    When pushing, use this as your password:
    - Username: your-github-username
-   - Password: ghp_xxxxxxxxxxxx (your token)
+   - Password: github_pat_xxxxxxxxxxxx (your token)
 
    Or configure credential storage:
    git config --global credential.helper store
@@ -1055,7 +1055,11 @@ export const testStoredCredentials = async (): Promise<{
         } catch {
           // Even if we can't parse, 200 OK means auth succeeded
           // Use username from credentials, fall back to metadata username if available
-          return { valid: true, username: username || metadata.username };
+          const effectiveUsername =
+            typeof username === 'string' && username.trim().length > 0
+              ? username
+              : metadata.username;
+          return { valid: true, username: effectiveUsername };
         }
       }
 

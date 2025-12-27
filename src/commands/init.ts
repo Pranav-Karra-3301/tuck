@@ -495,7 +495,9 @@ const promptForManualRepoUrl = async (
     placeholder: exampleUrl,
     validate: (value) => {
       if (!value) return 'Repository URL is required';
-      if (!value.includes('github.com') && !value.startsWith('git@')) {
+      const isGitHubHttps = value.startsWith('https://github.com/');
+      const isGitHubSsh = value.startsWith('git@github.com:');
+      if (!isGitHubHttps && !isGitHubSsh) {
         return 'Please enter a valid GitHub URL';
       }
       return undefined;
@@ -1245,8 +1247,10 @@ const runInteractiveInit = async (): Promise<void> => {
         placeholder: 'git@github.com:user/dotfiles.git',
         validate: (value) => {
           if (!value) return 'Repository URL is required';
-          if (!value.includes('github.com') && !value.includes('gitlab.com') && !value.includes('git@')) {
-            return 'Please enter a valid git URL';
+          const isGitHubHttps = value.startsWith('https://github.com/');
+          const isGitHubSsh = value.startsWith('git@github.com:');
+          if (!isGitHubHttps && !isGitHubSsh) {
+            return 'Please enter a valid GitHub URL';
           }
           return undefined;
         },
@@ -1333,8 +1337,10 @@ const runInteractiveInit = async (): Promise<void> => {
             placeholder: `git@github.com:${user?.login || 'user'}/${suggestedName}.git`,
             validate: (value) => {
               if (!value) return 'Repository URL is required';
-              if (!value.includes('github.com') && !value.includes('gitlab.com') && !value.startsWith('git@')) {
-                return 'Please enter a valid git URL';
+              const isGitHubHttps = value.startsWith('https://github.com/');
+              const isGitHubSsh = value.startsWith('git@github.com:');
+              if (!isGitHubHttps && !isGitHubSsh) {
+                return 'Please enter a valid GitHub URL';
               }
               return undefined;
             },
