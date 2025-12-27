@@ -69,13 +69,17 @@ export const isGhInstalled = async (): Promise<boolean> => {
  */
 export const isGhAuthenticated = async (): Promise<boolean> => {
   try {
-    const { stdout } = await execAsync('gh auth status');
+    // gh auth status outputs to stderr, not stdout
+    // execAsync provides both stdout and stderr even on success
+    const { stdout, stderr } = await execAsync('gh auth status');
+    // Check stderr (where gh auth status outputs) and stdout (as fallback)
+    const output = (stderr || stdout || '').trim();
     // Only return true if we can definitively confirm authentication
     // Check for positive indicator, not absence of negative indicator
-    return stdout.includes('Logged in');
+    return output.includes('Logged in');
   } catch (error) {
     // gh auth status returns exit code 1 when not authenticated
-    // but still outputs to stderr
+    // and outputs error message to stderr
     if (error instanceof Error && 'stderr' in error) {
       const stderr = (error as { stderr: string }).stderr;
       // Only return true if stderr explicitly confirms authentication
