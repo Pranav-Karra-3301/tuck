@@ -435,10 +435,11 @@ async function processTemplate(
 
   if (hasChezmoiCli) {
     try {
-      // Use chezmoi to evaluate the template
-      const { stdout } = await execAsync(
-        `chezmoi execute-template < "${sourcePath}"`
-      );
+      // Use chezmoi to evaluate the template (using stdin to avoid shell injection)
+      const fileContent = await readFile(sourcePath, 'utf-8');
+      const { stdout } = await execAsync('chezmoi execute-template', {
+        input: fileContent
+      });
       return { content: stdout, wasTemplate: true };
     } catch (error) {
       logger.warn(`Could not evaluate template ${sourcePath}: ${error}`);
@@ -608,10 +609,11 @@ async function step4_import(
         const result = await processTemplate(file.sourcePath, file.targetPath);
         content = result.content;
       } else if (file.isEncrypted) {
-        // Use chezmoi to decrypt
-        const { stdout } = await execAsync(
-          `chezmoi decrypt "${file.sourcePath}"`
-        );
+        // Use chezmoi to decrypt (using argument array to avoid shell injection)
+        const { stdout } = await execAsync('chezmoi', [
+          'decrypt',
+          file.sourcePath,
+        ]);
         content = stdout;
       } else {
         content = await readFile(file.sourcePath, 'utf-8');
