@@ -1,6 +1,5 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import ora from 'ora';
 import { prompts, logger, banner } from '../ui/index.js';
 import { getTuckDir, collapsePath } from '../lib/paths.js';
 import { loadManifest, getTrackedFileBySource } from '../lib/manifest.js';
@@ -10,6 +9,7 @@ import {
   DetectedFile,
 } from '../lib/detect.js';
 import { NotInitializedError } from '../errors.js';
+import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
 
 export interface ScanOptions {
   all?: boolean;
@@ -215,106 +215,19 @@ const addFilesWithProgress = async (
   selected: SelectableFile[],
   tuckDir: string
 ): Promise<number> => {
-  const { addFileToManifest } = await import('../lib/manifest.js');
-  const { copyFileOrDir, getFileChecksum, getFileInfo } = await import('../lib/files.js');
-  const { loadConfig } = await import('../lib/config.js');
-  const { expandPath, getDestinationPath, getRelativeDestination, generateFileId, sanitizeFilename, detectCategory } = await import('../lib/paths.js');
-  const { ensureDir } = await import('fs-extra');
-  const { CATEGORIES } = await import('../constants.js');
+  // Convert SelectableFile to FileToTrack
+  const filesToTrack: FileToTrack[] = selected.map(f => ({
+    path: f.path,
+    category: f.category,
+  }));
 
-  const config = await loadConfig(tuckDir);
-  const strategy = config.files.strategy || 'copy';
-  const total = selected.length;
-  const sensitiveFiles: string[] = [];
+  // Use the shared tracking utility
+  const result = await trackFilesWithProgress(filesToTrack, tuckDir, {
+    showCategory: true,
+    actionVerb: 'Tracking',
+  });
 
-  console.log();
-  console.log(chalk.bold.cyan(`Tracking ${total} ${total === 1 ? 'file' : 'files'}...`));
-  console.log(chalk.dim('─'.repeat(50)));
-  console.log();
-
-  let successCount = 0;
-
-  for (let i = 0; i < selected.length; i++) {
-    const file = selected[i];
-    const expandedPath = expandPath(file.path);
-    const indexStr = chalk.dim(`[${i + 1}/${total}]`);
-    const category = file.category || detectCategory(expandedPath);
-    const filename = sanitizeFilename(expandedPath);
-    const categoryInfo = CATEGORIES[category];
-    const icon = categoryInfo?.icon || '○';
-
-    // Show spinner while processing
-    const spinner = ora({
-      text: `${indexStr} Tracking ${chalk.cyan(collapsePath(file.path))}`,
-      color: 'cyan',
-      spinner: 'dots',
-      indent: 2,
-    }).start();
-
-    try {
-      // Get destination path
-      const destination = getDestinationPath(tuckDir, category, filename);
-
-      // Ensure category directory exists
-      const { dirname } = await import('path');
-      await ensureDir(dirname(destination));
-
-      // Copy file
-      await copyFileOrDir(expandedPath, destination, { overwrite: true });
-
-      // Get file info
-      const checksum = await getFileChecksum(destination);
-      const info = await getFileInfo(expandedPath);
-      const now = new Date().toISOString();
-
-      // Generate unique ID
-      const id = generateFileId(file.path);
-
-      // Add to manifest
-      await addFileToManifest(tuckDir, id, {
-        source: collapsePath(file.path),
-        destination: getRelativeDestination(category, filename),
-        category,
-        strategy,
-        encrypted: false,
-        template: false,
-        permissions: info.permissions,
-        added: now,
-        modified: now,
-        checksum,
-      });
-
-      spinner.stop();
-      const categoryStr = chalk.dim(` ${icon} ${category}`);
-      console.log(`  ${chalk.green('✓')} ${indexStr} ${collapsePath(file.path)}${categoryStr}`);
-
-      if (file.sensitive) {
-        sensitiveFiles.push(file.path);
-      }
-
-      successCount++;
-
-      // Small delay for visual effect
-      if (i < selected.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 30));
-      }
-    } catch (error) {
-      spinner.stop();
-      console.log(`  ${chalk.red('✗')} ${indexStr} ${collapsePath(file.path)} ${chalk.red('- failed')}`);
-    }
-  }
-
-  // Summary
-  console.log();
-  console.log(chalk.green('✓'), chalk.bold(`Tracked ${successCount} ${successCount === 1 ? 'file' : 'files'} successfully`));
-
-  if (sensitiveFiles.length > 0) {
-    console.log();
-    console.log(chalk.yellow('⚠'), chalk.yellow('Some files may contain sensitive data'));
-    console.log(chalk.dim('  Make sure your repository is private!'));
-  }
-
-  return successCount;
+  return result.succeeded;
 };
 
 /**

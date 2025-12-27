@@ -1,9 +1,7 @@
 import { Command } from 'commander';
-import { join, resolve, sep, dirname } from 'path';
+import { join, resolve, sep } from 'path';
 import { writeFile } from 'fs/promises';
 import { ensureDir } from 'fs-extra';
-import ora from 'ora';
-import chalk from 'chalk';
 import { banner, nextSteps, prompts, withSpinner, logger } from '../ui/index.js';
 import {
   getTuckDir,
@@ -38,6 +36,7 @@ import { AlreadyInitializedError } from '../errors.js';
 import { CATEGORIES } from '../constants.js';
 import { defaultConfig } from '../schemas/config.schema.js';
 import type { InitOptions } from '../types.js';
+import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
 
 const GITIGNORE_TEMPLATE = `# OS generated files
 .DS_Store
@@ -61,107 +60,22 @@ Thumbs.db
 /**
  * Track selected files with beautiful progress display
  */
-const trackFilesWithProgress = async (
+const trackFilesWithProgressInit = async (
   selectedPaths: string[],
   tuckDir: string
 ): Promise<number> => {
-  const { addFileToManifest } = await import('../lib/manifest.js');
-  const { copyFileOrDir, getFileChecksum, getFileInfo } = await import('../lib/files.js');
-  const { loadConfig } = await import('../lib/config.js');
-  const {
-    expandPath,
-    getDestinationPath,
-    getRelativeDestination,
-    generateFileId,
-    sanitizeFilename,
-    detectCategory,
-  } = await import('../lib/paths.js');
-  const { CATEGORIES } = await import('../constants.js');
+  // Convert paths to FileToTrack
+  const filesToTrack: FileToTrack[] = selectedPaths.map(path => ({
+    path,
+  }));
 
-  const config = await loadConfig(tuckDir);
-  const strategy = config.files.strategy || 'copy';
-  const total = selectedPaths.length;
+  // Use the shared tracking utility
+  const result = await trackFilesWithProgress(filesToTrack, tuckDir, {
+    showCategory: true,
+    actionVerb: 'Tracking',
+  });
 
-  console.log();
-  console.log(chalk.bold.cyan(`Tracking ${total} ${total === 1 ? 'file' : 'files'}...`));
-  console.log(chalk.dim('─'.repeat(50)));
-  console.log();
-
-  let successCount = 0;
-
-  for (let i = 0; i < selectedPaths.length; i++) {
-    const filePath = selectedPaths[i];
-    const expandedPath = expandPath(filePath);
-    const indexStr = chalk.dim(`[${i + 1}/${total}]`);
-    const category = detectCategory(expandedPath);
-    const filename = sanitizeFilename(expandedPath);
-    const categoryInfo = CATEGORIES[category];
-    const icon = categoryInfo?.icon || '○';
-
-    // Show spinner while processing
-    const spinner = ora({
-      text: `${indexStr} Tracking ${chalk.cyan(collapsePath(filePath))}`,
-      color: 'cyan',
-      spinner: 'dots',
-      indent: 2,
-    }).start();
-
-    try {
-      // Get destination path
-      const destination = getDestinationPath(tuckDir, category, filename);
-
-      // Ensure category directory exists
-      await ensureDir(dirname(destination));
-
-      // Copy file
-      await copyFileOrDir(expandedPath, destination, { overwrite: true });
-
-      // Get file info
-      const checksum = await getFileChecksum(destination);
-      const info = await getFileInfo(expandedPath);
-      const now = new Date().toISOString();
-
-      // Generate unique ID
-      const id = generateFileId(filePath);
-
-      // Add to manifest
-      await addFileToManifest(tuckDir, id, {
-        source: collapsePath(filePath),
-        destination: getRelativeDestination(category, filename),
-        category,
-        strategy,
-        encrypted: false,
-        template: false,
-        permissions: info.permissions,
-        added: now,
-        modified: now,
-        checksum,
-      });
-
-      spinner.stop();
-      const categoryStr = chalk.dim(` ${icon} ${category}`);
-      console.log(`  ${chalk.green('✓')} ${indexStr} ${collapsePath(filePath)}${categoryStr}`);
-
-      successCount++;
-
-      // Small delay for visual effect
-      if (i < selectedPaths.length - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 30));
-      }
-    } catch (error) {
-      spinner.stop();
-      console.log(`  ${chalk.red('✗')} ${indexStr} ${collapsePath(filePath)} ${chalk.red('- failed')}`);
-    }
-  }
-
-  // Summary
-  console.log();
-  console.log(
-    chalk.green('✓'),
-    chalk.bold(`Tracked ${successCount} ${successCount === 1 ? 'file' : 'files'} successfully`)
-  );
-
-  return successCount;
+  return result.succeeded;
 };
 
 const README_TEMPLATE = (machine?: string) => `# Dotfiles
@@ -1022,7 +936,7 @@ const runInteractiveInit = async (): Promise<void> => {
 
         if (selectedFiles.length > 0) {
           // Track files with beautiful progress display
-          await trackFilesWithProgress(selectedFiles, tuckDir);
+          await trackFilesWithProgressInit(selectedFiles, tuckDir);
 
           // Ask if user wants to sync now
           console.log();

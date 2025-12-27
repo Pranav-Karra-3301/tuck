@@ -117,16 +117,22 @@ export const createProgressTracker = (
 };
 
 /**
- * Animated file tracking display
- * Shows files being tracked one by one with nice animations
+ * Animated file operation display
+ * Shows files being processed one by one with nice animations
+ * Supports multiple operation types: tracking, copying, syncing, restoring
  */
-export interface FileTrackingOptions {
+export interface FileOperationOptions {
+  /** Delay between operations in milliseconds (automatically reduced for large batches) */
   delayBetween?: number;
+  /** Show category information for each file */
   showCategory?: boolean;
+  /** Callback invoked after each operation completes */
   onProgress?: (current: number, total: number) => void;
+  /** Custom action verb for display messages */
+  actionVerb?: string;
 }
 
-export interface FileTrackingItem {
+export interface FileOperationItem {
   path: string;
   category?: string;
   action: 'tracking' | 'copying' | 'syncing' | 'restoring';
@@ -134,28 +140,45 @@ export interface FileTrackingItem {
 }
 
 /**
- * Display an animated file tracking progress
+ * Display an animated file operation progress
+ * Generic function for showing progress of various file operations
  */
-export const trackFilesWithProgress = async <T>(
-  items: FileTrackingItem[],
-  processor: (item: FileTrackingItem, index: number) => Promise<T>,
-  options: FileTrackingOptions = {}
+export const processFilesWithProgress = async <T>(
+  items: FileOperationItem[],
+  processor: (item: FileOperationItem, index: number) => Promise<T>,
+  options: FileOperationOptions = {}
 ): Promise<T[]> => {
-  const { delayBetween = 50, showCategory = true, onProgress } = options;
+  // Adaptive delay: reduce delay for large batches
+  let { delayBetween } = options;
+  if (delayBetween === undefined) {
+    delayBetween = items.length >= 50 ? 10 : 50; // 10ms for large batches, 50ms for small
+  }
+  
+  const { showCategory = true, onProgress, actionVerb } = options;
   const results: T[] = [];
-  const total = items.length;
+
+  // Determine action text based on the operation type
+  const defaultActionText = {
+    tracking: 'Tracking',
+    copying: 'Copying',
+    syncing: 'Syncing',
+    restoring: 'Restoring',
+  }[items[0]?.action || 'tracking'];
+  
+  const displayAction = actionVerb || defaultActionText;
+  const totalItems = items.length;
 
   console.log();
-  console.log(chalk.bold.cyan(`Tracking ${total} ${total === 1 ? 'file' : 'files'}...`));
+  console.log(chalk.bold.cyan(`${displayAction} ${totalItems} ${totalItems === 1 ? 'file' : 'files'}...`));
   console.log(chalk.dim('─'.repeat(50)));
   console.log();
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
-    const indexStr = chalk.dim(`[${i + 1}/${total}]`);
+    const indexStr = chalk.dim(`[${i + 1}/${totalItems}]`);
 
-    // Get action text
-    const actionText = {
+    // Get action text for this specific item
+    const actionText = actionVerb || {
       tracking: 'Tracking',
       copying: 'Copying',
       syncing: 'Syncing',
@@ -198,10 +221,28 @@ export const trackFilesWithProgress = async <T>(
   }
 
   console.log();
-  console.log(chalk.green('✓'), chalk.bold(`Tracked ${total} ${total === 1 ? 'file' : 'files'} successfully`));
+  console.log(chalk.green('✓'), chalk.bold(`${displayAction === 'Tracking' ? 'Tracked' : displayAction.replace(/ing$/, 'ed')} ${totalItems} ${totalItems === 1 ? 'file' : 'files'} successfully`));
 
   return results;
 };
+
+/**
+ * @deprecated Use processFilesWithProgress instead
+ * Kept for backward compatibility
+ */
+export const trackFilesWithProgress = processFilesWithProgress;
+
+/**
+ * @deprecated Use FileOperationItem instead
+ * Kept for backward compatibility
+ */
+export type FileTrackingItem = FileOperationItem;
+
+/**
+ * @deprecated Use FileOperationOptions instead
+ * Kept for backward compatibility
+ */
+export type FileTrackingOptions = FileOperationOptions;
 
 /**
  * Simple step-by-step progress display for multi-step operations
