@@ -1,5 +1,20 @@
 <img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
+# [1.3.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.2.1...v1.3.0) (2025-12-27)
+
+
+### Bug Fixes
+
+* prevent shell injection in migration documentation examples ([5247088](https://github.com/Pranav-Karra-3301/tuck/commit/5247088267652f4768ab6323ecfcc942820eb5fa))
+* resolve multiple logic gaps and safety issues ([4980175](https://github.com/Pranav-Karra-3301/tuck/commit/498017592423b141c25e7b3e0ab91170dbabf82d))
+* resolve undefined variable and type errors in progress tracking ([e3fd023](https://github.com/Pranav-Karra-3301/tuck/commit/e3fd02341518f290c0ba04ac93a321386faa2db1))
+* **roadmap:** address review comments on naming and technical accuracy ([7c35f90](https://github.com/Pranav-Karra-3301/tuck/commit/7c35f908edbae086e0fc1384f02ca85d9c5d0d4e))
+
+
+### Features
+
+* improve onboarding experience with beautiful progress display ([aac84e8](https://github.com/Pranav-Karra-3301/tuck/commit/aac84e8083a770e59657bec43ebc9d1c8e534c28))
+
 ## [1.2.1](https://github.com/Pranav-Karra-3301/tuck/compare/v1.2.0...v1.2.1) (2025-12-27)
 
 
