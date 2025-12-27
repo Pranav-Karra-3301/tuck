@@ -51,7 +51,7 @@ export const prompts = {
     const mappedOptions = options.map((opt) => ({
       value: opt.value,
       label: opt.label,
-      hint: opt.hint ?? undefined,
+      hint: opt.hint,
     }));
 
     // Type assertion needed: TypeScript's Option<T> conditional type doesn't correctly

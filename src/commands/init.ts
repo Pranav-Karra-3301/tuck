@@ -395,8 +395,8 @@ const setupTokenAuth = async (
   const username = await prompts.text('Enter your GitHub username:', {
     validate: (value) => {
       if (!value) return 'Username is required';
-      // GitHub username rules: start with alphanumeric, may contain hyphens
-      // (no consecutive or trailing hyphens), maximum length 39 characters.
+      // GitHub username rules: 1-39 characters total, start with alphanumeric, may contain hyphens
+      // (no consecutive or trailing hyphens).
       if (!/^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$/.test(value)) {
         return 'Invalid GitHub username';
       }
@@ -410,6 +410,27 @@ const setupTokenAuth = async (
   if (!token) {
     prompts.log.warning('No token provided');
     return { remoteUrl: null, pushed: false };
+  }
+
+  // Basic token format validation
+  if (token.length < 20) {
+    prompts.log.error('Invalid token: Token appears too short');
+    return { remoteUrl: null, pushed: false };
+  }
+
+  // Check if token starts with expected GitHub token prefixes
+  const hasValidPrefix = token.startsWith('github_pat_') || // Fine-grained PAT
+    token.startsWith('ghp_') || // Classic PAT
+    token.startsWith('gho_') || // OAuth token
+    token.startsWith('ghu_') || // User token
+    token.startsWith('ghs_') || // Server token
+    token.startsWith('ghr_'); // Refresh token
+
+  if (!hasValidPrefix) {
+    prompts.log.warning(
+      'Warning: Token does not start with a recognized GitHub prefix (github_pat_, ghp_, etc.). ' +
+        'This may cause authentication to fail.'
+    );
   }
 
   // Auto-detect token type
