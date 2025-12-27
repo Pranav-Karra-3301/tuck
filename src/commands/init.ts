@@ -33,7 +33,7 @@ import { copy } from 'fs-extra';
 import { tmpdir } from 'os';
 import { readFile, rm } from 'fs/promises';
 import { AlreadyInitializedError } from '../errors.js';
-import { CATEGORIES, COMMON_DOTFILES } from '../constants.js';
+import { CATEGORIES } from '../constants.js';
 import { defaultConfig } from '../schemas/config.schema.js';
 import type { InitOptions } from '../types.js';
 
@@ -859,35 +859,64 @@ const runInteractiveInit = async (): Promise<void> => {
       prompts.log.info('Run `tuck restore --all` to restore all dotfiles');
     }
   } else {
-    // Check for common dotfiles that exist
-    const existingDotfiles: { path: string; label: string }[] = [];
-
-    for (const df of COMMON_DOTFILES) {
-      const fullPath = expandPath(df.path);
-      if (await pathExists(fullPath)) {
-        existingDotfiles.push({
-          path: df.path,
-          label: `${df.path} (${df.category})`,
-        });
-      }
-    }
-
     await initFromScratch(tuckDir, {});
 
-    // Ask to add common dotfiles if any exist
-    if (existingDotfiles.length > 0) {
-      const selectedFiles = await prompts.multiselect(
-        'Would you like to track some common dotfiles?',
-        existingDotfiles.map((f) => ({
-          value: f.path,
-          label: f.label,
-        }))
-      );
+    // Detect existing dotfiles on the system
+    const scanSpinner = prompts.spinner();
+    scanSpinner.start('Scanning for dotfiles...');
+    const detectedFiles = await detectDotfiles();
+    const nonSensitiveFiles = detectedFiles.filter((f) => !f.sensitive);
+    scanSpinner.stop(`Found ${nonSensitiveFiles.length} dotfiles on your system`);
 
-      if (selectedFiles.length > 0) {
-        prompts.log.step(
-          `Run the following to track these files:\n  tuck add ${selectedFiles.join(' ')}`
+    if (nonSensitiveFiles.length > 0) {
+      // Group by category and show summary
+      const grouped: Record<string, DetectedFile[]> = {};
+      for (const file of nonSensitiveFiles) {
+        if (!grouped[file.category]) grouped[file.category] = [];
+        grouped[file.category].push(file);
+      }
+
+      console.log();
+      const categoryOrder = ['shell', 'git', 'editors', 'terminal', 'ssh', 'misc'];
+      const sortedCategories = Object.keys(grouped).sort((a, b) => {
+        const aIdx = categoryOrder.indexOf(a);
+        const bIdx = categoryOrder.indexOf(b);
+        if (aIdx === -1 && bIdx === -1) return a.localeCompare(b);
+        if (aIdx === -1) return 1;
+        if (bIdx === -1) return -1;
+        return aIdx - bIdx;
+      });
+
+      for (const category of sortedCategories) {
+        const files = grouped[category];
+        const config = DETECTION_CATEGORIES[category] || { icon: '-', name: category };
+        console.log(`  ${config.icon} ${config.name}: ${files.length} files`);
+      }
+      console.log();
+
+      const trackNow = await prompts.confirm('Would you like to track some of these now?', true);
+
+      if (trackNow) {
+        // Show multiselect with categories as groups
+        const options = nonSensitiveFiles
+          .slice(0, 25) // Limit to avoid overwhelming
+          .map((f) => ({
+            value: f.path,
+            label: `${collapsePath(f.path)} (${f.category})`,
+          }));
+
+        const selectedFiles = await prompts.multiselect(
+          'Select files to track:',
+          options
         );
+
+        if (selectedFiles.length > 0) {
+          prompts.log.step(
+            `Run the following to track these files:\n  tuck add ${selectedFiles.join(' ')}`
+          );
+        }
+      } else {
+        prompts.log.info("Run 'tuck scan' later to interactively add files");
       }
     }
 

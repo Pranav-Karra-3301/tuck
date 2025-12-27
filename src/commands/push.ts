@@ -82,14 +82,34 @@ const runInteractivePush = async (tuckDir: string): Promise<void> => {
   // Push
   const needsUpstream = !status.tracking;
 
-  await withSpinner('Pushing...', async () => {
-    await push(tuckDir, {
-      setUpstream: needsUpstream,
-      branch: needsUpstream ? branch : undefined,
+  try {
+    await withSpinner('Pushing...', async () => {
+      await push(tuckDir, {
+        setUpstream: needsUpstream,
+        branch: needsUpstream ? branch : undefined,
+      });
     });
-  });
+    prompts.log.success('Pushed successfully!');
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
 
-  prompts.log.success('Pushed successfully!');
+    // Provide specific guidance based on common errors
+    if (errorMsg.includes('Permission denied') || errorMsg.includes('publickey')) {
+      prompts.log.error('Authentication failed');
+      prompts.log.info('Check your SSH keys with: ssh -T git@github.com');
+      prompts.log.info('Or try switching to HTTPS: git remote set-url origin https://...');
+    } else if (errorMsg.includes('Could not resolve host') || errorMsg.includes('Network')) {
+      prompts.log.error('Network error - could not reach remote');
+      prompts.log.info('Check your internet connection and try again');
+    } else if (errorMsg.includes('rejected') || errorMsg.includes('non-fast-forward')) {
+      prompts.log.error('Push rejected - remote has changes');
+      prompts.log.info("Run 'tuck pull' first, then push again");
+      prompts.log.info("Or use 'tuck push --force' to overwrite (use with caution)");
+    } else {
+      prompts.log.error(`Push failed: ${errorMsg}`);
+    }
+    return;
+  }
 
   if (remoteUrl) {
     // Extract repo URL for display
@@ -130,15 +150,28 @@ const runPush = async (options: PushOptions): Promise<void> => {
 
   const branch = await getCurrentBranch(tuckDir);
 
-  await withSpinner('Pushing...', async () => {
-    await push(tuckDir, {
-      force: options.force,
-      setUpstream: Boolean(options.setUpstream),
-      branch: options.setUpstream || branch,
+  try {
+    await withSpinner('Pushing...', async () => {
+      await push(tuckDir, {
+        force: options.force,
+        setUpstream: Boolean(options.setUpstream),
+        branch: options.setUpstream || branch,
+      });
     });
-  });
+    logger.success('Pushed successfully!');
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
 
-  logger.success('Pushed successfully!');
+    if (errorMsg.includes('Permission denied') || errorMsg.includes('publickey')) {
+      throw new GitError('Authentication failed', 'Check your SSH keys: ssh -T git@github.com');
+    } else if (errorMsg.includes('Could not resolve host') || errorMsg.includes('Network')) {
+      throw new GitError('Network error', 'Check your internet connection');
+    } else if (errorMsg.includes('rejected') || errorMsg.includes('non-fast-forward')) {
+      throw new GitError('Push rejected', "Run 'tuck pull' first, or use --force");
+    } else {
+      throw new GitError('Push failed', errorMsg);
+    }
+  }
 };
 
 export const pushCommand = new Command('push')

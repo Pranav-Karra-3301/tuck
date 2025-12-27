@@ -1,7 +1,19 @@
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
 
-export const VERSION = '0.1.0';
+// Read version from package.json at runtime
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const packageJsonPath = join(__dirname, '..', 'package.json');
+let VERSION_VALUE = '1.0.0'; // fallback
+try {
+  const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+  VERSION_VALUE = pkg.version;
+} catch {
+  // Fallback if package.json can't be read (e.g., bundled)
+}
+export const VERSION = VERSION_VALUE;
 export const DESCRIPTION = 'Modern dotfiles manager with a beautiful CLI';
 export const APP_NAME = 'tuck';
 
