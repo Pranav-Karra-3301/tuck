@@ -17,6 +17,9 @@ const CREDENTIAL_CACHE_TIMEOUT_SECONDS = 86400;
 /** Days threshold for warning about potentially expired tokens (85 days, before typical 90-day expiration) */
 const TOKEN_EXPIRATION_WARNING_DAYS = 85;
 
+/** Minimum length for a valid GitHub token */
+export const MIN_GITHUB_TOKEN_LENGTH = 20;
+
 /**
  * Validate repository name/identifier to prevent command injection.
  * Valid formats: "owner/repo", "repo", or full URLs
@@ -1036,7 +1039,8 @@ export const testStoredCredentials = async (): Promise<{
           return { valid: true, username: apiUsername };
         } catch {
           // Even if we can't parse, 200 OK means auth succeeded
-          return { valid: true, username };
+          // Fallback to metadata username if username is somehow falsy
+          return { valid: true, username: username || metadata.username };
         }
       }
 

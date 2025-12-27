@@ -38,6 +38,7 @@ import {
   configureGitCredentialHelper,
   testStoredCredentials,
   diagnoseAuthIssue,
+  MIN_GITHUB_TOKEN_LENGTH,
 } from '../lib/github.js';
 import chalk from 'chalk';
 import { detectDotfiles, DetectedFile, DETECTION_CATEGORIES } from '../lib/detect.js';
@@ -413,7 +414,7 @@ const setupTokenAuth = async (
   }
 
   // Basic token format validation
-  if (token.length < 20) {
+  if (token.length < MIN_GITHUB_TOKEN_LENGTH) {
     prompts.log.error('Invalid token: Token appears too short');
     return { remoteUrl: null, pushed: false };
   }
