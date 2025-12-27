@@ -1,3 +1,5 @@
+<img src="public/contribution guide.png" alt="Contribution Guide" style="width:100%;">
+
 # Contributing to tuck
 
 Thank you for your interest in contributing to tuck! This guide will help you get started.

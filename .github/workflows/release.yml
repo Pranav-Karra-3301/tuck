@@ -162,6 +162,19 @@ jobs:
             fi
           fi
 
+      - name: Preserve changelog header
+        if: inputs.dry_run != 'true'
+        run: |
+          # Preserve the changelog image header after semantic-release updates it
+          node scripts/preserve-changelog-header.js
+          
+          # Check if changelog was modified by our script and commit if needed
+          if ! git diff --quiet CHANGELOG.md; then
+            git add CHANGELOG.md
+            git commit -m "chore: preserve changelog header image [skip ci]"
+            git push origin HEAD || echo "Note: Could not push changelog header update (may already be included)"
+          fi
+
   build-binaries:
     name: Build Binary (${{ matrix.target }})
     runs-on: ${{ matrix.os }}

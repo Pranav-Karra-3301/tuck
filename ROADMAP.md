@@ -1,3 +1,5 @@
+<img src="public/Roadmap.png" alt="Roadmap" style="width:100%;">
+
 # tuck Roadmap
 
 > Future features and enhancements planned for tuck
