@@ -1,8 +1,34 @@
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import { GitHubCliError } from '../errors.js';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+/**
+ * Validate repository name/identifier to prevent command injection.
+ * Valid formats: "owner/repo", "repo", or full URLs
+ */
+const validateRepoName = (repoName: string): void => {
+  // Allow full URLs (https:// or git@)
+  if (repoName.includes('://') || repoName.startsWith('git@')) {
+    // Basic URL validation - must not contain shell metacharacters
+    if (/[;&|`$(){}[\]<>!#*?]/.test(repoName.replace(/[/:@.]/g, ''))) {
+      throw new GitHubCliError(`Invalid repository URL: ${repoName}`);
+    }
+    return;
+  }
+
+  // For owner/repo or repo format, validate strictly
+  // Valid: alphanumeric, hyphens, underscores, dots, and single forward slash
+  const validPattern = /^[a-zA-Z0-9._-]+(?:\/[a-zA-Z0-9._-]+)?$/;
+  if (!validPattern.test(repoName)) {
+    throw new GitHubCliError(`Invalid repository name: ${repoName}`, [
+      'Repository names can only contain alphanumeric characters, hyphens, underscores, and dots',
+      'Format: "owner/repo" or "repo"',
+    ]);
+  }
+};
 
 export interface GitHubUser {
   login: string;
@@ -91,7 +117,8 @@ export const getAuthenticatedUser = async (): Promise<GitHubUser> => {
  */
 export const repoExists = async (repoName: string): Promise<boolean> => {
   try {
-    await execAsync(`gh repo view ${repoName} --json name`);
+    validateRepoName(repoName);
+    await execFileAsync('gh', ['repo', 'view', repoName, '--json', 'name']);
     return true;
   } catch {
     return false;
@@ -166,9 +193,14 @@ export const getPreferredRemoteProtocol = async (): Promise<'ssh' | 'https'> => 
  */
 export const getRepoInfo = async (repoName: string): Promise<GitHubRepo | null> => {
   try {
-    const { stdout } = await execAsync(
-      `gh repo view ${repoName} --json name,url,sshUrl,isPrivate,owner`
-    );
+    validateRepoName(repoName);
+    const { stdout } = await execFileAsync('gh', [
+      'repo',
+      'view',
+      repoName,
+      '--json',
+      'name,url,sshUrl,isPrivate,owner',
+    ]);
     const result = JSON.parse(stdout);
 
     return {
@@ -192,8 +224,10 @@ export const ghCloneRepo = async (repoName: string, targetDir: string): Promise<
     throw new GitHubCliError('GitHub CLI is not installed');
   }
 
+  validateRepoName(repoName);
+
   try {
-    await execAsync(`gh repo clone ${repoName} "${targetDir}"`);
+    await execFileAsync('gh', ['repo', 'clone', repoName, targetDir]);
   } catch (error) {
     throw new GitHubCliError(`Failed to clone repository "${repoName}"`, [
       String(error),

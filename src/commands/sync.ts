@@ -153,7 +153,7 @@ const syncFiles = async (
   return result;
 };
 
-const runInteractiveSync = async (tuckDir: string): Promise<void> => {
+const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): Promise<void> => {
   prompts.intro('tuck sync');
 
   // Detect changes
@@ -221,8 +221,8 @@ const runInteractiveSync = async (tuckDir: string): Promise<void> => {
   if (result.commitHash) {
     prompts.log.success(`Committed: ${result.commitHash.slice(0, 7)}`);
 
-    // Push by default if remote exists
-    if (await hasRemote(tuckDir)) {
+    // Push by default if remote exists (unless --no-push specified)
+    if (!options.noPush && (await hasRemote(tuckDir))) {
       const spinner2 = prompts.spinner();
       spinner2.start('Pushing to remote...');
       try {
@@ -231,6 +231,8 @@ const runInteractiveSync = async (tuckDir: string): Promise<void> => {
       } catch {
         spinner2.stop('Push failed (will retry on next sync)');
       }
+    } else if (options.noPush) {
+      prompts.log.info("Run 'tuck push' when ready to upload");
     }
   }
 
@@ -247,9 +249,9 @@ const runSync = async (messageArg: string | undefined, options: SyncOptions): Pr
     throw new NotInitializedError();
   }
 
-  // If no options, run interactive
+  // If no options (except --no-push), run interactive
   if (!messageArg && !options.message && !options.all && !options.noCommit && !options.amend) {
-    await runInteractiveSync(tuckDir);
+    await runInteractiveSync(tuckDir, options);
     return;
   }
 

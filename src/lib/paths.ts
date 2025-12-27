@@ -135,6 +135,42 @@ export const getRelativePath = (from: string, to: string): string => {
   return relative(dirname(from), to);
 };
 
+/**
+ * Validate that a path is safely within the user's home directory.
+ * Prevents path traversal attacks from malicious manifests.
+ * @returns true if the path is within home directory, false otherwise
+ */
+export const isPathWithinHome = (path: string): boolean => {
+  const home = homedir();
+  const expandedPath = expandPath(path);
+  const normalizedPath = resolve(expandedPath);
+  const normalizedHome = resolve(home);
+
+  // Check if the normalized path starts with the home directory
+  return normalizedPath.startsWith(normalizedHome + '/') || normalizedPath === normalizedHome;
+};
+
+/**
+ * Validate that a source path from a manifest is safe to use.
+ * Throws an error if the path is unsafe (path traversal attempt).
+ */
+export const validateSafeSourcePath = (source: string): void => {
+  // Reject absolute paths that don't start with home-relative prefixes
+  if (isAbsolute(source) && !source.startsWith(homedir())) {
+    throw new Error(`Unsafe path detected: ${source} - absolute paths outside home directory are not allowed`);
+  }
+
+  // Reject obvious path traversal attempts
+  if (source.includes('../') || source.includes('..\\')) {
+    throw new Error(`Unsafe path detected: ${source} - path traversal is not allowed`);
+  }
+
+  // Validate the expanded path is within home
+  if (!isPathWithinHome(source)) {
+    throw new Error(`Unsafe path detected: ${source} - paths must be within home directory`);
+  }
+};
+
 export const generateFileId = (source: string): string => {
   // Create a unique ID from the source path
   const collapsed = collapsePath(source);

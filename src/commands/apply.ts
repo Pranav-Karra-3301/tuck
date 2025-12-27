@@ -5,7 +5,7 @@ import { ensureDir, pathExists as fsPathExists } from 'fs-extra';
 import { tmpdir } from 'os';
 import chalk from 'chalk';
 import { banner, prompts, logger } from '../ui/index.js';
-import { expandPath, pathExists, collapsePath } from '../lib/paths.js';
+import { expandPath, pathExists, collapsePath, validateSafeSourcePath } from '../lib/paths.js';
 import { cloneRepo } from '../lib/git.js';
 import {
   isGhInstalled,
@@ -152,6 +152,15 @@ const prepareFilesToApply = async (
     const repoFilePath = join(repoDir, file.destination);
 
     if (await fsPathExists(repoFilePath)) {
+      // Validate that the source path is safe (within home directory)
+      // This prevents malicious manifests from writing to arbitrary locations
+      try {
+        validateSafeSourcePath(file.source);
+      } catch (error) {
+        logger.warning(`Skipping unsafe path from manifest: ${file.source}`);
+        continue;
+      }
+
       files.push({
         source: file.source,
         destination: expandPath(file.source),
@@ -372,7 +381,11 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
     }
 
     // Create Time Machine backup before applying
-    const existingFiles = files.filter(async (f) => await pathExists(f.destination));
+    // Note: We need to properly await async checks - Array.filter doesn't await promises
+    const fileExistsChecks = await Promise.all(
+      files.map(async (f) => ({ file: f, exists: await pathExists(f.destination) }))
+    );
+    const existingFiles = fileExistsChecks.filter((check) => check.exists).map((check) => check.file);
     const targetPaths = existingFiles.map((f) => f.destination);
 
     if (targetPaths.length > 0 && !options.dryRun) {
