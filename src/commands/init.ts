@@ -388,7 +388,8 @@ const analyzeRepository = async (repoDir: string): Promise<RepositoryAnalysis> =
 
 interface ImportResult {
   success: boolean;
-  filesImported: number;
+  filesInRepo: number; // Files imported to ~/.tuck
+  filesApplied: number; // Files applied to system (0 if user declined)
   remoteUrl?: string;
 }
 
@@ -444,42 +445,8 @@ const importExistingRepo = async (
     );
 
     if (shouldApply) {
-      // Create backup before applying
-      const existingPaths: string[] = [];
-      for (const file of Object.values(analysis.manifest.files)) {
-        // Validate that the source path is safe (within home directory)
-        // This prevents malicious manifests from writing to arbitrary locations
-        try {
-          validateSafeSourcePath(file.source);
-        } catch (error) {
-          prompts.log.warning(`Skipping unsafe source path from manifest: ${file.source}`);
-          continue;
-        }
-
-        // Validate that the destination path stays within tuckDir
-        // This prevents path traversal attacks reading files from outside the repo
-        if (!validateDestinationPath(tuckDir, file.destination)) {
-          prompts.log.warning(`Skipping unsafe destination path from manifest: ${file.destination}`);
-          continue;
-        }
-
-        const destPath = expandPath(file.source);
-        if (await pathExists(destPath)) {
-          existingPaths.push(destPath);
-        }
-      }
-
-      if (existingPaths.length > 0) {
-        const backupSpinner = prompts.spinner();
-        backupSpinner.start('Creating backup of existing files...');
-        await createPreApplySnapshot(existingPaths, repoName);
-        backupSpinner.stop('Backup created');
-      }
-
-      // Apply files
-      const applySpinner = prompts.spinner();
-      applySpinner.start('Applying dotfiles...');
-
+      // Validate and filter files once to avoid duplicate warnings
+      const validFiles: Array<typeof analysis.manifest.files[string]> = [];
       for (const [_id, file] of Object.entries(analysis.manifest.files)) {
         // Validate that the source path is safe (within home directory)
         // This prevents malicious manifests from writing to arbitrary locations
@@ -497,6 +464,30 @@ const importExistingRepo = async (
           continue;
         }
 
+        validFiles.push(file);
+      }
+
+      // Create backup before applying
+      const existingPaths: string[] = [];
+      for (const file of validFiles) {
+        const destPath = expandPath(file.source);
+        if (await pathExists(destPath)) {
+          existingPaths.push(destPath);
+        }
+      }
+
+      if (existingPaths.length > 0) {
+        const backupSpinner = prompts.spinner();
+        backupSpinner.start('Creating backup of existing files...');
+        await createPreApplySnapshot(existingPaths, repoName);
+        backupSpinner.stop('Backup created');
+      }
+
+      // Apply files using the pre-validated list
+      const applySpinner = prompts.spinner();
+      applySpinner.start('Applying dotfiles...');
+
+      for (const file of validFiles) {
         const repoFilePath = join(tuckDir, file.destination);
         const destPath = expandPath(file.source);
 
@@ -514,9 +505,10 @@ const importExistingRepo = async (
       applySpinner.stop(`Applied ${appliedCount} dotfiles`);
     }
 
-    // Return the actual number of files applied, not the total in manifest
-    // This ensures consistency with the "Applied X dotfiles" message
-    return { success: true, filesImported: appliedCount, remoteUrl };
+    // Return both the number of files in the repo and the number applied to system
+    // filesInRepo: total files imported to ~/.tuck (always happens)
+    // filesApplied: files actually applied to system (0 if user declined)
+    return { success: true, filesInRepo: fileCount, filesApplied: appliedCount, remoteUrl };
   }
 
   if (analysis.type === 'plain-dotfiles') {
@@ -617,7 +609,9 @@ const importExistingRepo = async (
       // Ignore counting errors
     }
 
-    return { success: true, filesImported: importedCount, remoteUrl };
+    // For plain-dotfiles, importedCount represents files copied to ~/.tuck
+    // No files are applied to system in this flow (user needs to add them manually)
+    return { success: true, filesInRepo: importedCount, filesApplied: 0, remoteUrl };
   }
 
   // Scenario C: Messed up repository
@@ -643,7 +637,7 @@ const importExistingRepo = async (
   ]);
 
   if (action === 'cancel') {
-    return { success: false, filesImported: 0 };
+    return { success: false, filesInRepo: 0, filesApplied: 0 };
   }
 
   // Initialize tuck
@@ -673,7 +667,8 @@ const importExistingRepo = async (
     prompts.log.info("Run 'tuck add' to start tracking files");
   }
 
-  return { success: true, filesImported: 0, remoteUrl };
+  // For messed-up repos, no files are imported or applied
+  return { success: true, filesInRepo: 0, filesApplied: 0, remoteUrl };
 };
 
 const initFromRemote = async (tuckDir: string, remoteUrl: string): Promise<void> => {
@@ -771,8 +766,14 @@ const runInteractiveInit = async (): Promise<void> => {
 
             if (result.success) {
               console.log();
-              if (result.filesImported > 0) {
-                prompts.log.success(`Imported ${result.filesImported} files from ${existingRepoName}`);
+              // Always show that repository was imported to ~/.tuck
+              if (result.filesInRepo > 0) {
+                prompts.log.success(`Repository imported to ~/.tuck (${result.filesInRepo} files)`);
+                if (result.filesApplied > 0) {
+                  prompts.log.info(`Applied ${result.filesApplied} files to your system`);
+                } else if (result.filesInRepo > 0) {
+                  prompts.log.info('Files are ready in ~/.tuck. Run "tuck restore" to apply them to your system');
+                }
               } else {
                 prompts.log.success(`Tuck initialized with ${existingRepoName} as remote`);
               }

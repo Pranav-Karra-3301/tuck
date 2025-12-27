@@ -1,8 +1,7 @@
-import { exec, execFile } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { GitHubCliError } from '../errors.js';
 
-const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
 /**
@@ -57,7 +56,7 @@ export interface CreateRepoOptions {
  */
 export const isGhInstalled = async (): Promise<boolean> => {
   try {
-    await execAsync('gh --version');
+    await execFileAsync('gh', ['--version']);
     return true;
   } catch {
     return false;
@@ -70,8 +69,8 @@ export const isGhInstalled = async (): Promise<boolean> => {
 export const isGhAuthenticated = async (): Promise<boolean> => {
   try {
     // gh auth status outputs to stderr, not stdout
-    // execAsync provides both stdout and stderr even on success
-    const { stdout, stderr } = await execAsync('gh auth status');
+    // execFileAsync provides both stdout and stderr even on success
+    const { stdout, stderr } = await execFileAsync('gh', ['auth', 'status']);
     // Check stderr (where gh auth status outputs) and stdout (as fallback)
     const output = (stderr || stdout || '').trim();
     // Only return true if we can definitively confirm authentication
@@ -104,7 +103,7 @@ export const getAuthenticatedUser = async (): Promise<GitHubUser> => {
   }
 
   try {
-    const { stdout } = await execAsync('gh api user --jq ".login, .name, .email"');
+    const { stdout } = await execFileAsync('gh', ['api', 'user', '--jq', '.login, .name, .email']);
     const lines = stdout.trim().split('\n');
     return {
       login: lines[0] || '',
@@ -211,7 +210,7 @@ export const createRepo = async (options: CreateRepoOptions): Promise<GitHubRepo
  */
 export const getPreferredRemoteProtocol = async (): Promise<'ssh' | 'https'> => {
   try {
-    const { stdout } = await execAsync('gh config get git_protocol');
+    const { stdout } = await execFileAsync('gh', ['config', 'get', 'git_protocol']);
     const protocol = stdout.trim().toLowerCase();
     return protocol === 'ssh' ? 'ssh' : 'https';
   } catch {
