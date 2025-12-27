@@ -574,7 +574,8 @@ async function getFileType(path: string): Promise<
 ```typescript
 async function hasXattrs(path: string): Promise<boolean> {
   try {
-    const { stdout } = await execAsync(`xattr -l "${path}"`);
+    // Use argument array to avoid shell injection
+    const { stdout } = await execAsync('xattr', ['-l', path]);
     return stdout.trim().length > 0;
   } catch {
     return false;
