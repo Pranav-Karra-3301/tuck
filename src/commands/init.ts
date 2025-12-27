@@ -39,6 +39,7 @@ import {
   testStoredCredentials,
   diagnoseAuthIssue,
   MIN_GITHUB_TOKEN_LENGTH,
+  GITHUB_TOKEN_PREFIXES,
 } from '../lib/github.js';
 import chalk from 'chalk';
 import { detectDotfiles, DetectedFile, DETECTION_CATEGORIES } from '../lib/detect.js';
@@ -420,16 +421,12 @@ const setupTokenAuth = async (
   }
 
   // Check if token starts with expected GitHub token prefixes
-  const hasValidPrefix = token.startsWith('github_pat_') || // Fine-grained PAT
-    token.startsWith('ghp_') || // Classic PAT
-    token.startsWith('gho_') || // OAuth token
-    token.startsWith('ghu_') || // User token
-    token.startsWith('ghs_') || // Server token
-    token.startsWith('ghr_'); // Refresh token
+  const hasValidPrefix = GITHUB_TOKEN_PREFIXES.some((prefix) => token.startsWith(prefix));
 
   if (!hasValidPrefix) {
+    const prefixList = GITHUB_TOKEN_PREFIXES.join(', ');
     prompts.log.warning(
-      'Warning: Token does not start with a recognized GitHub prefix (github_pat_, ghp_, etc.). ' +
+      `Warning: Token does not start with a recognized GitHub prefix (${prefixList}). ` +
         'This may cause authentication to fail.'
     );
   }

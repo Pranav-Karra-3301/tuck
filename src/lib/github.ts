@@ -20,6 +20,16 @@ const TOKEN_EXPIRATION_WARNING_DAYS = 85;
 /** Minimum length for a valid GitHub token */
 export const MIN_GITHUB_TOKEN_LENGTH = 20;
 
+/** Valid GitHub token prefixes */
+export const GITHUB_TOKEN_PREFIXES = [
+  'github_pat_', // Fine-grained PAT
+  'ghp_', // Classic PAT
+  'gho_', // OAuth token
+  'ghu_', // User token
+  'ghs_', // Server token
+  'ghr_', // Refresh token
+] as const;
+
 /**
  * Validate repository name/identifier to prevent command injection.
  * Valid formats: "owner/repo", "repo", or full URLs
@@ -1039,8 +1049,8 @@ export const testStoredCredentials = async (): Promise<{
           return { valid: true, username: apiUsername };
         } catch {
           // Even if we can't parse, 200 OK means auth succeeded
-          // Fallback to metadata username if username is somehow falsy
-          return { valid: true, username: username || metadata.username };
+          // Use username from credentials, fall back to metadata username if available
+          return { valid: true, username: username || metadata.username || undefined };
         }
       }
 
