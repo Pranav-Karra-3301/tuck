@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="public/tuck.png" alt="tuck logo" width="200">
+</div>
+
 # tuck
 
 > Modern dotfiles manager with a beautiful CLI
