@@ -222,7 +222,8 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
     prompts.log.success(`Committed: ${result.commitHash.slice(0, 7)}`);
 
     // Push by default if remote exists (unless --no-push specified)
-    if (!options.noPush && (await hasRemote(tuckDir))) {
+    // Commander converts --no-push to push: false, default is push: true
+    if (options.push !== false && (await hasRemote(tuckDir))) {
       const spinner2 = prompts.spinner();
       spinner2.start('Pushing to remote...');
       try {
@@ -231,7 +232,7 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
       } catch {
         spinner2.stop('Push failed (will retry on next sync)');
       }
-    } else if (options.noPush) {
+    } else if (options.push === false) {
       prompts.log.info("Run 'tuck push' when ready to upload");
     }
   }
@@ -281,12 +282,13 @@ const runSync = async (messageArg: string | undefined, options: SyncOptions): Pr
     logger.info(`Commit: ${result.commitHash.slice(0, 7)}`);
 
     // Push by default unless --no-push
-    if (!options.noPush && (await hasRemote(tuckDir))) {
+    // Commander converts --no-push to push: false, default is push: true
+    if (options.push !== false && (await hasRemote(tuckDir))) {
       await withSpinner('Pushing to remote...', async () => {
         await push(tuckDir);
       });
       logger.success('Pushed to remote');
-    } else if (options.noPush) {
+    } else if (options.push === false) {
       logger.info("Run 'tuck push' when ready to upload");
     }
   }

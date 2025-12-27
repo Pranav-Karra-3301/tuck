@@ -54,17 +54,17 @@ const getSnapshotPath = (snapshotId: string): string => {
 };
 
 /**
- * Convert original path to a safe backup path
- * e.g., ~/.zshrc -> dot-zshrc
- * e.g., ~/.config/nvim -> dot-config_nvim
+ * Convert original path to a safe backup path, preserving directory structure
+ * to prevent filename collisions. The path is relative to the backup files directory.
+ * e.g., ~/.zshrc -> .zshrc
+ * e.g., ~/.config/nvim -> .config/nvim
+ * e.g., ~/.foo.bar -> .foo.bar (distinct from ~/.foo-bar -> .foo-bar)
  */
-const toBackupFileName = (originalPath: string): string => {
+const toBackupPath = (originalPath: string): string => {
   const collapsed = collapsePath(originalPath);
-  return collapsed
-    .replace(/^~\//, '')
-    .replace(/\//g, '_')
-    .replace(/^\./g, 'dot-')
-    .replace(/\./g, '-');
+  // Remove ~/ prefix to get a path relative to home directory
+  // This preserves the full directory structure, preventing collisions
+  return collapsed.replace(/^~\//, '');
 };
 
 /**
@@ -86,8 +86,8 @@ export const createSnapshot = async (
 
   for (const filePath of filePaths) {
     const expandedPath = expandPath(filePath);
-    const backupFileName = toBackupFileName(expandedPath);
-    const backupPath = join(snapshotPath, 'files', backupFileName);
+    const backupRelativePath = toBackupPath(expandedPath);
+    const backupPath = join(snapshotPath, 'files', backupRelativePath);
 
     const existed = await checkPathExists(expandedPath);
 
