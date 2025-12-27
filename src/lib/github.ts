@@ -898,6 +898,7 @@ export const removeStoredCredentials = async (): Promise<void> => {
 
 /**
  * Test if stored credentials are still valid
+ * Uses GitHub API /user endpoint which requires authentication
  */
 export const testStoredCredentials = async (): Promise<{
   valid: boolean;
@@ -910,33 +911,132 @@ export const testStoredCredentials = async (): Promise<{
     return { valid: false, reason: 'unknown' };
   }
 
-  // Try to access the GitHub API using the stored credentials
+  // Get credentials from git credential helper
+  let username: string | null = null;
+  let password: string | null = null;
+
   try {
-    // Use git ls-remote to test authentication
-    await execFileAsync('git', ['ls-remote', 'https://github.com/octocat/Hello-World.git'], {
-      timeout: 10000,
+    const { spawn } = await import('child_process');
+    const credentialOutput = await new Promise<string>((resolve, reject) => {
+      const proc = spawn('git', ['credential', 'fill'], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      // Request credentials for github.com
+      proc.stdin.write('protocol=https\nhost=github.com\n\n');
+      proc.stdin.end();
+
+      let output = '';
+      proc.stdout.on('data', (data) => {
+        output += data.toString();
+      });
+
+      proc.on('close', (code) => {
+        if (code === 0) {
+          resolve(output);
+        } else {
+          reject(new Error('git credential fill failed'));
+        }
+      });
+
+      proc.on('error', reject);
     });
-    return { valid: true, username: metadata.username };
-  } catch (error) {
-    const errorStr = error instanceof Error ? error.message.toLowerCase() : '';
 
-    // Check for common error patterns
-    if (errorStr.includes('401') || errorStr.includes('403') || errorStr.includes('authentication')) {
-      // Check if token might be expired based on creation date
-      if (metadata.createdAt) {
-        const daysSinceCreation = Math.floor(
-          (Date.now() - metadata.createdAt.getTime()) / (1000 * 60 * 60 * 24)
-        );
+    // Parse credential output (format: key=value\n)
+    for (const line of credentialOutput.trim().split('\n')) {
+      const [key, ...valueParts] = line.split('=');
+      if (key === 'username') {
+        username = valueParts.join('=');
+      } else if (key === 'password') {
+        password = valueParts.join('=');
+      }
+    }
+  } catch {
+    // If we can't get credentials, they're not valid
+    return { valid: false, reason: 'unknown', username: metadata.username };
+  }
 
-        // Fine-grained tokens often expire in 90 days, classic can vary
-        if (daysSinceCreation > 85) {
-          return { valid: false, reason: 'expired', username: metadata.username };
+  if (!username || !password) {
+    return { valid: false, reason: 'unknown', username: metadata.username };
+  }
+
+  // Test credentials against GitHub API /user endpoint (requires authentication)
+  try {
+    // Create Basic Auth header
+    const auth = Buffer.from(`${username}:${password}`).toString('base64');
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+    try {
+      const response = await fetch('https://api.github.com/user', {
+        method: 'GET',
+        headers: {
+          Authorization: `Basic ${auth}`,
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'tuck-dotfiles-manager',
+        },
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      // 200 OK means credentials are valid
+      if (response.status === 200) {
+        try {
+          // Parse user data to extract username (in case it differs from metadata)
+          const userData = (await response.json()) as { login?: string };
+          const apiUsername = userData.login || username;
+          return { valid: true, username: apiUsername };
+        } catch {
+          // Even if we can't parse, 200 OK means auth succeeded
+          return { valid: true, username: username || metadata.username };
         }
       }
-      return { valid: false, reason: 'invalid', username: metadata.username };
+
+      // 401 Unauthorized means invalid credentials
+      if (response.status === 401) {
+        // Check if token might be expired based on creation date
+        if (metadata.createdAt) {
+          const daysSinceCreation = Math.floor(
+            (Date.now() - metadata.createdAt.getTime()) / (1000 * 60 * 60 * 24)
+          );
+
+          // Fine-grained tokens often expire in 90 days, classic can vary
+          if (daysSinceCreation > 85) {
+            return { valid: false, reason: 'expired', username: metadata.username };
+          }
+        }
+        return { valid: false, reason: 'invalid', username: metadata.username };
+      }
+
+      // 403 Forbidden could mean token is invalid or lacks permissions
+      if (response.status === 403) {
+        return { valid: false, reason: 'invalid', username: metadata.username };
+      }
+
+      // Other status codes are unexpected
+      return { valid: false, reason: 'unknown', username: metadata.username };
+    } catch (fetchError) {
+      clearTimeout(timeoutId);
+      throw fetchError;
+    }
+  } catch (error) {
+    const errorStr = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+
+    // Check for timeout/abort errors
+    if (errorStr.includes('aborted') || errorStr.includes('timeout')) {
+      return { valid: false, reason: 'network', username: metadata.username };
     }
 
-    if (errorStr.includes('network') || errorStr.includes('timeout') || errorStr.includes('enotfound')) {
+    // Check for network-related errors
+    if (
+      errorStr.includes('network') ||
+      errorStr.includes('enotfound') ||
+      errorStr.includes('econnrefused') ||
+      errorStr.includes('could not resolve') ||
+      errorStr.includes('fetch failed') ||
+      errorStr.includes('getaddrinfo')
+    ) {
       return { valid: false, reason: 'network', username: metadata.username };
     }
 
@@ -1032,17 +1132,22 @@ export const updateStoredCredentials = async (
   }
 
   // Determine token type, preferring explicit type, then stored metadata, then detection
-  const tokenType = type ?? metadata?.type ?? detectTokenType(token);
+  const detectedType = detectTokenType(token);
+  const tokenType = type ?? metadata?.type ?? detectedType;
 
+  // Ensure we have a valid token type (not 'unknown')
   if (tokenType === 'unknown') {
     throw new Error('Could not determine GitHub token type. Please run `tuck init` to set up authentication.');
   }
+
+  // TypeScript now knows tokenType is 'fine-grained' | 'classic' after the check above
+  const validTokenType: 'fine-grained' | 'classic' = tokenType;
 
   // Remove old credentials first
   await removeStoredCredentials();
 
   // Store new credentials
-  await storeGitHubCredentials(username, token, tokenType);
+  await storeGitHubCredentials(username, token, validTokenType);
 };
 
 /**
