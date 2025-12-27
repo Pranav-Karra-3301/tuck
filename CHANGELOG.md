@@ -1,3 +1,20 @@
+# [1.1.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.0.0...v1.1.0) (2025-12-27)
+
+
+### Bug Fixes
+
+* **add:** correct sensitive file pattern matching for paths with ~/ prefix ([af4372f](https://github.com/Pranav-Karra-3301/tuck/commit/af4372f24af2b85e66230eef5e392e93f0ad6de8))
+* check stderr for GitHub CLI authentication status ([1219c0b](https://github.com/Pranav-Karra-3301/tuck/commit/1219c0bf207b18cb3a3e37e1dedba144eb4b1899))
+* correct SSH/GPG permission checks in restore command ([9814283](https://github.com/Pranav-Karra-3301/tuck/commit/9814283e75d7202d3217410ff95b9857219e813b))
+* prevent backup filename collisions in Time Machine snapshots ([5e3a1de](https://github.com/Pranav-Karra-3301/tuck/commit/5e3a1de48cfe38b78e517ea525fad2015ef99277))
+* **security:** address command injection and path traversal vulnerabilities ([cceb04d](https://github.com/Pranav-Karra-3301/tuck/commit/cceb04ddcfe5d6ad8ac3dee91b639878a1b02893))
+
+
+### Features
+
+* add scan command for automatic dotfile detection ([d3e50a9](https://github.com/Pranav-Karra-3301/tuck/commit/d3e50a996876a2a0fb267e701dd22266a9760921))
+* implement v1.1.0 features - apply command, Time Machine backups, GitHub auto-setup ([84f5a70](https://github.com/Pranav-Karra-3301/tuck/commit/84f5a707db44c34344747833c1b943f97debf6e4))
+
 # 1.0.0 (2025-12-27)
 
 
