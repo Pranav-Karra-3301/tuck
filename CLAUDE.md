@@ -45,7 +45,21 @@ Build:       tsup
 
 ```
 src/
-├── commands/     # CLI command implementations (init, add, sync, etc.)
+├── commands/     # CLI command implementations
+│   ├── init.ts       # tuck init - Initialize tuck
+│   ├── add.ts        # tuck add - Track a file
+│   ├── remove.ts     # tuck remove - Untrack a file
+│   ├── sync.ts       # tuck sync - Sync changes
+│   ├── push.ts       # tuck push - Push to remote
+│   ├── pull.ts       # tuck pull - Pull from remote
+│   ├── restore.ts    # tuck restore - Restore from backup
+│   ├── status.ts     # tuck status - Show status
+│   ├── list.ts       # tuck list - List tracked files
+│   ├── diff.ts       # tuck diff - Show differences
+│   ├── config.ts     # tuck config - Manage configuration
+│   ├── apply.ts      # tuck apply - Apply dotfiles from repo
+│   ├── undo.ts       # tuck undo - Undo/restore from snapshots
+│   └── scan.ts       # tuck scan - Detect dotfiles on system
 ├── lib/          # Core library modules
 │   ├── paths.ts      # Path utilities and resolution
 │   ├── config.ts     # Configuration management
@@ -53,7 +67,11 @@ src/
 │   ├── git.ts        # Git operations wrapper
 │   ├── files.ts      # File system operations
 │   ├── backup.ts     # Backup functionality
-│   └── hooks.ts      # Pre/post hook execution
+│   ├── hooks.ts      # Pre/post hook execution
+│   ├── github.ts     # GitHub CLI integration
+│   ├── timemachine.ts # Snapshot/time-machine backups
+│   ├── merge.ts      # Smart merging for shell files
+│   └── detect.ts     # Dotfile detection and categorization
 ├── ui/           # Terminal UI components
 │   ├── banner.ts     # ASCII art and boxes
 │   ├── logger.ts     # Styled logging
@@ -61,6 +79,8 @@ src/
 │   ├── spinner.ts    # Loading spinners
 │   └── table.ts      # Table formatting
 ├── schemas/      # Zod validation schemas
+│   ├── config.schema.ts   # Configuration schema
+│   └── manifest.schema.ts # Manifest schema
 ├── constants.ts  # App constants
 ├── types.ts      # TypeScript types
 ├── errors.ts     # Custom error classes
@@ -248,6 +268,7 @@ Use custom error classes from `src/errors.ts`:
 
 ```typescript
 // Available error types
+TuckError               // Base error class (extend for custom errors)
 NotInitializedError     // Tuck not set up
 AlreadyInitializedError // Trying to init twice
 FileNotFoundError       // File doesn't exist
@@ -257,6 +278,8 @@ GitError                // Git operation failed
 ConfigError             // Configuration issue
 ManifestError           // Manifest corruption
 PermissionError         // Can't read/write
+GitHubCliError          // GitHub CLI not installed or auth issue
+BackupError             // Backup/snapshot operation failed
 ```
 
 All errors include:
