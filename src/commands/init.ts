@@ -15,6 +15,7 @@ import {
 } from '../lib/paths.js';
 import { saveConfig } from '../lib/config.js';
 import { createManifest } from '../lib/manifest.js';
+import type { TuckManifest } from '../types.js';
 import { initRepo, addRemote, cloneRepo, setDefaultBranch, stageAll, commit, push } from '../lib/git.js';
 import {
   isGhInstalled,
@@ -22,7 +23,14 @@ import {
   getAuthenticatedUser,
   createRepo,
   getPreferredRepoUrl,
+  findDotfilesRepo,
+  ghCloneRepo,
 } from '../lib/github.js';
+import { detectDotfiles, DetectedFile, DETECTION_CATEGORIES } from '../lib/detect.js';
+import { createPreApplySnapshot } from '../lib/timemachine.js';
+import { copy } from 'fs-extra';
+import { tmpdir } from 'os';
+import { readFile, rm } from 'fs/promises';
 import { AlreadyInitializedError } from '../errors.js';
 import { CATEGORIES, COMMON_DOTFILES } from '../constants.js';
 import { defaultConfig } from '../schemas/config.schema.js';
@@ -273,6 +281,305 @@ const setupGitHubRepo = async (tuckDir: string): Promise<GitHubSetupResult> => {
   return { remoteUrl, pushed: false };
 };
 
+type RepositoryAnalysis =
+  | { type: 'valid-tuck'; manifest: TuckManifest }
+  | { type: 'plain-dotfiles'; files: DetectedFile[] }
+  | { type: 'messed-up'; reason: string };
+
+/**
+ * Analyze a cloned repository to determine its state
+ */
+const analyzeRepository = async (repoDir: string): Promise<RepositoryAnalysis> => {
+  const manifestPath = join(repoDir, '.tuckmanifest.json');
+
+  // Check for valid tuck manifest
+  if (await pathExists(manifestPath)) {
+    try {
+      const content = await readFile(manifestPath, 'utf-8');
+      const manifest = JSON.parse(content) as TuckManifest;
+
+      // Validate manifest has files
+      if (manifest.files && Object.keys(manifest.files).length > 0) {
+        return { type: 'valid-tuck', manifest };
+      }
+
+      // Manifest exists but is empty
+      return { type: 'messed-up', reason: 'Manifest exists but contains no tracked files' };
+    } catch {
+      return { type: 'messed-up', reason: 'Manifest file is corrupted or invalid' };
+    }
+  }
+
+  // No manifest - check for common dotfiles in the files directory or root
+  const filesDir = join(repoDir, 'files');
+  const hasFilesDir = await pathExists(filesDir);
+
+  // Look for common dotfile patterns in the repo
+  const commonPatterns = [
+    '.zshrc', '.bashrc', '.bash_profile', '.gitconfig', '.vimrc',
+    '.tmux.conf', '.profile', 'zshrc', 'bashrc', 'gitconfig', 'vimrc',
+  ];
+
+  const foundFiles: string[] = [];
+
+  // Check in files directory if it exists
+  if (hasFilesDir) {
+    const { readdir } = await import('fs/promises');
+    try {
+      const categories = await readdir(filesDir);
+      for (const category of categories) {
+        const categoryPath = join(filesDir, category);
+        const categoryStats = await import('fs/promises').then((fs) => fs.stat(categoryPath).catch(() => null));
+        if (categoryStats?.isDirectory()) {
+          const files = await readdir(categoryPath);
+          foundFiles.push(...files);
+        }
+      }
+    } catch {
+      // Ignore errors
+    }
+  }
+
+  // Check root directory
+  const { readdir } = await import('fs/promises');
+  try {
+    const rootFiles = await readdir(repoDir);
+    for (const file of rootFiles) {
+      if (commonPatterns.some((p) => file.includes(p) || file.startsWith('.'))) {
+        foundFiles.push(file);
+      }
+    }
+  } catch {
+    // Ignore errors
+  }
+
+  // Filter to meaningful dotfiles (not just .git, README, etc.)
+  const meaningfulFiles = foundFiles.filter(
+    (f) => !['README.md', 'README', '.git', '.gitignore', 'LICENSE', '.tuckrc.json'].includes(f)
+  );
+
+  if (meaningfulFiles.length > 0) {
+    // Run detection on user's system and show what would be tracked
+    const detectedOnSystem = await detectDotfiles();
+    return { type: 'plain-dotfiles', files: detectedOnSystem };
+  }
+
+  // Check if repo is essentially empty (only has README, .git, etc.)
+  const { readdir: rd } = await import('fs/promises');
+  try {
+    const allFiles = await rd(repoDir);
+    const nonEssentialFiles = allFiles.filter(
+      (f) => !['.git', 'README.md', 'README', 'LICENSE', '.gitignore'].includes(f)
+    );
+    if (nonEssentialFiles.length === 0) {
+      return { type: 'messed-up', reason: 'Repository is empty (only contains README or license)' };
+    }
+  } catch {
+    // Ignore
+  }
+
+  return { type: 'messed-up', reason: 'Repository does not contain recognizable dotfiles' };
+};
+
+interface ImportResult {
+  success: boolean;
+  filesImported: number;
+  remoteUrl?: string;
+}
+
+/**
+ * Import an existing GitHub dotfiles repository
+ */
+const importExistingRepo = async (
+  tuckDir: string,
+  repoName: string,
+  analysis: RepositoryAnalysis,
+  repoDir: string
+): Promise<ImportResult> => {
+  const { getPreferredRemoteProtocol } = await import('../lib/github.js');
+  const protocol = await getPreferredRemoteProtocol();
+  const remoteUrl = protocol === 'ssh'
+    ? `git@github.com:${repoName}.git`
+    : `https://github.com/${repoName}.git`;
+
+  if (analysis.type === 'valid-tuck') {
+    // Scenario A: Valid tuck repository - full import
+    prompts.log.step('Importing tuck repository...');
+
+    // Copy the entire repo to tuck directory
+    const spinner = prompts.spinner();
+    spinner.start('Copying repository...');
+
+    // Copy files from cloned repo to tuck directory
+    await copy(repoDir, tuckDir, { overwrite: true });
+
+    spinner.stop('Repository copied');
+
+    // Get file count
+    const fileCount = Object.keys(analysis.manifest.files).length;
+
+    // Apply dotfiles to system with merge strategy
+    const shouldApply = await prompts.confirm(
+      `Apply ${fileCount} dotfiles to your system?`,
+      true
+    );
+
+    if (shouldApply) {
+      // Create backup before applying
+      const existingPaths: string[] = [];
+      for (const file of Object.values(analysis.manifest.files)) {
+        const destPath = expandPath(file.source);
+        if (await pathExists(destPath)) {
+          existingPaths.push(destPath);
+        }
+      }
+
+      if (existingPaths.length > 0) {
+        const backupSpinner = prompts.spinner();
+        backupSpinner.start('Creating backup of existing files...');
+        await createPreApplySnapshot(existingPaths, repoName);
+        backupSpinner.stop('Backup created');
+      }
+
+      // Apply files
+      const applySpinner = prompts.spinner();
+      applySpinner.start('Applying dotfiles...');
+
+      let appliedCount = 0;
+      for (const [_id, file] of Object.entries(analysis.manifest.files)) {
+        const repoFilePath = join(tuckDir, file.destination);
+        const destPath = expandPath(file.source);
+
+        if (await pathExists(repoFilePath)) {
+          // Ensure destination directory exists
+          const destDir = join(destPath, '..');
+          await ensureDir(destDir);
+
+          // Copy file
+          await copy(repoFilePath, destPath, { overwrite: true });
+          appliedCount++;
+        }
+      }
+
+      applySpinner.stop(`Applied ${appliedCount} dotfiles`);
+    }
+
+    return { success: true, filesImported: fileCount, remoteUrl };
+  }
+
+  if (analysis.type === 'plain-dotfiles') {
+    // Scenario B: Plain dotfiles repository
+    prompts.log.step('Repository contains dotfiles but no tuck manifest');
+    prompts.log.info('Setting up tuck and detecting dotfiles on your system...');
+
+    // Initialize tuck from scratch
+    await createDirectoryStructure(tuckDir);
+    await initRepo(tuckDir);
+    await setDefaultBranch(tuckDir, 'main');
+
+    const hostname = (await import('os')).hostname();
+    await createManifest(tuckDir, hostname);
+    await saveConfig(
+      {
+        ...defaultConfig,
+        repository: { ...defaultConfig.repository, path: tuckDir },
+      },
+      tuckDir
+    );
+    await createDefaultFiles(tuckDir, hostname);
+
+    // Set up remote
+    await addRemote(tuckDir, 'origin', remoteUrl);
+
+    // Detect dotfiles on system
+    const detected = analysis.files.filter((f) => !f.sensitive);
+
+    if (detected.length > 0) {
+      console.log();
+      prompts.log.info(`Found ${detected.length} dotfiles on your system`);
+
+      const trackNow = await prompts.confirm('Would you like to add some of these to tuck?', true);
+
+      if (trackNow) {
+        // Group by category for display
+        const grouped: Record<string, DetectedFile[]> = {};
+        for (const file of detected) {
+          if (!grouped[file.category]) grouped[file.category] = [];
+          grouped[file.category].push(file);
+        }
+
+        // Show categories
+        console.log();
+        for (const [category, files] of Object.entries(grouped)) {
+          const config = DETECTION_CATEGORIES[category] || { icon: '-', name: category };
+          console.log(`  ${config.icon} ${config.name}: ${files.length} files`);
+        }
+
+        console.log();
+        prompts.log.info("Run 'tuck scan' to interactively select files to track");
+        prompts.log.info("Or run 'tuck add <path>' to add specific files");
+      }
+    }
+
+    return { success: true, filesImported: 0, remoteUrl };
+  }
+
+  // Scenario C: Messed up repository
+  prompts.log.warning(`Repository issue: ${analysis.reason}`);
+  console.log();
+
+  const action = await prompts.select('How would you like to proceed?', [
+    {
+      value: 'fresh',
+      label: 'Start fresh',
+      hint: 'Initialize tuck and set this repo as remote (will overwrite on push)',
+    },
+    {
+      value: 'remote-only',
+      label: 'Set as remote only',
+      hint: 'Initialize tuck locally, keep existing repo contents',
+    },
+    {
+      value: 'cancel',
+      label: 'Cancel',
+      hint: 'Inspect the repository manually first',
+    },
+  ]);
+
+  if (action === 'cancel') {
+    return { success: false, filesImported: 0 };
+  }
+
+  // Initialize tuck
+  await createDirectoryStructure(tuckDir);
+  await initRepo(tuckDir);
+  await setDefaultBranch(tuckDir, 'main');
+
+  const hostname = (await import('os')).hostname();
+  await createManifest(tuckDir, hostname);
+  await saveConfig(
+    {
+      ...defaultConfig,
+      repository: { ...defaultConfig.repository, path: tuckDir },
+    },
+    tuckDir
+  );
+  await createDefaultFiles(tuckDir, hostname);
+
+  // Set up remote
+  await addRemote(tuckDir, 'origin', remoteUrl);
+
+  if (action === 'fresh') {
+    prompts.log.info('Tuck initialized. When you push, it will replace the repository contents.');
+    prompts.log.info("Run 'tuck add' to track files, then 'tuck sync && tuck push --force' to update remote");
+  } else {
+    prompts.log.info('Tuck initialized with remote configured');
+    prompts.log.info("Run 'tuck add' to start tracking files");
+  }
+
+  return { success: true, filesImported: 0, remoteUrl };
+};
+
 const initFromRemote = async (tuckDir: string, remoteUrl: string): Promise<void> => {
   // Clone the repository
   await withSpinner(`Cloning from ${remoteUrl}...`, async () => {
@@ -316,7 +623,86 @@ const runInteractiveInit = async (): Promise<void> => {
     return;
   }
 
-  // Ask about existing repo
+  // Auto-detect existing GitHub dotfiles repository
+  const ghInstalled = await isGhInstalled();
+  const ghAuth = ghInstalled && (await isGhAuthenticated());
+
+  if (ghAuth) {
+    const spinner = prompts.spinner();
+    spinner.start('Checking for existing dotfiles repository on GitHub...');
+
+    try {
+      const user = await getAuthenticatedUser();
+      const existingRepoName = await findDotfilesRepo(user.login);
+
+      if (existingRepoName) {
+        spinner.stop(`Found repository: ${existingRepoName}`);
+
+        const importRepo = await prompts.confirm(
+          `Import dotfiles from ${existingRepoName}?`,
+          true
+        );
+
+        if (importRepo) {
+          // Clone to temp directory
+          const tempDir = join(tmpdir(), `tuck-import-${Date.now()}`);
+          const cloneSpinner = prompts.spinner();
+          cloneSpinner.start('Cloning repository...');
+
+          try {
+            await ghCloneRepo(existingRepoName, tempDir);
+            cloneSpinner.stop('Repository cloned');
+
+            // Analyze the repository
+            const analysisSpinner = prompts.spinner();
+            analysisSpinner.start('Analyzing repository...');
+            const analysis = await analyzeRepository(tempDir);
+            analysisSpinner.stop('Analysis complete');
+
+            // Import based on analysis
+            const result = await importExistingRepo(tuckDir, existingRepoName, analysis, tempDir);
+
+            // Clean up temp directory
+            await rm(tempDir, { recursive: true, force: true });
+
+            if (result.success) {
+              console.log();
+              if (result.filesImported > 0) {
+                prompts.log.success(`Imported ${result.filesImported} files from ${existingRepoName}`);
+              } else {
+                prompts.log.success(`Tuck initialized with ${existingRepoName} as remote`);
+              }
+
+              prompts.outro('Ready to manage your dotfiles!');
+
+              nextSteps([
+                `View status: tuck status`,
+                `Add files:   tuck add ~/.zshrc`,
+                `Sync:        tuck sync`,
+              ]);
+              return;
+            }
+
+            // User cancelled - continue with normal flow
+            console.log();
+          } catch (error) {
+            cloneSpinner.stop('Clone failed');
+            prompts.log.warning(
+              `Could not clone repository: ${error instanceof Error ? error.message : String(error)}`
+            );
+            console.log();
+            // Continue with normal flow
+          }
+        }
+      } else {
+        spinner.stop('No existing dotfiles repository found');
+      }
+    } catch {
+      spinner.stop('Could not check for existing repositories');
+    }
+  }
+
+  // Ask about existing repo (manual flow)
   const hasExisting = await prompts.select('Do you have an existing dotfiles repository?', [
     { value: 'no', label: 'No, start fresh' },
     { value: 'yes', label: 'Yes, clone from URL' },
