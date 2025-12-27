@@ -20,7 +20,12 @@ const TOKEN_EXPIRATION_WARNING_DAYS = 85;
 /** Minimum length for a valid GitHub token */
 export const MIN_GITHUB_TOKEN_LENGTH = 20;
 
-/** Valid GitHub token prefixes */
+/**
+ * Valid GitHub token prefixes for validation purposes.
+ * Note: detectTokenType() only distinguishes between fine-grained (github_pat_)
+ * and classic (ghp_) tokens, but GitHub issues other token types that should
+ * still be accepted as valid (gho_, ghu_, ghs_, ghr_).
+ */
 export const GITHUB_TOKEN_PREFIXES = [
   'github_pat_', // Fine-grained PAT
   'ghp_', // Classic PAT
@@ -1050,7 +1055,7 @@ export const testStoredCredentials = async (): Promise<{
         } catch {
           // Even if we can't parse, 200 OK means auth succeeded
           // Use username from credentials, fall back to metadata username if available
-          return { valid: true, username: username || metadata.username || undefined };
+          return { valid: true, username: username || metadata.username };
         }
       }
 
