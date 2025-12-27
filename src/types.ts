@@ -87,6 +87,7 @@ export interface SyncOptions {
   message?: string;
   all?: boolean;
   noCommit?: boolean;
+  push?: boolean; // Commander converts --no-push to push: false
   amend?: boolean;
   noHooks?: boolean;
   trustHooks?: boolean;

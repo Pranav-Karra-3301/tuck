@@ -7,7 +7,7 @@ export interface Logger {
   error: (msg: string) => void;
   debug: (msg: string) => void;
   step: (current: number, total: number, msg: string) => void;
-  file: (action: 'add' | 'modify' | 'delete' | 'sync', path: string) => void;
+  file: (action: 'add' | 'modify' | 'delete' | 'sync' | 'merge', path: string) => void;
   tree: (items: TreeItem[]) => void;
   blank: () => void;
   dim: (msg: string) => void;
@@ -22,24 +22,24 @@ export interface TreeItem {
 
 export const logger: Logger = {
   info: (msg: string) => {
-    console.log(chalk.blue('ℹ'), msg);
+    console.log(chalk.blue('i'), msg);
   },
 
   success: (msg: string) => {
-    console.log(chalk.green('✓'), msg);
+    console.log(chalk.green('ok'), msg);
   },
 
   warning: (msg: string) => {
-    console.log(chalk.yellow('⚠'), msg);
+    console.log(chalk.yellow('!'), msg);
   },
 
   error: (msg: string) => {
-    console.log(chalk.red('✗'), msg);
+    console.log(chalk.red('x'), msg);
   },
 
   debug: (msg: string) => {
     if (process.env.DEBUG) {
-      console.log(chalk.gray('⚙'), chalk.gray(msg));
+      console.log(chalk.gray('*'), chalk.gray(msg));
     }
   },
 
@@ -47,12 +47,13 @@ export const logger: Logger = {
     console.log(chalk.dim(`[${current}/${total}]`), msg);
   },
 
-  file: (action: 'add' | 'modify' | 'delete' | 'sync', path: string) => {
+  file: (action: 'add' | 'modify' | 'delete' | 'sync' | 'merge', path: string) => {
     const icons = {
       add: chalk.green('+'),
       modify: chalk.yellow('~'),
       delete: chalk.red('-'),
-      sync: chalk.blue('↔'),
+      sync: chalk.blue('<>'),
+      merge: chalk.magenta('+'),
     };
     console.log(`  ${icons[action]} ${path}`);
   },

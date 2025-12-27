@@ -4,7 +4,7 @@ import { join } from 'path';
 import { prompts, logger, withSpinner } from '../ui/index.js';
 import { getTuckDir, expandPath, pathExists } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles, updateFileInManifest } from '../lib/manifest.js';
-import { stageAll, commit, getStatus } from '../lib/git.js';
+import { stageAll, commit, getStatus, push, hasRemote } from '../lib/git.js';
 import { copyFileOrDir, getFileChecksum } from '../lib/files.js';
 import { runPreSyncHook, runPostSyncHook, type HookOptions } from '../lib/hooks.js';
 import { NotInitializedError } from '../errors.js';
@@ -153,7 +153,7 @@ const syncFiles = async (
   return result;
 };
 
-const runInteractiveSync = async (tuckDir: string): Promise<void> => {
+const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): Promise<void> => {
   prompts.intro('tuck sync');
 
   // Detect changes
@@ -220,10 +220,24 @@ const runInteractiveSync = async (tuckDir: string): Promise<void> => {
   console.log();
   if (result.commitHash) {
     prompts.log.success(`Committed: ${result.commitHash.slice(0, 7)}`);
+
+    // Push by default if remote exists (unless --no-push specified)
+    // Commander converts --no-push to push: false, default is push: true
+    if (options.push !== false && (await hasRemote(tuckDir))) {
+      const spinner2 = prompts.spinner();
+      spinner2.start('Pushing to remote...');
+      try {
+        await push(tuckDir);
+        spinner2.stop('Pushed to remote');
+      } catch {
+        spinner2.stop('Push failed (will retry on next sync)');
+      }
+    } else if (options.push === false) {
+      prompts.log.info("Run 'tuck push' when ready to upload");
+    }
   }
 
   prompts.outro('Synced successfully!');
-  logger.info("Run 'tuck push' to upload to remote");
 };
 
 const runSync = async (messageArg: string | undefined, options: SyncOptions): Promise<void> => {
@@ -236,9 +250,9 @@ const runSync = async (messageArg: string | undefined, options: SyncOptions): Pr
     throw new NotInitializedError();
   }
 
-  // If no options, run interactive
+  // If no options (except --no-push), run interactive
   if (!messageArg && !options.message && !options.all && !options.noCommit && !options.amend) {
-    await runInteractiveSync(tuckDir);
+    await runInteractiveSync(tuckDir, options);
     return;
   }
 
@@ -266,17 +280,27 @@ const runSync = async (messageArg: string | undefined, options: SyncOptions): Pr
 
   if (result.commitHash) {
     logger.info(`Commit: ${result.commitHash.slice(0, 7)}`);
-  }
 
-  logger.info("Run 'tuck push' to upload to remote");
+    // Push by default unless --no-push
+    // Commander converts --no-push to push: false, default is push: true
+    if (options.push !== false && (await hasRemote(tuckDir))) {
+      await withSpinner('Pushing to remote...', async () => {
+        await push(tuckDir);
+      });
+      logger.success('Pushed to remote');
+    } else if (options.push === false) {
+      logger.info("Run 'tuck push' when ready to upload");
+    }
+  }
 };
 
 export const syncCommand = new Command('sync')
-  .description('Sync changes to repository')
+  .description('Sync changes to repository (commits and pushes)')
   .argument('[message]', 'Commit message')
   .option('-m, --message <msg>', 'Commit message')
   .option('-a, --all', 'Sync all tracked files, not just changed')
   .option('--no-commit', "Stage changes but don't commit")
+  .option('--no-push', "Commit but don't push to remote")
   .option('--amend', 'Amend previous commit')
   .option('--no-hooks', 'Skip execution of pre/post sync hooks')
   .option('--trust-hooks', 'Trust and run hooks without confirmation (use with caution)')
