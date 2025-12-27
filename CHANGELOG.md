@@ -1,3 +1,10 @@
+## [1.1.1](https://github.com/Pranav-Karra-3301/tuck/compare/v1.1.0...v1.1.1) (2025-12-27)
+
+
+### Bug Fixes
+
+* use node18 target for pkg binary builds ([ea0ce16](https://github.com/Pranav-Karra-3301/tuck/commit/ea0ce161994978fc99d43ee38ec8f558b79b50bb))
+
 # [1.1.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.0.0...v1.1.0) (2025-12-27)
 
 
