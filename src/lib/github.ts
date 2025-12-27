@@ -131,6 +131,116 @@ export const repoExists = async (repoName: string): Promise<boolean> => {
   }
 };
 
+interface RepoCreationDiagnosis {
+  reason: string;
+  suggestions: string[];
+}
+
+/**
+ * Diagnose why repository creation failed and provide helpful suggestions
+ */
+const diagnoseRepoCreationFailure = async (
+  repoName: string,
+  errorMessage: string
+): Promise<RepoCreationDiagnosis> => {
+  const errorLower = errorMessage.toLowerCase();
+
+  // Check if repo already exists (double-check in case of race condition)
+  try {
+    const user = await getAuthenticatedUser();
+    const fullName = `${user.login}/${repoName}`;
+    if (await repoExists(fullName)) {
+      return {
+        reason: `Repository "${fullName}" already exists`,
+        suggestions: [
+          `Use the existing repository: tuck init --from ${fullName}`,
+          `Delete it first at github.com/${fullName}/settings`,
+          'Choose a different name for your dotfiles repository',
+        ],
+      };
+    }
+  } catch {
+    // Ignore - continue with other checks
+  }
+
+  // Permission errors
+  if (errorLower.includes('permission') || errorLower.includes('forbidden') || errorLower.includes('403')) {
+    return {
+      reason: 'Insufficient permissions to create repository',
+      suggestions: [
+        'Check your GitHub CLI authentication: gh auth status',
+        'Re-authenticate with repo scope: gh auth login --scopes repo',
+        'Create the repository manually at github.com/new',
+      ],
+    };
+  }
+
+  // Name already taken (in an org or different context)
+  if (errorLower.includes('name already exists') || errorLower.includes('already exists')) {
+    return {
+      reason: `Repository name "${repoName}" is already taken`,
+      suggestions: [
+        'Choose a different name (e.g., "my-dotfiles", "dotfiles-backup")',
+        'Check if you already have this repository: gh repo list',
+        'Create the repository manually at github.com/new',
+      ],
+    };
+  }
+
+  // Rate limiting
+  if (errorLower.includes('rate limit') || errorLower.includes('429') || errorLower.includes('too many')) {
+    return {
+      reason: 'GitHub API rate limit exceeded',
+      suggestions: [
+        'Wait a few minutes and try again',
+        'Create the repository manually at github.com/new',
+      ],
+    };
+  }
+
+  // Network issues
+  if (
+    errorLower.includes('network') ||
+    errorLower.includes('enotfound') ||
+    errorLower.includes('timeout') ||
+    errorLower.includes('econnrefused')
+  ) {
+    return {
+      reason: 'Network error - could not reach GitHub',
+      suggestions: [
+        'Check your internet connection',
+        'Try again in a moment',
+        'Create the repository manually at github.com/new',
+      ],
+    };
+  }
+
+  // Authentication expired or invalid
+  if (errorLower.includes('401') || errorLower.includes('unauthorized') || errorLower.includes('bad credentials')) {
+    return {
+      reason: 'GitHub authentication expired or invalid',
+      suggestions: [
+        'Re-authenticate: gh auth login',
+        'Check your token: gh auth status',
+      ],
+    };
+  }
+
+  // Generic fallback with manual instructions
+  return {
+    reason: `Failed to create repository "${repoName}"`,
+    suggestions: [
+      'Create the repository manually:',
+      '  1. Go to github.com/new',
+      `  2. Name: ${repoName}`,
+      '  3. Visibility: Private (recommended)',
+      '  4. Do NOT initialize with README/.gitignore',
+      '  5. Click "Create repository"',
+      '  6. Copy the URL and paste when prompted',
+    ],
+  };
+};
+
 /**
  * Create a new GitHub repository
  */
@@ -198,10 +308,9 @@ export const createRepo = async (options: CreateRepoOptions): Promise<GitHubRepo
       isPrivate: options.isPrivate !== false,
     };
   } catch (error) {
-    throw new GitHubCliError(`Failed to create repository "${options.name}"`, [
-      String(error),
-      'Check your GitHub permissions',
-    ]);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const diagnosis = await diagnoseRepoCreationFailure(options.name, errorMessage);
+    throw new GitHubCliError(diagnosis.reason, diagnosis.suggestions);
   }
 };
 

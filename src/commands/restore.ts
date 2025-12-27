@@ -209,7 +209,7 @@ const runInteractiveRestore = async (tuckDir: string): Promise<void> => {
     };
   });
 
-  const selectedIds = await prompts.multiselect('Select files to restore:', fileOptions, true);
+  const selectedIds = await prompts.multiselect('Select files to restore:', fileOptions, { required: true });
 
   if (selectedIds.length === 0) {
     prompts.cancel('No files selected');

@@ -42,16 +42,23 @@ export const prompts = {
   multiselect: async <T>(
     message: string,
     options: SelectOption<T>[],
-    required = false
+    config?: {
+      required?: boolean;
+      initialValues?: T[];
+    }
   ): Promise<T[]> => {
+    const mappedOptions = options.map((opt) => ({
+      value: opt.value,
+      label: opt.label,
+      ...(opt.hint && { hint: opt.hint }),
+    }));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = await p.multiselect({
       message,
-      options: options.map((opt) => ({
-        value: opt.value,
-        label: opt.label,
-        hint: opt.hint,
-      })),
-      required,
+      options: mappedOptions as any,
+      required: config?.required ?? false,
+      initialValues: config?.initialValues,
     });
     if (p.isCancel(result)) {
       prompts.cancel();
