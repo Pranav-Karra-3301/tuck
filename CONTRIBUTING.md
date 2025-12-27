@@ -410,7 +410,8 @@ Brief description of what this PR does.
 3. Request review from maintainers
 4. Address feedback if any
 5. Once approved, your PR will be merged into `development`
-6. Maintainers merge `development` into `main` for releases; merging to `main` requires all checks/actions to be green
+6. Maintainers merge `development` into `main` for releases
+7. Merging to `main` requires all checks/actions to be green
 
 ---
 
