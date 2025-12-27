@@ -1,3 +1,11 @@
+## [1.2.1](https://github.com/Pranav-Karra-3301/tuck/compare/v1.2.0...v1.2.1) (2025-12-27)
+
+
+### Bug Fixes
+
+* correct dry_run boolean comparison in release workflow ([48a6d8a](https://github.com/Pranav-Karra-3301/tuck/commit/48a6d8a13b4d6e29df5e5ee6d107c9a0e65b58d4))
+* multiple bug fixes and UX improvements ([6f8e01d](https://github.com/Pranav-Karra-3301/tuck/commit/6f8e01d56644a16c429473364b7f5b11ab9985b1))
+
 <img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
 # Changelog
