@@ -145,10 +145,10 @@ tuck/
 
 ### Workflow
 
-1. **Sync with main**
+1. **Sync with development**
    ```bash
-   git checkout main
-   git pull origin main
+   git checkout development
+   git pull origin development
    ```
 
 2. **Create a feature branch**
@@ -181,6 +181,7 @@ tuck/
    ```bash
    git push -u origin feat/your-feature-name
    ```
+   Open your PR against `development`.
 
 ---
 
@@ -369,10 +370,10 @@ git commit -m "feat(sync): add progress indicator for large syncs"
 
 ### Before Submitting
 
-1. **Sync with main** to avoid conflicts
+1. **Sync with development** to avoid conflicts
    ```bash
    git fetch origin
-   git rebase origin/main
+   git rebase origin/development
    ```
 
 2. **Run all checks**
@@ -404,11 +405,12 @@ Brief description of what this PR does.
 
 ### Review Process
 
-1. Create your PR against `main`
-2. Wait for CI checks to pass
+1. Create your PR against `development`
+2. Wait for required CI checks to pass (mandatory for merges to `main`)
 3. Request review from maintainers
 4. Address feedback if any
-5. Once approved, your PR will be merged
+5. Once approved, your PR will be merged into `development`
+6. Maintainers merge `development` into `main` for releases; merging to `main` requires all checks/actions to be green
 
 ---
 
@@ -416,7 +418,7 @@ Brief description of what this PR does.
 
 Releases are fully automated via semantic-release:
 
-1. **Commits to main** trigger the release workflow
+1. **Merges to main** (typically from `development`) trigger the release workflow
 2. **Commit messages** determine version bump
 3. **CHANGELOG.md** is automatically updated
 4. **npm package** is published

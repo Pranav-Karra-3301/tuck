@@ -32,6 +32,7 @@ coverage/
 *.tmp
 *.temp
 .cache/
+tmp/
 
 # Package manager lock files (keep pnpm-lock.yaml)
 package-lock.json
