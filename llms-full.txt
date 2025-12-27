@@ -465,7 +465,7 @@ tuck apply <source> [options]
 
 **Examples:**
 ```bash
-tuck apply pranav-karra                     # Discover and apply
+tuck apply username                         # Discover and apply
 tuck apply user/dotfiles                    # Specific repo
 tuck apply --merge                          # Merge instead of replace
 tuck apply --dry-run                        # Preview
