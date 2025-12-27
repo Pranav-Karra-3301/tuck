@@ -81,8 +81,12 @@ const isPrivateKey = (path: string): boolean => {
  * Check if a path contains potentially sensitive data
  */
 const isSensitiveFile = (path: string): boolean => {
+  // Strip ~/ prefix if present, since patterns with ^ anchor expect paths without it
+  // e.g., ~/.netrc should match /^\.netrc$/ pattern
+  const pathToTest = path.startsWith('~/') ? path.slice(2) : path;
+
   for (const pattern of SENSITIVE_FILE_PATTERNS) {
-    if (pattern.test(path)) {
+    if (pattern.test(pathToTest)) {
       return true;
     }
   }

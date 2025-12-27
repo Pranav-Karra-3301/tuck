@@ -206,10 +206,11 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<numb
           logger.file('add', collapsePath(file.destination));
         }
       } else {
+        const fileExists = await pathExists(file.destination);
         await copyFileOrDir(file.repoPath, file.destination, { overwrite: true });
         await fixSecurePermissions(file.destination);
         logger.file(
-          (await pathExists(file.destination)) ? 'modify' : 'add',
+          fileExists ? 'modify' : 'add',
           collapsePath(file.destination)
         );
       }
@@ -235,10 +236,11 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<nu
         logger.file('add', collapsePath(file.destination));
       }
     } else {
+      const fileExists = await pathExists(file.destination);
       await copyFileOrDir(file.repoPath, file.destination, { overwrite: true });
       await fixSecurePermissions(file.destination);
       logger.file(
-        (await pathExists(file.destination)) ? 'modify' : 'add',
+        fileExists ? 'modify' : 'add',
         collapsePath(file.destination)
       );
     }
@@ -382,16 +384,17 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
 
     // Create Time Machine backup before applying
     // Note: We need to properly await async checks - Array.filter doesn't await promises
-    const fileExistsChecks = await Promise.all(
-      files.map(async (f) => ({ file: f, exists: await pathExists(f.destination) }))
-    );
-    const existingFiles = fileExistsChecks.filter((check) => check.exists).map((check) => check.file);
-    const targetPaths = existingFiles.map((f) => f.destination);
+    const existingPaths = [];
+    for (const file of files) {
+      if (await pathExists(file.destination)) {
+        existingPaths.push(file.destination);
+      }
+    }
 
-    if (targetPaths.length > 0 && !options.dryRun) {
+    if (existingPaths.length > 0 && !options.dryRun) {
       const spinner = prompts.spinner();
       spinner.start('Creating backup snapshot...');
-      const snapshot = await createPreApplySnapshot(targetPaths, repoId);
+      const snapshot = await createPreApplySnapshot(existingPaths, repoId);
       spinner.stop(`Backup created: ${snapshot.id}`);
       console.log();
     }
