@@ -74,8 +74,9 @@ export interface AddOptions {
   category?: string;
   name?: string;
   symlink?: boolean;
-  encrypt?: boolean;
-  template?: boolean;
+  // TODO: Encryption and templating are planned for a future version
+  // encrypt?: boolean;
+  // template?: boolean;
 }
 
 export interface RemoveOptions {
@@ -85,10 +86,11 @@ export interface RemoveOptions {
 
 export interface SyncOptions {
   message?: string;
-  all?: boolean;
+  // TODO: --all and --amend are planned for a future version
+  // all?: boolean;
+  // amend?: boolean;
   noCommit?: boolean;
   push?: boolean; // Commander converts --no-push to push: false
-  amend?: boolean;
   noHooks?: boolean;
   trustHooks?: boolean;
 }

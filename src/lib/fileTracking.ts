@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { expandPath, collapsePath, getDestinationPath, getRelativeDestination, generateFileId, sanitizeFilename, detectCategory } from './paths.js';
 import { addFileToManifest } from './manifest.js';
-import { copyFileOrDir, getFileChecksum, getFileInfo } from './files.js';
+import { copyFileOrDir, createSymlink, getFileChecksum, getFileInfo } from './files.js';
 import { loadConfig } from './config.js';
 import { CATEGORIES } from '../constants.js';
 import { ensureDir } from 'fs-extra';
@@ -19,33 +19,34 @@ export interface FileTrackingOptions {
    * Show category icons after file names
    */
   showCategory?: boolean;
-  
+
   /**
    * Custom strategy (copy, symlink, etc.)
    */
   strategy?: FileStrategy;
-  
-  /**
-   * Encrypt files
-   */
-  encrypt?: boolean;
-  
-  /**
-   * Treat as template
-   */
-  template?: boolean;
-  
+
+  // TODO: Encryption and templating are planned for a future version
+  // /**
+  //  * Encrypt files
+  //  */
+  // encrypt?: boolean;
+  //
+  // /**
+  //  * Treat as template
+  //  */
+  // template?: boolean;
+
   /**
    * Delay between file operations in milliseconds
    * Automatically reduced for large batches (>=50 files)
    */
   delayBetween?: number;
-  
+
   /**
    * Action verb for display (e.g., "Tracking", "Adding", "Processing")
    */
   actionVerb?: string;
-  
+
   /**
    * Callback called after each file is processed
    */
@@ -108,8 +109,9 @@ export const trackFilesWithProgress = async (
   const {
     showCategory = true,
     strategy: customStrategy,
-    encrypt = false,
-    template = false,
+    // TODO: Encryption and templating are planned for a future version
+    // encrypt = false,
+    // template = false,
     actionVerb = 'Tracking',
     onProgress,
   } = options;
@@ -156,8 +158,14 @@ export const trackFilesWithProgress = async (
       // Ensure category directory exists
       await ensureDir(dirname(destination));
 
-      // Copy file
-      await copyFileOrDir(expandedPath, destination, { overwrite: true });
+      // Copy or symlink based on strategy
+      if (strategy === 'symlink') {
+        // Create symlink from destination to source (repo points to original)
+        await createSymlink(expandedPath, destination, { overwrite: true });
+      } else {
+        // Default: copy file into the repository
+        await copyFileOrDir(expandedPath, destination, { overwrite: true });
+      }
 
       // Get file info
       const checksum = await getFileChecksum(destination);
@@ -173,8 +181,9 @@ export const trackFilesWithProgress = async (
         destination: getRelativeDestination(category, filename),
         category,
         strategy,
-        encrypted: encrypt,
-        template,
+        // TODO: Encryption and templating are planned for a future version
+        encrypted: false,
+        template: false,
         permissions: info.permissions,
         added: now,
         modified: now,

@@ -1,7 +1,8 @@
 import { createHash } from 'crypto';
-import { readFile, stat, readdir, copyFile, symlink, unlink, rm } from 'fs/promises';
+import { readFile, stat, lstat, readdir, copyFile, symlink, unlink, rm } from 'fs/promises';
 import { copy, ensureDir } from 'fs-extra';
 import { join, dirname } from 'path';
+import { constants } from 'fs';
 import { FileNotFoundError, PermissionError } from '../errors.js';
 import { expandPath, pathExists, isDirectory } from './paths.js';
 
@@ -69,16 +70,35 @@ export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
   const expandedPath = expandPath(dirpath);
   const files: string[] = [];
 
-  const entries = await readdir(expandedPath, { withFileTypes: true });
+  let entries;
+  try {
+    entries = await readdir(expandedPath, { withFileTypes: true });
+  } catch (error) {
+    // Handle permission errors and other read failures gracefully
+    return files;
+  }
 
   for (const entry of entries) {
     const entryPath = join(expandedPath, entry.name);
 
-    if (entry.isDirectory()) {
-      const subFiles = await getDirectoryFiles(entryPath);
-      files.push(...subFiles);
-    } else if (entry.isFile()) {
-      files.push(entryPath);
+    try {
+      // Use lstat to detect symlinks (stat follows symlinks, lstat doesn't)
+      const lstats = await lstat(entryPath);
+
+      // Skip symlinks to prevent infinite recursion loops
+      if (lstats.isSymbolicLink()) {
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        const subFiles = await getDirectoryFiles(entryPath);
+        files.push(...subFiles);
+      } else if (entry.isFile()) {
+        files.push(entryPath);
+      }
+    } catch {
+      // Skip entries we can't access (permission errors, etc.)
+      continue;
     }
   }
 
@@ -108,8 +128,10 @@ export const copyFileOrDir = async (
   const sourceIsDir = await isDirectory(expandedSource);
 
   try {
+    const shouldOverwrite = options?.overwrite ?? true;
+
     if (sourceIsDir) {
-      await copy(expandedSource, expandedDest, { overwrite: options?.overwrite ?? true });
+      await copy(expandedSource, expandedDest, { overwrite: shouldOverwrite });
       const fileCount = await getDirectoryFileCount(expandedDest);
       const files = await getDirectoryFiles(expandedDest);
       let totalSize = 0;
@@ -119,7 +141,10 @@ export const copyFileOrDir = async (
       }
       return { source: expandedSource, destination: expandedDest, fileCount, totalSize };
     } else {
-      await copyFile(expandedSource, expandedDest);
+      // Use COPYFILE_EXCL flag to prevent overwriting when overwrite is false
+      // If overwrite is true (default), use mode 0 which allows overwriting
+      const copyFlags = shouldOverwrite ? 0 : constants.COPYFILE_EXCL;
+      await copyFile(expandedSource, expandedDest, copyFlags);
       const stats = await stat(expandedDest);
       return { source: expandedSource, destination: expandedDest, fileCount: 1, totalSize: stats.size };
     }

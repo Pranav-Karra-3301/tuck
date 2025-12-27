@@ -1,5 +1,5 @@
 import { homedir } from 'os';
-import { join, basename, dirname, relative, isAbsolute, resolve } from 'path';
+import { join, basename, dirname, relative, isAbsolute, resolve, sep } from 'path';
 import { stat, access } from 'fs/promises';
 import { constants } from 'fs';
 import { DEFAULT_TUCK_DIR, FILES_DIR, MANIFEST_FILE, CONFIG_FILE, CATEGORIES } from '../constants.js';
@@ -147,7 +147,8 @@ export const isPathWithinHome = (path: string): boolean => {
   const normalizedHome = resolve(home);
 
   // Check if the normalized path starts with the home directory
-  return normalizedPath.startsWith(normalizedHome + '/') || normalizedPath === normalizedHome;
+  // Use path.sep for cross-platform compatibility (/ on POSIX, \ on Windows)
+  return normalizedPath.startsWith(normalizedHome + sep) || normalizedPath === normalizedHome;
 };
 
 /**

@@ -1,4 +1,5 @@
 import { readFile, writeFile } from 'fs/promises';
+import { dirname } from 'path';
 import { cosmiconfig } from 'cosmiconfig';
 import { tuckConfigSchema, defaultConfig, type TuckConfigOutput } from '../schemas/config.schema.js';
 import { getConfigPath, pathExists, getTuckDir } from './paths.js';
@@ -175,7 +176,8 @@ export const findTuckDir = async (): Promise<string | null> => {
   try {
     const result = await explorer.search();
     if (result?.filepath) {
-      return result.filepath;
+      // Return the directory containing the config file, not the file path itself
+      return dirname(result.filepath);
     }
   } catch {
     // Ignore search errors

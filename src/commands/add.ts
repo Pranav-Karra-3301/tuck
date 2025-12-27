@@ -174,8 +174,6 @@ const addFiles = async (
   await trackFilesWithProgress(filesToTrack, tuckDir, {
     showCategory: true,
     strategy: options.symlink ? 'symlink' : undefined,
-    encrypt: options.encrypt,
-    template: options.template,
     actionVerb: 'Tracking',
   });
 };
@@ -312,8 +310,9 @@ export const addCommand = new Command('add')
   .option('-c, --category <name>', 'Category to organize under')
   .option('-n, --name <name>', 'Custom name for the file in manifest')
   .option('--symlink', 'Create symlink instead of copy')
-  .option('--encrypt', 'Encrypt this file (requires GPG setup)')
-  .option('--template', 'Treat as template with variable substitution')
+  // TODO: Encryption and templating are planned for a future version
+  // .option('--encrypt', 'Encrypt this file (requires GPG setup)')
+  // .option('--template', 'Treat as template with variable substitution')
   .action(async (paths: string[], options: AddOptions) => {
     await runAdd(paths, options);
   });
