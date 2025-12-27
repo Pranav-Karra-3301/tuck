@@ -1,0 +1,99 @@
+# tuck
+
+> A modern, beautiful dotfiles manager CLI built with TypeScript
+
+## What is tuck?
+
+tuck is a command-line tool for managing dotfiles across machines. It's a specialized git repository manager for configuration files that abstracts git complexity while leveraging its power.
+
+## Core Philosophy
+
+- **Beautiful by default** — Polished terminal UI with colors, icons, and interactive prompts
+- **Safe above all else** — Never lose data, always confirm destructive actions, automatic backups
+- **Git-native** — Full git power underneath with simple abstractions (sync, push, pull)
+- **Zero-config to start** — Works immediately, deeply customizable when needed
+
+## Quick Start
+
+```bash
+# Install
+npm install -g @prnv/tuck
+
+# Initialize (interactive setup with GitHub integration)
+tuck init
+
+# Find and add dotfiles
+tuck scan                    # Detect system dotfiles
+tuck add ~/.zshrc ~/.vimrc   # Track specific files
+
+# Sync changes
+tuck sync                    # Commit and push
+tuck status                  # See tracking status
+
+# New machine setup
+tuck apply username          # One-command setup from GitHub
+# OR
+tuck init --from git@github.com:user/dotfiles.git
+tuck restore --all
+```
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `init` | Initialize tuck repository (interactive setup with GitHub) |
+| `add <paths>` | Track new dotfiles with auto-categorization |
+| `remove <paths>` | Stop tracking dotfiles |
+| `sync [message]` | Commit and push changes |
+| `push` | Push to remote |
+| `pull` | Pull from remote |
+| `restore [paths]` | Restore dotfiles to system |
+| `status` | Show tracking status |
+| `list` | List tracked files by category |
+| `diff [paths]` | Show differences between system and repo |
+| `config` | Manage configuration (get/set/list/edit/reset) |
+| `scan` | Detect system dotfiles (100+ patterns) |
+| `apply <source>` | Apply dotfiles from another repo |
+| `undo` | Restore from Time Machine backups |
+
+## Key Features
+
+- **Auto-categorization** — Files organized into shell, git, editors, terminal, ssh, misc
+- **Security validation** — Blocks SSH private keys, warns about sensitive files
+- **Time Machine backups** — Snapshot before destructive operations
+- **Smart merge** — Preserves local blocks marked with `# local` or `# tuck:preserve`
+- **GitHub integration** — Auto-create repos, discover existing dotfiles
+- **Symlink support** — Copy or symlink strategy
+- **Hooks** — Pre/post sync and restore scripts
+- **Multiple output formats** — Pretty, JSON, paths-only
+
+## File Organization
+
+```
+~/.tuck/
+├── files/                    # Categorized dotfiles
+│   ├── shell/               # .zshrc, .bashrc
+│   ├── git/                 # .gitconfig
+│   ├── editors/             # nvim, vim, vscode
+│   ├── terminal/            # tmux, alacritty
+│   ├── ssh/                 # .ssh/config
+│   └── misc/                # Everything else
+├── .tuckmanifest.json       # Tracked files manifest
+├── .tuckrc.json             # Configuration
+└── README.md                # Auto-generated
+```
+
+## Why tuck?
+
+1. **Beautiful UX** — Interactive prompts, colored output, progress spinners
+2. **Safety-first** — Backups before every destructive operation
+3. **Smart detection** — Finds 100+ common dotfiles automatically
+4. **One-command setup** — `tuck apply username` on new machines
+5. **Git power, simple interface** — No git knowledge required
+6. **Cross-platform** — macOS, Linux support
+
+## Links
+
+- Package: https://www.npmjs.com/package/@prnv/tuck
+- Repository: https://github.com/Pranav-Karra-3301/tuck
+- Full documentation: See llms-full.txt
