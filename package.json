@@ -1,6 +1,6 @@
 {
   "name": "@prnv/tuck",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Modern dotfiles manager with a beautiful CLI",
   "keywords": [
     "dotfiles",
