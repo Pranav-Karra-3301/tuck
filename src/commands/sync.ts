@@ -240,7 +240,24 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
   prompts.outro('Synced successfully!');
 };
 
-const runSync = async (messageArg: string | undefined, options: SyncOptions): Promise<void> => {
+/**
+ * Run sync programmatically (exported for use by other commands)
+ */
+export const runSync = async (options: SyncOptions = {}): Promise<void> => {
+  const tuckDir = getTuckDir();
+
+  // Verify tuck is initialized
+  try {
+    await loadManifest(tuckDir);
+  } catch {
+    throw new NotInitializedError();
+  }
+
+  // Always run interactive sync when called programmatically
+  await runInteractiveSync(tuckDir, options);
+};
+
+const runSyncCommand = async (messageArg: string | undefined, options: SyncOptions): Promise<void> => {
   const tuckDir = getTuckDir();
 
   // Verify tuck is initialized
@@ -305,5 +322,5 @@ export const syncCommand = new Command('sync')
   .option('--no-hooks', 'Skip execution of pre/post sync hooks')
   .option('--trust-hooks', 'Trust and run hooks without confirmation (use with caution)')
   .action(async (messageArg: string | undefined, options: SyncOptions) => {
-    await runSync(messageArg, options);
+    await runSyncCommand(messageArg, options);
   });
