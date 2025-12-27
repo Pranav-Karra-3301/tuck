@@ -137,22 +137,29 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          # Run semantic-release and capture output
           if [ "${{ inputs.dry_run }}" = "true" ]; then
-            npx semantic-release --dry-run
-          else
-            npx semantic-release
-          fi
-
-          # Get the latest tag created by semantic-release
-          git fetch --tags
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ -n "$LATEST_TAG" ]; then
-            VERSION="${LATEST_TAG#v}"
-            echo "new_release_version=$VERSION" >> $GITHUB_OUTPUT
-            echo "new_release_published=true" >> $GITHUB_OUTPUT
-            echo "Released version: $VERSION"
-          else
+            echo "Running semantic-release in dry-run mode..."
+            npx semantic-release --dry-run 2>&1 | tee semantic-release-output.txt
+            # In dry-run mode, no release is actually published
             echo "new_release_published=false" >> $GITHUB_OUTPUT
+            echo "Dry run completed - no release published"
+          else
+            echo "Running semantic-release..."
+            npx semantic-release 2>&1 | tee semantic-release-output.txt
+            
+            # Get the latest tag created by semantic-release
+            git fetch --tags
+            LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+            if [ -n "$LATEST_TAG" ]; then
+              VERSION="${LATEST_TAG#v}"
+              echo "new_release_version=$VERSION" >> $GITHUB_OUTPUT
+              echo "new_release_published=true" >> $GITHUB_OUTPUT
+              echo "Released version: $VERSION"
+            else
+              echo "new_release_published=false" >> $GITHUB_OUTPUT
+              echo "No release published"
+            fi
           fi
 
   build-binaries:
