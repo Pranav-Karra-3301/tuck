@@ -406,7 +406,7 @@ Brief description of what this PR does.
 ### Review Process
 
 1. Create your PR against `development`
-2. Wait for required CI checks to pass (mandatory for merges to `main`)
+2. Wait for required CI checks to pass (required before this PR can be merged into `development`)
 3. Request review from maintainers
 4. Address feedback if any
 5. Once approved, your PR will be merged into `development`
