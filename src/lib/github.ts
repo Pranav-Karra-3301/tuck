@@ -400,3 +400,649 @@ export const getPreferredRepoUrl = async (repo: GitHubRepo): Promise<string> => 
   const protocol = await getPreferredRemoteProtocol();
   return protocol === 'ssh' ? repo.sshUrl : repo.httpsUrl;
 };
+
+// ============================================================================
+// Alternative Authentication Methods (when GitHub CLI is not available)
+// ============================================================================
+
+export interface SSHKeyInfo {
+  exists: boolean;
+  path: string;
+  publicKeyPath: string;
+  publicKey?: string;
+}
+
+/**
+ * Check if SSH keys exist for GitHub
+ */
+export const checkSSHKeys = async (): Promise<SSHKeyInfo> => {
+  const { homedir } = await import('os');
+  const { join } = await import('path');
+  const { readFile } = await import('fs/promises');
+  const { pathExists } = await import('./paths.js');
+
+  const sshDir = join(homedir(), '.ssh');
+  const keyTypes = ['id_ed25519', 'id_rsa', 'id_ecdsa'];
+
+  for (const keyType of keyTypes) {
+    const privateKeyPath = join(sshDir, keyType);
+    const publicKeyPath = `${privateKeyPath}.pub`;
+
+    if (await pathExists(publicKeyPath)) {
+      try {
+        const publicKey = await readFile(publicKeyPath, 'utf-8');
+        return {
+          exists: true,
+          path: privateKeyPath,
+          publicKeyPath,
+          publicKey: publicKey.trim(),
+        };
+      } catch {
+        return {
+          exists: true,
+          path: privateKeyPath,
+          publicKeyPath,
+        };
+      }
+    }
+  }
+
+  return {
+    exists: false,
+    path: join(sshDir, 'id_ed25519'),
+    publicKeyPath: join(sshDir, 'id_ed25519.pub'),
+  };
+};
+
+/**
+ * Test if SSH connection to GitHub works
+ */
+export const testSSHConnection = async (): Promise<{ success: boolean; username?: string }> => {
+  try {
+    // ssh -T git@github.com returns exit code 1 even on success, but outputs the username
+    const { stderr } = await execFileAsync('ssh', ['-T', '-o', 'StrictHostKeyChecking=no', 'git@github.com']);
+    const match = stderr.match(/Hi ([^!]+)!/);
+    if (match) {
+      return { success: true, username: match[1] };
+    }
+    return { success: false };
+  } catch (error) {
+    // SSH returns exit code 1 even on successful auth, check stderr for success message
+    if (error instanceof Error && 'stderr' in error) {
+      const stderr = (error as { stderr: string }).stderr;
+      const match = stderr.match(/Hi ([^!]+)!/);
+      if (match) {
+        return { success: true, username: match[1] };
+      }
+    }
+    return { success: false };
+  }
+};
+
+/**
+ * Get instructions for generating SSH keys
+ */
+export const getSSHKeyInstructions = (email?: string): string => {
+  const emailFlag = email ? ` -C "${email}"` : '';
+
+  return `
+To set up SSH authentication with GitHub:
+
+1. Generate a new SSH key (recommended: Ed25519):
+   ssh-keygen -t ed25519${emailFlag}
+
+   Press Enter to accept the default file location
+   Enter a passphrase (recommended) or press Enter for none
+
+2. Start the SSH agent:
+   eval "$(ssh-agent -s)"
+
+3. Add your SSH key to the agent:
+   ssh-add ~/.ssh/id_ed25519
+
+4. Copy your public key:
+   - macOS: pbcopy < ~/.ssh/id_ed25519.pub
+   - Linux: cat ~/.ssh/id_ed25519.pub
+
+5. Add the key to GitHub:
+   - Go to: https://github.com/settings/ssh/new
+   - Title: Your computer name (e.g., "MacBook Pro")
+   - Key type: Authentication Key
+   - Key: Paste your public key
+   - Click "Add SSH key"
+
+6. Test the connection:
+   ssh -T git@github.com
+
+   You should see: "Hi username! You've successfully authenticated..."
+`.trim();
+};
+
+/**
+ * Get instructions for creating a fine-grained personal access token
+ */
+export const getFineGrainedTokenInstructions = (repoName?: string): string => {
+  return `
+To create a Fine-grained Personal Access Token (recommended):
+
+1. Go to: https://github.com/settings/tokens?type=beta
+
+2. Click "Generate new token"
+
+3. Configure the token:
+   - Token name: "tuck-dotfiles" (or any descriptive name)
+   - Expiration: 90 days (or custom, can be renewed)
+   - Description: "Token for tuck dotfiles manager"
+
+4. Repository access:
+   - Select "Only select repositories"
+   - Choose your dotfiles repository${repoName ? ` (${repoName})` : ''}
+   - Or select "All repositories" if you haven't created it yet
+
+5. Permissions needed (under "Repository permissions"):
+   ┌─────────────────────────┬─────────────────┐
+   │ Permission              │ Access Level    │
+   ├─────────────────────────┼─────────────────┤
+   │ Contents                │ Read and write  │
+   │ Metadata                │ Read-only       │
+   └─────────────────────────┴─────────────────┘
+
+   That's it! Only 2 permissions needed.
+
+6. Click "Generate token"
+
+7. IMPORTANT: Copy the token immediately!
+   It won't be shown again.
+
+8. Configure git to use the token:
+   When pushing, use this as your password:
+   - Username: your-github-username
+   - Password: ghp_xxxxxxxxxxxx (your token)
+
+   Or configure credential storage:
+   git config --global credential.helper store
+
+   Then on first push, enter your token as the password
+   and it will be saved for future use.
+`.trim();
+};
+
+/**
+ * Get instructions for creating a classic personal access token
+ */
+export const getClassicTokenInstructions = (): string => {
+  return `
+To create a Classic Personal Access Token:
+
+Note: Fine-grained tokens are recommended for better security,
+but classic tokens work if you need broader access.
+
+1. Go to: https://github.com/settings/tokens/new
+
+2. Configure the token:
+   - Note: "tuck-dotfiles" (or any descriptive name)
+   - Expiration: 90 days (or "No expiration" - less secure)
+
+3. Select scopes (permissions):
+   ┌─────────────────────────┬─────────────────────────────────────┐
+   │ Scope                   │ Why it's needed                     │
+   ├─────────────────────────┼─────────────────────────────────────┤
+   │ ☑ repo                  │ Full access to private repositories │
+   │   ☑ repo:status         │ Access commit status                │
+   │   ☑ repo_deployment     │ Access deployment status            │
+   │   ☑ public_repo         │ Access public repositories          │
+   │   ☑ repo:invite         │ Access repository invitations       │
+   └─────────────────────────┴─────────────────────────────────────┘
+
+   Just check the top-level "repo" box - it selects all sub-items.
+
+4. Click "Generate token"
+
+5. IMPORTANT: Copy the token immediately!
+   It starts with "ghp_" and won't be shown again.
+
+6. Configure git to use the token:
+   When pushing, use this as your password:
+   - Username: your-github-username
+   - Password: ghp_xxxxxxxxxxxx (your token)
+
+   Or configure credential storage:
+   git config --global credential.helper store
+
+   Then on first push, enter your token as the password.
+`.trim();
+};
+
+/**
+ * Get instructions for installing GitHub CLI
+ */
+export const getGitHubCLIInstallInstructions = (): string => {
+  const { platform } = process;
+
+  let installCmd = '';
+  if (platform === 'darwin') {
+    installCmd = 'brew install gh';
+  } else if (platform === 'linux') {
+    installCmd = `# Debian/Ubuntu:
+sudo apt install gh
+
+# Fedora:
+sudo dnf install gh
+
+# Arch Linux:
+sudo pacman -S github-cli`;
+  } else if (platform === 'win32') {
+    installCmd = `# Using winget:
+winget install GitHub.cli
+
+# Using scoop:
+scoop install gh
+
+# Using chocolatey:
+choco install gh`;
+  }
+
+  return `
+GitHub CLI (gh) - Recommended for the best experience
+
+The GitHub CLI provides the easiest authentication and
+lets tuck automatically create repositories for you.
+
+Installation:
+${installCmd}
+
+After installing, authenticate:
+gh auth login
+
+Benefits:
+- Automatic repository creation
+- No manual token management
+- Easy authentication refresh
+- Works with SSH or HTTPS
+
+Learn more: https://cli.github.com/
+`.trim();
+};
+
+export type AuthMethod = 'gh-cli' | 'ssh' | 'fine-grained-token' | 'classic-token';
+
+export interface AuthMethodInfo {
+  id: AuthMethod;
+  name: string;
+  description: string;
+  recommended: boolean;
+  instructions: string;
+}
+
+/**
+ * Get all available authentication methods with instructions
+ */
+export const getAuthMethods = (repoName?: string, email?: string): AuthMethodInfo[] => {
+  return [
+    {
+      id: 'gh-cli',
+      name: 'GitHub CLI (gh)',
+      description: 'Easiest option - automatic repo creation, no token management',
+      recommended: true,
+      instructions: getGitHubCLIInstallInstructions(),
+    },
+    {
+      id: 'ssh',
+      name: 'SSH Key',
+      description: 'Secure, no password needed after setup, works everywhere',
+      recommended: false,
+      instructions: getSSHKeyInstructions(email),
+    },
+    {
+      id: 'fine-grained-token',
+      name: 'Fine-grained Token',
+      description: 'Limited permissions, more secure, repository-specific',
+      recommended: false,
+      instructions: getFineGrainedTokenInstructions(repoName),
+    },
+    {
+      id: 'classic-token',
+      name: 'Classic Token',
+      description: 'Broader access, simpler setup, works with all repos',
+      recommended: false,
+      instructions: getClassicTokenInstructions(),
+    },
+  ];
+};
+
+/**
+ * Configure git credential helper for HTTPS authentication
+ */
+export const configureGitCredentialHelper = async (): Promise<void> => {
+  const { platform } = process;
+
+  try {
+    if (platform === 'darwin') {
+      // macOS - use Keychain
+      await execFileAsync('git', ['config', '--global', 'credential.helper', 'osxkeychain']);
+    } else if (platform === 'linux') {
+      // Linux - use libsecret if available, otherwise cache
+      try {
+        await execFileAsync('git', ['config', '--global', 'credential.helper', 'libsecret']);
+      } catch {
+        await execFileAsync('git', ['config', '--global', 'credential.helper', 'cache --timeout=86400']);
+      }
+    } else if (platform === 'win32') {
+      // Windows - use credential manager
+      await execFileAsync('git', ['config', '--global', 'credential.helper', 'manager']);
+    }
+  } catch {
+    // Fallback to store (less secure but works everywhere)
+    await execFileAsync('git', ['config', '--global', 'credential.helper', 'store']);
+  }
+};
+
+// ============================================================================
+// Secure Credential Management
+// ============================================================================
+
+export interface StoredCredential {
+  username: string;
+  token: string;
+  createdAt: string;
+  type: 'fine-grained' | 'classic' | 'unknown';
+}
+
+/**
+ * Get the path to the tuck credentials file
+ */
+const getCredentialsPath = async (): Promise<string> => {
+  const { homedir } = await import('os');
+  const { join } = await import('path');
+  return join(homedir(), '.tuck', '.credentials.json');
+};
+
+/**
+ * Store GitHub credentials securely
+ * Uses git credential helper for the actual token storage
+ * Stores metadata (type, creation date) in tuck config
+ */
+export const storeGitHubCredentials = async (
+  username: string,
+  token: string,
+  type: 'fine-grained' | 'classic'
+): Promise<void> => {
+  const { writeFile, mkdir } = await import('fs/promises');
+  const { dirname } = await import('path');
+
+  // First, configure the credential helper
+  await configureGitCredentialHelper();
+
+  // Store the credential using git credential helper
+  // This pipes the credential to git credential approve
+  const credentialInput = `protocol=https\nhost=github.com\nusername=${username}\npassword=${token}\n`;
+
+  try {
+    const { spawn } = await import('child_process');
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn('git', ['credential', 'approve'], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      proc.stdin.write(credentialInput);
+      proc.stdin.end();
+
+      proc.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`git credential approve failed with code ${code}`));
+        }
+      });
+
+      proc.on('error', reject);
+    });
+  } catch {
+    // If git credential helper fails, we can still continue
+    // The user will just be prompted for credentials on push
+  }
+
+  // Store metadata (not the token itself) for expiration tracking
+  const credentialsPath = await getCredentialsPath();
+  const metadata = {
+    username,
+    type,
+    createdAt: new Date().toISOString(),
+    // Don't store the actual token - just track that we have one
+    hasToken: true,
+  };
+
+  try {
+    await mkdir(dirname(credentialsPath), { recursive: true });
+    await writeFile(credentialsPath, JSON.stringify(metadata, null, 2), {
+      mode: 0o600, // Read/write only for owner
+    });
+  } catch {
+    // Non-critical - metadata storage failed
+  }
+};
+
+/**
+ * Get stored credential metadata
+ */
+export const getStoredCredentialMetadata = async (): Promise<{
+  username?: string;
+  type?: 'fine-grained' | 'classic';
+  createdAt?: Date;
+  hasToken?: boolean;
+} | null> => {
+  const { readFile } = await import('fs/promises');
+  const { pathExists } = await import('./paths.js');
+
+  const credentialsPath = await getCredentialsPath();
+
+  if (!(await pathExists(credentialsPath))) {
+    return null;
+  }
+
+  try {
+    const content = await readFile(credentialsPath, 'utf-8');
+    const data = JSON.parse(content);
+    return {
+      username: data.username,
+      type: data.type,
+      createdAt: data.createdAt ? new Date(data.createdAt) : undefined,
+      hasToken: data.hasToken,
+    };
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Remove stored credentials (both from git helper and metadata)
+ */
+export const removeStoredCredentials = async (): Promise<void> => {
+  const { unlink } = await import('fs/promises');
+  const { pathExists } = await import('./paths.js');
+
+  // Remove from git credential helper
+  try {
+    const { spawn } = await import('child_process');
+    await new Promise<void>((resolve) => {
+      const proc = spawn('git', ['credential', 'reject'], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      proc.stdin.write('protocol=https\nhost=github.com\n');
+      proc.stdin.end();
+
+      proc.on('close', () => resolve());
+      proc.on('error', () => resolve());
+    });
+  } catch {
+    // Ignore errors
+  }
+
+  // Remove metadata file
+  const credentialsPath = await getCredentialsPath();
+  if (await pathExists(credentialsPath)) {
+    try {
+      await unlink(credentialsPath);
+    } catch {
+      // Ignore errors
+    }
+  }
+};
+
+/**
+ * Test if stored credentials are still valid
+ */
+export const testStoredCredentials = async (): Promise<{
+  valid: boolean;
+  reason?: 'expired' | 'invalid' | 'network' | 'unknown';
+  username?: string;
+}> => {
+  const metadata = await getStoredCredentialMetadata();
+
+  if (!metadata?.hasToken) {
+    return { valid: false, reason: 'unknown' };
+  }
+
+  // Try to access the GitHub API using the stored credentials
+  try {
+    // Use git ls-remote to test authentication
+    await execFileAsync('git', ['ls-remote', 'https://github.com/octocat/Hello-World.git'], {
+      timeout: 10000,
+    });
+    return { valid: true, username: metadata.username };
+  } catch (error) {
+    const errorStr = error instanceof Error ? error.message.toLowerCase() : '';
+
+    // Check for common error patterns
+    if (errorStr.includes('401') || errorStr.includes('403') || errorStr.includes('authentication')) {
+      // Check if token might be expired based on creation date
+      if (metadata.createdAt) {
+        const daysSinceCreation = Math.floor(
+          (Date.now() - metadata.createdAt.getTime()) / (1000 * 60 * 60 * 24)
+        );
+
+        // Fine-grained tokens often expire in 90 days, classic can vary
+        if (daysSinceCreation > 85) {
+          return { valid: false, reason: 'expired', username: metadata.username };
+        }
+      }
+      return { valid: false, reason: 'invalid', username: metadata.username };
+    }
+
+    if (errorStr.includes('network') || errorStr.includes('timeout') || errorStr.includes('enotfound')) {
+      return { valid: false, reason: 'network', username: metadata.username };
+    }
+
+    return { valid: false, reason: 'unknown', username: metadata.username };
+  }
+};
+
+/**
+ * Diagnose authentication issues and provide helpful suggestions
+ */
+export const diagnoseAuthIssue = async (): Promise<{
+  issue: string;
+  suggestions: string[];
+}> => {
+  const metadata = await getStoredCredentialMetadata();
+
+  if (!metadata?.hasToken) {
+    return {
+      issue: 'No GitHub credentials configured',
+      suggestions: [
+        'Set up authentication using one of the methods below',
+        'Run `tuck init` to configure GitHub access',
+      ],
+    };
+  }
+
+  const testResult = await testStoredCredentials();
+
+  if (testResult.valid) {
+    return {
+      issue: 'Credentials appear to be working',
+      suggestions: ['Try the operation again'],
+    };
+  }
+
+  switch (testResult.reason) {
+    case 'expired':
+      return {
+        issue: `Your ${metadata.type || 'GitHub'} token has likely expired`,
+        suggestions: [
+          metadata.type === 'fine-grained'
+            ? 'Create a new fine-grained token at: https://github.com/settings/tokens?type=beta'
+            : 'Create a new token at: https://github.com/settings/tokens/new',
+          'Use the same permissions as before',
+          'Run `tuck init` to update your credentials',
+        ],
+      };
+
+    case 'invalid':
+      return {
+        issue: 'Your GitHub credentials are invalid',
+        suggestions: [
+          'The token may have been revoked or is incorrect',
+          'Check your tokens at: https://github.com/settings/tokens',
+          'Create a new token and run `tuck init` to update',
+        ],
+      };
+
+    case 'network':
+      return {
+        issue: 'Could not connect to GitHub',
+        suggestions: [
+          'Check your internet connection',
+          'GitHub may be experiencing issues - check https://githubstatus.com',
+          'Try again in a moment',
+        ],
+      };
+
+    default:
+      return {
+        issue: 'Unknown authentication issue',
+        suggestions: [
+          'Try creating a new token',
+          'Check https://github.com/settings/tokens for your existing tokens',
+          'Run `tuck init` to reconfigure authentication',
+        ],
+      };
+  }
+};
+
+/**
+ * Update stored credentials with a new token
+ */
+export const updateStoredCredentials = async (
+  token: string,
+  type?: 'fine-grained' | 'classic'
+): Promise<void> => {
+  const metadata = await getStoredCredentialMetadata();
+  const username = metadata?.username;
+
+  if (!username) {
+    throw new Error('No username found. Please run `tuck init` to set up authentication.');
+  }
+
+  // Remove old credentials first
+  await removeStoredCredentials();
+
+  // Store new credentials
+  await storeGitHubCredentials(username, token, type || metadata?.type || 'unknown' as 'fine-grained' | 'classic');
+};
+
+/**
+ * Detect token type from the token format
+ */
+export const detectTokenType = (token: string): 'fine-grained' | 'classic' | 'unknown' => {
+  // Fine-grained tokens start with github_pat_
+  if (token.startsWith('github_pat_')) {
+    return 'fine-grained';
+  }
+  // Classic tokens start with ghp_
+  if (token.startsWith('ghp_')) {
+    return 'classic';
+  }
+  return 'unknown';
+};

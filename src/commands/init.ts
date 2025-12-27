@@ -27,6 +27,17 @@ import {
   getPreferredRemoteProtocol,
   findDotfilesRepo,
   ghCloneRepo,
+  checkSSHKeys,
+  testSSHConnection,
+  getSSHKeyInstructions,
+  getFineGrainedTokenInstructions,
+  getClassicTokenInstructions,
+  getGitHubCLIInstallInstructions,
+  storeGitHubCredentials,
+  detectTokenType,
+  configureGitCredentialHelper,
+  testStoredCredentials,
+  diagnoseAuthIssue,
 } from '../lib/github.js';
 import chalk from 'chalk';
 import { detectDotfiles, DetectedFile, DETECTION_CATEGORIES } from '../lib/detect.js';
@@ -207,20 +218,339 @@ interface GitHubSetupResult {
   pushed: boolean;
 }
 
+/**
+ * Set up alternative authentication (SSH or tokens)
+ */
+const setupAlternativeAuth = async (tuckDir: string): Promise<GitHubSetupResult> => {
+  console.log();
+  prompts.log.info('GitHub CLI not available. Let\'s set up authentication another way.');
+  console.log();
+
+  // Check for existing credentials and test them
+  const credTest = await testStoredCredentials();
+  if (credTest.valid && credTest.username) {
+    prompts.log.success(`Found existing valid credentials for ${credTest.username}`);
+    const useExisting = await prompts.confirm('Use these credentials?', true);
+    if (useExisting) {
+      // Credentials work - ask for repo URL
+      return await promptForManualRepoUrl(tuckDir, credTest.username);
+    }
+  } else if (credTest.username && credTest.reason) {
+    // Had credentials but they failed
+    const diagnosis = await diagnoseAuthIssue();
+    prompts.log.warning(diagnosis.issue);
+    for (const suggestion of diagnosis.suggestions) {
+      console.log(chalk.dim(`  ${suggestion}`));
+    }
+    console.log();
+  }
+
+  // Check for existing SSH keys
+  const sshInfo = await checkSSHKeys();
+  const sshConnection = sshInfo.exists ? await testSSHConnection() : { success: false };
+
+  // Build auth method options
+  const authOptions: Array<{ value: string; label: string; hint: string }> = [];
+
+  if (sshInfo.exists && sshConnection.success) {
+    authOptions.push({
+      value: 'ssh-existing',
+      label: 'Use existing SSH key',
+      hint: `Connected as ${sshConnection.username}`,
+    });
+  }
+
+  authOptions.push(
+    {
+      value: 'gh-cli',
+      label: 'Install GitHub CLI (recommended)',
+      hint: 'Easiest option - automatic repo creation',
+    },
+    {
+      value: 'ssh-new',
+      label: 'Set up SSH key',
+      hint: sshInfo.exists ? 'Configure existing key' : 'Generate new SSH key',
+    },
+    {
+      value: 'fine-grained',
+      label: 'Use Fine-grained Token',
+      hint: 'More secure - limited permissions',
+    },
+    {
+      value: 'classic',
+      label: 'Use Classic Token',
+      hint: 'Broader access - simpler setup',
+    },
+    {
+      value: 'skip',
+      label: 'Skip for now',
+      hint: 'Set up authentication later',
+    }
+  );
+
+  const authMethod = await prompts.select('Choose an authentication method:', authOptions);
+
+  if (authMethod === 'skip') {
+    return { remoteUrl: null, pushed: false };
+  }
+
+  if (authMethod === 'gh-cli') {
+    // Show GitHub CLI install instructions
+    console.log();
+    prompts.note(getGitHubCLIInstallInstructions(), 'GitHub CLI Installation');
+    console.log();
+    prompts.log.info('After installing and authenticating, run `tuck init` again');
+    prompts.log.info('Or continue with token-based authentication below');
+
+    const continueWithToken = await prompts.confirm('Set up token authentication instead?', true);
+    if (!continueWithToken) {
+      return { remoteUrl: null, pushed: false };
+    }
+    // Fall through to token setup
+    return await setupTokenAuth(tuckDir);
+  }
+
+  if (authMethod === 'ssh-existing') {
+    // SSH key already works - just need repo URL
+    prompts.log.success(`SSH authenticated as ${sshConnection.username}`);
+    return await promptForManualRepoUrl(tuckDir, sshConnection.username, 'ssh');
+  }
+
+  if (authMethod === 'ssh-new') {
+    // Show SSH setup instructions
+    console.log();
+    prompts.note(getSSHKeyInstructions(), 'SSH Key Setup');
+    console.log();
+
+    if (sshInfo.exists) {
+      prompts.log.info(`Found existing SSH key at ${sshInfo.path}`);
+      if (sshInfo.publicKey) {
+        console.log();
+        prompts.log.info('Your public key (copy this to GitHub):');
+        console.log(chalk.cyan(sshInfo.publicKey));
+        console.log();
+      }
+    }
+
+    const sshReady = await prompts.confirm('Have you added your SSH key to GitHub?');
+    if (sshReady) {
+      // Test connection
+      const testSpinner = prompts.spinner();
+      testSpinner.start('Testing SSH connection...');
+      const testResult = await testSSHConnection();
+      if (testResult.success) {
+        testSpinner.stop(`SSH authenticated as ${testResult.username}`);
+        return await promptForManualRepoUrl(tuckDir, testResult.username, 'ssh');
+      } else {
+        testSpinner.stop('SSH connection failed');
+        prompts.log.warning('Could not connect to GitHub via SSH');
+        prompts.log.info('Make sure you added the public key and try again');
+
+        const useTokenInstead = await prompts.confirm('Use token authentication instead?', true);
+        if (useTokenInstead) {
+          return await setupTokenAuth(tuckDir);
+        }
+      }
+    }
+    return { remoteUrl: null, pushed: false };
+  }
+
+  if (authMethod === 'fine-grained' || authMethod === 'classic') {
+    return await setupTokenAuth(tuckDir, authMethod === 'fine-grained' ? 'fine-grained' : 'classic');
+  }
+
+  return { remoteUrl: null, pushed: false };
+};
+
+/**
+ * Set up token-based authentication
+ */
+const setupTokenAuth = async (
+  tuckDir: string,
+  preferredType?: 'fine-grained' | 'classic'
+): Promise<GitHubSetupResult> => {
+  const tokenType = preferredType || await prompts.select('Which type of token?', [
+    {
+      value: 'fine-grained',
+      label: 'Fine-grained Token (recommended)',
+      hint: 'Limited permissions, more secure',
+    },
+    {
+      value: 'classic',
+      label: 'Classic Token',
+      hint: 'Full repo access, simpler',
+    },
+  ]);
+
+  // Show instructions for the selected token type
+  console.log();
+  if (tokenType === 'fine-grained') {
+    prompts.note(getFineGrainedTokenInstructions(), 'Fine-grained Token Setup');
+  } else {
+    prompts.note(getClassicTokenInstructions(), 'Classic Token Setup');
+  }
+  console.log();
+
+  // Ask for username
+  const username = await prompts.text('Enter your GitHub username:', {
+    validate: (value) => {
+      if (!value) return 'Username is required';
+      if (!/^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$/.test(value)) {
+        return 'Invalid GitHub username';
+      }
+      return undefined;
+    },
+  });
+
+  // Ask for token
+  const token = await prompts.password('Paste your token (hidden):');
+
+  if (!token) {
+    prompts.log.warning('No token provided');
+    return { remoteUrl: null, pushed: false };
+  }
+
+  // Auto-detect token type
+  const detectedType = detectTokenType(token);
+  const finalType = detectedType !== 'unknown' ? detectedType : (tokenType as 'fine-grained' | 'classic');
+
+  if (detectedType !== 'unknown' && detectedType !== tokenType) {
+    prompts.log.info(`Detected ${detectedType === 'fine-grained' ? 'fine-grained' : 'classic'} token`);
+  }
+
+  // Store credentials securely
+  const storeSpinner = prompts.spinner();
+  storeSpinner.start('Storing credentials securely...');
+
+  try {
+    await storeGitHubCredentials(username, token, finalType);
+    storeSpinner.stop('Credentials stored');
+    prompts.log.success('Authentication configured successfully');
+  } catch (error) {
+    storeSpinner.stop('Failed to store credentials');
+    prompts.log.warning(`Could not store credentials: ${error instanceof Error ? error.message : String(error)}`);
+    prompts.log.info('You may be prompted for credentials when pushing');
+  }
+
+  // Configure git credential helper
+  await configureGitCredentialHelper().catch(() => {});
+
+  return await promptForManualRepoUrl(tuckDir, username, 'https');
+};
+
+/**
+ * Prompt user for a repository URL and configure remote
+ */
+const promptForManualRepoUrl = async (
+  tuckDir: string,
+  username?: string,
+  preferredProtocol: 'ssh' | 'https' = 'https'
+): Promise<GitHubSetupResult> => {
+  const suggestedName = 'dotfiles';
+  const exampleUrl = preferredProtocol === 'ssh'
+    ? `git@github.com:${username || 'username'}/${suggestedName}.git`
+    : `https://github.com/${username || 'username'}/${suggestedName}.git`;
+
+  console.log();
+  prompts.note(
+    `Create a repository on GitHub:\n\n` +
+    `1. Go to: https://github.com/new\n` +
+    `2. Name: ${suggestedName}\n` +
+    `3. Visibility: Private (recommended)\n` +
+    `4. Do NOT add README or .gitignore\n` +
+    `5. Click "Create repository"\n` +
+    `6. Copy the ${preferredProtocol.toUpperCase()} URL`,
+    'Manual Repository Setup'
+  );
+  console.log();
+
+  const hasRepo = await prompts.confirm('Have you created the repository?');
+  if (!hasRepo) {
+    prompts.log.info('Create a repository first, then run `tuck init` again');
+    return { remoteUrl: null, pushed: false };
+  }
+
+  const repoUrl = await prompts.text('Paste the repository URL:', {
+    placeholder: exampleUrl,
+    validate: (value) => {
+      if (!value) return 'Repository URL is required';
+      if (!value.includes('github.com') && !value.startsWith('git@')) {
+        return 'Please enter a valid GitHub URL';
+      }
+      return undefined;
+    },
+  });
+
+  // Add remote
+  try {
+    await addRemote(tuckDir, 'origin', repoUrl);
+    prompts.log.success('Remote configured');
+    return { remoteUrl: repoUrl, pushed: false };
+  } catch (error) {
+    prompts.log.error(`Failed to add remote: ${error instanceof Error ? error.message : String(error)}`);
+    return { remoteUrl: null, pushed: false };
+  }
+};
+
 const setupGitHubRepo = async (tuckDir: string): Promise<GitHubSetupResult> => {
   // Check if GitHub CLI is available
   const ghInstalled = await isGhInstalled();
   if (!ghInstalled) {
-    prompts.log.info('GitHub CLI (gh) is not installed');
-    prompts.log.info('Install it from https://cli.github.com/ for auto-setup');
-    return { remoteUrl: null, pushed: false };
+    // Offer alternative authentication methods
+    return await setupAlternativeAuth(tuckDir);
   }
 
   const ghAuth = await isGhAuthenticated();
   if (!ghAuth) {
-    prompts.log.info('GitHub CLI is not authenticated');
-    prompts.log.info('Run `gh auth login` to enable auto-setup');
-    return { remoteUrl: null, pushed: false };
+    prompts.log.info('GitHub CLI is installed but not authenticated');
+
+    const authChoice = await prompts.select('How would you like to authenticate?', [
+      {
+        value: 'gh-login',
+        label: 'Run `gh auth login` now',
+        hint: 'Opens browser to authenticate',
+      },
+      {
+        value: 'alternative',
+        label: 'Use alternative method',
+        hint: 'SSH key or personal access token',
+      },
+      {
+        value: 'skip',
+        label: 'Skip for now',
+        hint: 'Set up authentication later',
+      },
+    ]);
+
+    if (authChoice === 'skip') {
+      return { remoteUrl: null, pushed: false };
+    }
+
+    if (authChoice === 'alternative') {
+      return await setupAlternativeAuth(tuckDir);
+    }
+
+    // Run gh auth login
+    prompts.log.info('Please complete the authentication in your browser...');
+    try {
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
+      await execFileAsync('gh', ['auth', 'login', '--web']);
+
+      // Re-check auth status
+      if (!(await isGhAuthenticated())) {
+        prompts.log.warning('Authentication may have failed');
+        return await setupAlternativeAuth(tuckDir);
+      }
+    } catch (error) {
+      prompts.log.warning(`Authentication failed: ${error instanceof Error ? error.message : String(error)}`);
+      const useAlt = await prompts.confirm('Try alternative authentication?', true);
+      if (useAlt) {
+        return await setupAlternativeAuth(tuckDir);
+      }
+      return { remoteUrl: null, pushed: false };
+    }
   }
 
   // Get authenticated user
