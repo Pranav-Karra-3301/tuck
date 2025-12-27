@@ -1,0 +1,87 @@
+---
+description: Safety and security rules
+globs: ["**/*.ts"]
+---
+
+# Safety Rules
+
+## Core Safety Principles
+
+1. **Never lose user data** - This is the most important rule
+2. **Confirm destructive actions** - Always ask before deleting/overwriting
+3. **Create backups** - Before any file modification
+4. **Validate all input** - Use Zod schemas
+
+## Destructive Operations
+
+ALWAYS confirm before:
+- Deleting files
+- Overwriting files
+- Removing tracked files
+- Resetting configuration
+
+```typescript
+// Required pattern
+const confirmed = await prompts.confirm(
+  'This will delete all backups. Continue?',
+  false  // Default to safe option
+);
+
+if (!confirmed) {
+  prompts.cancel('Operation cancelled');
+  return;
+}
+```
+
+## Backup Requirements
+
+Before modifying any user file:
+1. Create a backup copy
+2. Store backup location
+3. Provide restore path in error messages
+
+```typescript
+// Create backup before modification
+const backupPath = await createBackup(originalPath);
+
+try {
+  await modifyFile(originalPath);
+} catch (error) {
+  throw new Error(`Failed. Restore from: ${backupPath}`);
+}
+```
+
+## Secrets and Credentials
+
+NEVER:
+- Store API keys in tracked files
+- Track SSH private keys
+- Include passwords in config
+- Log sensitive data
+
+## Input Validation
+
+Use Zod for ALL external data:
+- Config file contents
+- Manifest file contents
+- User-provided paths
+- Environment variables
+
+```typescript
+import { ConfigSchema } from '../schemas/config.schema.js';
+
+const data = JSON.parse(fileContent);
+const config = ConfigSchema.parse(data); // Throws if invalid
+```
+
+## Path Handling
+
+ALWAYS use path utilities:
+- `expandPath()` - Expand ~ to full path
+- `collapsePath()` - Collapse home to ~
+- `pathExists()` - Check existence safely
+
+NEVER:
+- Assume path format
+- Use raw ~ in fs operations
+- Hardcode paths

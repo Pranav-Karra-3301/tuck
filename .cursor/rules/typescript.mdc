@@ -1,0 +1,78 @@
+---
+description: TypeScript coding rules
+globs: ["**/*.ts", "**/*.tsx"]
+---
+
+# TypeScript Rules
+
+## Type Safety
+
+1. **NEVER use `any` type**
+   ```typescript
+   // Bad
+   const data: any = JSON.parse(content);
+
+   // Good
+   const data: unknown = JSON.parse(content);
+   const validated = Schema.parse(data);
+   ```
+
+2. **Use explicit types for functions**
+   ```typescript
+   // Bad
+   const process = async (path) => { ... };
+
+   // Good
+   const process = async (path: string): Promise<void> => { ... };
+   ```
+
+3. **Prefer `unknown` over `any`**
+   - Use type guards to narrow `unknown`
+   - Use Zod for runtime validation
+
+## Import Conventions
+
+ALWAYS use `.js` extension for local imports (ESM requirement):
+
+```typescript
+// Correct
+import { getTuckDir } from '../lib/paths.js';
+import type { TuckConfig } from '../types.js';
+
+// Wrong - will fail at runtime
+import { getTuckDir } from '../lib/paths';
+```
+
+## Interface vs Type
+
+- Use `interface` for object shapes
+- Use `type` for unions, intersections, primitives
+
+```typescript
+// Objects
+interface FileChange {
+  path: string;
+  status: 'added' | 'modified' | 'deleted';
+}
+
+// Unions/primitives
+type Status = 'pending' | 'complete' | 'error';
+type Path = string;
+```
+
+## Constants
+
+- Use `const` for variables that won't change
+- Never use `var`
+- Use `let` only when reassignment is needed
+
+## Nullish Values
+
+- Prefer `undefined` over `null`
+- Use optional chaining `?.`
+- Use nullish coalescing `??`
+
+```typescript
+// Good
+const value = obj?.nested?.property ?? 'default';
+```

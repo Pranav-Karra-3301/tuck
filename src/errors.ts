@@ -1,0 +1,112 @@
+import chalk from 'chalk';
+
+export class TuckError extends Error {
+  constructor(
+    message: string,
+    public code: string,
+    public suggestions?: string[]
+  ) {
+    super(message);
+    this.name = 'TuckError';
+  }
+}
+
+export class NotInitializedError extends TuckError {
+  constructor() {
+    super('Tuck is not initialized in this system', 'NOT_INITIALIZED', [
+      'Run `tuck init` to get started',
+    ]);
+  }
+}
+
+export class AlreadyInitializedError extends TuckError {
+  constructor(path: string) {
+    super(`Tuck is already initialized at ${path}`, 'ALREADY_INITIALIZED', [
+      'Use `tuck status` to see current state',
+      `Remove ${path} to reinitialize`,
+    ]);
+  }
+}
+
+export class FileNotFoundError extends TuckError {
+  constructor(path: string) {
+    super(`File not found: ${path}`, 'FILE_NOT_FOUND', [
+      'Check that the path is correct',
+      'Use absolute paths or paths relative to home directory',
+    ]);
+  }
+}
+
+export class FileNotTrackedError extends TuckError {
+  constructor(path: string) {
+    super(`File is not tracked: ${path}`, 'FILE_NOT_TRACKED', [
+      `Run \`tuck add ${path}\` to track this file`,
+      'Run `tuck list` to see all tracked files',
+    ]);
+  }
+}
+
+export class FileAlreadyTrackedError extends TuckError {
+  constructor(path: string) {
+    super(`File is already tracked: ${path}`, 'FILE_ALREADY_TRACKED', [
+      'Run `tuck sync` to update it',
+      `Run \`tuck remove ${path}\` to untrack`,
+    ]);
+  }
+}
+
+export class GitError extends TuckError {
+  constructor(message: string, gitError?: string) {
+    super(`Git operation failed: ${message}`, 'GIT_ERROR', gitError ? [gitError] : undefined);
+  }
+}
+
+export class ConfigError extends TuckError {
+  constructor(message: string) {
+    super(`Configuration error: ${message}`, 'CONFIG_ERROR', [
+      'Run `tuck config edit` to fix configuration',
+      'Run `tuck config reset` to restore defaults',
+    ]);
+  }
+}
+
+export class ManifestError extends TuckError {
+  constructor(message: string) {
+    super(`Manifest error: ${message}`, 'MANIFEST_ERROR', [
+      'The manifest file may be corrupted',
+      'Run `tuck init --from <remote>` to restore from remote',
+    ]);
+  }
+}
+
+export class PermissionError extends TuckError {
+  constructor(path: string, operation: string) {
+    super(`Permission denied: cannot ${operation} ${path}`, 'PERMISSION_ERROR', [
+      'Check file permissions',
+      'Try running with appropriate permissions',
+    ]);
+  }
+}
+
+export const handleError = (error: unknown): never => {
+  if (error instanceof TuckError) {
+    console.error(chalk.red('✗'), error.message);
+    if (error.suggestions && error.suggestions.length > 0) {
+      console.error();
+      console.error(chalk.dim('Suggestions:'));
+      error.suggestions.forEach((s) => console.error(chalk.dim(`  → ${s}`)));
+    }
+    process.exit(1);
+  }
+
+  if (error instanceof Error) {
+    console.error(chalk.red('✗'), 'An unexpected error occurred:', error.message);
+    if (process.env.DEBUG) {
+      console.error(error.stack);
+    }
+    process.exit(1);
+  }
+
+  console.error(chalk.red('✗'), 'An unknown error occurred');
+  process.exit(1);
+};

@@ -1,0 +1,114 @@
+---
+description: Error handling rules
+globs: ["src/**/*.ts"]
+---
+
+# Error Handling Rules
+
+## Custom Error Classes
+
+ALWAYS use custom errors from `src/errors.ts`:
+
+```typescript
+import {
+  NotInitializedError,      // Tuck not set up
+  AlreadyInitializedError,  // Already initialized
+  FileNotFoundError,        // File doesn't exist
+  FileNotTrackedError,      // File not in manifest
+  FileAlreadyTrackedError,  // Already tracked
+  GitError,                 // Git operation failed
+  ConfigError,              // Configuration issue
+  ManifestError,            // Manifest corruption
+  PermissionError,          // Can't read/write
+} from '../errors.js';
+```
+
+## Error Structure
+
+All custom errors include:
+- Human-readable message
+- Error code for programmatic handling
+- Suggestions for resolution
+
+```typescript
+throw new FileNotFoundError(path, {
+  suggestion: "Run 'tuck add' to track this file first"
+});
+```
+
+## Error Handling Patterns
+
+### Catching Errors
+
+```typescript
+// Good - handle specific error
+try {
+  await loadManifest(tuckDir);
+} catch (error) {
+  if (error instanceof ManifestError) {
+    throw new NotInitializedError();
+  }
+  throw error; // Re-throw unknown errors
+}
+```
+
+### NEVER Do
+
+```typescript
+// Bad - silent failure
+await operation().catch(() => {});
+
+// Bad - generic error
+throw new Error('Something went wrong');
+
+// Bad - swallowing errors
+try {
+  await operation();
+} catch {
+  // Do nothing
+}
+```
+
+## User-Facing Errors
+
+Errors shown to users should:
+1. Explain what happened
+2. Suggest how to fix it
+3. Be actionable
+
+```typescript
+// Good
+throw new ConfigError(
+  'Configuration file is corrupted',
+  {
+    code: 'CONFIG_CORRUPT',
+    suggestion: "Run 'tuck config reset' to restore defaults"
+  }
+);
+```
+
+## Logging Errors
+
+Use the logger for debug info, not console:
+
+```typescript
+import { logger } from '../ui/index.js';
+
+logger.debug('Processing file:', filePath);
+logger.error('Failed to read file:', error.message);
+```
+
+## Error Recovery
+
+When possible, provide recovery paths:
+
+```typescript
+try {
+  await writeFile(path, content);
+} catch (error) {
+  // Provide backup location
+  throw new PermissionError(path, 'write', {
+    suggestion: `Check permissions or restore from ${backupPath}`
+  });
+}
+```

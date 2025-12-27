@@ -1,0 +1,44 @@
+---
+description: General project rules for tuck dotfiles manager
+globs: ["**/*"]
+---
+
+# General Project Rules
+
+## Project Identity
+
+tuck is a modern, beautiful dotfiles manager CLI built with TypeScript. It prioritizes:
+
+1. **Safety** - Never lose user data
+2. **Beauty** - Polished terminal experience
+3. **Git-native** - Built on git, abstracts complexity
+4. **Zero-config** - Works immediately
+
+## Tech Stack
+
+- Runtime: Node.js 18+ (ESM only)
+- Language: TypeScript 5.x (strict mode)
+- Package Manager: pnpm 9+ (NEVER npm or yarn)
+- CLI Framework: Commander.js
+- Prompts: @clack/prompts
+- Styling: chalk, boxen, ora
+- Git: simple-git
+- Validation: Zod
+- Testing: Vitest
+- Build: tsup
+
+## Key Principles
+
+1. Always validate user input
+2. Create backups before destructive operations
+3. Confirm dangerous actions with user
+4. Provide helpful error messages
+5. Show progress for long operations
+6. End commands with next step suggestions
+
+## Package Manager
+
+ALWAYS use pnpm commands:
+- `pnpm install` not `npm install`
+- `pnpm test` not `npm test`
+- `pnpm build` not `npm build`

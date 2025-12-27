@@ -1,0 +1,86 @@
+---
+description: Testing guidelines and rules
+globs: ["**/*.test.ts", "tests/**/*"]
+---
+
+# Testing Rules
+
+## Test Framework
+
+- Use Vitest for all tests
+- Tests mirror src/ structure in tests/
+- Test files end with `.test.ts`
+
+## Running Tests
+
+```bash
+pnpm test              # Run all tests
+pnpm test:watch        # Watch mode
+pnpm test:coverage     # With coverage
+```
+
+## Test Structure
+
+```typescript
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+
+describe('functionName', () => {
+  beforeEach(() => {
+    // Setup before each test
+  });
+
+  afterEach(() => {
+    // Cleanup after each test
+  });
+
+  it('should do X when given Y', () => {
+    const result = functionName(input);
+    expect(result).toBe(expected);
+  });
+
+  it('should throw CustomError when given invalid input', () => {
+    expect(() => functionName(invalid)).toThrow(CustomError);
+  });
+});
+```
+
+## Test Guidelines
+
+1. **Test both paths** - Success AND error cases
+2. **Use temp directories** - For file operations
+3. **Mock external services** - Don't hit real APIs
+4. **Meaningful assertions** - Test behavior, not implementation
+5. **Descriptive names** - "should X when Y" format
+
+## What to Test
+
+### Unit Tests
+- Individual functions
+- Edge cases
+- Error handling
+- Input validation
+
+### Integration Tests
+- Command workflows
+- Git operations
+- File system changes
+
+## Coverage
+
+- Aim for high coverage but prioritize meaningful tests
+- Don't test implementation details
+- Focus on public API behavior
+
+## Test File Location
+
+```
+src/lib/paths.ts      -> tests/lib/paths.test.ts
+src/commands/add.ts   -> tests/commands/add.test.ts
+```
+
+## NEVER
+
+- Skip tests in PRs
+- Commit failing tests
+- Test private implementation details
+- Leave flaky tests unfixed

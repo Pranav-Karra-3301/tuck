@@ -1,0 +1,90 @@
+---
+description: Git workflow and commit rules
+globs: ["**/*"]
+---
+
+# Git Rules
+
+## Branch Strategy
+
+- `main` - Production-ready, protected
+- `feat/*` - New features
+- `fix/*` - Bug fixes
+- `docs/*` - Documentation
+- `refactor/*` - Code restructuring
+
+## Before Starting Work
+
+ALWAYS sync with main:
+```bash
+git checkout main
+git fetch origin
+git pull origin main
+git checkout -b feat/your-feature
+```
+
+## Commit Messages
+
+Follow [Conventional Commits](https://conventionalcommits.org):
+
+```
+<type>(<scope>): <description>
+
+[optional body]
+
+[optional footer]
+```
+
+### Types
+
+| Type | Description | Version Bump |
+|------|-------------|--------------|
+| `feat` | New feature | Minor (0.x.0) |
+| `fix` | Bug fix | Patch (0.0.x) |
+| `docs` | Documentation | None |
+| `style` | Formatting | None |
+| `refactor` | Restructuring | None |
+| `perf` | Performance | Patch |
+| `test` | Tests | None |
+| `chore` | Maintenance | None |
+
+### Examples
+
+```bash
+feat: add restore command for backup recovery
+fix: handle missing config file gracefully
+docs: update installation instructions
+refactor: extract git operations to lib/git.ts
+test: add integration tests for sync command
+chore: update dependencies
+```
+
+### Breaking Changes
+
+```bash
+feat!: redesign configuration format
+
+BREAKING CHANGE: Config files must be migrated
+```
+
+## Before Committing
+
+Run all checks:
+```bash
+pnpm lint && pnpm typecheck && pnpm test
+```
+
+## Pull Requests
+
+1. Create against `main`
+2. Wait for CI to pass
+3. Request review
+4. Address feedback
+5. Merge when approved
+
+## NEVER Do
+
+- Force push to main
+- Skip CI checks
+- Merge without review
+- Commit directly to main

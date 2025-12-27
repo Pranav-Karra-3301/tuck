@@ -1,0 +1,95 @@
+---
+description: File organization and structure rules
+globs: ["src/**/*"]
+---
+
+# File Organization Rules
+
+## Directory Structure
+
+```
+src/
+├── commands/     # CLI command implementations
+├── lib/          # Core library modules
+├── ui/           # Terminal UI components
+├── schemas/      # Zod validation schemas
+├── constants.ts  # App constants
+├── types.ts      # TypeScript types
+├── errors.ts     # Custom error classes
+└── index.ts      # Entry point
+```
+
+## File Placement
+
+### Commands (`src/commands/`)
+- One file per command
+- Named after the command: `add.ts`, `sync.ts`
+- Export named command: `export const addCommand`
+- Register in `src/commands/index.ts`
+
+### Library Modules (`src/lib/`)
+- Core functionality, reusable across commands
+- Named by domain: `paths.ts`, `git.ts`, `config.ts`
+- Export all public functions
+- Register in `src/lib/index.ts`
+
+### UI Components (`src/ui/`)
+- Terminal UI utilities
+- Named by function: `logger.ts`, `prompts.ts`
+- Wrapper around @clack/prompts, chalk, etc.
+- Register in `src/ui/index.ts`
+
+### Schemas (`src/schemas/`)
+- Zod validation schemas
+- Named with `.schema.ts` suffix
+- Export input and output types
+
+## Creating New Files
+
+### New Command
+
+1. Create `src/commands/mycommand.ts`
+2. Export from `src/commands/index.ts`
+3. Register in `src/index.ts`
+4. Add tests in `tests/commands/mycommand.test.ts`
+
+### New Library Module
+
+1. Create `src/lib/mymodule.ts`
+2. Export from `src/lib/index.ts`
+3. Add tests in `tests/lib/mymodule.test.ts`
+
+### New Schema
+
+1. Create `src/schemas/myschema.schema.ts`
+2. Export input type, output type, and schema
+
+## Index Files
+
+Always use barrel exports:
+
+```typescript
+// src/lib/index.ts
+export * from './paths.js';
+export * from './config.js';
+export * from './git.js';
+```
+
+## Import Paths
+
+Always include `.js` extension:
+
+```typescript
+// Correct
+import { getTuckDir } from '../lib/paths.js';
+
+// Wrong
+import { getTuckDir } from '../lib/paths';
+```
+
+## File Naming
+
+- Use kebab-case for multi-word files: `my-module.ts`
+- Use `.schema.ts` for Zod schemas
+- Use `.test.ts` for test files
+- Entry point is always `index.ts`

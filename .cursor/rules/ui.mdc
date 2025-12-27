@@ -1,0 +1,101 @@
+---
+description: UI/UX patterns and rules
+globs: ["src/ui/**/*.ts", "src/commands/**/*.ts"]
+---
+
+# UI Rules
+
+## Color Palette
+
+| Color | Usage |
+|-------|-------|
+| **Cyan** | Primary brand, headings, emphasis |
+| **Green** | Success states, confirmations |
+| **Yellow** | Warnings, modifications |
+| **Red** | Errors, deletions |
+| **Dim/Gray** | Secondary info, paths, hints |
+
+## Command Structure
+
+Every command should follow this pattern:
+
+```typescript
+prompts.intro('tuck commandname');
+
+// ... work with spinners/progress ...
+
+prompts.note("Run 'tuck next' to continue", 'Next step');
+prompts.outro('Done!');
+```
+
+## Spinners
+
+Use for operations >100ms:
+
+```typescript
+const spinner = prompts.spinner();
+spinner.start('Processing files...');
+
+try {
+  await doWork();
+  spinner.stop('Processed 5 files');
+} catch (error) {
+  spinner.stop('Failed to process');
+  throw error;
+}
+```
+
+## Progress Feedback
+
+For multi-step operations:
+1. Show what's being done
+2. Show progress (X of Y)
+3. Show completion status
+
+```typescript
+prompts.log.step(`Syncing file ${i}/${total}: ${filename}`);
+```
+
+## Confirmations
+
+ALWAYS confirm destructive actions:
+
+```typescript
+const confirmed = await prompts.confirm(
+  'Delete all backups?',
+  false  // Default to NO (safe option)
+);
+
+if (!confirmed) {
+  prompts.cancel('Operation cancelled');
+  return;
+}
+```
+
+## Error Messages
+
+Provide helpful, actionable errors:
+
+```typescript
+// Good
+throw new FileNotFoundError(path, {
+  suggestion: "Run 'tuck add' first to track this file"
+});
+
+// Bad
+throw new Error('File not found');
+```
+
+## Interactive Mode
+
+Every command should support:
+- Interactive mode (default) - prompts for input
+- Non-interactive mode (--yes, --force) - for scripts
+
+## Next Steps
+
+Always end successful operations with guidance:
+
+```typescript
+prompts.note("Run 'tuck push' to upload changes", 'Next step');
+```

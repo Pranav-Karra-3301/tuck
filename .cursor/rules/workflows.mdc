@@ -1,0 +1,103 @@
+---
+description: GitHub Actions and CI/CD workflow rules
+globs: [".github/**/*"]
+---
+
+# Workflow Rules
+
+## CI Workflow (ci.yml)
+
+Runs on:
+- Push to main
+- Pull requests to main
+
+Jobs:
+1. **lint** - ESLint + TypeScript checking
+2. **test** - Run on Ubuntu + macOS, Node 18/20/22
+3. **build** - Build and verify CLI works
+4. **security** - Dependency audit
+
+## Release Workflow (release.yml)
+
+Runs on:
+- Push to main (when CI passes)
+- Manual trigger (workflow_dispatch)
+
+Jobs:
+1. **check** - Verify releasable changes exist
+2. **release** - Run semantic-release
+3. **build-binaries** - Build for all platforms
+
+## Workflow Conventions
+
+### Always Use
+
+- `pnpm/action-setup@v4` for pnpm
+- `actions/setup-node@v4` for Node.js
+- `actions/checkout@v4` for checkout
+- `pnpm install --frozen-lockfile` for deps
+
+### Version Matrix
+
+Test on:
+- Node.js: 18, 20, 22
+- OS: ubuntu-latest, macos-latest
+
+### Timeouts
+
+Set reasonable timeouts:
+- lint: 10 minutes
+- test: 15 minutes
+- build: 10 minutes
+- release: 20 minutes
+
+### Concurrency
+
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true  # For PRs
+  cancel-in-progress: false # For releases
+```
+
+## Secrets Required
+
+- `GITHUB_TOKEN` - Auto-provided
+- `NPM_TOKEN` - For npm publish
+- `CODECOV_TOKEN` - For coverage upload
+
+## Binary Builds
+
+Build standalone binaries using pkg:
+- linux-x64, linux-arm64
+- darwin-x64, darwin-arm64
+- win32-x64
+
+Binaries are attached to GitHub releases.
+
+## Semantic Release
+
+Configuration in `package.json`:
+
+```json
+{
+  "release": {
+    "branches": ["main"],
+    "plugins": [
+      "@semantic-release/commit-analyzer",
+      "@semantic-release/release-notes-generator",
+      "@semantic-release/changelog",
+      "@semantic-release/npm",
+      "@semantic-release/github",
+      "@semantic-release/git"
+    ]
+  }
+}
+```
+
+## NEVER Do
+
+- Skip CI with `[skip ci]` in production
+- Hardcode secrets in workflows
+- Use latest tags for actions (pin versions)
+- Skip tests in release workflow

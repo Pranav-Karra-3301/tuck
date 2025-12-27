@@ -1,0 +1,88 @@
+---
+description: Dependency management rules
+globs: ["package.json", "pnpm-lock.yaml"]
+---
+
+# Dependency Rules
+
+## Package Manager
+
+ALWAYS use pnpm:
+```bash
+pnpm install        # Install deps
+pnpm add <pkg>      # Add dependency
+pnpm add -D <pkg>   # Add dev dependency
+pnpm remove <pkg>   # Remove dependency
+pnpm update         # Update all deps
+```
+
+NEVER use npm or yarn commands.
+
+## Core Dependencies
+
+| Package | Purpose | Version |
+|---------|---------|---------|
+| commander | CLI framework | ^12.x |
+| @clack/prompts | Interactive prompts | ^0.7.x |
+| chalk | Terminal colors | ^5.x |
+| boxen | Terminal boxes | ^8.x |
+| ora | Spinners | ^8.x |
+| simple-git | Git operations | ^3.x |
+| fs-extra | File operations | ^11.x |
+| zod | Schema validation | ^3.x |
+
+## Dev Dependencies
+
+| Package | Purpose |
+|---------|---------|
+| typescript | Type checking |
+| tsup | Bundling |
+| vitest | Testing |
+| eslint | Linting |
+| prettier | Formatting |
+| @types/* | Type definitions |
+
+## Version Pinning
+
+- Use caret (^) for minor updates
+- Pin major versions
+- Lock file must be committed
+
+## Security Audits
+
+Run regularly:
+```bash
+pnpm audit
+pnpm audit --fix  # Auto-fix if possible
+```
+
+CI runs `pnpm audit --audit-level=high`
+
+## Adding Dependencies
+
+Before adding a new dependency:
+1. Check if existing dep can do it
+2. Verify it supports ESM
+3. Check maintenance status
+4. Review bundle size impact
+5. Prefer deps with TypeScript types
+
+## Updating Dependencies
+
+1. Check for breaking changes
+2. Run full test suite
+3. Test manually
+4. Update in feature branch
+
+```bash
+pnpm update --interactive  # Select updates
+pnpm outdated              # Check outdated
+```
+
+## NEVER Do
+
+- Use `npm install`
+- Commit without lock file
+- Ignore security warnings
+- Add unnecessary deps
+- Use deps without ESM support

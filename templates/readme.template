@@ -1,0 +1,40 @@
+# Dotfiles
+
+Managed with [tuck](https://github.com/Pranav-Karra-3301/tuck) - Modern Dotfiles Manager
+
+## Quick Start
+
+```bash
+# Restore dotfiles to a new machine
+tuck init --from <this-repo-url>
+
+# Or clone and restore manually
+git clone <this-repo-url> ~/.tuck
+tuck restore --all
+```
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `tuck add <paths>` | Track new dotfiles |
+| `tuck sync` | Sync changes to repository |
+| `tuck push` | Push to remote |
+| `tuck pull` | Pull from remote |
+| `tuck restore` | Restore dotfiles to system |
+| `tuck status` | Show tracking status |
+| `tuck list` | List tracked files |
+
+## Structure
+
+```
+.tuck/
+├── files/           # Tracked dotfiles organized by category
+│   ├── shell/       # Shell configs (.zshrc, .bashrc, etc.)
+│   ├── git/         # Git configs (.gitconfig, etc.)
+│   ├── editors/     # Editor configs (nvim, vim, etc.)
+│   ├── terminal/    # Terminal configs (tmux, alacritty, etc.)
+│   └── misc/        # Other dotfiles
+├── .tuckmanifest.json  # Tracks all managed files
+└── .tuckrc.json        # Tuck configuration
+```
