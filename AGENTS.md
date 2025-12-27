@@ -22,7 +22,7 @@
 | Runtime | Node.js 18+ | ESM modules only |
 | Language | TypeScript 5.x | Strict mode enabled |
 | Package Manager | pnpm 9+ | Use `pnpm` not `npm` |
-| CLI Framework | Commander.js | v12+ |
+| CLI Framework | Commander.js | v11+ |
 | Prompts | @clack/prompts | For interactive UI |
 | Styling | chalk, boxen, ora | Terminal colors/boxes/spinners |
 | Git | simple-git | Async git operations |
@@ -39,17 +39,20 @@
 tuck/
 ├── src/
 │   ├── commands/        # CLI command implementations
-│   │   ├── init.ts      # tuck init
-│   │   ├── add.ts       # tuck add <path>
-│   │   ├── remove.ts    # tuck remove <path>
-│   │   ├── sync.ts      # tuck sync
-│   │   ├── push.ts      # tuck push
-│   │   ├── pull.ts      # tuck pull
-│   │   ├── restore.ts   # tuck restore
-│   │   ├── status.ts    # tuck status
-│   │   ├── list.ts      # tuck list
-│   │   ├── diff.ts      # tuck diff
-│   │   └── config.ts    # tuck config
+│   │   ├── init.ts      # tuck init - Initialize tuck
+│   │   ├── add.ts       # tuck add <path> - Track a file
+│   │   ├── remove.ts    # tuck remove <path> - Untrack a file
+│   │   ├── sync.ts      # tuck sync - Sync changes
+│   │   ├── push.ts      # tuck push - Push to remote
+│   │   ├── pull.ts      # tuck pull - Pull from remote
+│   │   ├── restore.ts   # tuck restore - Restore from backup
+│   │   ├── status.ts    # tuck status - Show status
+│   │   ├── list.ts      # tuck list - List tracked files
+│   │   ├── diff.ts      # tuck diff - Show differences
+│   │   ├── config.ts    # tuck config - Manage configuration
+│   │   ├── apply.ts     # tuck apply - Apply dotfiles from repo
+│   │   ├── undo.ts      # tuck undo - Undo/restore snapshots
+│   │   └── scan.ts      # tuck scan - Detect dotfiles on system
 │   ├── lib/             # Core modules
 │   │   ├── paths.ts     # Path utilities
 │   │   ├── config.ts    # Config management
@@ -57,7 +60,11 @@ tuck/
 │   │   ├── git.ts       # Git wrapper
 │   │   ├── files.ts     # File operations
 │   │   ├── backup.ts    # Backup system
-│   │   └── hooks.ts     # Lifecycle hooks
+│   │   ├── hooks.ts     # Lifecycle hooks
+│   │   ├── github.ts    # GitHub CLI integration
+│   │   ├── timemachine.ts # Snapshot/time-machine backups
+│   │   ├── merge.ts     # Smart merging for shell files
+│   │   └── detect.ts    # Dotfile detection
 │   ├── ui/              # UI components
 │   │   ├── banner.ts    # ASCII art
 │   │   ├── logger.ts    # Styled logs
@@ -65,6 +72,8 @@ tuck/
 │   │   ├── spinner.ts   # Loading spinners
 │   │   └── table.ts     # Table output
 │   ├── schemas/         # Zod schemas
+│   │   ├── config.schema.ts   # Configuration schema
+│   │   └── manifest.schema.ts # Manifest schema
 │   ├── constants.ts     # App constants
 │   ├── types.ts         # TypeScript types
 │   ├── errors.ts        # Custom errors
@@ -447,6 +456,7 @@ import { prompts } from '../ui';
 ```typescript
 // Available error classes
 import {
+  TuckError,                // Base error class (extend for custom)
   NotInitializedError,      // Tuck directory not set up
   AlreadyInitializedError,  // Already initialized
   FileNotFoundError,        // File doesn't exist
@@ -456,12 +466,16 @@ import {
   ConfigError,              // Configuration error
   ManifestError,            // Manifest corruption/issue
   PermissionError,          // Can't read/write file
+  GitHubCliError,           // GitHub CLI not installed/auth issues
+  BackupError,              // Backup/snapshot operation failed
 } from '../errors.js';
 
 // Usage
 throw new FileNotFoundError(path);
 throw new PermissionError(path, 'write');
 throw new GitError('Failed to commit', 'git commit');
+throw new GitHubCliError('Not authenticated');
+throw new BackupError('Failed to create snapshot');
 ```
 
 ---
