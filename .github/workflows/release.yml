@@ -203,3 +203,120 @@ jobs:
           files: ${{ matrix.artifact }}
           tag_name: ${{ github.ref_name }}
         continue-on-error: true
+
+  update-homebrew:
+    name: Update Homebrew Tap
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !inputs.dry_run
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get latest version
+        id: version
+        run: |
+          # Get the latest tag (semantic-release should have created it)
+          git fetch --tags
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LATEST_TAG" ]; then
+            echo "No tags found, skipping homebrew update"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          VERSION="${LATEST_TAG#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "skip=false" >> $GITHUB_OUTPUT
+          echo "Latest version: $VERSION"
+
+      - name: Download npm tarball and compute SHA256
+        if: steps.version.outputs.skip != 'true'
+        id: sha
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          # Wait a bit for npm to propagate
+          sleep 30
+          # Download the tarball from npm
+          curl -sL "https://registry.npmjs.org/tuck/-/tuck-${VERSION}.tgz" -o tuck.tgz
+          # Compute SHA256
+          SHA256=$(sha256sum tuck.tgz | awk '{print $1}')
+          echo "sha256=$SHA256" >> $GITHUB_OUTPUT
+          echo "SHA256: $SHA256"
+
+      - name: Clone Homebrew tap
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          git clone https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/Pranav-Karra-3301/homebrew-tuck.git homebrew-tap
+
+      - name: Update formula
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SHA256="${{ steps.sha.outputs.sha256 }}"
+
+          cd homebrew-tap
+
+          # Update the formula file
+          cat > Formula/tuck.rb << 'FORMULA_EOF'
+          # Homebrew Formula for tuck
+          #
+          # This formula is automatically updated by the tuck release workflow.
+          # Manual updates should not be necessary.
+          #
+          # To install:
+          #   brew tap pranav-karra-3301/tuck
+          #   brew install tuck
+
+          class Tuck < Formula
+            desc "Modern, beautiful dotfiles manager CLI"
+            homepage "https://github.com/Pranav-Karra-3301/tuck"
+            url "https://registry.npmjs.org/tuck/-/tuck-VERSION_PLACEHOLDER.tgz"
+            sha256 "SHA256_PLACEHOLDER"
+            license "MIT"
+
+            depends_on "node@20"
+
+            def install
+              system "npm", "install", *std_npm_args
+              bin.install_symlink Dir["#{libexec}/bin/*"]
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/tuck --version")
+            end
+
+            def caveats
+              <<~EOS
+                tuck is a modern dotfiles manager. Get started with:
+
+                  tuck init      # Initialize tuck in your home directory
+                  tuck add       # Add files to track
+                  tuck status    # Check status of tracked files
+                  tuck sync      # Sync changes with your repository
+
+                For more information, visit: https://github.com/Pranav-Karra-3301/tuck
+              EOS
+            end
+          end
+          FORMULA_EOF
+
+          # Replace placeholders
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" Formula/tuck.rb
+          sed -i "s/SHA256_PLACEHOLDER/${SHA256}/g" Formula/tuck.rb
+
+          echo "Updated formula:"
+          cat Formula/tuck.rb
+
+      - name: Commit and push
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/tuck.rb
+          git commit -m "Update tuck to ${{ steps.version.outputs.version }}" || echo "No changes to commit"
+          git push
