@@ -1,5 +1,6 @@
 import { defineConfig } from 'tsup';
 
+// Build configuration for tuck CLI
 export default defineConfig({
   entry: ['src/index.ts'],
   format: ['esm'],
