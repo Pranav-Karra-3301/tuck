@@ -1,0 +1,849 @@
+# tuck — Complete Reference
+
+> A modern, beautiful dotfiles manager CLI built with TypeScript
+
+Version: 1.2.1
+Package: @prnv/tuck
+License: MIT
+Platforms: macOS, Linux
+Runtime: Node.js 18+
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Installation](#installation)
+3. [Commands Reference](#commands-reference)
+4. [Configuration](#configuration)
+5. [File Organization](#file-organization)
+6. [Security](#security)
+7. [Architecture](#architecture)
+8. [Comparison with Alternatives](#comparison-with-alternatives)
+9. [Usage Patterns](#usage-patterns)
+
+---
+
+## Overview
+
+tuck is a command-line tool for managing dotfiles across machines. It's a specialized git repository manager for configuration files that abstracts git complexity while leveraging its power.
+
+### Core Philosophy
+
+- **Beautiful by default** — Every interaction feels polished with colors, icons, spinners, and interactive prompts
+- **Safe above all else** — Never lose data, always confirm destructive actions, create automatic backups
+- **Git-native** — Full git power underneath with simple abstractions (sync, push, pull)
+- **Zero-config to start** — Works immediately after `tuck init`, deeply customizable when needed
+
+### What tuck IS
+
+- A CLI tool for managing dotfiles across machines
+- A git repository manager specialized for configuration files
+- A cross-platform tool (macOS, Linux)
+- A beautiful, modern terminal experience
+
+### What tuck is NOT
+
+- A general-purpose backup tool
+- A secrets manager (never store secrets in dotfiles)
+- A system configuration manager
+- A replacement for ansible/puppet/chef
+
+---
+
+## Installation
+
+```bash
+# npm
+npm install -g @prnv/tuck
+
+# pnpm
+pnpm add -g @prnv/tuck
+
+# yarn
+yarn global add @prnv/tuck
+```
+
+### Requirements
+
+- Node.js 18 or higher
+- git installed and configured
+- Optional: GitHub CLI (gh) for GitHub integration
+
+---
+
+## Commands Reference
+
+### init — Initialize Repository
+
+Initialize a tuck repository with interactive setup.
+
+```bash
+tuck init [options]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-d, --dir <path>` | Custom repository path (default: ~/.tuck) |
+| `-r, --remote <url>` | Git remote URL |
+| `--bare` | Minimal setup without prompts |
+| `--from <url>` | Clone from existing dotfiles repo |
+
+**Features:**
+- Interactive setup with GitHub auto-detection
+- Can import existing dotfiles repos
+- Auto-creates GitHub repo with gh CLI (if authenticated)
+- Categorizes dotfiles automatically
+- Creates .gitignore and README templates
+
+**Examples:**
+```bash
+tuck init                                    # Interactive setup
+tuck init --from git@github.com:user/dots    # Clone existing
+tuck init -d ~/my-dotfiles                   # Custom location
+tuck init --bare                             # Minimal setup
+```
+
+---
+
+### add — Track Dotfiles
+
+Track new dotfiles in the repository.
+
+```bash
+tuck add <paths...> [options]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-c, --category <name>` | File category (shell/git/editors/terminal/ssh/misc) |
+| `-n, --name <name>` | Custom name for the file |
+| `--symlink` | Use symlink instead of copy |
+| `--encrypt` | Encrypt file (requires GPG setup) |
+| `--template` | Treat as template file |
+
+**Features:**
+- Auto-detects file categories based on patterns
+- Security: Blocks SSH private keys, warns about sensitive files
+- Interactive category confirmation
+- Stores files in `~/.tuck/files/<category>/`
+- Updates manifest with checksums and metadata
+
+**Category Detection:**
+| Category | Patterns |
+|----------|----------|
+| shell | .zshrc, .bashrc, .profile, .zprofile |
+| git | .gitconfig, .gitignore_global |
+| editors | .vimrc, nvim/*, .config/Code/* |
+| terminal | .tmux.conf, alacritty/*, starship.toml |
+| ssh | .ssh/config |
+| misc | Everything else |
+
+**Examples:**
+```bash
+tuck add ~/.zshrc                           # Auto-categorize
+tuck add ~/.config/nvim -c editors          # Explicit category
+tuck add ~/.bashrc --symlink                # Use symlink
+tuck add ~/scripts --name my-scripts        # Custom name
+```
+
+---
+
+### remove — Stop Tracking
+
+Stop tracking dotfiles.
+
+```bash
+tuck remove [paths...] [options]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--delete` | Also delete from repository |
+| `--keep-original` | Keep the original file on system |
+
+**Examples:**
+```bash
+tuck remove                                 # Interactive selection
+tuck remove ~/.zshrc                        # Specific file
+tuck remove ~/.config/nvim --delete         # Remove from repo too
+```
+
+---
+
+### sync — Commit and Push
+
+Commit changes and push to remote.
+
+```bash
+tuck sync [message] [options]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-m, --message <msg>` | Commit message |
+| `-a, --all` | Include all changes |
+| `--no-commit` | Skip commit step |
+| `--no-push` | Skip push step |
+| `--amend` | Amend previous commit |
+| `--no-hooks` | Skip pre/post-sync hooks |
+| `--trust-hooks` | Run hooks without confirmation |
+
+**Features:**
+- Detects changes by comparing checksums
+- Auto-generates descriptive commit messages
+- Runs pre/post-sync hooks
+- Auto-pushes to remote by default
+
+**Examples:**
+```bash
+tuck sync                                   # Auto-message, auto-push
+tuck sync "Update zsh aliases"              # Custom message
+tuck sync --no-push                         # Commit only
+tuck sync -a -m "Full update"               # All changes
+```
+
+---
+
+### push — Push to Remote
+
+Push commits to remote repository.
+
+```bash
+tuck push [options]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-f, --force` | Force push |
+| `--set-upstream` | Set upstream tracking |
+
+**Examples:**
+```bash
+tuck push                                   # Normal push
+tuck push --set-upstream                    # Set tracking
+```
+
+---
+
+### pull — Pull from Remote
+
+Pull changes from remote repository.
+
+```bash
+tuck pull [options]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--rebase` | Rebase instead of merge |
+| `--restore` | Run restore after pull |
+
+**Examples:**
+```bash
+tuck pull                                   # Normal pull
+tuck pull --rebase                          # Rebase
+tuck pull --restore                         # Pull and restore files
+```
+
+---
+
+### restore — Restore to System
+
+Restore dotfiles from repository to system.
+
+```bash
+tuck restore [paths...] [options]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-a, --all` | Restore all tracked files |
+| `--symlink` | Create symlinks instead of copies |
+| `--backup` | Create backup before restore (default) |
+| `--no-backup` | Skip backup |
+| `--dry-run` | Preview without making changes |
+| `--no-hooks` | Skip pre/post-restore hooks |
+| `--trust-hooks` | Run hooks without confirmation |
+
+**Features:**
+- Creates backups of existing files before restore
+- Can use symlinks instead of copies
+- Fixes permissions for SSH/GPG files (700/600)
+- Interactive file selection
+
+**Examples:**
+```bash
+tuck restore --all                          # Restore everything
+tuck restore ~/.zshrc                       # Specific file
+tuck restore --dry-run                      # Preview
+tuck restore --symlink                      # Use symlinks
+```
+
+---
+
+### status — Show Status
+
+Display tracking and repository status.
+
+```bash
+tuck status [options]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--short` | Compact output |
+| `--json` | JSON output |
+
+**Output includes:**
+- Repository path and branch
+- Remote sync status (up-to-date/ahead/behind/diverged)
+- Tracked file count by category
+- Detected changes (modified/deleted)
+- Git changes (staged/modified/untracked)
+- Next-step suggestions
+
+**Examples:**
+```bash
+tuck status                                 # Full status
+tuck status --short                         # Compact
+tuck status --json                          # For scripts
+```
+
+---
+
+### list — List Tracked Files
+
+List all tracked dotfiles.
+
+```bash
+tuck list [options]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-c, --category <name>` | Filter by category |
+| `--paths` | Show only file paths |
+| `--json` | JSON output |
+
+**Examples:**
+```bash
+tuck list                                   # All files, grouped
+tuck list -c shell                          # Shell files only
+tuck list --paths                           # Paths only
+tuck list --json                            # For scripts
+```
+
+---
+
+### diff — Show Differences
+
+Show differences between system and repository.
+
+```bash
+tuck diff [paths...] [options]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--staged` | Show git staged diff |
+| `--stat` | Show summary only |
+
+**Examples:**
+```bash
+tuck diff                                   # All changes
+tuck diff ~/.zshrc                          # Specific file
+tuck diff --stat                            # Summary only
+```
+
+---
+
+### config — Manage Configuration
+
+Manage tuck configuration.
+
+```bash
+tuck config <subcommand> [args]
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `get <key>` | Get config value (dot-notation) |
+| `set <key> <value>` | Set config value |
+| `list` | Show all configuration |
+| `edit` | Open in $EDITOR |
+| `reset` | Reset to defaults |
+
+**Examples:**
+```bash
+tuck config list                            # Show all
+tuck config get repository.autoCommit       # Get value
+tuck config set ui.colors false             # Set value
+tuck config edit                            # Open in editor
+tuck config reset                           # Reset all
+```
+
+---
+
+### scan — Detect Dotfiles
+
+Scan system for common dotfiles.
+
+```bash
+tuck scan [options]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-a, --all` | Show all found files |
+| `-c, --category <name>` | Filter by category |
+| `-q, --quick` | Quick mode (fewer locations) |
+| `--json` | JSON output |
+
+**Detection Categories (11):**
+| Category | Examples |
+|----------|----------|
+| shell | .zshrc, .bashrc, .profile |
+| git | .gitconfig, .gitignore_global |
+| editors | .vimrc, nvim, vscode |
+| terminal | tmux, alacritty, kitty |
+| prompt | starship, p10k |
+| cli | .npmrc, .yarnrc, cargo |
+| languages | .pythonrc, .gemrc |
+| ssh | .ssh/config |
+| xdg | .config/* |
+| desktop | .xinitrc |
+| scripts | ~/bin, ~/.local/bin |
+
+**Examples:**
+```bash
+tuck scan                                   # Interactive scan
+tuck scan -c editors                        # Editors only
+tuck scan --quick                           # Fast overview
+tuck scan --json                            # For scripts
+```
+
+---
+
+### apply — Apply from Repository
+
+Apply dotfiles from another repository.
+
+```bash
+tuck apply <source> [options]
+```
+
+**Source formats:**
+- `username` — Searches GitHub for dotfiles repos
+- `user/repo` — Specific GitHub repo
+- `git@github.com:user/repo.git` — Full URL
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-m, --merge` | Merge with existing files |
+| `-r, --replace` | Replace existing files |
+| `--dry-run` | Preview without changes |
+| `-f, --force` | Skip confirmations |
+| `-y, --yes` | Accept defaults |
+
+**Features:**
+- Auto-discovers GitHub dotfiles repos via gh CLI
+- Smart merge for shell files (preserves local blocks)
+- Creates Time Machine backup before applying
+- Fixes SSH/GPG permissions
+
+**Examples:**
+```bash
+tuck apply username                         # Discover and apply
+tuck apply user/dotfiles                    # Specific repo
+tuck apply --merge                          # Merge instead of replace
+tuck apply --dry-run                        # Preview
+```
+
+---
+
+### undo — Restore from Backup
+
+Restore from Time Machine snapshots.
+
+```bash
+tuck undo [snapshot-id] [options]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-l, --list` | List all snapshots |
+| `--latest` | Use most recent snapshot |
+| `--file <path>` | Restore specific file |
+| `--delete` | Delete snapshot |
+| `-f, --force` | Skip confirmations |
+| `--dry-run` | Preview without changes |
+
+**Examples:**
+```bash
+tuck undo --list                            # List snapshots
+tuck undo --latest                          # Restore latest
+tuck undo abc123                            # Specific snapshot
+tuck undo --file ~/.zshrc                   # Single file
+tuck undo abc123 --delete                   # Delete snapshot
+```
+
+---
+
+## Configuration
+
+Configuration is stored in `~/.tuck/.tuckrc.json`.
+
+### Full Schema
+
+```json
+{
+  "repository": {
+    "path": "~/.tuck",
+    "defaultBranch": "main",
+    "autoCommit": true,
+    "autoPush": false
+  },
+  "files": {
+    "strategy": "copy",
+    "backupOnRestore": true,
+    "backupDir": "~/.tuck-backups"
+  },
+  "ui": {
+    "colors": true,
+    "emoji": true,
+    "verbose": false
+  },
+  "hooks": {
+    "preSync": null,
+    "postSync": null,
+    "preRestore": null,
+    "postRestore": null
+  },
+  "templates": {
+    "enabled": false,
+    "variables": {}
+  },
+  "encryption": {
+    "enabled": false,
+    "gpgKey": null,
+    "files": []
+  }
+}
+```
+
+### Configuration Options
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `repository.path` | string | ~/.tuck | Repository location |
+| `repository.defaultBranch` | string | main | Default git branch |
+| `repository.autoCommit` | boolean | true | Auto-commit on sync |
+| `repository.autoPush` | boolean | false | Auto-push on sync |
+| `files.strategy` | string | copy | File strategy: copy or symlink |
+| `files.backupOnRestore` | boolean | true | Backup before restore |
+| `files.backupDir` | string | ~/.tuck-backups | Backup location |
+| `ui.colors` | boolean | true | Enable colored output |
+| `ui.emoji` | boolean | true | Enable emoji in output |
+| `ui.verbose` | boolean | false | Verbose logging |
+| `hooks.preSync` | string | null | Pre-sync hook script |
+| `hooks.postSync` | string | null | Post-sync hook script |
+| `hooks.preRestore` | string | null | Pre-restore hook script |
+| `hooks.postRestore` | string | null | Post-restore hook script |
+
+---
+
+## File Organization
+
+```
+~/.tuck/
+├── files/                       # Categorized dotfiles
+│   ├── shell/      ($)         # .zshrc, .bashrc, .profile
+│   ├── git/        (*)         # .gitconfig, .gitignore_global
+│   ├── editors/    (>)         # nvim, vim, vscode configs
+│   ├── terminal/   (#)         # tmux, alacritty, starship
+│   ├── ssh/        (!)         # .ssh/config
+│   └── misc/       (-)         # Everything else
+├── .tuckmanifest.json          # Tracked files manifest
+├── .tuckrc.json                # Configuration
+├── .gitignore                  # Git ignore rules
+└── README.md                   # Auto-generated documentation
+```
+
+### Manifest Structure
+
+```json
+{
+  "version": "1.0",
+  "createdAt": "2024-01-15T10:00:00Z",
+  "updatedAt": "2024-01-15T12:00:00Z",
+  "machine": "hostname",
+  "files": [
+    {
+      "id": "uuid",
+      "source": "~/.zshrc",
+      "destination": "files/shell/zshrc",
+      "category": "shell",
+      "checksum": "sha256:...",
+      "addedAt": "2024-01-15T10:00:00Z",
+      "modifiedAt": "2024-01-15T12:00:00Z",
+      "isDirectory": false,
+      "isSymlink": false
+    }
+  ]
+}
+```
+
+---
+
+## Security
+
+### Blocked Files
+
+tuck automatically blocks tracking of sensitive files:
+- SSH private keys: `id_rsa`, `id_ed25519`, `*.pem`, `*.key`
+- Any file matching private key patterns
+
+### Warned Files
+
+tuck warns when tracking potentially sensitive files:
+- `.env`, `.env.*`
+- `credentials.json`, `credentials`
+- `.npmrc` (may contain tokens)
+- `.netrc`
+- `.aws/credentials`
+- `.docker/config.json`
+- `*_token`, `*_secret`
+
+### Best Practices
+
+1. **Use private repositories** for dotfiles with any sensitive data
+2. **Never store plaintext secrets** — use environment variables
+3. **Review files before adding** — check for embedded tokens
+4. **Use .gitignore** — exclude machine-specific sensitive files
+
+### Permission Handling
+
+tuck automatically fixes permissions on restore:
+- SSH files: 700 for directories, 600 for files
+- GPG files: 700 for directories, 600 for files
+
+---
+
+## Architecture
+
+### Technology Stack
+
+| Component | Technology |
+|-----------|------------|
+| Runtime | Node.js 18+ (ESM) |
+| Language | TypeScript 5.x (strict) |
+| CLI Framework | Commander.js |
+| Prompts | @clack/prompts |
+| Styling | chalk, boxen, ora |
+| Git | simple-git |
+| Files | fs-extra |
+| Validation | Zod |
+| Testing | Vitest |
+| Build | tsup |
+
+### Core Modules
+
+| Module | Purpose |
+|--------|---------|
+| `paths.ts` | Path expansion, validation, categorization |
+| `config.ts` | Configuration loading and saving |
+| `manifest.ts` | File tracking manifest operations |
+| `git.ts` | Git operations wrapper |
+| `files.ts` | File system operations |
+| `backup.ts` | Backup functionality |
+| `hooks.ts` | Pre/post hook execution |
+| `detect.ts` | Dotfile detection (100+ patterns) |
+| `github.ts` | GitHub CLI integration |
+| `timemachine.ts` | Backup snapshots |
+| `merge.ts` | Smart config merging |
+
+### UI Modules
+
+| Module | Purpose |
+|--------|---------|
+| `banner.ts` | ASCII art and boxes |
+| `logger.ts` | Styled logging |
+| `prompts.ts` | Interactive prompts |
+| `spinner.ts` | Loading spinners |
+| `table.ts` | Table formatting |
+
+---
+
+## Comparison with Alternatives
+
+### vs chezmoi
+
+| Feature | tuck | chezmoi |
+|---------|------|---------|
+| Language | TypeScript | Go |
+| Learning curve | Low | Medium |
+| Templates | Basic | Advanced |
+| Encryption | GPG (planned) | age, GPG |
+| UI | Beautiful, interactive | Functional |
+| GitHub integration | Native | None |
+| Smart merge | Yes | No |
+
+### vs yadm
+
+| Feature | tuck | yadm |
+|---------|------|------|
+| Implementation | Node.js | Bash |
+| Git abstraction | Yes | Thin wrapper |
+| Categorization | Automatic | Manual |
+| Templates | Basic | Jinja2-like |
+| Encryption | GPG (planned) | GPG |
+| Multi-machine | Via apply | Via alternates |
+
+### vs dotbot
+
+| Feature | tuck | dotbot |
+|---------|------|--------|
+| Language | TypeScript | Python |
+| Configuration | Interactive | YAML |
+| Git management | Built-in | External |
+| Backup | Automatic | Manual |
+| Detection | 100+ patterns | None |
+
+### vs stow
+
+| Feature | tuck | stow |
+|---------|------|------|
+| Purpose | Dotfiles | Symlink farm |
+| Git | Integrated | None |
+| UI | Interactive | None |
+| Categories | Automatic | Manual |
+| Backup | Automatic | None |
+
+### Why Choose tuck?
+
+1. **Best UX** — Beautiful terminal interface with interactive prompts
+2. **Safety-first** — Automatic backups, confirmation prompts, Time Machine
+3. **Easiest setup** — `tuck apply username` on new machines
+4. **Smart detection** — Finds 100+ common dotfiles automatically
+5. **GitHub native** — Auto-create repos, discover dotfiles
+6. **Modern stack** — TypeScript, ESM, Zod validation
+
+---
+
+## Usage Patterns
+
+### Quick Start
+
+```bash
+# Install
+npm install -g @prnv/tuck
+
+# Initialize with GitHub
+tuck init
+
+# Detect and add dotfiles
+tuck scan
+tuck add ~/.zshrc ~/.vimrc ~/.gitconfig
+
+# Sync to remote
+tuck sync
+```
+
+### Daily Workflow
+
+```bash
+# Edit dotfiles normally
+vim ~/.zshrc
+
+# Check what changed
+tuck diff
+tuck status
+
+# Commit and push
+tuck sync "Add new aliases"
+```
+
+### New Machine Setup
+
+```bash
+# Option 1: Apply from GitHub username
+tuck apply myusername
+
+# Option 2: Clone and restore
+tuck init --from git@github.com:user/dotfiles.git
+tuck restore --all
+
+# Option 3: Merge with existing
+tuck apply myusername --merge
+```
+
+### Automation / CI
+
+```bash
+# Non-interactive mode
+tuck add ~/.zshrc --category shell
+tuck sync -m "Auto-update" --trust-hooks
+tuck push
+
+# Scripting
+tuck status --json | jq '.tracked'
+tuck list --paths
+```
+
+### Recovery
+
+```bash
+# List backups
+tuck undo --list
+
+# Restore from latest snapshot
+tuck undo --latest
+
+# Restore specific file
+tuck undo --file ~/.zshrc
+
+# Preview restore
+tuck undo --latest --dry-run
+```
+
+### Multi-Machine
+
+```bash
+# Machine A: Make changes
+tuck sync "Update for work machine"
+
+# Machine B: Pull changes
+tuck pull
+tuck restore --all
+
+# Or selectively restore
+tuck restore ~/.zshrc ~/.gitconfig
+```
+
+---
+
+## Links
+
+- **npm:** https://www.npmjs.com/package/@prnv/tuck
+- **GitHub:** https://github.com/Pranav-Karra-3301/tuck
+- **Issues:** https://github.com/Pranav-Karra-3301/tuck/issues
+- **Changelog:** https://github.com/Pranav-Karra-3301/tuck/blob/main/CHANGELOG.md
+
+---
+
+## License
+
+MIT License — See LICENSE file for details.

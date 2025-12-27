@@ -9,10 +9,18 @@ globs: ["src/**/*"]
 
 ```
 src/
-├── commands/     # CLI command implementations
-├── lib/          # Core library modules
+├── commands/     # CLI command implementations (14 commands)
+│   ├── init, add, remove, sync, push, pull
+│   ├── restore, status, list, diff, config
+│   └── apply, undo, scan
+├── lib/          # Core library modules (11 modules)
+│   ├── paths, config, manifest, git, files
+│   ├── backup, hooks, github, timemachine
+│   └── merge, detect
 ├── ui/           # Terminal UI components
+│   └── banner, logger, prompts, spinner, table
 ├── schemas/      # Zod validation schemas
+│   └── config.schema, manifest.schema
 ├── constants.ts  # App constants
 ├── types.ts      # TypeScript types
 ├── errors.ts     # Custom error classes

@@ -1,7 +1,6 @@
 import { Command } from 'commander';
 import { basename } from 'path';
-import chalk from 'chalk';
-import { prompts, logger, withSpinner } from '../ui/index.js';
+import { prompts, logger } from '../ui/index.js';
 import {
   getTuckDir,
   expandPath,
@@ -11,19 +10,16 @@ import {
   detectCategory,
   sanitizeFilename,
   getDestinationPath,
-  getRelativeDestination,
-  generateFileId,
 } from '../lib/paths.js';
-import { loadConfig } from '../lib/config.js';
 import {
-  addFileToManifest,
   isFileTracked,
   loadManifest,
 } from '../lib/manifest.js';
-import { copyFileOrDir, getFileChecksum, getDirectoryFileCount, getFileInfo } from '../lib/files.js';
+import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
 import { NotInitializedError, FileNotFoundError, FileAlreadyTrackedError } from '../errors.js';
 import { CATEGORIES } from '../constants.js';
 import type { AddOptions } from '../types.js';
+import { getDirectoryFileCount } from '../lib/files.js';
 
 // SSH private key patterns - NEVER allow these
 const PRIVATE_KEY_PATTERNS = [
@@ -168,54 +164,18 @@ const addFiles = async (
   tuckDir: string,
   options: AddOptions
 ): Promise<void> => {
-  const config = await loadConfig(tuckDir);
-  const strategy = options.symlink ? 'symlink' : (config.files.strategy || 'copy');
+  // Convert FileToAdd to FileToTrack
+  const filesToTrack: FileToTrack[] = filesToAdd.map(f => ({
+    path: f.source,
+    category: f.category,
+  }));
 
-  for (const file of filesToAdd) {
-    const expandedSource = expandPath(file.source);
-
-    // Copy file to repository
-    await withSpinner(`Copying ${file.source}...`, async () => {
-      await copyFileOrDir(expandedSource, file.destination, { overwrite: true });
-    });
-
-    // Get file info
-    const checksum = await getFileChecksum(file.destination);
-    const info = await getFileInfo(expandedSource);
-    const now = new Date().toISOString();
-
-    // Generate unique ID
-    const id = generateFileId(file.source);
-
-    // Add to manifest
-    await addFileToManifest(tuckDir, id, {
-      source: file.source,
-      destination: getRelativeDestination(file.category, file.filename),
-      category: file.category,
-      strategy,
-      encrypted: options.encrypt || false,
-      template: options.template || false,
-      permissions: info.permissions,
-      added: now,
-      modified: now,
-      checksum,
-    });
-
-    // Log result
-    const categoryInfo = CATEGORIES[file.category];
-    const icon = categoryInfo?.icon || '-';
-    logger.success(`Added ${file.source}`);
-    logger.dim(`  ${icon} Category: ${file.category}`);
-    if (file.isDir) {
-      logger.dim(`  [dir] Directory with ${file.fileCount} files`);
-    }
-
-    // Warn about sensitive files
-    if (file.sensitive) {
-      console.log(chalk.yellow(`  [!] Warning: This file may contain sensitive data`));
-      console.log(chalk.dim(`      Make sure your repository is private!`));
-    }
-  }
+  // Use the shared tracking utility
+  await trackFilesWithProgress(filesToTrack, tuckDir, {
+    showCategory: true,
+    strategy: options.symlink ? 'symlink' : undefined,
+    actionVerb: 'Tracking',
+  });
 };
 
 const runInteractiveAdd = async (tuckDir: string): Promise<void> => {
@@ -329,9 +289,19 @@ const runAdd = async (paths: string[], options: AddOptions): Promise<void> => {
   // Add files
   await addFiles(filesToAdd, tuckDir, options);
 
-  logger.blank();
-  logger.success(`Added ${filesToAdd.length} ${filesToAdd.length === 1 ? 'item' : 'items'}`);
-  logger.info("Run 'tuck sync' to commit changes");
+  // Ask if user wants to sync now
+  console.log();
+  const shouldSync = await prompts.confirm('Would you like to sync these changes now?', true);
+
+  if (shouldSync) {
+    console.log();
+    // Dynamically import sync to avoid circular dependencies
+    const { runSync } = await import('./sync.js');
+    await runSync({});
+  } else {
+    console.log();
+    logger.info("Run 'tuck sync' when you're ready to commit changes");
+  }
 };
 
 export const addCommand = new Command('add')
@@ -340,8 +310,9 @@ export const addCommand = new Command('add')
   .option('-c, --category <name>', 'Category to organize under')
   .option('-n, --name <name>', 'Custom name for the file in manifest')
   .option('--symlink', 'Create symlink instead of copy')
-  .option('--encrypt', 'Encrypt this file (requires GPG setup)')
-  .option('--template', 'Treat as template with variable substitution')
+  // TODO: Encryption and templating are planned for a future version
+  // .option('--encrypt', 'Encrypt this file (requires GPG setup)')
+  // .option('--template', 'Treat as template with variable substitution')
   .action(async (paths: string[], options: AddOptions) => {
     await runAdd(paths, options);
   });

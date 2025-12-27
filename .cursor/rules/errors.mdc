@@ -11,6 +11,7 @@ ALWAYS use custom errors from `src/errors.ts`:
 
 ```typescript
 import {
+  TuckError,                // Base error class
   NotInitializedError,      // Tuck not set up
   AlreadyInitializedError,  // Already initialized
   FileNotFoundError,        // File doesn't exist
@@ -20,6 +21,8 @@ import {
   ConfigError,              // Configuration issue
   ManifestError,            // Manifest corruption
   PermissionError,          // Can't read/write
+  GitHubCliError,           // GitHub CLI issues
+  BackupError,              // Backup/snapshot issues
 } from '../errors.js';
 ```
 

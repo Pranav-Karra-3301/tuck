@@ -3,18 +3,19 @@ import chalk from 'chalk';
 import { join } from 'path';
 import { prompts, logger, withSpinner } from '../ui/index.js';
 import { getTuckDir, expandPath, pathExists } from '../lib/paths.js';
-import { loadManifest, getAllTrackedFiles, updateFileInManifest } from '../lib/manifest.js';
+import { loadManifest, getAllTrackedFiles, updateFileInManifest, removeFileFromManifest } from '../lib/manifest.js';
 import { stageAll, commit, getStatus, push, hasRemote } from '../lib/git.js';
-import { copyFileOrDir, getFileChecksum } from '../lib/files.js';
+import { copyFileOrDir, getFileChecksum, deleteFileOrDir } from '../lib/files.js';
 import { runPreSyncHook, runPostSyncHook, type HookOptions } from '../lib/hooks.js';
 import { NotInitializedError } from '../errors.js';
 import type { SyncOptions, FileChange } from '../types.js';
 
 interface SyncResult {
   modified: string[];
-  added: string[];
   deleted: string[];
   commitHash?: string;
+  // Note: There is no 'added' array because adding new files is done via 'tuck add', not 'tuck sync'.
+  // The sync command only handles changes to already-tracked files.
 }
 
 const detectChanges = async (tuckDir: string): Promise<FileChange[]> => {
@@ -62,9 +63,6 @@ const detectChanges = async (tuckDir: string): Promise<FileChange[]> => {
 const generateCommitMessage = (result: SyncResult): string => {
   const parts: string[] = [];
 
-  if (result.added.length > 0) {
-    parts.push(`Add: ${result.added.join(', ')}`);
-  }
   if (result.modified.length > 0) {
     parts.push(`Update: ${result.modified.join(', ')}`);
   }
@@ -76,8 +74,7 @@ const generateCommitMessage = (result: SyncResult): string => {
     return 'Sync dotfiles';
   }
 
-  const totalCount =
-    result.added.length + result.modified.length + result.deleted.length;
+  const totalCount = result.modified.length + result.deleted.length;
 
   if (parts.length === 1 && totalCount <= 3) {
     return parts[0];
@@ -93,7 +90,6 @@ const syncFiles = async (
 ): Promise<SyncResult> => {
   const result: SyncResult = {
     modified: [],
-    added: [],
     deleted: [],
   };
 
@@ -129,7 +125,18 @@ const syncFiles = async (
       });
       result.modified.push(change.path.split('/').pop() || change.path);
     } else if (change.status === 'deleted') {
-      logger.warning(`Source file deleted: ${change.path}`);
+      await withSpinner(`Removing ${change.path}...`, async () => {
+        // Delete the file from the tuck repository
+        await deleteFileOrDir(destPath);
+
+        // Remove from manifest
+        const files = await getAllTrackedFiles(tuckDir);
+        const fileId = Object.entries(files).find(([, f]) => f.source === change.source)?.[0];
+
+        if (fileId) {
+          await removeFileFromManifest(tuckDir, fileId);
+        }
+      });
       result.deleted.push(change.path.split('/').pop() || change.path);
     }
   }
@@ -206,7 +213,6 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
   // Get commit message
   const autoMessage = generateCommitMessage({
     modified: changes.filter((c) => c.status === 'modified').map((c) => c.path),
-    added: [],
     deleted: changes.filter((c) => c.status === 'deleted').map((c) => c.path),
   });
 
@@ -240,7 +246,24 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
   prompts.outro('Synced successfully!');
 };
 
-const runSync = async (messageArg: string | undefined, options: SyncOptions): Promise<void> => {
+/**
+ * Run sync programmatically (exported for use by other commands)
+ */
+export const runSync = async (options: SyncOptions = {}): Promise<void> => {
+  const tuckDir = getTuckDir();
+
+  // Verify tuck is initialized
+  try {
+    await loadManifest(tuckDir);
+  } catch {
+    throw new NotInitializedError();
+  }
+
+  // Always run interactive sync when called programmatically
+  await runInteractiveSync(tuckDir, options);
+};
+
+const runSyncCommand = async (messageArg: string | undefined, options: SyncOptions): Promise<void> => {
   const tuckDir = getTuckDir();
 
   // Verify tuck is initialized
@@ -251,7 +274,7 @@ const runSync = async (messageArg: string | undefined, options: SyncOptions): Pr
   }
 
   // If no options (except --no-push), run interactive
-  if (!messageArg && !options.message && !options.all && !options.noCommit && !options.amend) {
+  if (!messageArg && !options.message && !options.noCommit) {
     await runInteractiveSync(tuckDir, options);
     return;
   }
@@ -298,12 +321,13 @@ export const syncCommand = new Command('sync')
   .description('Sync changes to repository (commits and pushes)')
   .argument('[message]', 'Commit message')
   .option('-m, --message <msg>', 'Commit message')
-  .option('-a, --all', 'Sync all tracked files, not just changed')
+  // TODO: --all and --amend are planned for a future version
+  // .option('-a, --all', 'Sync all tracked files, not just changed')
+  // .option('--amend', 'Amend previous commit')
   .option('--no-commit', "Stage changes but don't commit")
   .option('--no-push', "Commit but don't push to remote")
-  .option('--amend', 'Amend previous commit')
   .option('--no-hooks', 'Skip execution of pre/post sync hooks')
   .option('--trust-hooks', 'Trust and run hooks without confirmation (use with caution)')
   .action(async (messageArg: string | undefined, options: SyncOptions) => {
-    await runSync(messageArg, options);
+    await runSyncCommand(messageArg, options);
   });

@@ -36,6 +36,7 @@ import { AlreadyInitializedError } from '../errors.js';
 import { CATEGORIES } from '../constants.js';
 import { defaultConfig } from '../schemas/config.schema.js';
 import type { InitOptions } from '../types.js';
+import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
 
 const GITIGNORE_TEMPLATE = `# OS generated files
 .DS_Store
@@ -55,6 +56,27 @@ Thumbs.db
 # *.secret
 # .env.local
 `;
+
+/**
+ * Track selected files with beautiful progress display
+ */
+const trackFilesWithProgressInit = async (
+  selectedPaths: string[],
+  tuckDir: string
+): Promise<number> => {
+  // Convert paths to FileToTrack
+  const filesToTrack: FileToTrack[] = selectedPaths.map(path => ({
+    path,
+  }));
+
+  // Use the shared tracking utility
+  const result = await trackFilesWithProgress(filesToTrack, tuckDir, {
+    showCategory: true,
+    actionVerb: 'Tracking',
+  });
+
+  return result.succeeded;
+};
 
 const README_TEMPLATE = (machine?: string) => `# Dotfiles
 
@@ -856,7 +878,10 @@ const runInteractiveInit = async (): Promise<void> => {
     const shouldRestore = await prompts.confirm('Would you like to restore dotfiles now?', true);
 
     if (shouldRestore) {
-      prompts.log.info('Run `tuck restore --all` to restore all dotfiles');
+      console.log();
+      // Dynamically import and run restore
+      const { runRestore } = await import('./restore.js');
+      await runRestore({ all: true });
     }
   } else {
     await initFromScratch(tuckDir, {});
@@ -897,13 +922,12 @@ const runInteractiveInit = async (): Promise<void> => {
       const trackNow = await prompts.confirm('Would you like to track some of these now?', true);
 
       if (trackNow) {
-        // Show multiselect with categories as groups
-        const options = nonSensitiveFiles
-          .slice(0, 25) // Limit to avoid overwhelming
-          .map((f) => ({
-            value: f.path,
-            label: `${collapsePath(f.path)} (${f.category})`,
-          }));
+        // Show multiselect with categories as groups - NO arbitrary limit!
+        const options = nonSensitiveFiles.map((f) => ({
+          value: f.path,
+          label: `${collapsePath(f.path)}`,
+          hint: f.category,
+        }));
 
         const selectedFiles = await prompts.multiselect(
           'Select files to track:',
@@ -911,9 +935,22 @@ const runInteractiveInit = async (): Promise<void> => {
         );
 
         if (selectedFiles.length > 0) {
-          prompts.log.step(
-            `Run the following to track these files:\n  tuck add ${selectedFiles.join(' ')}`
-          );
+          // Track files with beautiful progress display
+          const trackedCount = await trackFilesWithProgressInit(selectedFiles, tuckDir);
+
+          if (trackedCount > 0) {
+            // Ask if user wants to sync now
+            console.log();
+            const shouldSync = await prompts.confirm('Would you like to sync these changes now?', true);
+
+            if (shouldSync) {
+              console.log();
+              const { runSync } = await import('./sync.js');
+              await runSync({});
+            }
+          } else {
+            prompts.outro('No files were tracked');
+          }
         }
       } else {
         prompts.log.info("Run 'tuck scan' later to interactively add files");

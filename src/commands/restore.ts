@@ -256,7 +256,40 @@ const runInteractiveRestore = async (tuckDir: string): Promise<void> => {
   prompts.outro(`Restored ${restoredCount} file${restoredCount > 1 ? 's' : ''}`);
 };
 
-const runRestore = async (paths: string[], options: RestoreOptions): Promise<void> => {
+/**
+ * Run restore programmatically (exported for use by other commands)
+ */
+export const runRestore = async (options: RestoreOptions): Promise<void> => {
+  const tuckDir = getTuckDir();
+
+  // Verify tuck is initialized
+  try {
+    await loadManifest(tuckDir);
+  } catch {
+    throw new NotInitializedError();
+  }
+
+  // Run interactive restore when called programmatically with --all
+  if (options.all) {
+    // Prepare files to restore
+    const files = await prepareFilesToRestore(tuckDir, undefined);
+
+    if (files.length === 0) {
+      logger.warning('No files to restore');
+      return;
+    }
+
+    // Restore files with progress
+    const restoredCount = await restoreFiles(tuckDir, files, options);
+
+    logger.blank();
+    logger.success(`Restored ${restoredCount} file${restoredCount > 1 ? 's' : ''}`);
+  } else {
+    await runInteractiveRestore(tuckDir);
+  }
+};
+
+const runRestoreCommand = async (paths: string[], options: RestoreOptions): Promise<void> => {
   const tuckDir = getTuckDir();
 
   // Verify tuck is initialized
@@ -310,5 +343,5 @@ export const restoreCommand = new Command('restore')
   .option('--no-hooks', 'Skip execution of pre/post restore hooks')
   .option('--trust-hooks', 'Trust and run hooks without confirmation (use with caution)')
   .action(async (paths: string[], options: RestoreOptions) => {
-    await runRestore(paths, options);
+    await runRestoreCommand(paths, options);
   });

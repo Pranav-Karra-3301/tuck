@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { prompts, logger, banner } from '../ui/index.js';
-import { getTuckDir } from '../lib/paths.js';
+import { getTuckDir, collapsePath } from '../lib/paths.js';
 import { loadManifest, getTrackedFileBySource } from '../lib/manifest.js';
 import {
   detectDotfiles,
@@ -9,6 +9,7 @@ import {
   DetectedFile,
 } from '../lib/detect.js';
 import { NotInitializedError } from '../errors.js';
+import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
 
 export interface ScanOptions {
   all?: boolean;
@@ -181,7 +182,8 @@ const showSummary = (selected: SelectableFile[]): void => {
   }
 
   console.log();
-  console.log(chalk.bold.green(`Selected ${selected.length} files to track:`));
+  console.log(chalk.bold.cyan(`Selected ${selected.length} files to track:`));
+  console.log(chalk.dim('─'.repeat(50)));
   console.log();
 
   const grouped = groupSelectableByCategory(selected);
@@ -191,30 +193,41 @@ const showSummary = (selected: SelectableFile[]): void => {
     console.log(chalk.bold(`${config.icon} ${config.name}`));
 
     for (const file of files) {
-      const sensitive = file.sensitive ? chalk.yellow(' [!]') : '';
-      console.log(chalk.dim(`  • ${file.path}${sensitive}`));
+      const sensitive = file.sensitive ? chalk.yellow(' ⚠') : '';
+      console.log(chalk.dim(`  • ${collapsePath(file.path)}${sensitive}`));
     }
+    console.log();
   }
-
-  console.log();
 
   // Show warnings for sensitive files
   const sensitiveFiles = selected.filter((f) => f.sensitive);
   if (sensitiveFiles.length > 0) {
-    console.log(chalk.yellow('Warning: Some selected files may contain sensitive data:'));
-    for (const file of sensitiveFiles) {
-      console.log(chalk.yellow(`  • ${file.path}`));
-    }
+    console.log(chalk.yellow('⚠ Warning: Some files may contain sensitive data'));
     console.log(chalk.dim('  Make sure your repository is private!'));
     console.log();
   }
+};
 
-  // Show command to add files
-  const paths = selected.map((f) => f.path).join(' ');
-  console.log(chalk.bold('Run this command to add the selected files:'));
-  console.log();
-  console.log(chalk.cyan(`  tuck add ${paths}`));
-  console.log();
+/**
+ * Add selected files with beautiful progress display
+ */
+const addFilesWithProgress = async (
+  selected: SelectableFile[],
+  tuckDir: string
+): Promise<number> => {
+  // Convert SelectableFile to FileToTrack
+  const filesToTrack: FileToTrack[] = selected.map(f => ({
+    path: f.path,
+    category: f.category,
+  }));
+
+  // Use the shared tracking utility
+  const result = await trackFilesWithProgress(filesToTrack, tuckDir, {
+    showCategory: true,
+    actionVerb: 'Tracking',
+  });
+
+  return result.succeeded;
 };
 
 /**
@@ -337,11 +350,11 @@ const runScan = async (options: ScanOptions): Promise<void> => {
     return;
   }
 
-  // Confirm selection
+  // Show summary of what will be tracked
   showSummary(selected);
 
   const confirmed = await prompts.confirm(
-    `Add ${selected.length} files to tuck?`,
+    `Track these ${selected.length} files?`,
     true
   );
 
@@ -350,13 +363,24 @@ const runScan = async (options: ScanOptions): Promise<void> => {
     return;
   }
 
-  // Add the files
-  const { addFilesFromPaths } = await import('./add.js');
-  const paths = selected.map((f) => f.path);
+  // Add the files with beautiful progress display
+  const addedCount = await addFilesWithProgress(selected, tuckDir);
 
-  await addFilesFromPaths(paths, {});
+  if (addedCount > 0) {
+    // Ask if user wants to sync now
+    console.log();
+    const shouldSync = await prompts.confirm('Would you like to sync these changes now?', true);
 
-  prompts.outro(`Added ${selected.length} files to tuck!`);
+    if (shouldSync) {
+      console.log();
+      const { runSync } = await import('./sync.js');
+      await runSync({});
+    } else {
+      prompts.outro("Run 'tuck sync' when you're ready to commit changes");
+    }
+  } else {
+    prompts.outro('No files were added');
+  }
 };
 
 export const scanCommand = new Command('scan')
