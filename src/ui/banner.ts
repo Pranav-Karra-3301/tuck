@@ -47,6 +47,7 @@ ${chalk.bold.cyan('On a New Machine:')}
 ${chalk.bold.cyan('Commands:')}
   ${chalk.cyan('Getting Started')}
     init              Initialize tuck repository
+    scan              Auto-detect and select dotfiles to track
     apply <source>    Apply dotfiles from a repository
 
   ${chalk.cyan('Managing Files')}

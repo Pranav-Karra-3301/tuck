@@ -14,6 +14,7 @@ import {
   configCommand,
   applyCommand,
   undoCommand,
+  scanCommand,
 } from './commands/index.js';
 import { handleError } from './errors.js';
 import { VERSION, DESCRIPTION } from './constants.js';
@@ -51,6 +52,7 @@ program.addCommand(diffCommand);
 program.addCommand(configCommand);
 program.addCommand(applyCommand);
 program.addCommand(undoCommand);
+program.addCommand(scanCommand);
 
 // Global error handling
 process.on('uncaughtException', handleError);

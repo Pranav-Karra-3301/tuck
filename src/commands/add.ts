@@ -196,6 +196,28 @@ const runInteractiveAdd = async (tuckDir: string): Promise<void> => {
   logger.info("Run 'tuck sync' to commit changes");
 };
 
+/**
+ * Add files programmatically (used by scan command)
+ */
+export const addFilesFromPaths = async (paths: string[], options: AddOptions = {}): Promise<number> => {
+  const tuckDir = getTuckDir();
+
+  // Verify tuck is initialized
+  try {
+    await loadManifest(tuckDir);
+  } catch {
+    throw new NotInitializedError();
+  }
+
+  // Validate and prepare files
+  const filesToAdd = await validateAndPrepareFiles(paths, tuckDir, options);
+
+  // Add files
+  await addFiles(filesToAdd, tuckDir, options);
+
+  return filesToAdd.length;
+};
+
 const runAdd = async (paths: string[], options: AddOptions): Promise<void> => {
   const tuckDir = getTuckDir();
 
