@@ -206,7 +206,7 @@ export const processFilesWithProgress = async <T>(
 
       // Call progress callback
       if (onProgress) {
-        onProgress(i + 1, total);
+        onProgress(i + 1, totalItems);
       }
 
       // Small delay for visual effect (unless it's the last item)

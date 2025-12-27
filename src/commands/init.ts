@@ -936,16 +936,20 @@ const runInteractiveInit = async (): Promise<void> => {
 
         if (selectedFiles.length > 0) {
           // Track files with beautiful progress display
-          await trackFilesWithProgressInit(selectedFiles, tuckDir);
+          const trackedCount = await trackFilesWithProgressInit(selectedFiles, tuckDir);
 
-          // Ask if user wants to sync now
-          console.log();
-          const shouldSync = await prompts.confirm('Would you like to sync these changes now?', true);
-
-          if (shouldSync) {
+          if (trackedCount > 0) {
+            // Ask if user wants to sync now
             console.log();
-            const { runSync } = await import('./sync.js');
-            await runSync({});
+            const shouldSync = await prompts.confirm('Would you like to sync these changes now?', true);
+
+            if (shouldSync) {
+              console.log();
+              const { runSync } = await import('./sync.js');
+              await runSync({});
+            }
+          } else {
+            prompts.outro('No files were tracked');
           }
         }
       } else {

@@ -7,6 +7,7 @@ import { loadConfig } from './config.js';
 import { CATEGORIES } from '../constants.js';
 import { ensureDir } from 'fs-extra';
 import { dirname } from 'path';
+import type { FileStrategy } from '../types.js';
 
 export interface FileToTrack {
   path: string;
@@ -22,7 +23,7 @@ export interface FileTrackingOptions {
   /**
    * Custom strategy (copy, symlink, etc.)
    */
-  strategy?: string;
+  strategy?: FileStrategy;
   
   /**
    * Encrypt files
@@ -120,7 +121,7 @@ export const trackFilesWithProgress = async (
   }
 
   const config = await loadConfig(tuckDir);
-  const strategy = customStrategy || config.files.strategy || 'copy';
+  const strategy: FileStrategy = customStrategy || config.files.strategy || 'copy';
   const total = files.length;
   const errors: Array<{ path: string; error: Error }> = [];
   const sensitiveFiles: string[] = [];
