@@ -460,7 +460,7 @@ export const checkSSHKeys = async (): Promise<SSHKeyInfo> => {
 export const testSSHConnection = async (): Promise<{ success: boolean; username?: string }> => {
   try {
     // ssh -T git@github.com returns exit code 1 even on success, but outputs the username
-    const { stderr } = await execFileAsync('ssh', ['-T', '-o', 'StrictHostKeyChecking=no', 'git@github.com']);
+    const { stderr } = await execFileAsync('ssh', ['-T', '-o', 'StrictHostKeyChecking=accept-new', 'git@github.com']);
     const match = stderr.match(/Hi ([^!]+)!/);
     if (match) {
       return { success: true, username: match[1] };
@@ -745,7 +745,7 @@ export interface StoredCredential {
   username: string;
   token: string;
   createdAt: string;
-  type: 'fine-grained' | 'classic' | 'unknown';
+  type: 'fine-grained' | 'classic';
 }
 
 /**
@@ -791,7 +791,7 @@ export const storeGitHubCredentials = async (
         if (code === 0) {
           resolve();
         } else {
-          reject(new Error(`git credential approve failed with code ${code}`));
+          reject(new Error('git credential approve failed'));
         }
       });
 
@@ -817,8 +817,14 @@ export const storeGitHubCredentials = async (
     await writeFile(credentialsPath, JSON.stringify(metadata, null, 2), {
       mode: 0o600, // Read/write only for owner
     });
-  } catch {
-    // Non-critical - metadata storage failed
+  } catch (error) {
+    // Non-critical - metadata storage failed, but log a warning as this affects
+    // security-relevant file permissions/metadata.
+    console.warn(
+      `Warning: Failed to store GitHub credential metadata at "${credentialsPath}". ` +
+        'The credentials file may not have restricted permissions (0o600).',
+      error
+    );
   }
 };
 
@@ -1025,11 +1031,18 @@ export const updateStoredCredentials = async (
     throw new Error('No username found. Please run `tuck init` to set up authentication.');
   }
 
+  // Determine token type, preferring explicit type, then stored metadata, then detection
+  const tokenType = type ?? metadata?.type ?? detectTokenType(token);
+
+  if (tokenType === 'unknown') {
+    throw new Error('Could not determine GitHub token type. Please run `tuck init` to set up authentication.');
+  }
+
   // Remove old credentials first
   await removeStoredCredentials();
 
   // Store new credentials
-  await storeGitHubCredentials(username, token, type || metadata?.type || 'unknown' as 'fine-grained' | 'classic');
+  await storeGitHubCredentials(username, token, tokenType);
 };
 
 /**
