@@ -149,13 +149,38 @@ export const createRepo = async (options: CreateRepoOptions): Promise<GitHubRepo
     ]);
   }
 
-  try {
-    const visibility = options.isPrivate !== false ? '--private' : '--public';
-    const description = options.description ? `--description "${options.description}"` : '';
-    const homepage = options.homepage ? `--homepage "${options.homepage}"` : '';
+  // Validate inputs to prevent command injection
+  validateRepoName(options.name);
+  
+  if (options.description && /[;&|`$(){}[\]<>!#*?]/.test(options.description)) {
+    throw new GitHubCliError('Invalid description: contains unsafe characters');
+  }
+  
+  if (options.homepage && /[;&|`$(){}[\]<>!#*?]/.test(options.homepage)) {
+    throw new GitHubCliError('Invalid homepage: contains unsafe characters');
+  }
 
-    const cmd = `gh repo create ${options.name} ${visibility} ${description} ${homepage} --confirm --json name,url,sshUrl`;
-    const { stdout } = await execAsync(cmd);
+  try {
+    // Build command arguments array to prevent command injection
+    const args: string[] = ['repo', 'create', options.name];
+    
+    if (options.isPrivate !== false) {
+      args.push('--private');
+    } else {
+      args.push('--public');
+    }
+    
+    if (options.description) {
+      args.push('--description', options.description);
+    }
+    
+    if (options.homepage) {
+      args.push('--homepage', options.homepage);
+    }
+    
+    args.push('--confirm', '--json', 'name,url,sshUrl');
+    
+    const { stdout } = await execFileAsync('gh', args);
     const result = JSON.parse(stdout);
 
     return {

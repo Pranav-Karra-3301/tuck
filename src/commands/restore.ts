@@ -21,7 +21,8 @@ const fixSSHPermissions = async (path: string): Promise<void> => {
   const expandedPath = expandPath(path);
 
   // Only fix permissions for SSH files
-  if (!path.includes('.ssh/') && !path.includes('.ssh')) {
+  // Check for files inside .ssh/ directory or the .ssh directory itself
+  if (!path.includes('.ssh/') && !path.endsWith('.ssh')) {
     return;
   }
 
@@ -46,7 +47,9 @@ const fixSSHPermissions = async (path: string): Promise<void> => {
 const fixGPGPermissions = async (path: string): Promise<void> => {
   const expandedPath = expandPath(path);
 
-  if (!path.includes('.gnupg/') && !path.includes('.gnupg')) {
+  // Only fix permissions for GPG files
+  // Check for files inside .gnupg/ directory or the .gnupg directory itself
+  if (!path.includes('.gnupg/') && !path.endsWith('.gnupg')) {
     return;
   }
 
