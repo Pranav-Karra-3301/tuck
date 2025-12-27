@@ -1,4 +1,6 @@
 import { Command } from 'commander';
+import { basename } from 'path';
+import chalk from 'chalk';
 import { prompts, logger, withSpinner } from '../ui/index.js';
 import {
   getTuckDir,
@@ -23,6 +25,70 @@ import { NotInitializedError, FileNotFoundError, FileAlreadyTrackedError } from 
 import { CATEGORIES } from '../constants.js';
 import type { AddOptions } from '../types.js';
 
+// SSH private key patterns - NEVER allow these
+const PRIVATE_KEY_PATTERNS = [
+  /^id_rsa$/,
+  /^id_dsa$/,
+  /^id_ecdsa$/,
+  /^id_ed25519$/,
+  /^id_.*$/,  // Any id_ file without .pub
+  /\.pem$/,
+  /\.key$/,
+  /^.*_key$/,  // aws_key, github_key, etc.
+];
+
+// Files that should trigger a warning
+const SENSITIVE_FILE_PATTERNS = [
+  /^\.netrc$/,
+  /^\.aws\/credentials$/,
+  /^\.docker\/config\.json$/,
+  /^\.npmrc$/,      // May contain tokens
+  /^\.pypirc$/,
+  /^\.kube\/config$/,
+  /^\.ssh\/config$/,
+  /^\.gnupg\//,
+  /credentials/i,
+  /secrets?/i,
+  /tokens?\.json$/i,
+  /\.env$/,
+  /\.env\./,
+];
+
+/**
+ * Check if a path is a private key (should never be tracked)
+ */
+const isPrivateKey = (path: string): boolean => {
+  const name = basename(path);
+
+  // SSH private keys (without .pub extension)
+  if (path.includes('.ssh/') && !name.endsWith('.pub')) {
+    for (const pattern of PRIVATE_KEY_PATTERNS) {
+      if (pattern.test(name)) {
+        return true;
+      }
+    }
+  }
+
+  // Other private key patterns
+  if (name.endsWith('.pem') || name.endsWith('.key')) {
+    return true;
+  }
+
+  return false;
+};
+
+/**
+ * Check if a path contains potentially sensitive data
+ */
+const isSensitiveFile = (path: string): boolean => {
+  for (const pattern of SENSITIVE_FILE_PATTERNS) {
+    if (pattern.test(path)) {
+      return true;
+    }
+  }
+  return false;
+};
+
 interface FileToAdd {
   source: string;
   destination: string;
@@ -30,6 +96,7 @@ interface FileToAdd {
   filename: string;
   isDir: boolean;
   fileCount: number;
+  sensitive: boolean;
 }
 
 const validateAndPrepareFiles = async (
@@ -42,6 +109,15 @@ const validateAndPrepareFiles = async (
   for (const path of paths) {
     const expandedPath = expandPath(path);
     const collapsedPath = collapsePath(expandedPath);
+
+    // SECURITY: Block private keys
+    if (isPrivateKey(collapsedPath)) {
+      throw new Error(
+        `Cannot track private key: ${path}\n` +
+        `Private keys should NEVER be committed to a repository.\n` +
+        `If you need to backup SSH keys, use a secure password manager.`
+      );
+    }
 
     // Check if file exists
     if (!(await pathExists(expandedPath))) {
@@ -66,6 +142,9 @@ const validateAndPrepareFiles = async (
     // Determine destination path
     const destination = getDestinationPath(tuckDir, category, filename);
 
+    // Check if sensitive
+    const sensitive = isSensitiveFile(collapsedPath);
+
     filesToAdd.push({
       source: collapsedPath,
       destination,
@@ -73,6 +152,7 @@ const validateAndPrepareFiles = async (
       filename,
       isDir,
       fileCount,
+      sensitive,
     });
   }
 
@@ -119,11 +199,17 @@ const addFiles = async (
 
     // Log result
     const categoryInfo = CATEGORIES[file.category];
-    const icon = categoryInfo?.icon || '📄';
+    const icon = categoryInfo?.icon || '-';
     logger.success(`Added ${file.source}`);
     logger.dim(`  ${icon} Category: ${file.category}`);
     if (file.isDir) {
-      logger.dim(`  📁 Directory with ${file.fileCount} files`);
+      logger.dim(`  [dir] Directory with ${file.fileCount} files`);
+    }
+
+    // Warn about sensitive files
+    if (file.sensitive) {
+      console.log(chalk.yellow(`  [!] Warning: This file may contain sensitive data`));
+      console.log(chalk.dim(`      Make sure your repository is private!`));
     }
   }
 };

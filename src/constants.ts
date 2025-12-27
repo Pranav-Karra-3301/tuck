@@ -32,11 +32,11 @@ export const CATEGORIES: Record<string, CategoryConfig> = {
       '.bash_aliases',
       '.inputrc',
     ],
-    icon: '🐚',
+    icon: '$',
   },
   git: {
     patterns: ['.gitconfig', '.gitignore_global', '.gitmessage', '.gitattributes'],
-    icon: '📦',
+    icon: '*',
   },
   editors: {
     patterns: [
@@ -48,7 +48,7 @@ export const CATEGORIES: Record<string, CategoryConfig> = {
       '.ideavimrc',
       '.nanorc',
     ],
-    icon: '✏️',
+    icon: '>',
   },
   terminal: {
     patterns: [
@@ -60,15 +60,15 @@ export const CATEGORIES: Record<string, CategoryConfig> = {
       '.config/hyper',
       '.config/starship.toml',
     ],
-    icon: '💻',
+    icon: '#',
   },
   ssh: {
     patterns: ['.ssh/config'],
-    icon: '🔐',
+    icon: '!',
   },
   misc: {
     patterns: [],
-    icon: '📄',
+    icon: '-',
   },
 };
 

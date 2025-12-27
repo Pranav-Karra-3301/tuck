@@ -56,7 +56,7 @@ const displayGroupedFiles = (
 
   for (const category of categories) {
     const categoryFiles = grouped[category];
-    const config = DETECTION_CATEGORIES[category] || { icon: '📄', name: category };
+    const config = DETECTION_CATEGORIES[category] || { icon: '-', name: category };
     const newFiles = categoryFiles.filter((f) => !f.alreadyTracked);
     const trackedFiles = categoryFiles.filter((f) => f.alreadyTracked);
 
@@ -70,10 +70,10 @@ const displayGroupedFiles = (
     for (const file of categoryFiles) {
       if (!showAll && file.alreadyTracked) continue;
 
-      const status = file.selected ? chalk.green('●') : chalk.dim('○');
+      const status = file.selected ? chalk.green('[x]') : chalk.dim('[ ]');
       const name = file.path;
-      const tracked = file.alreadyTracked ? chalk.dim(' (already tracked)') : '';
-      const sensitive = file.sensitive ? chalk.yellow(' ⚠ sensitive') : '';
+      const tracked = file.alreadyTracked ? chalk.dim(' (tracked)') : '';
+      const sensitive = file.sensitive ? chalk.yellow(' [!]') : '';
       const dir = file.isDirectory ? chalk.cyan(' [dir]') : '';
 
       console.log(`  ${status} ${name}${dir}${sensitive}${tracked}`);
@@ -101,7 +101,7 @@ const runInteractiveSelection = async (
 
   // Ask for each category
   for (const [category, categoryFiles] of Object.entries(grouped)) {
-    const config = DETECTION_CATEGORIES[category] || { icon: '📄', name: category };
+    const config = DETECTION_CATEGORIES[category] || { icon: '-', name: category };
 
     console.log();
     console.log(chalk.bold(`${config.icon} ${config.name}`));
@@ -112,10 +112,10 @@ const runInteractiveSelection = async (
     const options = categoryFiles.map((file: SelectableFile) => {
       let label = file.path;
       if (file.sensitive) {
-        label += chalk.yellow(' ⚠');
+        label += chalk.yellow(' [!]');
       }
       if (file.isDirectory) {
-        label += chalk.cyan(' 📁');
+        label += chalk.cyan(' [dir]');
       }
 
       return {
@@ -187,11 +187,11 @@ const showSummary = (selected: SelectableFile[]): void => {
   const grouped = groupSelectableByCategory(selected);
 
   for (const [category, files] of Object.entries(grouped)) {
-    const config = DETECTION_CATEGORIES[category] || { icon: '📄', name: category };
+    const config = DETECTION_CATEGORIES[category] || { icon: '-', name: category };
     console.log(chalk.bold(`${config.icon} ${config.name}`));
 
     for (const file of files) {
-      const sensitive = file.sensitive ? chalk.yellow(' ⚠') : '';
+      const sensitive = file.sensitive ? chalk.yellow(' [!]') : '';
       console.log(chalk.dim(`  • ${file.path}${sensitive}`));
     }
   }
@@ -201,7 +201,7 @@ const showSummary = (selected: SelectableFile[]): void => {
   // Show warnings for sensitive files
   const sensitiveFiles = selected.filter((f) => f.sensitive);
   if (sensitiveFiles.length > 0) {
-    console.log(chalk.yellow('⚠ Warning: Some selected files may contain sensitive data:'));
+    console.log(chalk.yellow('Warning: Some selected files may contain sensitive data:'));
     for (const file of sensitiveFiles) {
       console.log(chalk.yellow(`  • ${file.path}`));
     }

@@ -106,7 +106,7 @@ export class BackupError extends TuckError {
 
 export const handleError = (error: unknown): never => {
   if (error instanceof TuckError) {
-    console.error(chalk.red('✗'), error.message);
+    console.error(chalk.red('x'), error.message);
     if (error.suggestions && error.suggestions.length > 0) {
       console.error();
       console.error(chalk.dim('Suggestions:'));
@@ -116,13 +116,13 @@ export const handleError = (error: unknown): never => {
   }
 
   if (error instanceof Error) {
-    console.error(chalk.red('✗'), 'An unexpected error occurred:', error.message);
+    console.error(chalk.red('x'), 'An unexpected error occurred:', error.message);
     if (process.env.DEBUG) {
       console.error(error.stack);
     }
     process.exit(1);
   }
 
-  console.error(chalk.red('✗'), 'An unknown error occurred');
+  console.error(chalk.red('x'), 'An unknown error occurred');
   process.exit(1);
 };

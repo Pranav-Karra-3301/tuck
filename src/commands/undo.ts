@@ -73,7 +73,7 @@ const showSnapshotDetails = (snapshot: Snapshot): void => {
 
   for (const file of snapshot.files) {
     if (file.existed) {
-      console.log(chalk.dim(`  ✓ ${collapsePath(file.originalPath)}`));
+      console.log(chalk.dim(`  ok ${collapsePath(file.originalPath)}`));
     } else {
       console.log(chalk.dim(`  - ${collapsePath(file.originalPath)} (did not exist)`));
     }
@@ -143,7 +143,7 @@ const restoreFromSnapshot = async (
   logger.success(`Restored ${restoredFiles.length} file(s)`);
 
   for (const file of restoredFiles) {
-    logger.dim(`  ✓ ${collapsePath(file)}`);
+    logger.dim(`  ok ${collapsePath(file)}`);
   }
 };
 

@@ -22,24 +22,24 @@ export interface TreeItem {
 
 export const logger: Logger = {
   info: (msg: string) => {
-    console.log(chalk.blue('ℹ'), msg);
+    console.log(chalk.blue('i'), msg);
   },
 
   success: (msg: string) => {
-    console.log(chalk.green('✓'), msg);
+    console.log(chalk.green('ok'), msg);
   },
 
   warning: (msg: string) => {
-    console.log(chalk.yellow('⚠'), msg);
+    console.log(chalk.yellow('!'), msg);
   },
 
   error: (msg: string) => {
-    console.log(chalk.red('✗'), msg);
+    console.log(chalk.red('x'), msg);
   },
 
   debug: (msg: string) => {
     if (process.env.DEBUG) {
-      console.log(chalk.gray('⚙'), chalk.gray(msg));
+      console.log(chalk.gray('*'), chalk.gray(msg));
     }
   },
 
@@ -52,8 +52,8 @@ export const logger: Logger = {
       add: chalk.green('+'),
       modify: chalk.yellow('~'),
       delete: chalk.red('-'),
-      sync: chalk.blue('↔'),
-      merge: chalk.magenta('⊕'),
+      sync: chalk.blue('<>'),
+      merge: chalk.magenta('+'),
     };
     console.log(`  ${icons[action]} ${path}`);
   },

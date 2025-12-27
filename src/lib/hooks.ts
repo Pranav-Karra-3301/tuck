@@ -48,7 +48,7 @@ export const runHook = async (
   // unless trustHooks is explicitly set (for non-interactive/scripted use)
   if (!options?.trustHooks) {
     console.log();
-    console.log(chalk.yellow.bold('⚠️  Hook Execution Warning'));
+    console.log(chalk.yellow.bold('WARNING: Hook Execution'));
     console.log(chalk.dim('─'.repeat(50)));
     console.log(chalk.white(`Hook type: ${chalk.cyan(hookType)}`));
     console.log(chalk.white('Command:'));

@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { join } from 'path';
+import { chmod, stat } from 'fs/promises';
 import { prompts, logger, withSpinner } from '../ui/index.js';
 import { getTuckDir, expandPath, pathExists, collapsePath } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles, getTrackedFileBySource } from '../lib/manifest.js';
@@ -11,6 +12,56 @@ import { runPreRestoreHook, runPostRestoreHook, type HookOptions } from '../lib/
 import { NotInitializedError, FileNotFoundError } from '../errors.js';
 import { CATEGORIES } from '../constants.js';
 import type { RestoreOptions } from '../types.js';
+
+/**
+ * Fix permissions for SSH files after restore
+ * SSH requires strict permissions: 700 for directories, 600 for private files
+ */
+const fixSSHPermissions = async (path: string): Promise<void> => {
+  const expandedPath = expandPath(path);
+
+  // Only fix permissions for SSH files
+  if (!path.includes('.ssh/') && !path.includes('.ssh')) {
+    return;
+  }
+
+  try {
+    const stats = await stat(expandedPath);
+
+    if (stats.isDirectory()) {
+      // Directories should be 700
+      await chmod(expandedPath, 0o700);
+    } else {
+      // Files should be 600
+      await chmod(expandedPath, 0o600);
+    }
+  } catch {
+    // Ignore permission errors (might be on Windows)
+  }
+};
+
+/**
+ * Fix GPG permissions after restore
+ */
+const fixGPGPermissions = async (path: string): Promise<void> => {
+  const expandedPath = expandPath(path);
+
+  if (!path.includes('.gnupg/') && !path.includes('.gnupg')) {
+    return;
+  }
+
+  try {
+    const stats = await stat(expandedPath);
+
+    if (stats.isDirectory()) {
+      await chmod(expandedPath, 0o700);
+    } else {
+      await chmod(expandedPath, 0o600);
+    }
+  } catch {
+    // Ignore permission errors
+  }
+};
 
 interface FileToRestore {
   id: string;
@@ -116,6 +167,10 @@ const restoreFiles = async (
       } else {
         await copyFileOrDir(file.destination, targetPath, { overwrite: true });
       }
+
+      // Fix permissions for sensitive files
+      await fixSSHPermissions(file.source);
+      await fixGPGPermissions(file.source);
     });
 
     restoredCount++;

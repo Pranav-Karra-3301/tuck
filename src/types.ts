@@ -87,6 +87,7 @@ export interface SyncOptions {
   message?: string;
   all?: boolean;
   noCommit?: boolean;
+  noPush?: boolean;
   amend?: boolean;
   noHooks?: boolean;
   trustHooks?: boolean;

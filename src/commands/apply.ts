@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { join } from 'path';
-import { readFile, rm } from 'fs/promises';
+import { readFile, rm, chmod, stat } from 'fs/promises';
 import { ensureDir, pathExists as fsPathExists } from 'fs-extra';
 import { tmpdir } from 'os';
 import chalk from 'chalk';
@@ -18,6 +18,30 @@ import { smartMerge, isShellFile, generateMergePreview } from '../lib/merge.js';
 import { copyFileOrDir } from '../lib/files.js';
 import { CATEGORIES } from '../constants.js';
 import type { TuckManifest } from '../types.js';
+
+/**
+ * Fix permissions for SSH/GPG files after apply
+ */
+const fixSecurePermissions = async (path: string): Promise<void> => {
+  const collapsedPath = collapsePath(path);
+
+  // Only fix permissions for SSH and GPG files
+  if (!collapsedPath.includes('.ssh/') && !collapsedPath.includes('.gnupg/')) {
+    return;
+  }
+
+  try {
+    const stats = await stat(path);
+
+    if (stats.isDirectory()) {
+      await chmod(path, 0o700);
+    } else {
+      await chmod(path, 0o600);
+    }
+  } catch {
+    // Ignore permission errors (might be on Windows)
+  }
+};
 
 export interface ApplyOptions {
   merge?: boolean;
@@ -174,6 +198,7 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<numb
         }
       } else {
         await copyFileOrDir(file.repoPath, file.destination, { overwrite: true });
+        await fixSecurePermissions(file.destination);
         logger.file(
           (await pathExists(file.destination)) ? 'modify' : 'add',
           collapsePath(file.destination)
@@ -202,6 +227,7 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<nu
       }
     } else {
       await copyFileOrDir(file.repoPath, file.destination, { overwrite: true });
+      await fixSecurePermissions(file.destination);
       logger.file(
         (await pathExists(file.destination)) ? 'modify' : 'add',
         collapsePath(file.destination)
