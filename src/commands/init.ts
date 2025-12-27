@@ -112,13 +112,17 @@ const createDirectoryStructure = async (tuckDir: string): Promise<void> => {
 };
 
 const createDefaultFiles = async (tuckDir: string, machine?: string): Promise<void> => {
-  // Create .gitignore
+  // Create .gitignore only if it doesn't exist
   const gitignorePath = join(tuckDir, '.gitignore');
-  await writeFile(gitignorePath, GITIGNORE_TEMPLATE, 'utf-8');
+  if (!(await pathExists(gitignorePath))) {
+    await writeFile(gitignorePath, GITIGNORE_TEMPLATE, 'utf-8');
+  }
 
-  // Create README.md
+  // Create README.md only if it doesn't exist
   const readmePath = join(tuckDir, 'README.md');
-  await writeFile(readmePath, README_TEMPLATE(machine), 'utf-8');
+  if (!(await pathExists(readmePath))) {
+    await writeFile(readmePath, README_TEMPLATE(machine), 'utf-8');
+  }
 };
 
 const initFromScratch = async (
