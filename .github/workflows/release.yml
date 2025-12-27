@@ -209,7 +209,7 @@ jobs:
         run: pnpm build
 
       - name: Build standalone binary
-        run: npx pkg dist/index.js --target node20-${{ matrix.target }} --output ${{ matrix.artifact }}
+        run: npx pkg dist/index.js --target node18-${{ matrix.target }} --output ${{ matrix.artifact }}
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
