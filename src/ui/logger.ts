@@ -7,7 +7,7 @@ export interface Logger {
   error: (msg: string) => void;
   debug: (msg: string) => void;
   step: (current: number, total: number, msg: string) => void;
-  file: (action: 'add' | 'modify' | 'delete' | 'sync', path: string) => void;
+  file: (action: 'add' | 'modify' | 'delete' | 'sync' | 'merge', path: string) => void;
   tree: (items: TreeItem[]) => void;
   blank: () => void;
   dim: (msg: string) => void;
@@ -47,12 +47,13 @@ export const logger: Logger = {
     console.log(chalk.dim(`[${current}/${total}]`), msg);
   },
 
-  file: (action: 'add' | 'modify' | 'delete' | 'sync', path: string) => {
+  file: (action: 'add' | 'modify' | 'delete' | 'sync' | 'merge', path: string) => {
     const icons = {
       add: chalk.green('+'),
       modify: chalk.yellow('~'),
       delete: chalk.red('-'),
       sync: chalk.blue('↔'),
+      merge: chalk.magenta('⊕'),
     };
     console.log(`  ${icons[action]} ${path}`);
   },

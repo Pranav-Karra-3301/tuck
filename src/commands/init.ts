@@ -15,7 +15,14 @@ import {
 } from '../lib/paths.js';
 import { saveConfig } from '../lib/config.js';
 import { createManifest } from '../lib/manifest.js';
-import { initRepo, addRemote, cloneRepo, setDefaultBranch } from '../lib/git.js';
+import { initRepo, addRemote, cloneRepo, setDefaultBranch, stageAll, commit, push } from '../lib/git.js';
+import {
+  isGhInstalled,
+  isGhAuthenticated,
+  getAuthenticatedUser,
+  createRepo,
+  getPreferredRepoUrl,
+} from '../lib/github.js';
 import { AlreadyInitializedError } from '../errors.js';
 import { CATEGORIES, COMMON_DOTFILES } from '../constants.js';
 import { defaultConfig } from '../schemas/config.schema.js';
@@ -158,6 +165,114 @@ const initFromScratch = async (
   }
 };
 
+interface GitHubSetupResult {
+  remoteUrl: string | null;
+  pushed: boolean;
+}
+
+const setupGitHubRepo = async (tuckDir: string): Promise<GitHubSetupResult> => {
+  // Check if GitHub CLI is available
+  const ghInstalled = await isGhInstalled();
+  if (!ghInstalled) {
+    prompts.log.info('GitHub CLI (gh) is not installed');
+    prompts.log.info('Install it from https://cli.github.com/ for auto-setup');
+    return { remoteUrl: null, pushed: false };
+  }
+
+  const ghAuth = await isGhAuthenticated();
+  if (!ghAuth) {
+    prompts.log.info('GitHub CLI is not authenticated');
+    prompts.log.info('Run `gh auth login` to enable auto-setup');
+    return { remoteUrl: null, pushed: false };
+  }
+
+  // Get authenticated user
+  const user = await getAuthenticatedUser();
+  prompts.log.success(`Detected GitHub account: ${user.login}`);
+
+  // Ask if they want to auto-create repo
+  const createGhRepo = await prompts.confirm('Create a GitHub repository automatically?', true);
+
+  if (!createGhRepo) {
+    return { remoteUrl: null, pushed: false };
+  }
+
+  // Ask for repo name
+  const repoName = await prompts.text('Repository name:', {
+    defaultValue: 'dotfiles',
+    placeholder: 'dotfiles',
+    validate: (value) => {
+      if (!value) return 'Repository name is required';
+      if (!/^[a-zA-Z0-9._-]+$/.test(value)) {
+        return 'Invalid repository name';
+      }
+      return undefined;
+    },
+  });
+
+  // Ask for visibility
+  const visibility = await prompts.select('Repository visibility:', [
+    { value: 'private', label: 'Private (recommended)', hint: 'Only you can see it' },
+    { value: 'public', label: 'Public', hint: 'Anyone can see it' },
+  ]);
+
+  // Create the repository
+  let repo;
+  try {
+    const spinner = prompts.spinner();
+    spinner.start(`Creating repository ${user.login}/${repoName}...`);
+
+    repo = await createRepo({
+      name: repoName,
+      description: 'My dotfiles managed with tuck',
+      isPrivate: visibility === 'private',
+    });
+
+    spinner.stop(`Repository created: ${repo.fullName}`);
+  } catch (error) {
+    prompts.log.error(`Failed to create repository: ${error instanceof Error ? error.message : String(error)}`);
+    return { remoteUrl: null, pushed: false };
+  }
+
+  // Get the remote URL in preferred format
+  const remoteUrl = await getPreferredRepoUrl(repo);
+
+  // Add as remote
+  await addRemote(tuckDir, 'origin', remoteUrl);
+  prompts.log.success('Remote origin configured');
+
+  // Ask to push initial commit
+  const shouldPush = await prompts.confirm('Push initial commit to GitHub?', true);
+
+  if (shouldPush) {
+    try {
+      const spinner = prompts.spinner();
+      spinner.start('Creating initial commit...');
+
+      await stageAll(tuckDir);
+      await commit(tuckDir, 'Initial commit: tuck dotfiles setup');
+
+      spinner.stop('Initial commit created');
+
+      spinner.start('Pushing to GitHub...');
+      await push(tuckDir, { remote: 'origin', branch: 'main', setUpstream: true });
+      spinner.stop('Pushed to GitHub');
+
+      prompts.note(
+        `Your dotfiles are now at:\n${repo.url}\n\nOn a new machine, run:\ntuck apply ${user.login}`,
+        'Success'
+      );
+
+      return { remoteUrl, pushed: true };
+    } catch (error) {
+      prompts.log.error(`Failed to push: ${error instanceof Error ? error.message : String(error)}`);
+      return { remoteUrl, pushed: false };
+    }
+  }
+
+  return { remoteUrl, pushed: false };
+};
+
 const initFromRemote = async (tuckDir: string, remoteUrl: string): Promise<void> => {
   // Clone the repository
   await withSpinner(`Cloning from ${remoteUrl}...`, async () => {
@@ -261,17 +376,27 @@ const runInteractiveInit = async (): Promise<void> => {
       }
     }
 
-    // Ask about remote
+    // Ask about remote - try GitHub auto-setup first
     const wantsRemote = await prompts.confirm('Would you like to set up a remote repository?');
 
     if (wantsRemote) {
-      const remoteUrl = await prompts.text('Enter remote URL:', {
-        placeholder: 'git@github.com:user/dotfiles.git',
-      });
+      // Try GitHub auto-setup
+      const ghResult = await setupGitHubRepo(tuckDir);
 
-      if (remoteUrl) {
-        await addRemote(tuckDir, 'origin', remoteUrl);
-        prompts.log.success('Remote added successfully');
+      // If GitHub setup didn't add a remote, fall back to manual entry
+      if (!ghResult.remoteUrl) {
+        const useManual = await prompts.confirm('Enter a remote URL manually?');
+
+        if (useManual) {
+          const remoteUrl = await prompts.text('Enter remote URL:', {
+            placeholder: 'git@github.com:user/dotfiles.git',
+          });
+
+          if (remoteUrl) {
+            await addRemote(tuckDir, 'origin', remoteUrl);
+            prompts.log.success('Remote added successfully');
+          }
+        }
       }
     }
   }

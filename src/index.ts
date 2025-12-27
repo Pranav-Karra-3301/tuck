@@ -12,9 +12,12 @@ import {
   listCommand,
   diffCommand,
   configCommand,
+  applyCommand,
+  undoCommand,
 } from './commands/index.js';
 import { handleError } from './errors.js';
 import { VERSION, DESCRIPTION } from './constants.js';
+import { customHelp } from './ui/banner.js';
 
 const program = new Command();
 
@@ -24,7 +27,15 @@ program
   .version(VERSION, '-v, --version', 'Display version number')
   .configureOutput({
     outputError: (str, write) => write(chalk.red(str)),
-  });
+  })
+  .addHelpText('beforeAll', customHelp(VERSION))
+  .helpOption('-h, --help', 'Display this help message')
+  .showHelpAfterError(false);
+
+// Override default help to use our custom version
+program.configureHelp({
+  formatHelp: () => '',
+});
 
 // Register commands
 program.addCommand(initCommand);
@@ -38,6 +49,8 @@ program.addCommand(statusCommand);
 program.addCommand(listCommand);
 program.addCommand(diffCommand);
 program.addCommand(configCommand);
+program.addCommand(applyCommand);
+program.addCommand(undoCommand);
 
 // Global error handling
 process.on('uncaughtException', handleError);

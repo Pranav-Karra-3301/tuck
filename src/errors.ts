@@ -88,6 +88,22 @@ export class PermissionError extends TuckError {
   }
 }
 
+export class GitHubCliError extends TuckError {
+  constructor(message: string, suggestions?: string[]) {
+    super(
+      `GitHub CLI error: ${message}`,
+      'GITHUB_CLI_ERROR',
+      suggestions || ['Install GitHub CLI: https://cli.github.com/', 'Run `gh auth login` to authenticate']
+    );
+  }
+}
+
+export class BackupError extends TuckError {
+  constructor(message: string, suggestions?: string[]) {
+    super(`Backup error: ${message}`, 'BACKUP_ERROR', suggestions || ['Check available disk space']);
+  }
+}
+
 export const handleError = (error: unknown): never => {
   if (error instanceof TuckError) {
     console.error(chalk.red('✗'), error.message);

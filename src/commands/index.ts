@@ -9,3 +9,5 @@ export { statusCommand } from './status.js';
 export { listCommand } from './list.js';
 export { diffCommand } from './diff.js';
 export { configCommand } from './config.js';
+export { applyCommand } from './apply.js';
+export { undoCommand } from './undo.js';
