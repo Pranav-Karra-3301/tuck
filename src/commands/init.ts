@@ -137,6 +137,39 @@ tuck restore --all
 \`\`\`
 `;
 
+/**
+ * Validates a GitHub repository URL (HTTPS or SSH format) and checks for owner/repo pattern
+ * @param value The URL to validate
+ * @returns undefined if valid, or an error message string if invalid
+ */
+const validateGitHubUrl = (value: string): string | undefined => {
+  if (!value) return 'Repository URL is required';
+  
+  const isGitHubHttps = value.startsWith('https://github.com/');
+  const isGitHubSsh = value.startsWith('git@github.com:');
+  
+  if (!isGitHubHttps && !isGitHubSsh) {
+    return 'Please enter a valid GitHub URL';
+  }
+  
+  // Validate URL contains owner/repo pattern
+  if (isGitHubHttps) {
+    // HTTPS format: https://github.com/owner/repo[.git]
+    const pathPart = value.substring('https://github.com/'.length);
+    if (!pathPart.includes('/') || pathPart === '/') {
+      return 'GitHub URL must include owner and repository name (e.g., https://github.com/owner/repo)';
+    }
+  } else if (isGitHubSsh) {
+    // SSH format: git@github.com:owner/repo[.git]
+    const pathPart = value.substring('git@github.com:'.length);
+    if (!pathPart.includes('/') || pathPart === '/') {
+      return 'GitHub URL must include owner and repository name (e.g., git@github.com:owner/repo.git)';
+    }
+  }
+  
+  return undefined;
+};
+
 const createDirectoryStructure = async (tuckDir: string): Promise<void> => {
   // Create main directories
   await ensureDir(tuckDir);
@@ -400,7 +433,7 @@ const setupTokenAuth = async (
       // GitHub username rules: 1-39 characters total, start with alphanumeric, may contain hyphens
       // (no consecutive or trailing hyphens).
       if (!/^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$/.test(value)) {
-        return 'Invalid GitHub username';
+        return 'Invalid GitHub username (must start with a letter or number, be 1-39 characters, and may include hyphens but not consecutively or at the end).';
       }
       return undefined;
     },
@@ -429,6 +462,19 @@ const setupTokenAuth = async (
       `Warning: Token does not start with a recognized GitHub prefix (${prefixList}). ` +
         'This may cause authentication to fail.'
     );
+    
+    const proceedWithUnrecognizedToken = await prompts.confirm(
+      'The value you entered does not look like a typical GitHub personal access token. ' +
+        'Are you sure this is a GitHub token and not, for example, a password or another secret?'
+    );
+    
+    if (!proceedWithUnrecognizedToken) {
+      prompts.log.error(
+        'Aborting setup to avoid storing a value that may not be a GitHub token. ' +
+          'Please generate a GitHub personal access token and try again.'
+      );
+      return { remoteUrl: null, pushed: false };
+    }
   }
 
   // Auto-detect token type
@@ -453,8 +499,10 @@ const setupTokenAuth = async (
     prompts.log.info('You may be prompted for credentials when pushing');
   }
 
-  // Configure git credential helper
-  await configureGitCredentialHelper().catch(() => {});
+  // Configure git credential helper (best-effort; Git can still prompt for credentials if this fails)
+  await configureGitCredentialHelper().catch((error) => {
+    logger?.debug?.('Failed to configure git credential helper (non-fatal)', error);
+  });
 
   return await promptForManualRepoUrl(tuckDir, username, 'https');
 };
@@ -493,15 +541,7 @@ const promptForManualRepoUrl = async (
 
   const repoUrl = await prompts.text('Paste the repository URL:', {
     placeholder: exampleUrl,
-    validate: (value) => {
-      if (!value) return 'Repository URL is required';
-      const isGitHubHttps = value.startsWith('https://github.com/');
-      const isGitHubSsh = value.startsWith('git@github.com:');
-      if (!isGitHubHttps && !isGitHubSsh) {
-        return 'Please enter a valid GitHub URL';
-      }
-      return undefined;
-    },
+    validate: validateGitHubUrl,
   });
 
   // Add remote
@@ -1245,15 +1285,7 @@ const runInteractiveInit = async (): Promise<void> => {
     if (hasExisting === 'yes') {
       const repoUrl = await prompts.text('Enter repository URL:', {
         placeholder: 'git@github.com:user/dotfiles.git',
-        validate: (value) => {
-          if (!value) return 'Repository URL is required';
-          const isGitHubHttps = value.startsWith('https://github.com/');
-          const isGitHubSsh = value.startsWith('git@github.com:');
-          if (!isGitHubHttps && !isGitHubSsh) {
-            return 'Please enter a valid GitHub URL';
-          }
-          return undefined;
-        },
+        validate: validateGitHubUrl,
       });
 
       await initFromRemote(tuckDir, repoUrl);
@@ -1335,15 +1367,7 @@ const runInteractiveInit = async (): Promise<void> => {
         if (useManual) {
           const manualUrl = await prompts.text('Paste your repository URL:', {
             placeholder: `git@github.com:${user?.login || 'user'}/${suggestedName}.git`,
-            validate: (value) => {
-              if (!value) return 'Repository URL is required';
-              const isGitHubHttps = value.startsWith('https://github.com/');
-              const isGitHubSsh = value.startsWith('git@github.com:');
-              if (!isGitHubHttps && !isGitHubSsh) {
-                return 'Please enter a valid GitHub URL';
-              }
-              return undefined;
-            },
+            validate: validateGitHubUrl,
           });
 
           if (manualUrl) {
@@ -1407,7 +1431,7 @@ const runInteractiveInit = async (): Promise<void> => {
       const initialValues = nonSensitiveFiles.map((f) => f.path);
 
       const selectedFiles = await prompts.multiselect(
-        'Select files to track (all pre-selected):',
+        'Select files to track (all pre-selected; use space to toggle selection):',
         options,
         { initialValues }
       );

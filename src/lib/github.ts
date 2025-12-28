@@ -490,6 +490,12 @@ export const checkSSHKeys = async (): Promise<SSHKeyInfo> => {
  */
 export const testSSHConnection = async (): Promise<{ success: boolean; username?: string }> => {
   try {
+    // Note: We use StrictHostKeyChecking=accept-new here for better UX when testing SSH to GitHub.
+    // This will automatically trust a new host key on first connect, which can weaken protection
+    // against man-in-the-middle attacks during initial key establishment. In this specific case,
+    // the target is hard-coded to github.com, whose SSH host keys are well-known, documented, and
+    // rarely change, so the practical risk is low. If stricter security is required in your
+    // environment, pre-populate known_hosts for github.com and change this to StrictHostKeyChecking=yes.
     // ssh -T git@github.com returns exit code 1 even on success, but outputs the username
     const { stderr } = await execFileAsync('ssh', ['-T', '-o', 'StrictHostKeyChecking=accept-new', 'git@github.com']);
     const match = stderr.match(/Hi ([^!]+)!/);
@@ -823,7 +829,9 @@ export const storeGitHubCredentials = async (
   // which would break the git credential helper protocol format.
   if (/[\r\n]/.test(username) || /[\r\n]/.test(token)) {
     throw new GitHubCliError('Username or token contains invalid newline characters.', [
-      'Newline characters are not allowed in GitHub usernames or tokens.',
+      "Newline characters are not allowed in GitHub usernames or tokens because git's credential helper protocol is line-based.",
+      'Each credential field is sent as "key=value" on its own line; embedded newlines would corrupt this format and cause git credential storage to fail.',
+      'If you copied the token from a password manager or web page, ensure it is a single line with no trailing line breaks, then paste it again or regenerate a new token.',
     ]);
   }
 
@@ -851,9 +859,26 @@ export const storeGitHubCredentials = async (
 
       proc.on('error', reject);
     });
-  } catch {
-    // If git credential helper fails, we can still continue
-    // The user will just be prompted for credentials on push
+  } catch (error) {
+    // If git credential helper fails, we can still continue.
+    // The user will just be prompted for credentials on push.
+    const warningMessage =
+      'Failed to store GitHub credentials via `git credential approve`. ' +
+      'Credentials will not be cached and you may be prompted again on push.';
+
+    // Emit a process warning so this is visible in a non-blocking way.
+    try {
+      process.emitWarning(warningMessage, {
+        code: 'GIT_CREDENTIAL_HELPER_FAILED',
+      });
+    } catch {
+      // Fallback: emitting a warning should never break the main flow.
+    }
+
+    // Also log to console for environments that rely on standard output logging.
+    const errorMessage =
+      error instanceof Error ? error.message : String(error);
+    console.warn(`Warning: ${warningMessage} Error: ${errorMessage}`);
   }
 
   // Store metadata (not the token itself) for expiration tracking
@@ -1041,19 +1066,32 @@ export const testStoredCredentials = async (): Promise<{
 
   // Test credentials against GitHub API /user endpoint (requires authentication)
   try {
-    // Create Basic Auth header
-    const auth = Buffer.from(`${username}:${password}`).toString('base64');
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
+
+    // Prefer Bearer token auth when the "password" looks like a GitHub token,
+    // but fall back to Basic auth for traditional username/password credentials.
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'tuck-dotfiles-manager',
+    };
+
+    const looksLikeToken =
+      typeof password === 'string' &&
+      password.length >= MIN_GITHUB_TOKEN_LENGTH &&
+      GITHUB_TOKEN_PREFIXES.some((prefix) => password.startsWith(prefix));
+
+    if (looksLikeToken) {
+      headers.Authorization = `Bearer ${password}`;
+    } else {
+      const auth = Buffer.from(`${username}:${password}`).toString('base64');
+      headers.Authorization = `Basic ${auth}`;
+    }
 
     try {
       const response = await fetch('https://api.github.com/user', {
         method: 'GET',
-        headers: {
-          Authorization: `Basic ${auth}`,
-          Accept: 'application/vnd.github+json',
-          'User-Agent': 'tuck-dotfiles-manager',
-        },
+        headers,
         signal: controller.signal,
       });
 
@@ -1068,11 +1106,8 @@ export const testStoredCredentials = async (): Promise<{
           return { valid: true, username: apiUsername };
         } catch {
           // Even if we can't parse, 200 OK means auth succeeded
-          // Use username from credentials, fall back to metadata username if available
-          const effectiveUsername =
-            typeof username === 'string' && username.trim().length > 0
-              ? username
-              : metadata.username;
+          // Use username from credentials if valid, otherwise fall back to metadata username
+          const effectiveUsername = (username && username.trim()) || metadata.username;
           return { valid: true, username: effectiveUsername };
         }
       }
