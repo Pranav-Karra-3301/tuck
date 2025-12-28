@@ -864,10 +864,13 @@ export const storeGitHubCredentials = async (
 
   try {
     await mkdir(dirname(credentialsPath), { recursive: true });
-    // Note: File permissions (0o600) protect this metadata file.
-    // The actual token is stored securely via git credential helper (e.g., osxkeychain,
-    // libsecret, manager) which uses OS-level secure storage. The security of the token
-    // depends on the credential helper implementation, not just this metadata file.
+    // Note: File permissions (0o600) protect this metadata file on the filesystem,
+    // but the username stored in this file is in plaintext and may be readable by
+    // any process running as the same OS user. Only non-secret metadata such as
+    // the username and token presence/creation time are stored here; the actual
+    // token is stored securely via the git credential helper (e.g., osxkeychain,
+    // libsecret, manager) which uses OS-level secure storage. The security of the
+    // token itself depends on the credential helper implementation, not this file.
     await writeFile(credentialsPath, JSON.stringify(metadata, null, 2), {
       mode: 0o600, // Read/write only for owner
     });
