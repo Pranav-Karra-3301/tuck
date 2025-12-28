@@ -1013,13 +1013,17 @@ export const testStoredCredentials = async (): Promise<{
       proc.on('error', reject);
     });
 
-    // Parse credential output (format: key=value\n)
+    // Parse credential output (format: key=value\n). Values may contain '=' characters,
+    // so split into at most two parts: key and the full remaining value.
     for (const line of credentialOutput.trim().split('\n')) {
-      const [key, ...valueParts] = line.split('=');
+      const [key, value] = line.split('=', 2);
+      if (value === undefined) {
+        continue;
+      }
       if (key === 'username') {
-        username = valueParts.join('=');
+        username = value;
       } else if (key === 'password') {
-        password = valueParts.join('=');
+        password = value;
       }
     }
   } catch {
