@@ -180,9 +180,9 @@ const validateGitUrl = (value: string): string | undefined => {
   const trimmed = value.trim();
   
   // Check for common Git URL patterns
-  const isHttps = /^https?:\/\/.+/.test(trimmed);
-  const isSshScp = /^[^@]+@[^:]+:.+/.test(trimmed); // e.g. git@host:user/repo.git
-  const isSshUrl = /^ssh:\/\/.+/.test(trimmed);     // e.g. ssh://git@host/user/repo.git
+  const isHttps = /^https?:\/\/.+\/.+/.test(trimmed); // Must have at least host/path
+  const isSshScp = /^[^@]+@[^@:]+:[^:]+\/.+/.test(trimmed); // e.g. git@host:user/repo.git
+  const isSshUrl = /^ssh:\/\/.+\/.+/.test(trimmed);     // e.g. ssh://git@host/user/repo.git
   
   if (!isHttps && !isSshScp && !isSshUrl) {
     return 'Please enter a valid Git repository URL (HTTPS or SSH format)';

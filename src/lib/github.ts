@@ -503,14 +503,15 @@ const getStrictHostKeyCheckingOption = async (): Promise<string> => {
 
     const knownHostsContent = await readFile(knownHostsPath, 'utf-8');
 
-    // Check if github.com already has an entry by looking for lines that start with 'github.com'
-    // or contain '|1|' (hashed entries). This prevents matching on URLs like evil-github.com.
+    // Check if github.com already has a plain-text entry by looking for lines that start with 'github.com'
+    // Note: We don't check hashed entries (|1|...) because we can't verify the hostname without
+    // attempting the SSH connection. For security purposes, we only trust explicit github.com entries.
     const hasGitHubEntry = knownHostsContent.split('\n').some(line => {
       const trimmed = line.trim();
       // Skip comments and empty lines
       if (!trimmed || trimmed.startsWith('#')) return false;
-      // Check for exact hostname match (github.com or |1| hashed format)
-      return trimmed.startsWith('github.com ') || trimmed.startsWith('github.com,') || trimmed.startsWith('|1|');
+      // Check for exact hostname match at start of line (github.com or github.com,)
+      return trimmed.startsWith('github.com ') || trimmed.startsWith('github.com,');
     });
 
     if (hasGitHubEntry) {
