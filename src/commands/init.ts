@@ -1384,12 +1384,12 @@ const runInteractiveInit = async (): Promise<void> => {
         );
         console.log();
 
-        const useManual = await prompts.confirm('Enter a remote URL now?', true);
+        const useManual = await prompts.confirm('Did you create a GitHub repository?', true);
 
         if (useManual) {
-          const manualUrl = await prompts.text('Paste your repository URL:', {
+          const manualUrl = await prompts.text('Paste your GitHub repository URL:', {
             placeholder: `git@github.com:${user?.login || 'user'}/${suggestedName}.git`,
-            validate: validateGitUrl,
+            validate: validateGitHubUrl,
           });
 
           if (manualUrl) {

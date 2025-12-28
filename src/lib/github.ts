@@ -506,12 +506,20 @@ const getStrictHostKeyCheckingOption = async (): Promise<string> => {
     // Check if github.com already has a plain-text entry by looking for lines that start with 'github.com'
     // Note: We don't check hashed entries (|1|...) because we can't verify the hostname without
     // attempting the SSH connection. For security purposes, we only trust explicit github.com entries.
+    // Format: "github.com[,port] key-type key-data [comment]" or "@marker github.com[,port] key-type..."
     const hasGitHubEntry = knownHostsContent.split('\n').some(line => {
       const trimmed = line.trim();
       // Skip comments and empty lines
       if (!trimmed || trimmed.startsWith('#')) return false;
-      // Check for exact hostname match at start of line (github.com or github.com,)
-      return trimmed.startsWith('github.com ') || trimmed.startsWith('github.com,');
+      
+      // Handle @marker entries (e.g., @cert-authority or @revoked)
+      const hostnamePart = trimmed.startsWith('@') 
+        ? trimmed.split(/\s+/)[1] // Get second field after marker
+        : trimmed.split(/\s+/)[0]; // Get first field for regular entries
+      
+      // Check for exact hostname match (github.com or github.com,port)
+      if (!hostnamePart) return false;
+      return hostnamePart === 'github.com' || hostnamePart.startsWith('github.com,');
     });
 
     if (hasGitHubEntry) {
