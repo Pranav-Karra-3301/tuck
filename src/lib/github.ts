@@ -825,7 +825,8 @@ export const storeGitHubCredentials = async (
 
   // Store the credential using git credential helper
   // This pipes the credential to git credential approve
-  const credentialInput = `protocol=https\nhost=github.com\nusername=${username}\npassword=${token}\n`;
+  // Note: git credential protocol requires input to be terminated with a blank line (\n\n)
+  const credentialInput = `protocol=https\nhost=github.com\nusername=${username}\npassword=${token}\n\n`;
 
   try {
     const { spawn } = await import('child_process');
@@ -940,7 +941,8 @@ export const removeStoredCredentials = async (): Promise<void> => {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
-      proc.stdin.write('protocol=https\nhost=github.com\n');
+      // Note: git credential protocol requires input to be terminated with a blank line (\n\n)
+      proc.stdin.write('protocol=https\nhost=github.com\n\n');
       proc.stdin.end();
 
       proc.on('close', () => resolve());
