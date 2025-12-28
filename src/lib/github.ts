@@ -892,7 +892,9 @@ export const storeGitHubCredentials = async (
     }
 
     // Also log to console for environments that rely on standard output logging.
-    console.warn(`Warning: ${warningMessage}`, error);
+    const errorMessage =
+      error instanceof Error ? error.message : String(error);
+    console.warn(`Warning: ${warningMessage} Error: ${errorMessage}`);
   }
 };
 
