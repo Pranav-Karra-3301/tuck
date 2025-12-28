@@ -54,11 +54,13 @@ export const prompts = {
       hint: opt.hint ?? '',
     }));
 
-    // Type assertion needed: TypeScript's Option<T> conditional type doesn't correctly
-    // infer the type when T is generic. At runtime, the types match correctly.
+    // Type assertion needed: @clack/prompts uses a conditional Option<T> type that
+    // requires label when T is not a Primitive. Since we always provide label,
+    // the runtime types are correct, but TypeScript can't infer this properly.
     const result = await p.multiselect({
       message,
-      options: mappedOptions as SelectOption<T>[],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      options: mappedOptions as any,
       required: config?.required ?? false,
       initialValues: config?.initialValues,
     });

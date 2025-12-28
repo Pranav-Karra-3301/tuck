@@ -501,7 +501,7 @@ const setupTokenAuth = async (
 
   // Configure git credential helper (best-effort; Git can still prompt for credentials if this fails)
   await configureGitCredentialHelper().catch((error) => {
-    logger?.debug?.('Failed to configure git credential helper (non-fatal)', error);
+    logger.debug(`Failed to configure git credential helper (non-fatal): ${error instanceof Error ? error.message : String(error)}`);
   });
 
   return await promptForManualRepoUrl(tuckDir, username, 'https');
