@@ -825,8 +825,7 @@ export const storeGitHubCredentials = async (
 
   // Store the credential using git credential helper
   // This pipes the credential to git credential approve
-  // Note: git credential protocol requires input to be terminated with a blank line (\n\n)
-  const credentialInput = `protocol=https\nhost=github.com\nusername=${username}\npassword=${token}\n\n`;
+  const credentialInput = `protocol=https\nhost=github.com\nusername=${username}\npassword=${token}\n\n`; // Note: git credential protocol requires input to be terminated with a blank line (\n\n)
 
   try {
     const { spawn } = await import('child_process');
