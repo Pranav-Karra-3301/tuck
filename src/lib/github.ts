@@ -766,7 +766,11 @@ export const configureGitCredentialHelper = async (): Promise<void> => {
       // Linux - use libsecret if available, otherwise cache
       try {
         await execFileAsync('git', ['config', '--global', 'credential.helper', 'libsecret']);
-      } catch {
+      } catch (error) {
+        console.info(
+          'git-credential-libsecret is not available; falling back to git credential cache helper with timeout of ' +
+            `${CREDENTIAL_CACHE_TIMEOUT_SECONDS} seconds.`
+        );
         await execFileAsync('git', ['config', '--global', 'credential.helper', `cache --timeout=${CREDENTIAL_CACHE_TIMEOUT_SECONDS}`]);
       }
     } else if (platform === 'win32') {
