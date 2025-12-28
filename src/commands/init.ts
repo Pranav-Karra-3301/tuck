@@ -162,7 +162,7 @@ const validateGitHubUrl = (value: string): string | undefined => {
   } else if (isGitHubSsh) {
     // SSH format: git@github.com:owner/repo[.git]
     const pathPart = value.substring('git@github.com:'.length);
-    if (!pathPart.includes('/')) {
+    if (!pathPart.includes('/') || pathPart === '/') {
       return 'GitHub URL must include owner and repository name (e.g., git@github.com:owner/repo.git)';
     }
   }

@@ -1107,7 +1107,7 @@ export const testStoredCredentials = async (): Promise<{
         } catch {
           // Even if we can't parse, 200 OK means auth succeeded
           // Use username from credentials if valid, otherwise fall back to metadata username
-          const effectiveUsername = username || metadata.username;
+          const effectiveUsername = (username && username.trim()) || metadata.username;
           return { valid: true, username: effectiveUsername };
         }
       }
