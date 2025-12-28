@@ -1389,7 +1389,7 @@ const runInteractiveInit = async (): Promise<void> => {
         if (useManual) {
           const manualUrl = await prompts.text('Paste your repository URL:', {
             placeholder: `git@github.com:${user?.login || 'user'}/${suggestedName}.git`,
-            validate: validateGitHubUrl,
+            validate: validateGitUrl,
           });
 
           if (manualUrl) {
