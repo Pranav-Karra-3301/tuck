@@ -11,8 +11,11 @@ const execFileAsync = promisify(execFile);
 /** API request timeout in milliseconds (10 seconds) */
 const API_REQUEST_TIMEOUT_MS = 10000;
 
-/** Git credential cache timeout in seconds (24 hours) */
-const CREDENTIAL_CACHE_TIMEOUT_SECONDS = 86400;
+/**
+ * Git credential helper fallback cache timeout in seconds (24 hours).
+ * This is used when the git credential helper falls back to cache mode on Linux.
+ */
+const GIT_CREDENTIAL_CACHE_FALLBACK_TIMEOUT_SECONDS = 86400;
 
 /** Days threshold for warning about potentially expired tokens (85 days, before typical 90-day expiration) */
 const TOKEN_EXPIRATION_WARNING_DAYS = 85;
@@ -486,18 +489,44 @@ export const checkSSHKeys = async (): Promise<SSHKeyInfo> => {
 };
 
 /**
+ * Determine the appropriate StrictHostKeyChecking option for GitHub SSH tests.
+ * Uses "yes" if github.com is already in known_hosts, otherwise "accept-new".
+ */
+const getStrictHostKeyCheckingOption = async (): Promise<string> => {
+  try {
+    const { homedir } = await import('os');
+    const { join } = await import('path');
+    const { readFile } = await import('fs/promises');
+
+    const sshDir = join(homedir(), '.ssh');
+    const knownHostsPath = join(sshDir, 'known_hosts');
+
+    const knownHostsContent = await readFile(knownHostsPath, 'utf-8');
+
+    // If github.com already has an entry, use the safer strict checking mode.
+    if (knownHostsContent.includes('github.com')) {
+      return 'yes';
+    }
+  } catch {
+    // If known_hosts doesn't exist or can't be read, fall back to accept-new
+    // to preserve existing behavior for first-time setups.
+  }
+
+  // Use accept-new for better UX on first connection. This will automatically
+  // trust a new host key, which can weaken protection against MITM attacks during
+  // initial key establishment. However, since the target is hard-coded to github.com,
+  // whose SSH host keys are well-known and documented, the practical risk is low.
+  return 'accept-new';
+};
+
+/**
  * Test if SSH connection to GitHub works
  */
 export const testSSHConnection = async (): Promise<{ success: boolean; username?: string }> => {
   try {
-    // Note: We use StrictHostKeyChecking=accept-new here for better UX when testing SSH to GitHub.
-    // This will automatically trust a new host key on first connect, which can weaken protection
-    // against man-in-the-middle attacks during initial key establishment. In this specific case,
-    // the target is hard-coded to github.com, whose SSH host keys are well-known, documented, and
-    // rarely change, so the practical risk is low. If stricter security is required in your
-    // environment, pre-populate known_hosts for github.com and change this to StrictHostKeyChecking=yes.
+    const strictHostKeyChecking = await getStrictHostKeyCheckingOption();
     // ssh -T git@github.com returns exit code 1 even on success, but outputs the username
-    const { stderr } = await execFileAsync('ssh', ['-T', '-o', 'StrictHostKeyChecking=accept-new', 'git@github.com']);
+    const { stderr } = await execFileAsync('ssh', ['-T', '-o', `StrictHostKeyChecking=${strictHostKeyChecking}`, 'git@github.com']);
     const match = stderr.match(/Hi ([^!]+)!/);
     if (match) {
       return { success: true, username: match[1] };
@@ -775,9 +804,9 @@ export const configureGitCredentialHelper = async (): Promise<void> => {
       } catch (error) {
         console.info(
           'git-credential-libsecret is not available; falling back to git credential cache helper with timeout of ' +
-            `${CREDENTIAL_CACHE_TIMEOUT_SECONDS} seconds.`
+            `${GIT_CREDENTIAL_CACHE_FALLBACK_TIMEOUT_SECONDS} seconds.`
         );
-        await execFileAsync('git', ['config', '--global', 'credential.helper', `cache --timeout=${CREDENTIAL_CACHE_TIMEOUT_SECONDS}`]);
+        await execFileAsync('git', ['config', '--global', 'credential.helper', `cache --timeout=${GIT_CREDENTIAL_CACHE_FALLBACK_TIMEOUT_SECONDS}`]);
       }
     } else if (platform === 'win32') {
       // Windows - use credential manager
@@ -920,10 +949,25 @@ export const storeGitHubCredentials = async (
       // Fallback: emitting a warning should never break the main flow.
     }
 
-    // Also log to console for environments that rely on standard output logging.
-    const errorMessage =
-      error instanceof Error ? error.message : String(error);
-    console.warn(`Warning: ${warningMessage} Error: ${errorMessage}`);
+    // Also log to console for environments that rely on standard output logging,
+    // but avoid exposing full filesystem paths by default. Detailed information,
+    // including the credential metadata path and underlying error, is only logged
+    // when an explicit debug flag is enabled.
+    const isDebugLoggingEnabled =
+      process.env.GITHUB_DEBUG_CREDENTIALS_METADATA === '1';
+    if (isDebugLoggingEnabled) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      console.warn(
+        `Warning: ${warningMessage} Error: ${errorMessage}`,
+      );
+    } else {
+      console.warn(
+        'Warning: Failed to store GitHub credential metadata. ' +
+          'Token expiration tracking and verification of restricted file ' +
+          'permissions (0o600) may not work as expected.',
+      );
+    }
   }
 };
 
@@ -1247,7 +1291,10 @@ export const updateStoredCredentials = async (
   const username = metadata?.username;
 
   if (!username) {
-    throw new Error('No username found. Please run `tuck init` to set up authentication.');
+    throw new Error(
+      'GitHub credential metadata is incomplete or corrupted (missing username). ' +
+      'Please remove the credential file and re-authenticate by running `tuck config` or `tuck init`.'
+    );
   }
 
   // Determine token type, preferring explicit type, then stored metadata, then detection
@@ -1256,7 +1303,11 @@ export const updateStoredCredentials = async (
 
   // Ensure we have a valid token type (not 'unknown')
   if (tokenType !== 'fine-grained' && tokenType !== 'classic') {
-    throw new Error('Could not determine GitHub token type. Please run `tuck init` to set up authentication.');
+    throw new Error(
+      'Could not determine GitHub token type. The token format is not recognized. ' +
+      'Please verify your token starts with "github_pat_" (fine-grained) or "ghp_" (classic), ' +
+      'or generate a new token at https://github.com/settings/tokens'
+    );
   }
 
   // Remove old credentials first

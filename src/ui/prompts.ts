@@ -54,11 +54,14 @@ export const prompts = {
       hint: opt.hint ?? '',
     }));
 
-    // Type assertion needed: TypeScript's Option<T> conditional type doesn't correctly
-    // infer the type when T is generic. At runtime, the types match correctly.
+    // Type assertion needed: @clack/prompts uses a conditional type Option<T> that checks
+    // if T extends Primitive. When T is a generic type parameter, TypeScript cannot narrow
+    // this conditional type properly, causing a type mismatch. The mapped options satisfy
+    // the Option<T> contract at runtime (value, label, hint properties), so we use 'any'
+    // to bypass the type checking limitation.
     const result = await p.multiselect({
       message,
-      options: mappedOptions as SelectOption<T>[],
+      options: mappedOptions as any,
       required: config?.required ?? false,
       initialValues: config?.initialValues,
     });

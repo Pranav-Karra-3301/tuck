@@ -170,6 +170,27 @@ const validateGitHubUrl = (value: string): string | undefined => {
   return undefined;
 };
 
+/**
+ * Validate any Git repository URL (not just GitHub)
+ * Used when cloning existing repositories that may be hosted anywhere
+ */
+const validateGitUrl = (value: string): string | undefined => {
+  if (!value) return 'Repository URL is required';
+  
+  const trimmed = value.trim();
+  
+  // Check for common Git URL patterns
+  const isHttps = /^https?:\/\/.+/.test(trimmed);
+  const isSshScp = /^[^@]+@[^:]+:.+/.test(trimmed); // e.g. git@host:user/repo.git
+  const isSshUrl = /^ssh:\/\/.+/.test(trimmed);     // e.g. ssh://git@host/user/repo.git
+  
+  if (!isHttps && !isSshScp && !isSshUrl) {
+    return 'Please enter a valid Git repository URL (HTTPS or SSH format)';
+  }
+  
+  return undefined;
+};
+
 const createDirectoryStructure = async (tuckDir: string): Promise<void> => {
   // Create main directories
   await ensureDir(tuckDir);
@@ -404,7 +425,7 @@ const setupTokenAuth = async (
   tuckDir: string,
   preferredType?: 'fine-grained' | 'classic'
 ): Promise<GitHubSetupResult> => {
-  const tokenType = preferredType || await prompts.select('Which type of token?', [
+  const tokenType = preferredType ?? await prompts.select('Which type of token?', [
     {
       value: 'fine-grained',
       label: 'Fine-grained Token (recommended)',
@@ -501,7 +522,8 @@ const setupTokenAuth = async (
 
   // Configure git credential helper (best-effort; Git can still prompt for credentials if this fails)
   await configureGitCredentialHelper().catch((error) => {
-    logger?.debug?.('Failed to configure git credential helper (non-fatal)', error);
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger?.debug?.(`Failed to configure git credential helper (non-fatal): ${errorMsg}`);
   });
 
   return await promptForManualRepoUrl(tuckDir, username, 'https');
@@ -1284,8 +1306,8 @@ const runInteractiveInit = async (): Promise<void> => {
 
     if (hasExisting === 'yes') {
       const repoUrl = await prompts.text('Enter repository URL:', {
-        placeholder: 'git@github.com:user/dotfiles.git',
-        validate: validateGitHubUrl,
+        placeholder: 'git@host:user/dotfiles.git or https://host/user/dotfiles.git',
+        validate: validateGitUrl,
       });
 
       await initFromRemote(tuckDir, repoUrl);
