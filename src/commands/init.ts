@@ -24,9 +24,24 @@ import {
   getAuthenticatedUser,
   createRepo,
   getPreferredRepoUrl,
+  getPreferredRemoteProtocol,
   findDotfilesRepo,
   ghCloneRepo,
+  checkSSHKeys,
+  testSSHConnection,
+  getSSHKeyInstructions,
+  getFineGrainedTokenInstructions,
+  getClassicTokenInstructions,
+  getGitHubCLIInstallInstructions,
+  storeGitHubCredentials,
+  detectTokenType,
+  configureGitCredentialHelper,
+  testStoredCredentials,
+  diagnoseAuthIssue,
+  MIN_GITHUB_TOKEN_LENGTH,
+  GITHUB_TOKEN_PREFIXES,
 } from '../lib/github.js';
+import chalk from 'chalk';
 import { detectDotfiles, DetectedFile, DETECTION_CATEGORIES } from '../lib/detect.js';
 import { createPreApplySnapshot } from '../lib/timemachine.js';
 import { copy } from 'fs-extra';
@@ -122,6 +137,60 @@ tuck restore --all
 \`\`\`
 `;
 
+/**
+ * Validates a GitHub repository URL (HTTPS or SSH format) and checks for owner/repo pattern
+ * @param value The URL to validate
+ * @returns undefined if valid, or an error message string if invalid
+ */
+const validateGitHubUrl = (value: string): string | undefined => {
+  if (!value) return 'Repository URL is required';
+  
+  const isGitHubHttps = value.startsWith('https://github.com/');
+  const isGitHubSsh = value.startsWith('git@github.com:');
+  
+  if (!isGitHubHttps && !isGitHubSsh) {
+    return 'Please enter a valid GitHub URL';
+  }
+  
+  // Validate URL contains owner/repo pattern
+  if (isGitHubHttps) {
+    // HTTPS format: https://github.com/owner/repo[.git]
+    const pathPart = value.substring('https://github.com/'.length);
+    if (!pathPart.includes('/') || pathPart === '/') {
+      return 'GitHub URL must include owner and repository name (e.g., https://github.com/owner/repo)';
+    }
+  } else if (isGitHubSsh) {
+    // SSH format: git@github.com:owner/repo[.git]
+    const pathPart = value.substring('git@github.com:'.length);
+    if (!pathPart.includes('/') || pathPart === '/') {
+      return 'GitHub URL must include owner and repository name (e.g., git@github.com:owner/repo.git)';
+    }
+  }
+  
+  return undefined;
+};
+
+/**
+ * Validate any Git repository URL (not just GitHub)
+ * Used when cloning existing repositories that may be hosted anywhere
+ */
+const validateGitUrl = (value: string): string | undefined => {
+  if (!value) return 'Repository URL is required';
+  
+  const trimmed = value.trim();
+  
+  // Check for common Git URL patterns
+  const isHttps = /^https?:\/\/.+\/.+/.test(trimmed); // Must have at least host/path
+  const isSshScp = /^[^@]+@[^@:]+:[^:]+\/.+/.test(trimmed); // e.g. git@host:user/repo.git
+  const isSshUrl = /^ssh:\/\/.+\/.+/.test(trimmed);     // e.g. ssh://git@host/user/repo.git
+  
+  if (!isHttps && !isSshScp && !isSshUrl) {
+    return 'Please enter a valid Git repository URL (HTTPS or SSH format)';
+  }
+  
+  return undefined;
+};
+
 const createDirectoryStructure = async (tuckDir: string): Promise<void> => {
   // Create main directories
   await ensureDir(tuckDir);
@@ -205,20 +274,368 @@ interface GitHubSetupResult {
   pushed: boolean;
 }
 
+/**
+ * Set up alternative authentication (SSH or tokens)
+ */
+const setupAlternativeAuth = async (tuckDir: string): Promise<GitHubSetupResult> => {
+  console.log();
+  prompts.log.info("GitHub CLI not available. Let's set up authentication another way.");
+  console.log();
+
+  // Check for existing credentials and test them
+  const credTest = await testStoredCredentials();
+  if (credTest.valid && credTest.username) {
+    prompts.log.success(`Found existing valid credentials for ${credTest.username}`);
+    const useExisting = await prompts.confirm('Use these credentials?', true);
+    if (useExisting) {
+      // Credentials work - ask for repo URL
+      return await promptForManualRepoUrl(tuckDir, credTest.username);
+    }
+  } else if (credTest.username && credTest.reason) {
+    // Had credentials but they failed
+    const diagnosis = await diagnoseAuthIssue();
+    prompts.log.warning(diagnosis.issue);
+    for (const suggestion of diagnosis.suggestions) {
+      console.log(chalk.dim(`  ${suggestion}`));
+    }
+    console.log();
+  }
+
+  // Check for existing SSH keys
+  const sshInfo = await checkSSHKeys();
+  const sshConnection = sshInfo.exists ? await testSSHConnection() : { success: false };
+
+  // Build auth method options
+  const authOptions: Array<{ value: string; label: string; hint: string }> = [];
+
+  if (sshInfo.exists && sshConnection.success) {
+    authOptions.push({
+      value: 'ssh-existing',
+      label: 'Use existing SSH key',
+      hint: `Connected as ${sshConnection.username}`,
+    });
+  }
+
+  authOptions.push(
+    {
+      value: 'gh-cli',
+      label: 'Install GitHub CLI (recommended)',
+      hint: 'Easiest option - automatic repo creation',
+    },
+    {
+      value: 'ssh-new',
+      label: 'Set up SSH key',
+      hint: sshInfo.exists ? 'Configure existing key' : 'Generate new SSH key',
+    },
+    {
+      value: 'fine-grained',
+      label: 'Use Fine-grained Token',
+      hint: 'More secure - limited permissions',
+    },
+    {
+      value: 'classic',
+      label: 'Use Classic Token',
+      hint: 'Broader access - simpler setup',
+    },
+    {
+      value: 'skip',
+      label: 'Skip for now',
+      hint: 'Set up authentication later',
+    }
+  );
+
+  const authMethod = await prompts.select('Choose an authentication method:', authOptions);
+
+  if (authMethod === 'skip') {
+    return { remoteUrl: null, pushed: false };
+  }
+
+  if (authMethod === 'gh-cli') {
+    // Show GitHub CLI install instructions
+    console.log();
+    prompts.note(getGitHubCLIInstallInstructions(), 'GitHub CLI Installation');
+    console.log();
+    prompts.log.info('After installing and authenticating, run `tuck init` again');
+    prompts.log.info('Or continue with token-based authentication below');
+
+    const continueWithToken = await prompts.confirm('Set up token authentication instead?', true);
+    if (!continueWithToken) {
+      return { remoteUrl: null, pushed: false };
+    }
+    // Fall through to token setup
+    return await setupTokenAuth(tuckDir);
+  }
+
+  if (authMethod === 'ssh-existing') {
+    // SSH key already works - just need repo URL
+    prompts.log.success(`SSH authenticated as ${sshConnection.username}`);
+    return await promptForManualRepoUrl(tuckDir, sshConnection.username, 'ssh');
+  }
+
+  if (authMethod === 'ssh-new') {
+    // Show SSH setup instructions
+    console.log();
+    prompts.note(getSSHKeyInstructions(), 'SSH Key Setup');
+    console.log();
+
+    if (sshInfo.exists) {
+      prompts.log.info(`Found existing SSH key at ${sshInfo.path}`);
+      if (sshInfo.publicKey) {
+        console.log();
+        prompts.log.info('Your public key (copy this to GitHub):');
+        console.log(chalk.cyan(sshInfo.publicKey));
+        console.log();
+      }
+    }
+
+    const sshReady = await prompts.confirm('Have you added your SSH key to GitHub?');
+    if (sshReady) {
+      // Test connection
+      const testSpinner = prompts.spinner();
+      testSpinner.start('Testing SSH connection...');
+      const testResult = await testSSHConnection();
+      if (testResult.success) {
+        testSpinner.stop(`SSH authenticated as ${testResult.username}`);
+        return await promptForManualRepoUrl(tuckDir, testResult.username, 'ssh');
+      } else {
+        testSpinner.stop('SSH connection failed');
+        prompts.log.warning('Could not connect to GitHub via SSH');
+        prompts.log.info('Make sure you added the public key and try again');
+
+        const useTokenInstead = await prompts.confirm('Use token authentication instead?', true);
+        if (useTokenInstead) {
+          return await setupTokenAuth(tuckDir);
+        }
+      }
+    }
+    return { remoteUrl: null, pushed: false };
+  }
+
+  if (authMethod === 'fine-grained' || authMethod === 'classic') {
+    return await setupTokenAuth(tuckDir, authMethod === 'fine-grained' ? 'fine-grained' : 'classic');
+  }
+
+  return { remoteUrl: null, pushed: false };
+};
+
+/**
+ * Set up token-based authentication
+ */
+const setupTokenAuth = async (
+  tuckDir: string,
+  preferredType?: 'fine-grained' | 'classic'
+): Promise<GitHubSetupResult> => {
+  const tokenType = preferredType ?? await prompts.select('Which type of token?', [
+    {
+      value: 'fine-grained',
+      label: 'Fine-grained Token (recommended)',
+      hint: 'Limited permissions, more secure',
+    },
+    {
+      value: 'classic',
+      label: 'Classic Token',
+      hint: 'Full repo access, simpler',
+    },
+  ]);
+
+  // Show instructions for the selected token type
+  console.log();
+  if (tokenType === 'fine-grained') {
+    prompts.note(getFineGrainedTokenInstructions(), 'Fine-grained Token Setup');
+  } else {
+    prompts.note(getClassicTokenInstructions(), 'Classic Token Setup');
+  }
+  console.log();
+
+  // Ask for username
+  const username = await prompts.text('Enter your GitHub username:', {
+    validate: (value) => {
+      if (!value) return 'Username is required';
+      // GitHub username rules: 1-39 characters total, start with alphanumeric, may contain hyphens
+      // (no consecutive or trailing hyphens).
+      if (!/^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$/.test(value)) {
+        return 'Invalid GitHub username (must start with a letter or number, be 1-39 characters, and may include hyphens but not consecutively or at the end).';
+      }
+      return undefined;
+    },
+  });
+
+  // Ask for token
+  const token = await prompts.password('Paste your token (hidden):');
+
+  if (!token) {
+    prompts.log.warning('No token provided');
+    return { remoteUrl: null, pushed: false };
+  }
+
+  // Basic token format validation
+  if (token.length < MIN_GITHUB_TOKEN_LENGTH) {
+    prompts.log.error('Invalid token: Token appears too short');
+    return { remoteUrl: null, pushed: false };
+  }
+
+  // Check if token starts with expected GitHub token prefixes
+  const hasValidPrefix = GITHUB_TOKEN_PREFIXES.some((prefix) => token.startsWith(prefix));
+
+  if (!hasValidPrefix) {
+    const prefixList = GITHUB_TOKEN_PREFIXES.join(', ');
+    prompts.log.warning(
+      `Warning: Token does not start with a recognized GitHub prefix (${prefixList}). ` +
+        'This may cause authentication to fail.'
+    );
+    
+    const proceedWithUnrecognizedToken = await prompts.confirm(
+      'The value you entered does not look like a typical GitHub personal access token. ' +
+        'Are you sure this is a GitHub token and not, for example, a password or another secret?'
+    );
+    
+    if (!proceedWithUnrecognizedToken) {
+      prompts.log.error(
+        'Aborting setup to avoid storing a value that may not be a GitHub token. ' +
+          'Please generate a GitHub personal access token and try again.'
+      );
+      return { remoteUrl: null, pushed: false };
+    }
+  }
+
+  // Auto-detect token type
+  const detectedType = detectTokenType(token);
+  const finalType = detectedType !== 'unknown' ? detectedType : (tokenType as 'fine-grained' | 'classic');
+
+  if (detectedType !== 'unknown' && detectedType !== tokenType) {
+    prompts.log.info(`Detected ${detectedType === 'fine-grained' ? 'fine-grained' : 'classic'} token`);
+  }
+
+  // Store credentials securely
+  const storeSpinner = prompts.spinner();
+  storeSpinner.start('Storing credentials securely...');
+
+  try {
+    await storeGitHubCredentials(username, token, finalType);
+    storeSpinner.stop('Credentials stored');
+    prompts.log.success('Authentication configured successfully');
+  } catch (error) {
+    storeSpinner.stop('Failed to store credentials');
+    prompts.log.warning(`Could not store credentials: ${error instanceof Error ? error.message : String(error)}`);
+    prompts.log.info('You may be prompted for credentials when pushing');
+  }
+
+  // Configure git credential helper (best-effort; Git can still prompt for credentials if this fails)
+  await configureGitCredentialHelper().catch((error) => {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger?.debug?.(`Failed to configure git credential helper (non-fatal): ${errorMsg}`);
+  });
+
+  return await promptForManualRepoUrl(tuckDir, username, 'https');
+};
+
+/**
+ * Prompt user for a repository URL and configure remote
+ */
+const promptForManualRepoUrl = async (
+  tuckDir: string,
+  username?: string,
+  preferredProtocol: 'ssh' | 'https' = 'https'
+): Promise<GitHubSetupResult> => {
+  const suggestedName = 'dotfiles';
+  const exampleUrl = preferredProtocol === 'ssh'
+    ? `git@github.com:${username || 'username'}/${suggestedName}.git`
+    : `https://github.com/${username || 'username'}/${suggestedName}.git`;
+
+  console.log();
+  prompts.note(
+    `Create a repository on GitHub:\n\n` +
+    `1. Go to: https://github.com/new\n` +
+    `2. Name: ${suggestedName}\n` +
+    `3. Visibility: Private (recommended)\n` +
+    `4. Do NOT add README or .gitignore\n` +
+    `5. Click "Create repository"\n` +
+    `6. Copy the ${preferredProtocol.toUpperCase()} URL`,
+    'Manual Repository Setup'
+  );
+  console.log();
+
+  const hasRepo = await prompts.confirm('Have you created the repository?');
+  if (!hasRepo) {
+    prompts.log.info('Create a repository first, then run `tuck init` again');
+    return { remoteUrl: null, pushed: false };
+  }
+
+  const repoUrl = await prompts.text('Paste the repository URL:', {
+    placeholder: exampleUrl,
+    validate: validateGitHubUrl,
+  });
+
+  // Add remote
+  try {
+    await addRemote(tuckDir, 'origin', repoUrl);
+    prompts.log.success('Remote configured');
+    return { remoteUrl: repoUrl, pushed: false };
+  } catch (error) {
+    prompts.log.error(`Failed to add remote: ${error instanceof Error ? error.message : String(error)}`);
+    return { remoteUrl: null, pushed: false };
+  }
+};
+
 const setupGitHubRepo = async (tuckDir: string): Promise<GitHubSetupResult> => {
   // Check if GitHub CLI is available
   const ghInstalled = await isGhInstalled();
   if (!ghInstalled) {
-    prompts.log.info('GitHub CLI (gh) is not installed');
-    prompts.log.info('Install it from https://cli.github.com/ for auto-setup');
-    return { remoteUrl: null, pushed: false };
+    // Offer alternative authentication methods
+    return await setupAlternativeAuth(tuckDir);
   }
 
   const ghAuth = await isGhAuthenticated();
   if (!ghAuth) {
-    prompts.log.info('GitHub CLI is not authenticated');
-    prompts.log.info('Run `gh auth login` to enable auto-setup');
-    return { remoteUrl: null, pushed: false };
+    prompts.log.info('GitHub CLI is installed but not authenticated');
+
+    const authChoice = await prompts.select('How would you like to authenticate?', [
+      {
+        value: 'gh-login',
+        label: 'Run `gh auth login` now',
+        hint: 'Opens browser to authenticate',
+      },
+      {
+        value: 'alternative',
+        label: 'Use alternative method',
+        hint: 'SSH key or personal access token',
+      },
+      {
+        value: 'skip',
+        label: 'Skip for now',
+        hint: 'Set up authentication later',
+      },
+    ]);
+
+    if (authChoice === 'skip') {
+      return { remoteUrl: null, pushed: false };
+    }
+
+    if (authChoice === 'alternative') {
+      return await setupAlternativeAuth(tuckDir);
+    }
+
+    // Run gh auth login
+    prompts.log.info('Please complete the authentication in your browser...');
+    try {
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
+      await execFileAsync('gh', ['auth', 'login', '--web']);
+
+      // Re-check auth status
+      if (!(await isGhAuthenticated())) {
+        prompts.log.warning('Authentication may have failed');
+        return await setupAlternativeAuth(tuckDir);
+      }
+    } catch (error) {
+      prompts.log.warning(`Authentication failed: ${error instanceof Error ? error.message : String(error)}`);
+      const useAlt = await prompts.confirm('Try alternative authentication?', true);
+      if (useAlt) {
+        return await setupAlternativeAuth(tuckDir);
+      }
+      return { remoteUrl: null, pushed: false };
+    }
   }
 
   // Get authenticated user
@@ -736,6 +1153,11 @@ const runInteractiveInit = async (): Promise<void> => {
     return;
   }
 
+  // Flow control flags
+  let skipExistingRepoQuestion = false;
+  let remoteUrl: string | null = null;
+  let existingRepoToUseAsRemote: string | null = null;
+
   // Auto-detect existing GitHub dotfiles repository
   const ghInstalled = await isGhInstalled();
   const ghAuth = ghInstalled && (await isGhAuthenticated());
@@ -830,7 +1252,17 @@ const runInteractiveInit = async (): Promise<void> => {
               );
             }
             console.log();
-            // Continue with normal flow
+
+            // Offer to use the failed repo as remote and continue with fresh init
+            const useAsRemoteAnyway = await prompts.confirm(
+              `Use ${existingRepoName} as your remote and start fresh?`,
+              true
+            );
+
+            if (useAsRemoteAnyway) {
+              existingRepoToUseAsRemote = existingRepoName;
+              skipExistingRepoQuestion = true;
+            }
           } finally {
             // Always clean up temp directory if it exists
             if (await pathExists(tempDir)) {
@@ -844,6 +1276,18 @@ const runInteractiveInit = async (): Promise<void> => {
               }
             }
           }
+        } else {
+          // User declined to import - offer to use as remote only
+          console.log();
+          const useAsRemote = await prompts.confirm(
+            `Use ${existingRepoName} as your remote (without importing its contents)?`,
+            true
+          );
+
+          if (useAsRemote) {
+            existingRepoToUseAsRemote = existingRepoName;
+          }
+          skipExistingRepoQuestion = true;
         }
       } else {
         spinner.stop('No existing dotfiles repository found');
@@ -853,131 +1297,327 @@ const runInteractiveInit = async (): Promise<void> => {
     }
   }
 
-  // Ask about existing repo (manual flow)
-  const hasExisting = await prompts.select('Do you have an existing dotfiles repository?', [
-    { value: 'no', label: 'No, start fresh' },
-    { value: 'yes', label: 'Yes, clone from URL' },
-  ]);
+  // Ask about existing repo (manual flow) - skip if we already handled it
+  if (!skipExistingRepoQuestion) {
+    const hasExisting = await prompts.select('Do you have an existing dotfiles repository?', [
+      { value: 'no', label: 'No, start fresh' },
+      { value: 'yes', label: 'Yes, clone from URL' },
+    ]);
 
-  if (hasExisting === 'yes') {
-    const repoUrl = await prompts.text('Enter repository URL:', {
-      placeholder: 'git@github.com:user/dotfiles.git',
-      validate: (value) => {
-        if (!value) return 'Repository URL is required';
-        if (!value.includes('github.com') && !value.includes('gitlab.com') && !value.includes('git@')) {
-          return 'Please enter a valid git URL';
-        }
-        return undefined;
-      },
-    });
-
-    await initFromRemote(tuckDir, repoUrl);
-
-    prompts.log.success('Repository cloned successfully!');
-
-    const shouldRestore = await prompts.confirm('Would you like to restore dotfiles now?', true);
-
-    if (shouldRestore) {
-      console.log();
-      // Dynamically import and run restore
-      const { runRestore } = await import('./restore.js');
-      await runRestore({ all: true });
-    }
-  } else {
-    await initFromScratch(tuckDir, {});
-
-    // Detect existing dotfiles on the system
-    const scanSpinner = prompts.spinner();
-    scanSpinner.start('Scanning for dotfiles...');
-    const detectedFiles = await detectDotfiles();
-    const nonSensitiveFiles = detectedFiles.filter((f) => !f.sensitive);
-    scanSpinner.stop(`Found ${nonSensitiveFiles.length} dotfiles on your system`);
-
-    if (nonSensitiveFiles.length > 0) {
-      // Group by category and show summary
-      const grouped: Record<string, DetectedFile[]> = {};
-      for (const file of nonSensitiveFiles) {
-        if (!grouped[file.category]) grouped[file.category] = [];
-        grouped[file.category].push(file);
-      }
-
-      console.log();
-      const categoryOrder = ['shell', 'git', 'editors', 'terminal', 'ssh', 'misc'];
-      const sortedCategories = Object.keys(grouped).sort((a, b) => {
-        const aIdx = categoryOrder.indexOf(a);
-        const bIdx = categoryOrder.indexOf(b);
-        if (aIdx === -1 && bIdx === -1) return a.localeCompare(b);
-        if (aIdx === -1) return 1;
-        if (bIdx === -1) return -1;
-        return aIdx - bIdx;
+    if (hasExisting === 'yes') {
+      const repoUrl = await prompts.text('Enter repository URL:', {
+        placeholder: 'git@host:user/dotfiles.git or https://host/user/dotfiles.git',
+        validate: validateGitUrl,
       });
 
-      for (const category of sortedCategories) {
-        const files = grouped[category];
-        const config = DETECTION_CATEGORIES[category] || { icon: '-', name: category };
-        console.log(`  ${config.icon} ${config.name}: ${files.length} files`);
+      await initFromRemote(tuckDir, repoUrl);
+
+      prompts.log.success('Repository cloned successfully!');
+
+      const shouldRestore = await prompts.confirm('Would you like to restore dotfiles now?', true);
+
+      if (shouldRestore) {
+        console.log();
+        // Dynamically import and run restore
+        const { runRestore } = await import('./restore.js');
+        await runRestore({ all: true });
       }
-      console.log();
 
-      const trackNow = await prompts.confirm('Would you like to track some of these now?', true);
-
-      if (trackNow) {
-        // Show multiselect with categories as groups - NO arbitrary limit!
-        const options = nonSensitiveFiles.map((f) => ({
-          value: f.path,
-          label: `${collapsePath(f.path)}`,
-          hint: f.category,
-        }));
-
-        const selectedFiles = await prompts.multiselect(
-          'Select files to track:',
-          options
-        );
-
-        if (selectedFiles.length > 0) {
-          // Track files with beautiful progress display
-          const trackedCount = await trackFilesWithProgressInit(selectedFiles, tuckDir);
-
-          if (trackedCount > 0) {
-            // Ask if user wants to sync now
-            console.log();
-            const shouldSync = await prompts.confirm('Would you like to sync these changes now?', true);
-
-            if (shouldSync) {
-              console.log();
-              const { runSync } = await import('./sync.js');
-              await runSync({});
-            }
-          } else {
-            prompts.outro('No files were tracked');
-          }
-        }
-      } else {
-        prompts.log.info("Run 'tuck scan' later to interactively add files");
-      }
+      prompts.outro('Tuck initialized successfully!');
+      nextSteps([
+        `View status: tuck status`,
+        `Add files:   tuck add ~/.zshrc`,
+        `Sync:        tuck sync`,
+      ]);
+      return;
     }
+  }
 
-    // Ask about remote - try GitHub auto-setup first
-    const wantsRemote = await prompts.confirm('Would you like to set up a remote repository?');
+  // Initialize from scratch
+  await initFromScratch(tuckDir, {});
+
+  // If we have an existing repo to use as remote, set it up now
+  if (existingRepoToUseAsRemote) {
+    const protocol = await getPreferredRemoteProtocol();
+    remoteUrl = protocol === 'ssh'
+      ? `git@github.com:${existingRepoToUseAsRemote}.git`
+      : `https://github.com/${existingRepoToUseAsRemote}.git`;
+
+    await addRemote(tuckDir, 'origin', remoteUrl);
+    prompts.log.success(`Remote set to ${existingRepoToUseAsRemote}`);
+    prompts.log.info('Your next push will update the remote repository');
+    console.log();
+  }
+
+  // ========== STEP 1: Remote Setup (if not already configured) ==========
+  if (!remoteUrl) {
+    const wantsRemote = await prompts.confirm('Would you like to set up a remote repository?', true);
 
     if (wantsRemote) {
       // Try GitHub auto-setup
       const ghResult = await setupGitHubRepo(tuckDir);
+      remoteUrl = ghResult.remoteUrl;
 
-      // If GitHub setup didn't add a remote, fall back to manual entry
+      // If GitHub setup didn't add a remote, show manual instructions
       if (!ghResult.remoteUrl) {
-        const useManual = await prompts.confirm('Enter a remote URL manually?');
+        // Get user info for examples
+        const user = await getAuthenticatedUser().catch(() => null);
+        const suggestedName = 'dotfiles';
+
+        console.log();
+        prompts.note(
+          `To create a GitHub repository manually:\n\n` +
+          `1. Go to: https://github.com/new\n` +
+          `2. Repository name: ${suggestedName}\n` +
+          `3. Description: My dotfiles managed with tuck\n` +
+          `4. Visibility: Private (recommended)\n` +
+          `5. IMPORTANT: Do NOT initialize with:\n` +
+          `   - NO README\n` +
+          `   - NO .gitignore\n` +
+          `   - NO license\n` +
+          `6. Click "Create repository"\n` +
+          `7. Copy the URL shown\n\n` +
+          `Example URLs:\n` +
+          `  SSH:   git@github.com:${user?.login || 'username'}/${suggestedName}.git\n` +
+          `  HTTPS: https://github.com/${user?.login || 'username'}/${suggestedName}.git`,
+          'Manual Repository Setup'
+        );
+        console.log();
+
+        const useManual = await prompts.confirm('Did you create a GitHub repository?', true);
 
         if (useManual) {
-          const remoteUrl = await prompts.text('Enter remote URL:', {
-            placeholder: 'git@github.com:user/dotfiles.git',
+          const manualUrl = await prompts.text('Paste your GitHub repository URL:', {
+            placeholder: `git@github.com:${user?.login || 'user'}/${suggestedName}.git`,
+            validate: validateGitHubUrl,
           });
 
-          if (remoteUrl) {
-            await addRemote(tuckDir, 'origin', remoteUrl);
+          if (manualUrl) {
+            await addRemote(tuckDir, 'origin', manualUrl);
             prompts.log.success('Remote added successfully');
+            remoteUrl = manualUrl;
           }
         }
+      }
+    }
+  }
+
+  // ========== STEP 2: Detect and Select Files ==========
+  const scanSpinner = prompts.spinner();
+  scanSpinner.start('Scanning for dotfiles...');
+  const detectedFiles = await detectDotfiles();
+  const nonSensitiveFiles = detectedFiles.filter((f) => !f.sensitive);
+  const sensitiveFiles = detectedFiles.filter((f) => f.sensitive);
+  scanSpinner.stop(`Found ${detectedFiles.length} dotfiles on your system`);
+
+  let trackedCount = 0;
+
+  // Handle non-sensitive files
+  if (nonSensitiveFiles.length > 0) {
+    // Group by category and show summary
+    const grouped: Record<string, DetectedFile[]> = {};
+    for (const file of nonSensitiveFiles) {
+      if (!grouped[file.category]) grouped[file.category] = [];
+      grouped[file.category].push(file);
+    }
+
+    console.log();
+    const categoryOrder = ['shell', 'git', 'editors', 'terminal', 'ssh', 'misc'];
+    const sortedCategories = Object.keys(grouped).sort((a, b) => {
+      const aIdx = categoryOrder.indexOf(a);
+      const bIdx = categoryOrder.indexOf(b);
+      if (aIdx === -1 && bIdx === -1) return a.localeCompare(b);
+      if (aIdx === -1) return 1;
+      if (bIdx === -1) return -1;
+      return aIdx - bIdx;
+    });
+
+    for (const category of sortedCategories) {
+      const files = grouped[category];
+      const config = DETECTION_CATEGORIES[category] || { icon: '-', name: category };
+      console.log(`  ${config.icon} ${config.name}: ${files.length} files`);
+    }
+    console.log();
+
+    const trackNow = await prompts.confirm('Would you like to track some of these now?', true);
+
+    if (trackNow) {
+      // Show multiselect with all files PRE-SELECTED by default
+      const options = nonSensitiveFiles.map((f) => ({
+        value: f.path,
+        label: `${collapsePath(f.path)}`,
+        hint: f.category,
+      }));
+
+      // Pre-select all non-sensitive files
+      const initialValues = nonSensitiveFiles.map((f) => f.path);
+
+      const selectedFiles = await prompts.multiselect(
+        'Select files to track (all pre-selected; use space to toggle selection):',
+        options,
+        { initialValues }
+      );
+
+      // Handle sensitive files with individual prompts
+      const filesToTrack = [...selectedFiles];
+
+      if (sensitiveFiles.length > 0) {
+        console.log();
+        prompts.log.warning(`Found ${sensitiveFiles.length} sensitive file(s):`);
+
+        for (const sf of sensitiveFiles) {
+          console.log(chalk.yellow(`  ! ${collapsePath(sf.path)} - ${sf.description || sf.category}`));
+        }
+
+        console.log();
+        const trackSensitive = await prompts.confirm(
+          'Would you like to review sensitive files? (Ensure your repo is PRIVATE)',
+          false
+        );
+
+        if (trackSensitive) {
+          for (const sf of sensitiveFiles) {
+            const track = await prompts.confirm(
+              `Track ${collapsePath(sf.path)}?`,
+              false
+            );
+            if (track) {
+              filesToTrack.push(sf.path);
+            }
+          }
+        }
+      }
+
+      if (filesToTrack.length > 0) {
+        // Track files with beautiful progress display
+        trackedCount = await trackFilesWithProgressInit(filesToTrack, tuckDir);
+      }
+    } else {
+      prompts.log.info("Run 'tuck scan' later to interactively add files");
+    }
+  }
+
+  // Handle case where only sensitive files were found
+  if (nonSensitiveFiles.length === 0 && sensitiveFiles.length > 0) {
+    console.log();
+    prompts.log.warning(`Found ${sensitiveFiles.length} sensitive file(s):`);
+
+    for (const sf of sensitiveFiles) {
+      console.log(chalk.yellow(`  ! ${collapsePath(sf.path)} - ${sf.description || sf.category}`));
+    }
+
+    console.log();
+    const trackSensitive = await prompts.confirm(
+      'Would you like to review these sensitive files? (Ensure your repo is PRIVATE)',
+      false
+    );
+
+    if (trackSensitive) {
+      const filesToTrack: string[] = [];
+      for (const sf of sensitiveFiles) {
+        const track = await prompts.confirm(
+          `Track ${collapsePath(sf.path)}?`,
+          false
+        );
+        if (track) {
+          filesToTrack.push(sf.path);
+        }
+      }
+
+      if (filesToTrack.length > 0) {
+        // Track files with beautiful progress display
+        trackedCount = await trackFilesWithProgressInit(filesToTrack, tuckDir);
+      }
+    } else {
+      prompts.log.info("Run 'tuck scan' later to interactively add files");
+    }
+  }
+
+  // Handle case where no files were found
+  if (detectedFiles.length === 0) {
+    console.log();
+    prompts.log.info('No dotfiles detected on your system');
+    prompts.log.info("Run 'tuck add <path>' to manually track files");
+  }
+
+  // ========== STEP 3: Commit and Push ==========
+  if (trackedCount > 0) {
+    console.log();
+
+    if (remoteUrl) {
+      // Remote is configured - offer to commit AND push
+      const action = await prompts.select('Your files are tracked. What would you like to do?', [
+        {
+          value: 'commit-push',
+          label: 'Commit and push to remote',
+          hint: 'Recommended - sync your dotfiles now',
+        },
+        {
+          value: 'commit-only',
+          label: 'Commit only',
+          hint: "Save locally, push later with 'tuck push'",
+        },
+        {
+          value: 'skip',
+          label: 'Skip for now',
+          hint: "Run 'tuck sync' later",
+        },
+      ]);
+
+      if (action !== 'skip') {
+        const commitSpinner = prompts.spinner();
+        commitSpinner.start('Committing changes...');
+
+        await stageAll(tuckDir);
+        const commitHash = await commit(tuckDir, `Add ${trackedCount} dotfiles via tuck init`);
+
+        commitSpinner.stop(`Committed: ${commitHash.slice(0, 7)}`);
+
+        if (action === 'commit-push') {
+          const pushSpinner = prompts.spinner();
+          pushSpinner.start('Pushing to remote...');
+
+          try {
+            await push(tuckDir, { remote: 'origin', branch: 'main', setUpstream: true });
+            pushSpinner.stop('Pushed successfully!');
+
+            // Show success with URL
+            let viewUrl = remoteUrl;
+            if (viewUrl.startsWith('git@github.com:')) {
+              viewUrl = viewUrl.replace('git@github.com:', 'https://github.com/').replace('.git', '');
+            } else if (viewUrl.startsWith('https://github.com/')) {
+              viewUrl = viewUrl.replace('.git', '');
+            }
+
+            console.log();
+            prompts.note(
+              `Your dotfiles are now live at:\n${viewUrl}\n\n` +
+              `On a new machine, run:\n  tuck init --from ${viewUrl}`,
+              'Success!'
+            );
+          } catch (error) {
+            pushSpinner.stop('Push failed');
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            prompts.log.warning(`Could not push: ${errorMsg}`);
+            prompts.log.info("Run 'tuck push' to try again");
+          }
+        } else {
+          prompts.log.info("Run 'tuck push' when you're ready to upload to remote");
+        }
+      }
+    } else {
+      // No remote configured
+      const shouldCommit = await prompts.confirm('Commit these changes locally?', true);
+
+      if (shouldCommit) {
+        const commitSpinner = prompts.spinner();
+        commitSpinner.start('Committing...');
+
+        await stageAll(tuckDir);
+        const commitHash = await commit(tuckDir, `Add ${trackedCount} dotfiles via tuck init`);
+
+        commitSpinner.stop(`Committed: ${commitHash.slice(0, 7)}`);
+        prompts.log.info("Set up a remote with 'tuck push' to backup your dotfiles");
       }
     }
   }
@@ -985,9 +1625,9 @@ const runInteractiveInit = async (): Promise<void> => {
   prompts.outro('Tuck initialized successfully!');
 
   nextSteps([
-    `Add files:    tuck add ~/.zshrc`,
-    `Sync changes: tuck sync`,
-    `Push remote:  tuck push`,
+    `View status: tuck status`,
+    `Add files:   tuck add ~/.zshrc`,
+    `Sync:        tuck sync`,
   ]);
 };
 

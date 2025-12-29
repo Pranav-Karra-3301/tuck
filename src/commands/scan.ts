@@ -126,10 +126,14 @@ const runInteractiveSelection = async (
       };
     });
 
-    // All selected by default
+    // Pre-select all non-sensitive files by default
+    const nonSensitiveFiles = categoryFiles.filter((f) => !f.sensitive);
+    const initialValues = nonSensitiveFiles.map((f) => f.path);
+
     const selected = await prompts.multiselect(
       `Select files to track from ${config.name}:`,
-      options.map((opt: { value: string; label: string; hint: string }) => ({ ...opt, selected: true }))
+      options,
+      { initialValues }
     );
 
     // Mark selected files

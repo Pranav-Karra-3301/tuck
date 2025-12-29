@@ -90,7 +90,7 @@ const runInteractiveRemove = async (tuckDir: string): Promise<void> => {
       label: file.source,
       hint: file.category,
     })),
-    true
+    { required: true }
   );
 
   if (selectedFiles.length === 0) {
