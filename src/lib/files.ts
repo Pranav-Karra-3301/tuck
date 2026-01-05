@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { readFile, stat, lstat, readdir, copyFile, symlink, unlink, rm } from 'fs/promises';
 import { copy, ensureDir } from 'fs-extra';
-import { join, dirname } from 'path';
+import { join, dirname, basename } from 'path';
 import { constants } from 'fs';
 import { FileNotFoundError, PermissionError } from '../errors.js';
 import { expandPath, pathExists, isDirectory } from './paths.js';
@@ -70,6 +70,24 @@ export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
   const expandedPath = expandPath(dirpath);
   const files: string[] = [];
 
+  // Skip common temporary/cache files and git repos that change frequently
+  const skipPatterns = [
+    '.DS_Store',
+    'Thumbs.db',
+    '.git', // Skip git directories to prevent nested repos
+    '.gitignore',
+    'node_modules',
+    '.cache',
+    '__pycache__',
+    '*.pyc',
+    '*.swp',
+    '*.tmp',
+    '.npmrc',
+    'package-lock.json',
+    'yarn.lock',
+    'pnpm-lock.yaml',
+  ];
+
   let entries;
   try {
     entries = await readdir(expandedPath, { withFileTypes: true });
@@ -80,28 +98,12 @@ export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
 
   for (const entry of entries) {
     const entryPath = join(expandedPath, entry.name);
-
-    // Skip common temporary/cache files and git repos that change frequently
-    const skipPatterns = [
-      '.DS_Store',
-      'Thumbs.db',
-      '.git', // Skip git directories to prevent nested repos
-      '.gitignore',
-      'node_modules',
-      '.cache',
-      '__pycache__',
-      '*.pyc',
-      '*.swp',
-      '*.tmp',
-      '.npmrc',
-      'package-lock.json',
-      'yarn.lock',
-      'pnpm-lock.yaml',
-    ];
     
     const shouldSkip = skipPatterns.some(pattern => {
       if (pattern.includes('*')) {
-        const regex = new RegExp('^' + pattern.replace('*', '.*') + '$');
+        // Escape special regex characters (especially .) before replacing * with .*
+        const escapedPattern = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace('\\*', '.*');
+        const regex = new RegExp('^' + escapedPattern + '$');
         return regex.test(entry.name);
       }
       return entry.name === pattern;
@@ -165,7 +167,7 @@ export const copyFileOrDir = async (
       await copy(expandedSource, expandedDest, { 
         overwrite: shouldOverwrite,
         filter: (src: string) => {
-          const name = src.split('/').pop() || '';
+          const name = basename(src);
           // Skip .git directories, node_modules, and cache directories
           const skipDirs = ['.git', 'node_modules', '.cache', '__pycache__', '.DS_Store'];
           return !skipDirs.includes(name);
@@ -331,8 +333,13 @@ export const getFileSizeRecursive = async (filepath: string): Promise<number> =>
 
 /**
  * Format file size in human-readable format (e.g., "50.2 MB")
+ * Adds validation to handle invalid/negative values safely
  */
 export const formatFileSize = (bytes: number): string => {
+  // Normalize invalid or negative values to 0 to avoid surprising output
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    bytes = 0;
+  }
   return formatBytes(bytes);
 };
 
