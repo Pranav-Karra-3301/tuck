@@ -5,7 +5,7 @@ import { prompts, logger, withSpinner } from '../ui/index.js';
 import { getTuckDir, expandPath, pathExists } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles, updateFileInManifest, removeFileFromManifest } from '../lib/manifest.js';
 import { stageAll, commit, getStatus, push, hasRemote } from '../lib/git.js';
-import { copyFileOrDir, getFileChecksum, deleteFileOrDir, checkFileSizeThreshold, formatFileSize } from '../lib/files.js';
+import { copyFileOrDir, getFileChecksum, deleteFileOrDir, checkFileSizeThreshold, formatFileSize, SIZE_BLOCK_THRESHOLD } from '../lib/files.js';
 import { addToTuckignore, loadTuckignore } from '../lib/tuckignore.js';
 import { runPreSyncHook, runPostSyncHook, type HookOptions } from '../lib/hooks.js';
 import { NotInitializedError } from '../errors.js';
@@ -227,7 +227,8 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
   const largeFiles: Array<{ path: string; size: string; sizeBytes: number }> = [];
 
   for (const change of changes) {
-    if (change.status === 'modified') {
+    // Check size for all changes that involve adding/modifying file content
+    if (change.status !== 'deleted') {
       const expandedPath = expandPath(change.source);
       const sizeCheck = await checkFileSizeThreshold(expandedPath);
       
@@ -252,7 +253,7 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
     console.log(chalk.dim('GitHub has a 50MB warning and 100MB hard limit.'));
     console.log();
     
-    const hasBlockers = largeFiles.some(f => f.sizeBytes >= 100 * 1024 * 1024);
+    const hasBlockers = largeFiles.some(f => f.sizeBytes >= SIZE_BLOCK_THRESHOLD);
     
     if (hasBlockers) {
       const action = await prompts.select(
@@ -344,6 +345,8 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
   const result = await syncFiles(tuckDir, changes, { message });
 
   console.log();
+  let pushFailed = false;
+  
   if (result.commitHash) {
     prompts.log.success(`Committed: ${result.commitHash.slice(0, 7)}`);
 
@@ -372,6 +375,7 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
         });
         spinner2.stop('Pushed to remote');
       } catch (error) {
+        pushFailed = true;
         const errorMsg = error instanceof Error ? error.message : String(error);
         spinner2.stop(`Push failed: ${errorMsg}`);
         prompts.log.warning("Run 'tuck pull' then 'tuck push' to sync manually");
@@ -381,7 +385,10 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
     }
   }
 
-  prompts.outro('Synced successfully!');
+  // Only show success if no push failure occurred
+  if (!pushFailed) {
+    prompts.outro('Synced successfully!');
+  }
 };
 
 /**

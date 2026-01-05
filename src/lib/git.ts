@@ -143,6 +143,7 @@ const ensureGitCredentials = async (): Promise<void> => {
     const execFileAsync = promisify(execFile);
     
     const { stdout, stderr } = await execFileAsync('gh', ['auth', 'status']);
+    // gh auth status writes its output to stderr per gh CLI design
     const output = (stderr || stdout || '').trim();
     
     if (output.includes('Logged in')) {
@@ -150,7 +151,9 @@ const ensureGitCredentials = async (): Promise<void> => {
       await execFileAsync('gh', ['auth', 'setup-git']);
     }
   } catch {
-    // gh not available or not authenticated, skip
+    // gh CLI not available or not authenticated; skip git credential setup.
+    // This is expected on systems without gh CLI or when user hasn't logged in.
+    // Git will fall back to default credential mechanisms (ssh keys, https tokens, etc.)
   }
 };
 

@@ -50,7 +50,9 @@ export const loadTuckignore = async (tuckDir: string): Promise<Set<string>> => {
       ignoredPaths.add(collapsed);
     }
   } catch {
-    // If file can't be read, return empty set
+    // If the file can't be read, treat it as having no ignore rules.
+    // This is intentionally non-fatal as it allows operation when .tuckignore
+    // doesn't exist or has permission issues.
   }
 
   return ignoredPaths;
