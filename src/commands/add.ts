@@ -19,7 +19,9 @@ import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js
 import { NotInitializedError, FileNotFoundError, FileAlreadyTrackedError } from '../errors.js';
 import { CATEGORIES } from '../constants.js';
 import type { AddOptions } from '../types.js';
-import { getDirectoryFileCount } from '../lib/files.js';
+import { getDirectoryFileCount, checkFileSizeThreshold, formatFileSize } from '../lib/files.js';
+import { shouldExcludeFromBin } from '../lib/binary.js';
+import { addToTuckignore, isIgnored } from '../lib/tuckignore.js';
 
 // SSH private key patterns - NEVER allow these
 const PRIVATE_KEY_PATTERNS = [
@@ -127,6 +129,74 @@ const validateAndPrepareFiles = async (
     // Check if already tracked
     if (await isFileTracked(tuckDir, collapsedPath)) {
       throw new FileAlreadyTrackedError(path);
+    }
+
+    // Check if in .tuckignore
+    if (await isIgnored(tuckDir, collapsedPath)) {
+      logger.info(`Skipping ${path} (in .tuckignore)`);
+      continue;
+    }
+
+    // Check if binary executable in bin directory
+    if (await shouldExcludeFromBin(expandedPath)) {
+      const sizeCheck = await checkFileSizeThreshold(expandedPath);
+      logger.info(
+        `Skipping binary executable: ${path}${sizeCheck.size > 0 ? ` (${formatFileSize(sizeCheck.size)})` : ''}` +
+        ` - Add to .tuckignore to customize`
+      );
+      continue;
+    }
+
+    // Check file size
+    const sizeCheck = await checkFileSizeThreshold(expandedPath);
+
+    if (sizeCheck.block) {
+      // >= 100MB: Block and offer to ignore
+      logger.warning(
+        `File ${path} is ${formatFileSize(sizeCheck.size)} (exceeds GitHub's 100MB limit)`
+      );
+      
+      const action = await prompts.select(
+        'How would you like to proceed?',
+        [
+          { value: 'ignore', label: 'Add to .tuckignore and skip' },
+          { value: 'cancel', label: 'Cancel operation' },
+        ]
+      );
+      
+      if (action === 'ignore') {
+        await addToTuckignore(tuckDir, collapsedPath);
+        logger.success(`Added ${path} to .tuckignore`);
+        continue; // Skip this file
+      } else {
+        throw new Error('Operation cancelled');
+      }
+    }
+
+    if (sizeCheck.warn) {
+      // 50-100MB: Warn and confirm
+      logger.warning(
+        `File ${path} is ${formatFileSize(sizeCheck.size)}. ` +
+        `GitHub recommends files under 50MB.`
+      );
+      
+      const action = await prompts.select(
+        'How would you like to proceed?',
+        [
+          { value: 'continue', label: 'Track it anyway' },
+          { value: 'ignore', label: 'Add to .tuckignore and skip' },
+          { value: 'cancel', label: 'Cancel operation' },
+        ]
+      );
+      
+      if (action === 'ignore') {
+        await addToTuckignore(tuckDir, collapsedPath);
+        logger.success(`Added ${path} to .tuckignore`);
+        continue;
+      } else if (action === 'cancel') {
+        throw new Error('Operation cancelled');
+      }
+      // 'continue' falls through to track the file
     }
 
     // Determine if it's a directory

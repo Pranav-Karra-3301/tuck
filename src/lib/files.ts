@@ -81,6 +81,36 @@ export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
   for (const entry of entries) {
     const entryPath = join(expandedPath, entry.name);
 
+    // Skip common temporary/cache files and git repos that change frequently
+    const skipPatterns = [
+      '.DS_Store',
+      'Thumbs.db',
+      '.git', // Skip git directories to prevent nested repos
+      '.gitignore',
+      'node_modules',
+      '.cache',
+      '__pycache__',
+      '*.pyc',
+      '*.swp',
+      '*.tmp',
+      '.npmrc',
+      'package-lock.json',
+      'yarn.lock',
+      'pnpm-lock.yaml',
+    ];
+    
+    const shouldSkip = skipPatterns.some(pattern => {
+      if (pattern.includes('*')) {
+        const regex = new RegExp('^' + pattern.replace('*', '.*') + '$');
+        return regex.test(entry.name);
+      }
+      return entry.name === pattern;
+    });
+    
+    if (shouldSkip) {
+      continue;
+    }
+
     try {
       // Use lstat to detect symlinks (stat follows symlinks, lstat doesn't)
       const lstats = await lstat(entryPath);
@@ -131,7 +161,16 @@ export const copyFileOrDir = async (
     const shouldOverwrite = options?.overwrite ?? true;
 
     if (sourceIsDir) {
-      await copy(expandedSource, expandedDest, { overwrite: shouldOverwrite });
+      // Copy directory but skip .git and other problematic files
+      await copy(expandedSource, expandedDest, { 
+        overwrite: shouldOverwrite,
+        filter: (src: string) => {
+          const name = src.split('/').pop() || '';
+          // Skip .git directories, node_modules, and cache directories
+          const skipDirs = ['.git', 'node_modules', '.cache', '__pycache__', '.DS_Store'];
+          return !skipDirs.includes(name);
+        }
+      });
       const fileCount = await getDirectoryFileCount(expandedDest);
       const files = await getDirectoryFiles(expandedDest);
       let totalSize = 0;
@@ -248,4 +287,66 @@ export const formatBytes = (bytes: number): string => {
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+};
+
+// ============================================================================
+// File Size Utilities for Large File Detection
+// ============================================================================
+
+export const SIZE_WARN_THRESHOLD = 50 * 1024 * 1024; // 50MB
+export const SIZE_BLOCK_THRESHOLD = 100 * 1024 * 1024; // 100MB
+
+/**
+ * Get total size of a file or directory recursively
+ */
+export const getFileSizeRecursive = async (filepath: string): Promise<number> => {
+  const expandedPath = expandPath(filepath);
+
+  if (!(await pathExists(expandedPath))) {
+    return 0;
+  }
+
+  const stats = await stat(expandedPath);
+
+  if (!stats.isDirectory()) {
+    return stats.size;
+  }
+
+  // Directory: sum all file sizes
+  const files = await getDirectoryFiles(expandedPath);
+  let totalSize = 0;
+
+  for (const file of files) {
+    try {
+      const fileStats = await stat(file);
+      totalSize += fileStats.size;
+    } catch {
+      // Skip files we can't access
+      continue;
+    }
+  }
+
+  return totalSize;
+};
+
+/**
+ * Format file size in human-readable format (e.g., "50.2 MB")
+ */
+export const formatFileSize = (bytes: number): string => {
+  return formatBytes(bytes);
+};
+
+/**
+ * Check if file size exceeds warning or blocking thresholds
+ */
+export const checkFileSizeThreshold = async (
+  filepath: string
+): Promise<{ warn: boolean; block: boolean; size: number }> => {
+  const size = await getFileSizeRecursive(filepath);
+
+  return {
+    warn: size >= SIZE_WARN_THRESHOLD,
+    block: size >= SIZE_BLOCK_THRESHOLD,
+    size,
+  };
 };
