@@ -345,10 +345,11 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
   const result = await syncFiles(tuckDir, changes, { message });
 
   console.log();
+  let pushFailed = false;
+  
   if (result.commitHash) {
     prompts.log.success(`Committed: ${result.commitHash.slice(0, 7)}`);
 
-    let pushFailed = false;
     // Auto-push to remote if it exists (unless --no-push specified)
     if (options.push !== false && (await hasRemote(tuckDir))) {
       const spinner2 = prompts.spinner();
@@ -382,11 +383,10 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
     } else if (options.push === false) {
       prompts.log.info("Run 'tuck push' when ready to upload");
     }
+  }
 
-    if (!pushFailed) {
-      prompts.outro('Synced successfully!');
-    }
-  } else {
+  // Only show success if no push failure occurred
+  if (!pushFailed) {
     prompts.outro('Synced successfully!');
   }
 };

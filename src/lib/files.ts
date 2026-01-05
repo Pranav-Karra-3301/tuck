@@ -102,7 +102,7 @@ export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
     const shouldSkip = skipPatterns.some(pattern => {
       if (pattern.includes('*')) {
         // Escape special regex characters (especially .) before replacing * with .*
-        const escapedPattern = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace('\\*', '.*');
+        const escapedPattern = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '.*');
         const regex = new RegExp('^' + escapedPattern + '$');
         return regex.test(entry.name);
       }
