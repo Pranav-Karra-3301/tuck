@@ -158,13 +158,12 @@ export const isScriptFile = async (path: string): Promise<boolean> => {
 export const shouldExcludeFromBin = async (path: string): Promise<boolean> => {
   const expandedPath = expandPath(path);
 
-  // Check if file is in a bin directory by checking if parent directory is 'bin' or '.local/bin'
+  // Check if file is in a bin directory by checking if parent directory is 'bin'
+  // This matches both ~/bin and ~/.local/bin directories
   const parentDir = dirname(expandedPath);
   const parentBasename = basename(parentDir);
-  const grandparentBasename = basename(dirname(parentDir));
   
-  const isInBinDir = parentBasename === 'bin' || 
-                     (parentBasename === 'bin' && grandparentBasename === '.local');
+  const isInBinDir = parentBasename === 'bin';
 
   if (!isInBinDir) {
     return false;
