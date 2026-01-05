@@ -6,6 +6,7 @@ import { getTuckDir, collapsePath, expandPath, pathExists } from '../lib/paths.j
 import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import { getStatus, hasRemote, getRemoteUrl, getCurrentBranch } from '../lib/git.js';
 import { getFileChecksum } from '../lib/files.js';
+import { loadTuckignore } from '../lib/tuckignore.js';
 import { NotInitializedError } from '../errors.js';
 import { VERSION } from '../constants.js';
 import type { StatusOptions, FileChange } from '../types.js';
@@ -29,9 +30,15 @@ interface TuckStatus {
 
 const detectFileChanges = async (tuckDir: string): Promise<FileChange[]> => {
   const files = await getAllTrackedFiles(tuckDir);
+  const ignoredPaths = await loadTuckignore(tuckDir);
   const changes: FileChange[] = [];
 
   for (const [, file] of Object.entries(files)) {
+    // Skip if in .tuckignore
+    if (ignoredPaths.has(file.source)) {
+      continue;
+    }
+
     const sourcePath = expandPath(file.source);
 
     // Check if source still exists

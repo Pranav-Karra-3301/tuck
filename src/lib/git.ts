@@ -132,11 +132,36 @@ export const commit = async (dir: string, message: string): Promise<string> => {
   }
 };
 
+/**
+ * Configure git to use gh CLI credentials if gh is authenticated
+ */
+const ensureGitCredentials = async (): Promise<void> => {
+  try {
+    // Check if gh is authenticated
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const execFileAsync = promisify(execFile);
+    
+    const { stdout, stderr } = await execFileAsync('gh', ['auth', 'status']);
+    const output = (stderr || stdout || '').trim();
+    
+    if (output.includes('Logged in')) {
+      // gh is authenticated, configure git to use it
+      await execFileAsync('gh', ['auth', 'setup-git']);
+    }
+  } catch {
+    // gh not available or not authenticated, skip
+  }
+};
+
 export const push = async (
   dir: string,
   options?: { remote?: string; branch?: string; force?: boolean; setUpstream?: boolean }
 ): Promise<void> => {
   try {
+    // Ensure git can use gh credentials if available
+    await ensureGitCredentials();
+    
     const git = createGit(dir);
     const args: string[] = [];
 
