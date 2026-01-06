@@ -5,7 +5,8 @@ import { prompts, logger, withSpinner } from '../ui/index.js';
 import { getTuckDir, expandPath, pathExists } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles, updateFileInManifest, removeFileFromManifest } from '../lib/manifest.js';
 import { stageAll, commit, getStatus, push, hasRemote } from '../lib/git.js';
-import { copyFileOrDir, getFileChecksum, deleteFileOrDir } from '../lib/files.js';
+import { copyFileOrDir, getFileChecksum, deleteFileOrDir, checkFileSizeThreshold, formatFileSize, SIZE_BLOCK_THRESHOLD } from '../lib/files.js';
+import { addToTuckignore, loadTuckignore } from '../lib/tuckignore.js';
 import { runPreSyncHook, runPostSyncHook, type HookOptions } from '../lib/hooks.js';
 import { NotInitializedError } from '../errors.js';
 import type { SyncOptions, FileChange } from '../types.js';
@@ -20,9 +21,15 @@ interface SyncResult {
 
 const detectChanges = async (tuckDir: string): Promise<FileChange[]> => {
   const files = await getAllTrackedFiles(tuckDir);
+  const ignoredPaths = await loadTuckignore(tuckDir);
   const changes: FileChange[] = [];
 
   for (const [, file] of Object.entries(files)) {
+    // Skip if in .tuckignore
+    if (ignoredPaths.has(file.source)) {
+      continue;
+    }
+
     const sourcePath = expandPath(file.source);
 
     // Check if source still exists
@@ -61,26 +68,51 @@ const detectChanges = async (tuckDir: string): Promise<FileChange[]> => {
 };
 
 const generateCommitMessage = (result: SyncResult): string => {
-  const parts: string[] = [];
-
-  if (result.modified.length > 0) {
-    parts.push(`Update: ${result.modified.join(', ')}`);
-  }
-  if (result.deleted.length > 0) {
-    parts.push(`Remove: ${result.deleted.join(', ')}`);
-  }
-
-  if (parts.length === 0) {
-    return 'Sync dotfiles';
-  }
-
   const totalCount = result.modified.length + result.deleted.length;
+  const date = new Date().toISOString().split('T')[0];
 
-  if (parts.length === 1 && totalCount <= 3) {
-    return parts[0];
+  // Header with emoji and count
+  let message = `✨ Update dotfiles\n\n`;
+
+  // List changes
+  const changes: string[] = [];
+  
+  if (result.modified.length > 0) {
+    if (result.modified.length <= 5) {
+      // List individual files if 5 or fewer
+      changes.push('Modified:');
+      result.modified.forEach(file => {
+        changes.push(`• ${file}`);
+      });
+    } else {
+      changes.push(`Modified: ${result.modified.length} files`);
+    }
   }
 
-  return `Sync: ${totalCount} file${totalCount > 1 ? 's' : ''} changed`;
+  if (result.deleted.length > 0) {
+    if (result.deleted.length <= 5) {
+      changes.push(result.modified.length > 0 ? '\nDeleted:' : 'Deleted:');
+      result.deleted.forEach(file => {
+        changes.push(`• ${file}`);
+      });
+    } else {
+      changes.push(`${result.modified.length > 0 ? '\n' : ''}Deleted: ${result.deleted.length} files`);
+    }
+  }
+
+  if (changes.length > 0) {
+    message += changes.join('\n') + '\n';
+  }
+
+  // Footer with branding and metadata
+  message += `\n---\n`;
+  message += `📦 Managed by tuck (tuck.sh) • ${date}`;
+  
+  if (totalCount > 0) {
+    message += ` • ${totalCount} file${totalCount > 1 ? 's' : ''} changed`;
+  }
+
+  return message;
 };
 
 const syncFiles = async (
@@ -191,6 +223,102 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
     return;
   }
 
+  // Check for large files in changes
+  const largeFiles: Array<{ path: string; size: string; sizeBytes: number }> = [];
+
+  for (const change of changes) {
+    // Check size for all changes that involve adding/modifying file content
+    if (change.status !== 'deleted') {
+      const expandedPath = expandPath(change.source);
+      const sizeCheck = await checkFileSizeThreshold(expandedPath);
+      
+      if (sizeCheck.warn || sizeCheck.block) {
+        largeFiles.push({
+          path: change.path,
+          size: formatFileSize(sizeCheck.size),
+          sizeBytes: sizeCheck.size,
+        });
+      }
+    }
+  }
+
+  // Show large file warnings
+  if (largeFiles.length > 0) {
+    console.log();
+    console.log(chalk.yellow('⚠ Large files detected:'));
+    for (const file of largeFiles) {
+      console.log(chalk.yellow(`  • ${file.path} (${file.size})`));
+    }
+    console.log();
+    console.log(chalk.dim('GitHub has a 50MB warning and 100MB hard limit.'));
+    console.log();
+    
+    const hasBlockers = largeFiles.some(f => f.sizeBytes >= SIZE_BLOCK_THRESHOLD);
+    
+    if (hasBlockers) {
+      const action = await prompts.select(
+        'Some files exceed 100MB. What would you like to do?',
+        [
+          { value: 'ignore', label: 'Add large files to .tuckignore' },
+          { value: 'continue', label: 'Try to commit anyway (may fail)' },
+          { value: 'cancel', label: 'Cancel sync' },
+        ]
+      );
+      
+      if (action === 'ignore') {
+        for (const file of largeFiles) {
+          const fullPath = changes.find(c => c.path === file.path)?.source;
+          if (fullPath) {
+            await addToTuckignore(tuckDir, fullPath);
+            // Remove from changes array
+            const index = changes.findIndex(c => c.path === file.path);
+            if (index > -1) changes.splice(index, 1);
+          }
+        }
+        prompts.log.success('Added large files to .tuckignore');
+        
+        if (changes.length === 0) {
+          prompts.log.info('No changes remaining to sync');
+          return;
+        }
+      } else if (action === 'cancel') {
+        prompts.cancel('Operation cancelled');
+        return;
+      }
+      // 'continue' falls through
+    } else {
+      // Just warnings (50-100MB), show but allow to continue
+      const action = await prompts.select(
+        'Large files detected. What would you like to do?',
+        [
+          { value: 'continue', label: 'Continue with sync' },
+          { value: 'ignore', label: 'Add to .tuckignore and skip' },
+          { value: 'cancel', label: 'Cancel sync' },
+        ]
+      );
+      
+      if (action === 'ignore') {
+        for (const file of largeFiles) {
+          const fullPath = changes.find(c => c.path === file.path)?.source;
+          if (fullPath) {
+            await addToTuckignore(tuckDir, fullPath);
+            const index = changes.findIndex(c => c.path === file.path);
+            if (index > -1) changes.splice(index, 1);
+          }
+        }
+        prompts.log.success('Added large files to .tuckignore');
+        
+        if (changes.length === 0) {
+          prompts.log.info('No changes remaining to sync');
+          return;
+        }
+      } else if (action === 'cancel') {
+        prompts.cancel('Operation cancelled');
+        return;
+      }
+    }
+  }
+
   // Show changes
   console.log();
   console.log(chalk.bold('Changes detected:'));
@@ -203,47 +331,64 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
   }
   console.log();
 
-  // Confirm
-  const confirm = await prompts.confirm('Sync these changes?', true);
-  if (!confirm) {
-    prompts.cancel('Operation cancelled');
-    return;
-  }
-
-  // Get commit message
-  const autoMessage = generateCommitMessage({
+  // Generate auto commit message
+  const message = generateCommitMessage({
     modified: changes.filter((c) => c.status === 'modified').map((c) => c.path),
     deleted: changes.filter((c) => c.status === 'deleted').map((c) => c.path),
   });
 
-  const message = await prompts.text('Commit message:', {
-    defaultValue: autoMessage,
-  });
+  console.log(chalk.dim('Commit message:'));
+  console.log(chalk.cyan(message.split('\n').map(line => `  ${line}`).join('\n')));
+  console.log();
 
   // Sync
   const result = await syncFiles(tuckDir, changes, { message });
 
   console.log();
+  let pushFailed = false;
+  
   if (result.commitHash) {
     prompts.log.success(`Committed: ${result.commitHash.slice(0, 7)}`);
 
-    // Push by default if remote exists (unless --no-push specified)
-    // Commander converts --no-push to push: false, default is push: true
+    // Auto-push to remote if it exists (unless --no-push specified)
     if (options.push !== false && (await hasRemote(tuckDir))) {
       const spinner2 = prompts.spinner();
-      spinner2.start('Pushing to remote...');
       try {
-        await push(tuckDir);
+        // Get current branch and status
+        const status = await getStatus(tuckDir);
+        const needsUpstream = !status.tracking;
+        const branch = status.branch;
+        
+        // If behind remote, pull first
+        if (status.behind > 0) {
+          spinner2.start('Pulling from remote...');
+          const { pull } = await import('../lib/git.js');
+          await pull(tuckDir, { rebase: true });
+          spinner2.stop('Pulled from remote');
+        }
+        
+        // Push to remote
+        spinner2.start('Pushing to remote...');
+        await push(tuckDir, {
+          setUpstream: needsUpstream,
+          branch: needsUpstream ? branch : undefined,
+        });
         spinner2.stop('Pushed to remote');
-      } catch {
-        spinner2.stop('Push failed (will retry on next sync)');
+      } catch (error) {
+        pushFailed = true;
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        spinner2.stop(`Push failed: ${errorMsg}`);
+        prompts.log.warning("Run 'tuck pull' then 'tuck push' to sync manually");
       }
     } else if (options.push === false) {
       prompts.log.info("Run 'tuck push' when ready to upload");
     }
   }
 
-  prompts.outro('Synced successfully!');
+  // Only show success if no push failure occurred
+  if (!pushFailed) {
+    prompts.outro('Synced successfully!');
+  }
 };
 
 /**

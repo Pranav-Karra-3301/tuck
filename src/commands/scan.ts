@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { prompts, logger, banner } from '../ui/index.js';
-import { getTuckDir, collapsePath } from '../lib/paths.js';
+import { getTuckDir, collapsePath, expandPath } from '../lib/paths.js';
 import { loadManifest, getTrackedFileBySource } from '../lib/manifest.js';
 import {
   detectDotfiles,
@@ -10,6 +10,8 @@ import {
 } from '../lib/detect.js';
 import { NotInitializedError } from '../errors.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
+import { shouldExcludeFromBin } from '../lib/binary.js';
+import { isIgnored } from '../lib/tuckignore.js';
 
 export interface ScanOptions {
   all?: boolean;
@@ -265,6 +267,16 @@ const runScan = async (options: ScanOptions): Promise<void> => {
 
   for (const file of detected) {
     const tracked = await getTrackedFileBySource(tuckDir, file.path);
+    
+    // Skip if in .tuckignore
+    if (await isIgnored(tuckDir, file.path)) {
+      continue;
+    }
+    
+    // Skip if binary executable in bin directory
+    if (await shouldExcludeFromBin(expandPath(file.path))) {
+      continue;
+    }
 
     selectableFiles.push({
       ...file,
