@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { join, resolve, sep } from 'path';
+import { join } from 'path';
 import { writeFile } from 'fs/promises';
 import { ensureDir } from 'fs-extra';
 import { banner, nextSteps, prompts, withSpinner, logger } from '../ui/index.js';
@@ -10,9 +10,7 @@ import {
   getFilesDir,
   getCategoryDir,
   pathExists,
-  expandPath,
   collapsePath,
-  validateSafeSourcePath,
 } from '../lib/paths.js';
 import { saveConfig } from '../lib/config.js';
 import { createManifest } from '../lib/manifest.js';
@@ -43,7 +41,6 @@ import {
 } from '../lib/github.js';
 import chalk from 'chalk';
 import { detectDotfiles, DetectedFile, DETECTION_CATEGORIES } from '../lib/detect.js';
-import { createPreApplySnapshot } from '../lib/timemachine.js';
 import { copy } from 'fs-extra';
 import { tmpdir } from 'os';
 import { readFile, rm } from 'fs/promises';
@@ -831,17 +828,6 @@ interface ImportResult {
   filesApplied: number; // Files applied to system (0 if user declined)
   remoteUrl?: string;
 }
-
-/**
- * Validate that a destination path stays within the tuck directory
- * Prevents path traversal attacks via malicious manifest files
- */
-const validateDestinationPath = (tuckDir: string, destination: string): boolean => {
-  const fullPath = resolve(join(tuckDir, destination));
-  const normalizedTuckDir = resolve(tuckDir);
-  // Ensure the resolved path starts with tuckDir + separator to prevent escaping
-  return fullPath.startsWith(normalizedTuckDir + sep) || fullPath === normalizedTuckDir;
-};
 
 /**
  * Import an existing GitHub dotfiles repository

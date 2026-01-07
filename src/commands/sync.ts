@@ -516,7 +516,7 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
 /**
  * Helper to push with spinner and error handling
  */
-const pushWithSpinner = async (tuckDir: string, options: SyncOptions): Promise<boolean> => {
+const pushWithSpinner = async (tuckDir: string, _options: SyncOptions): Promise<boolean> => {
   const spinner = prompts.spinner();
   try {
     const status = await getStatus(tuckDir);
