@@ -248,10 +248,14 @@ const runConfigWizard = async (config: TuckConfigOutput, tuckDir: string): Promi
   // File strategy
   console.log();
   console.log(chalk.bold.cyan('> File Strategy'));
-  const strategy = await prompts.select('How should tuck manage files?', [
+  const rawStrategy = await prompts.select('How should tuck manage files?', [
     { value: 'copy', label: 'Copy files', hint: 'Safe, independent copies' },
     { value: 'symlink', label: 'Symlink files', hint: 'Real-time updates, single source of truth' },
-  ]) as 'copy' | 'symlink';
+  ]);
+  const strategy: 'copy' | 'symlink' =
+    rawStrategy === 'copy' || rawStrategy === 'symlink'
+      ? rawStrategy
+      : (config.files.strategy ?? 'copy');
 
   const backupOnRestore = await prompts.confirm(
     'Create backups before restoring files?',
@@ -320,9 +324,11 @@ const editConfigInteractive = async (config: TuckConfigOutput, tuckDir: string):
   let newValue: unknown;
 
   switch (keyInfo.type) {
-    case 'boolean':
-      newValue = await prompts.confirm(keyInfo.description, currentValue as boolean ?? false);
+    case 'boolean': {
+      const defaultValue = typeof currentValue === 'boolean' ? currentValue : false;
+      newValue = await prompts.confirm(keyInfo.description, defaultValue);
       break;
+    }
     case 'enum':
       newValue = await prompts.select(`Select value for ${selectedKey}:`,
         (keyInfo.options || []).map((opt) => ({ value: opt, label: opt }))

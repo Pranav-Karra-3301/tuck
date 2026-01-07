@@ -593,7 +593,8 @@ const isDirectory = async (path: string): Promise<boolean> => {
 
 /**
  * Scan system for existing dotfiles
- * @param options.includeExcluded - If true, include files that match exclusion patterns (default: false)
+ * @param options - Optional configuration for detection
+ * @param options.includeExcluded - If true, include files that match exclusion patterns (default: false). Set to true when you need to detect all dotfiles regardless of exclusion rules, such as for manual review or special operations.
  */
 export const detectDotfiles = async (options?: {
   includeExcluded?: boolean;

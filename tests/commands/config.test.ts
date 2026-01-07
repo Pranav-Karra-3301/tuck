@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { vol } from 'memfs';
-import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
+import { TEST_TUCK_DIR } from '../setup.js';
 import { initTestTuck, getTestConfig } from '../utils/testHelpers.js';
 import { createMockConfig } from '../utils/factories.js';
 
@@ -160,9 +160,9 @@ describe('config command', () => {
       const { resetConfig, loadConfig } = await import('../../src/lib/config.js');
       await resetConfig(TEST_TUCK_DIR);
 
-      const resetedConfig = await loadConfig(TEST_TUCK_DIR);
-      expect(resetedConfig.repository.defaultBranch).toBe('main');
-      expect(resetedConfig.repository.autoCommit).toBe(true);
+      const resetConfigAfter = await loadConfig(TEST_TUCK_DIR);
+      expect(resetConfigAfter.repository.defaultBranch).toBe('main');
+      expect(resetConfigAfter.repository.autoCommit).toBe(true);
     });
   });
 
