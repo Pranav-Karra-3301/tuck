@@ -10,7 +10,7 @@ import { addToTuckignore, loadTuckignore, isIgnored } from '../lib/tuckignore.js
 import { runPreSyncHook, runPostSyncHook, type HookOptions } from '../lib/hooks.js';
 import { NotInitializedError } from '../errors.js';
 import type { SyncOptions, FileChange } from '../types.js';
-import { detectDotfiles, DETECTION_CATEGORIES, shouldExcludeFile, type DetectedFile } from '../lib/detect.js';
+import { detectDotfiles, DETECTION_CATEGORIES, type DetectedFile } from '../lib/detect.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
 
 interface SyncResult {

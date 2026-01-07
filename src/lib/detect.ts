@@ -1,7 +1,7 @@
-import { join, basename } from 'path';
+import { join, basename, isAbsolute } from 'path';
 import { readdir, stat } from 'fs/promises';
 import { platform } from 'os';
-import { pathExists, expandPath } from './paths.js';
+import { pathExists, expandPath, collapsePath } from './paths.js';
 
 const IS_MACOS = platform() === 'darwin';
 const IS_LINUX = platform() === 'linux';
@@ -517,11 +517,18 @@ export const DEFAULT_EXCLUSION_PATTERNS = {
  */
 export const shouldExcludeFile = (path: string): boolean => {
   // Normalize path to use ~ prefix
-  const normalizedPath = path.startsWith('~/')
-    ? path
-    : path.startsWith(expandPath('~/'))
-      ? path.replace(expandPath('~/'), '~/')
-      : path;
+  // Handle both tilde paths and absolute paths that point to home directory
+  let normalizedPath = path;
+  if (path.startsWith('~/')) {
+    normalizedPath = path;
+  } else if (path.startsWith(expandPath('~/'))) {
+    // Absolute path within home directory - convert to tilde notation
+    normalizedPath = path.replace(expandPath('~/'), '~/');
+  } else if (isAbsolute(path)) {
+    // Other absolute path - try to collapse to tilde notation
+    normalizedPath = collapsePath(path);
+  }
+  // else: relative path, keep as-is
 
   // Check cache directories (directory-aware prefix match)
   // Must match exactly or be a subdirectory (with /)

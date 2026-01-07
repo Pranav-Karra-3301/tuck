@@ -846,7 +846,9 @@ const importExistingRepo = async (
 
   if (analysis.type === 'valid-tuck') {
     // Scenario A: Valid tuck repository - import only (NO auto-apply)
-    // User should run 'tuck apply' or 'tuck restore' manually when ready
+    // BREAKING CHANGE: Files are no longer automatically applied when cloning a tuck repository.
+    // This is a safer default that prevents accidental overwrites of existing configurations.
+    // User should run 'tuck apply' or 'tuck restore' manually when ready.
     prompts.log.step('Importing tuck repository...');
 
     // Copy the entire repo to tuck directory
