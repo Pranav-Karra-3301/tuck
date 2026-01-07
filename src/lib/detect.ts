@@ -1,7 +1,7 @@
-import { join, basename } from 'path';
+import { join, basename, isAbsolute } from 'path';
 import { readdir, stat } from 'fs/promises';
 import { platform } from 'os';
-import { pathExists, expandPath } from './paths.js';
+import { pathExists, expandPath, collapsePath } from './paths.js';
 
 const IS_MACOS = platform() === 'darwin';
 const IS_LINUX = platform() === 'linux';
@@ -517,11 +517,21 @@ export const DEFAULT_EXCLUSION_PATTERNS = {
  */
 export const shouldExcludeFile = (path: string): boolean => {
   // Normalize path to use ~ prefix
-  const normalizedPath = path.startsWith('~/')
-    ? path
-    : path.startsWith(expandPath('~/'))
-      ? path.replace(expandPath('~/'), '~/')
-      : path;
+  // Handle both tilde paths and absolute paths that point to home directory
+  let normalizedPath: string;
+  if (path.startsWith('~/')) {
+    // Already in tilde notation
+    normalizedPath = path;
+  } else if (path.startsWith(expandPath('~/'))) {
+    // Absolute path within home directory - convert to tilde notation
+    normalizedPath = path.replace(expandPath('~/'), '~/');
+  } else if (isAbsolute(path)) {
+    // Other absolute path - try to collapse to tilde notation
+    normalizedPath = collapsePath(path);
+  } else {
+    // Relative path, keep as-is
+    normalizedPath = path;
+  }
 
   // Check cache directories (directory-aware prefix match)
   // Must match exactly or be a subdirectory (with /)
@@ -593,7 +603,8 @@ const isDirectory = async (path: string): Promise<boolean> => {
 
 /**
  * Scan system for existing dotfiles
- * @param options.includeExcluded - If true, include files that match exclusion patterns (default: false)
+ * @param options - Optional configuration for detection
+ * @param options.includeExcluded - If true, include files that match exclusion patterns (default: false). Set to true when you need to detect all dotfiles regardless of exclusion rules, such as for manual review or special operations.
  */
 export const detectDotfiles = async (options?: {
   includeExcluded?: boolean;

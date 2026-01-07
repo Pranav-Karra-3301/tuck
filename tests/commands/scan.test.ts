@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { vol } from 'memfs';
-import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
+import { TEST_HOME } from '../setup.js';
 import { initTestTuck, createTestDotfile, getTestManifest } from '../utils/testHelpers.js';
 import { createMockTrackedFile } from '../utils/factories.js';
 import { shouldExcludeFile, DEFAULT_EXCLUSION_PATTERNS } from '../../src/lib/detect.js';
@@ -155,7 +155,6 @@ describe('scan command', () => {
   describe('categorization', () => {
     it('should categorize shell configs correctly', () => {
       const shellPatterns = ['zshrc', 'bashrc', 'profile', 'zprofile'];
-      const category = 'shell';
 
       for (const pattern of shellPatterns) {
         const file = `.${pattern}`;

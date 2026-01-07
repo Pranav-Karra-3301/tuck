@@ -11,6 +11,17 @@ export interface CommandResult {
 }
 
 /**
+ * Custom error class for mocking process.exit in tests
+ * This prevents false positives from real errors that might start with "process.exit"
+ */
+class ProcessExitMockError extends Error {
+  constructor(public exitCode: number) {
+    super(`Mocked process.exit with code ${exitCode}`);
+    this.name = 'ProcessExitMockError';
+  }
+}
+
+/**
  * Capture console output during command execution
  */
 export const captureOutput = (): {
@@ -56,15 +67,13 @@ export const runCommand = async <
   const originalExit = process.exit;
   process.exit = vi.fn((code?: number) => {
     exitCode = code ?? 0;
-    throw new Error(`process.exit(${code})`);
+    throw new ProcessExitMockError(exitCode);
   }) as never;
 
   try {
     await action(...args);
   } catch (error) {
-    if (
-      !(error instanceof Error && error.message.startsWith('process.exit'))
-    ) {
+    if (!(error instanceof ProcessExitMockError)) {
       // Re-throw if not a process.exit mock
       stderr.push(error instanceof Error ? error.message : String(error));
       exitCode = 1;
@@ -113,14 +122,28 @@ export const assertOutputNotContains = (
 
 /**
  * Create a mock for @clack/prompts
+ * 
+ * IMPORTANT: The matching uses partial string matching (message.includes(key)).
+ * - Keys are sorted by length (longest first) and matched in that order, so more specific keys match first
+ * - Use specific, unique keys to avoid ambiguous matches
+ * - Overlapping keys are automatically handled by length-first matching (e.g., "remote for updates" before "remote")
+ * 
+ * Example:
+ *   Good: { "file strategy": "copy", "default branch": "main" }
+ *   Also Good: { "remote": "origin", "remote for updates": "upstream" } // Works correctly with sorting!
  */
 export const createPromptsMock = (responses: Record<string, unknown>) => {
+  // Sort keys by length (longest first) to prioritize more specific matches
+  const sortedEntries = Object.entries(responses).sort(
+    ([a], [b]) => b.length - a.length
+  );
+
   return {
     intro: vi.fn(),
     outro: vi.fn(),
     confirm: vi.fn().mockImplementation((message: string) => {
-      // Check for partial matches in response keys
-      for (const [key, value] of Object.entries(responses)) {
+      // Check for partial matches in response keys (longest/most specific first)
+      for (const [key, value] of sortedEntries) {
         if (message.includes(key)) {
           return Promise.resolve(value);
         }
@@ -128,7 +151,7 @@ export const createPromptsMock = (responses: Record<string, unknown>) => {
       return Promise.resolve(false);
     }),
     select: vi.fn().mockImplementation((message: string) => {
-      for (const [key, value] of Object.entries(responses)) {
+      for (const [key, value] of sortedEntries) {
         if (message.includes(key)) {
           return Promise.resolve(value);
         }
@@ -136,7 +159,7 @@ export const createPromptsMock = (responses: Record<string, unknown>) => {
       return Promise.resolve(null);
     }),
     text: vi.fn().mockImplementation((message: string) => {
-      for (const [key, value] of Object.entries(responses)) {
+      for (const [key, value] of sortedEntries) {
         if (message.includes(key)) {
           return Promise.resolve(value);
         }
@@ -144,7 +167,7 @@ export const createPromptsMock = (responses: Record<string, unknown>) => {
       return Promise.resolve('');
     }),
     multiselect: vi.fn().mockImplementation((message: string) => {
-      for (const [key, value] of Object.entries(responses)) {
+      for (const [key, value] of sortedEntries) {
         if (message.includes(key)) {
           return Promise.resolve(value);
         }

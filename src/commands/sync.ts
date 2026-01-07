@@ -10,7 +10,7 @@ import { addToTuckignore, loadTuckignore, isIgnored } from '../lib/tuckignore.js
 import { runPreSyncHook, runPostSyncHook, type HookOptions } from '../lib/hooks.js';
 import { NotInitializedError } from '../errors.js';
 import type { SyncOptions, FileChange } from '../types.js';
-import { detectDotfiles, DETECTION_CATEGORIES, shouldExcludeFile, type DetectedFile } from '../lib/detect.js';
+import { detectDotfiles, DETECTION_CATEGORIES, type DetectedFile } from '../lib/detect.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
 
 interface SyncResult {
@@ -120,9 +120,6 @@ const detectNewDotfiles = async (tuckDir: string): Promise<DetectedFile[]> => {
 
     // Skip if in .tuckignore
     if (await isIgnored(tuckDir, file.path)) continue;
-
-    // Skip if matches exclusion patterns (this is now handled by detectDotfiles but double check)
-    if (shouldExcludeFile(file.path)) continue;
 
     newFiles.push(file);
   }
@@ -610,7 +607,7 @@ const runSyncCommand = async (messageArg: string | undefined, options: SyncOptio
 };
 
 export const syncCommand = new Command('sync')
-  .description('Sync all dotfile changes (pull, detect, track, commit, push)')
+  .description('Sync all dotfile changes (pull, detect changes, scan for new files, track, commit, push)')
   .argument('[message]', 'Commit message')
   .option('-m, --message <msg>', 'Commit message')
   // TODO: --all and --amend are planned for a future version

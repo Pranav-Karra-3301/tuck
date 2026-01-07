@@ -141,10 +141,13 @@ describe('detect', () => {
     });
 
     describe('temp files', () => {
-      it('should exclude lock files', () => {
-        expect(shouldExcludeFile('~/package-lock.json')).toBe(false); // not ending in .lock
+      it('should exclude generic .lock files but keep dependency lockfiles', () => {
+        // package-lock.json is intentionally NOT excluded: it's important for dependency management
+        // and our pattern only matches files that end in `.lock`, not `.lock.json` or `-lock.yaml`.
+        expect(shouldExcludeFile('~/package-lock.json')).toBe(false);
         expect(shouldExcludeFile('~/yarn.lock')).toBe(true);
-        expect(shouldExcludeFile('~/pnpm-lock.yaml')).toBe(false); // not ending in .lock
+        // pnpm-lock.yaml is also intentionally NOT excluded for the same reason as package-lock.json.
+        expect(shouldExcludeFile('~/pnpm-lock.yaml')).toBe(false);
         expect(shouldExcludeFile('~/Cargo.lock')).toBe(true);
       });
 

@@ -19,7 +19,7 @@ export default defineConfig({
     testTimeout: 10000,
     mockReset: true,
     restoreMocks: true,
-    // Isolate tests to prevent state leakage
-    isolate: true,
+    // Rely on mock and setup resets to prevent state leakage; avoid per-file worker isolation for performance
+    isolate: false,
   },
 });
