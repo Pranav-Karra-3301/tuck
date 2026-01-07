@@ -518,8 +518,9 @@ export const DEFAULT_EXCLUSION_PATTERNS = {
 export const shouldExcludeFile = (path: string): boolean => {
   // Normalize path to use ~ prefix
   // Handle both tilde paths and absolute paths that point to home directory
-  let normalizedPath = path;
+  let normalizedPath: string;
   if (path.startsWith('~/')) {
+    // Already in tilde notation
     normalizedPath = path;
   } else if (path.startsWith(expandPath('~/'))) {
     // Absolute path within home directory - convert to tilde notation
@@ -527,8 +528,10 @@ export const shouldExcludeFile = (path: string): boolean => {
   } else if (isAbsolute(path)) {
     // Other absolute path - try to collapse to tilde notation
     normalizedPath = collapsePath(path);
+  } else {
+    // Relative path, keep as-is
+    normalizedPath = path;
   }
-  // else: relative path, keep as-is
 
   // Check cache directories (directory-aware prefix match)
   // Must match exactly or be a subdirectory (with /)

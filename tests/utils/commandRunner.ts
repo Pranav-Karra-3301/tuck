@@ -124,13 +124,13 @@ export const assertOutputNotContains = (
  * Create a mock for @clack/prompts
  * 
  * IMPORTANT: The matching uses partial string matching (message.includes(key)).
- * - Keys are matched in iteration order, first match wins
+ * - Keys are sorted by length (longest first) and matched in that order, so more specific keys match first
  * - Use specific, unique keys to avoid ambiguous matches
- * - For overlapping keys (e.g., "remote" and "remote for updates"), use the more specific key
+ * - Overlapping keys are automatically handled by length-first matching (e.g., "remote for updates" before "remote")
  * 
  * Example:
  *   Good: { "file strategy": "copy", "default branch": "main" }
- *   Problematic: { "remote": "origin", "remote for updates": "upstream" } // "remote" matches both!
+ *   Also Good: { "remote": "origin", "remote for updates": "upstream" } // Works correctly with sorting!
  */
 export const createPromptsMock = (responses: Record<string, unknown>) => {
   // Sort keys by length (longest first) to prioritize more specific matches
