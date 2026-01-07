@@ -2,14 +2,16 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { join } from 'path';
 import { prompts, logger, withSpinner } from '../ui/index.js';
-import { getTuckDir, expandPath, pathExists } from '../lib/paths.js';
-import { loadManifest, getAllTrackedFiles, updateFileInManifest, removeFileFromManifest } from '../lib/manifest.js';
-import { stageAll, commit, getStatus, push, hasRemote } from '../lib/git.js';
+import { getTuckDir, expandPath, pathExists, collapsePath } from '../lib/paths.js';
+import { loadManifest, getAllTrackedFiles, updateFileInManifest, removeFileFromManifest, getTrackedFileBySource } from '../lib/manifest.js';
+import { stageAll, commit, getStatus, push, hasRemote, fetch, pull } from '../lib/git.js';
 import { copyFileOrDir, getFileChecksum, deleteFileOrDir, checkFileSizeThreshold, formatFileSize, SIZE_BLOCK_THRESHOLD } from '../lib/files.js';
-import { addToTuckignore, loadTuckignore } from '../lib/tuckignore.js';
+import { addToTuckignore, loadTuckignore, isIgnored } from '../lib/tuckignore.js';
 import { runPreSyncHook, runPostSyncHook, type HookOptions } from '../lib/hooks.js';
 import { NotInitializedError } from '../errors.js';
 import type { SyncOptions, FileChange } from '../types.js';
+import { detectDotfiles, DETECTION_CATEGORIES, shouldExcludeFile, type DetectedFile } from '../lib/detect.js';
+import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
 
 interface SyncResult {
   modified: string[];
@@ -65,6 +67,67 @@ const detectChanges = async (tuckDir: string): Promise<FileChange[]> => {
   }
 
   return changes;
+};
+
+/**
+ * Pull from remote if behind, returns info about what happened
+ */
+const pullIfBehind = async (
+  tuckDir: string
+): Promise<{ pulled: boolean; behind: number; error?: string }> => {
+  const hasRemoteRepo = await hasRemote(tuckDir);
+  if (!hasRemoteRepo) {
+    return { pulled: false, behind: 0 };
+  }
+
+  try {
+    // Fetch to get latest remote status
+    await fetch(tuckDir);
+
+    const status = await getStatus(tuckDir);
+
+    if (status.behind === 0) {
+      return { pulled: false, behind: 0 };
+    }
+
+    // Pull with rebase to keep history clean
+    await pull(tuckDir, { rebase: true });
+
+    return { pulled: true, behind: status.behind };
+  } catch (error) {
+    return {
+      pulled: false,
+      behind: 0,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+};
+
+/**
+ * Detect new dotfiles that are not already tracked
+ */
+const detectNewDotfiles = async (tuckDir: string): Promise<DetectedFile[]> => {
+  // Get all detected dotfiles on the system
+  const detected = await detectDotfiles();
+
+  // Filter out already-tracked files, ignored files, and excluded patterns
+  const newFiles: DetectedFile[] = [];
+
+  for (const file of detected) {
+    // Skip if already tracked
+    const tracked = await getTrackedFileBySource(tuckDir, file.path);
+    if (tracked) continue;
+
+    // Skip if in .tuckignore
+    if (await isIgnored(tuckDir, file.path)) continue;
+
+    // Skip if matches exclusion patterns (this is now handled by detectDotfiles but double check)
+    if (shouldExcludeFile(file.path)) continue;
+
+    newFiles.push(file);
+  }
+
+  return newFiles;
 };
 
 const generateCommitMessage = (result: SyncResult): string => {
@@ -195,14 +258,39 @@ const syncFiles = async (
 const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): Promise<void> => {
   prompts.intro('tuck sync');
 
-  // Detect changes
-  const spinner = prompts.spinner();
-  spinner.start('Detecting changes...');
-  const changes = await detectChanges(tuckDir);
-  spinner.stop('Changes detected');
+  // ========== STEP 1: Pull from remote if behind ==========
+  if (options.pull !== false && (await hasRemote(tuckDir))) {
+    const pullSpinner = prompts.spinner();
+    pullSpinner.start('Checking remote for updates...');
 
-  if (changes.length === 0) {
-    // Check for git changes
+    const pullResult = await pullIfBehind(tuckDir);
+    if (pullResult.error) {
+      pullSpinner.stop(`Could not pull: ${pullResult.error}`);
+      prompts.log.warning('Continuing with local changes...');
+    } else if (pullResult.pulled) {
+      pullSpinner.stop(`Pulled ${pullResult.behind} commit${pullResult.behind > 1 ? 's' : ''} from remote`);
+    } else {
+      pullSpinner.stop('Up to date with remote');
+    }
+  }
+
+  // ========== STEP 2: Detect changes to tracked files ==========
+  const changeSpinner = prompts.spinner();
+  changeSpinner.start('Detecting changes to tracked files...');
+  const changes = await detectChanges(tuckDir);
+  changeSpinner.stop(`Found ${changes.length} changed file${changes.length !== 1 ? 's' : ''}`);
+
+  // ========== STEP 3: Scan for new dotfiles (if enabled) ==========
+  let newFiles: DetectedFile[] = [];
+  if (options.scan !== false) {
+    const scanSpinner = prompts.spinner();
+    scanSpinner.start('Scanning for new dotfiles...');
+    newFiles = await detectNewDotfiles(tuckDir);
+    scanSpinner.stop(`Found ${newFiles.length} new dotfile${newFiles.length !== 1 ? 's' : ''}`);
+  }
+
+  // ========== STEP 4: Handle case where nothing to do ==========
+  if (changes.length === 0 && newFiles.length === 0) {
     const gitStatus = await getStatus(tuckDir);
     if (gitStatus.hasChanges) {
       prompts.log.info('No dotfile changes, but repository has uncommitted changes');
@@ -216,6 +304,11 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
         await stageAll(tuckDir);
         const hash = await commit(tuckDir, message);
         prompts.log.success(`Committed: ${hash.slice(0, 7)}`);
+
+        // Push if remote exists
+        if (options.push !== false && (await hasRemote(tuckDir))) {
+          await pushWithSpinner(tuckDir, options);
+        }
       }
     } else {
       prompts.log.success('Everything is up to date');
@@ -223,15 +316,70 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
     return;
   }
 
-  // Check for large files in changes
+  // ========== STEP 5: Show changes to tracked files ==========
+  if (changes.length > 0) {
+    console.log();
+    console.log(chalk.bold('Changes to tracked files:'));
+    for (const change of changes) {
+      if (change.status === 'modified') {
+        console.log(chalk.yellow(`  ~ ${change.path}`));
+      } else if (change.status === 'deleted') {
+        console.log(chalk.red(`  - ${change.path}`));
+      }
+    }
+  }
+
+  // ========== STEP 6: Interactive selection for new files ==========
+  let filesToTrack: FileToTrack[] = [];
+
+  if (newFiles.length > 0) {
+    console.log();
+    console.log(chalk.bold(`New dotfiles found (${newFiles.length}):`));
+
+    // Group by category for display
+    const grouped: Record<string, DetectedFile[]> = {};
+    for (const file of newFiles) {
+      if (!grouped[file.category]) grouped[file.category] = [];
+      grouped[file.category].push(file);
+    }
+
+    for (const [category, files] of Object.entries(grouped)) {
+      const categoryInfo = DETECTION_CATEGORIES[category] || { icon: '-', name: category };
+      console.log(chalk.cyan(`  ${categoryInfo.icon} ${categoryInfo.name}: ${files.length} file${files.length > 1 ? 's' : ''}`));
+    }
+
+    console.log();
+    const trackNewFiles = await prompts.confirm('Would you like to track some of these new files?', true);
+
+    if (trackNewFiles) {
+      // Create multiselect options (pre-select non-sensitive files)
+      const selectOptions = newFiles.map((f) => ({
+        value: f.path,
+        label: `${collapsePath(expandPath(f.path))}${f.sensitive ? chalk.yellow(' [sensitive]') : ''}`,
+        hint: f.category,
+      }));
+
+      const nonSensitiveFiles = newFiles.filter((f) => !f.sensitive);
+      const initialValues = nonSensitiveFiles.map((f) => f.path);
+
+      const selected = await prompts.multiselect(
+        'Select files to track:',
+        selectOptions,
+        { initialValues }
+      );
+
+      filesToTrack = selected.map((path) => ({ path: path as string }));
+    }
+  }
+
+  // ========== STEP 7: Handle large files in tracked changes ==========
   const largeFiles: Array<{ path: string; size: string; sizeBytes: number }> = [];
 
   for (const change of changes) {
-    // Check size for all changes that involve adding/modifying file content
     if (change.status !== 'deleted') {
       const expandedPath = expandPath(change.source);
       const sizeCheck = await checkFileSizeThreshold(expandedPath);
-      
+
       if (sizeCheck.warn || sizeCheck.block) {
         largeFiles.push({
           path: change.path,
@@ -242,42 +390,37 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
     }
   }
 
-  // Show large file warnings
   if (largeFiles.length > 0) {
     console.log();
-    console.log(chalk.yellow('⚠ Large files detected:'));
+    console.log(chalk.yellow('Large files detected:'));
     for (const file of largeFiles) {
-      console.log(chalk.yellow(`  • ${file.path} (${file.size})`));
+      console.log(chalk.yellow(`  ${file.path} (${file.size})`));
     }
     console.log();
     console.log(chalk.dim('GitHub has a 50MB warning and 100MB hard limit.'));
     console.log();
-    
-    const hasBlockers = largeFiles.some(f => f.sizeBytes >= SIZE_BLOCK_THRESHOLD);
-    
+
+    const hasBlockers = largeFiles.some((f) => f.sizeBytes >= SIZE_BLOCK_THRESHOLD);
+
     if (hasBlockers) {
-      const action = await prompts.select(
-        'Some files exceed 100MB. What would you like to do?',
-        [
-          { value: 'ignore', label: 'Add large files to .tuckignore' },
-          { value: 'continue', label: 'Try to commit anyway (may fail)' },
-          { value: 'cancel', label: 'Cancel sync' },
-        ]
-      );
-      
+      const action = await prompts.select('Some files exceed 100MB. What would you like to do?', [
+        { value: 'ignore', label: 'Add large files to .tuckignore' },
+        { value: 'continue', label: 'Try to commit anyway (may fail)' },
+        { value: 'cancel', label: 'Cancel sync' },
+      ]);
+
       if (action === 'ignore') {
         for (const file of largeFiles) {
-          const fullPath = changes.find(c => c.path === file.path)?.source;
+          const fullPath = changes.find((c) => c.path === file.path)?.source;
           if (fullPath) {
             await addToTuckignore(tuckDir, fullPath);
-            // Remove from changes array
-            const index = changes.findIndex(c => c.path === file.path);
+            const index = changes.findIndex((c) => c.path === file.path);
             if (index > -1) changes.splice(index, 1);
           }
         }
         prompts.log.success('Added large files to .tuckignore');
-        
-        if (changes.length === 0) {
+
+        if (changes.length === 0 && filesToTrack.length === 0) {
           prompts.log.info('No changes remaining to sync');
           return;
         }
@@ -285,30 +428,25 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
         prompts.cancel('Operation cancelled');
         return;
       }
-      // 'continue' falls through
     } else {
-      // Just warnings (50-100MB), show but allow to continue
-      const action = await prompts.select(
-        'Large files detected. What would you like to do?',
-        [
-          { value: 'continue', label: 'Continue with sync' },
-          { value: 'ignore', label: 'Add to .tuckignore and skip' },
-          { value: 'cancel', label: 'Cancel sync' },
-        ]
-      );
-      
+      const action = await prompts.select('Large files detected. What would you like to do?', [
+        { value: 'continue', label: 'Continue with sync' },
+        { value: 'ignore', label: 'Add to .tuckignore and skip' },
+        { value: 'cancel', label: 'Cancel sync' },
+      ]);
+
       if (action === 'ignore') {
         for (const file of largeFiles) {
-          const fullPath = changes.find(c => c.path === file.path)?.source;
+          const fullPath = changes.find((c) => c.path === file.path)?.source;
           if (fullPath) {
             await addToTuckignore(tuckDir, fullPath);
-            const index = changes.findIndex(c => c.path === file.path);
+            const index = changes.findIndex((c) => c.path === file.path);
             if (index > -1) changes.splice(index, 1);
           }
         }
         prompts.log.success('Added large files to .tuckignore');
-        
-        if (changes.length === 0) {
+
+        if (changes.length === 0 && filesToTrack.length === 0) {
           prompts.log.info('No changes remaining to sync');
           return;
         }
@@ -319,67 +457,51 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
     }
   }
 
-  // Show changes
-  console.log();
-  console.log(chalk.bold('Changes detected:'));
-  for (const change of changes) {
-    if (change.status === 'modified') {
-      console.log(chalk.yellow(`  ~ ${change.path}`));
-    } else if (change.status === 'deleted') {
-      console.log(chalk.red(`  - ${change.path}`));
+  // ========== STEP 8: Track new files ==========
+  if (filesToTrack.length > 0) {
+    console.log();
+    await trackFilesWithProgress(filesToTrack, tuckDir, {
+      showCategory: true,
+      actionVerb: 'Tracking',
+    });
+  }
+
+  // ========== STEP 9: Sync changes to tracked files ==========
+  let result: SyncResult = { modified: [], deleted: [] };
+
+  if (changes.length > 0) {
+    // Generate commit message
+    const message =
+      options.message ||
+      generateCommitMessage({
+        modified: changes.filter((c) => c.status === 'modified').map((c) => c.path),
+        deleted: changes.filter((c) => c.status === 'deleted').map((c) => c.path),
+      });
+
+    console.log();
+    console.log(chalk.dim('Commit message:'));
+    console.log(chalk.cyan(message.split('\n').map((line) => `  ${line}`).join('\n')));
+    console.log();
+
+    result = await syncFiles(tuckDir, changes, { ...options, message });
+  } else if (filesToTrack.length > 0) {
+    // Only new files were added, commit them
+    if (!options.noCommit) {
+      const message = options.message || `Add ${filesToTrack.length} new dotfile${filesToTrack.length > 1 ? 's' : ''}`;
+      await stageAll(tuckDir);
+      result.commitHash = await commit(tuckDir, message);
     }
   }
-  console.log();
 
-  // Generate auto commit message
-  const message = generateCommitMessage({
-    modified: changes.filter((c) => c.status === 'modified').map((c) => c.path),
-    deleted: changes.filter((c) => c.status === 'deleted').map((c) => c.path),
-  });
-
-  console.log(chalk.dim('Commit message:'));
-  console.log(chalk.cyan(message.split('\n').map(line => `  ${line}`).join('\n')));
-  console.log();
-
-  // Sync
-  const result = await syncFiles(tuckDir, changes, { message });
-
+  // ========== STEP 10: Push to remote ==========
   console.log();
   let pushFailed = false;
-  
+
   if (result.commitHash) {
     prompts.log.success(`Committed: ${result.commitHash.slice(0, 7)}`);
 
-    // Auto-push to remote if it exists (unless --no-push specified)
     if (options.push !== false && (await hasRemote(tuckDir))) {
-      const spinner2 = prompts.spinner();
-      try {
-        // Get current branch and status
-        const status = await getStatus(tuckDir);
-        const needsUpstream = !status.tracking;
-        const branch = status.branch;
-        
-        // If behind remote, pull first
-        if (status.behind > 0) {
-          spinner2.start('Pulling from remote...');
-          const { pull } = await import('../lib/git.js');
-          await pull(tuckDir, { rebase: true });
-          spinner2.stop('Pulled from remote');
-        }
-        
-        // Push to remote
-        spinner2.start('Pushing to remote...');
-        await push(tuckDir, {
-          setUpstream: needsUpstream,
-          branch: needsUpstream ? branch : undefined,
-        });
-        spinner2.stop('Pushed to remote');
-      } catch (error) {
-        pushFailed = true;
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        spinner2.stop(`Push failed: ${errorMsg}`);
-        prompts.log.warning("Run 'tuck pull' then 'tuck push' to sync manually");
-      }
+      pushFailed = !(await pushWithSpinner(tuckDir, options));
     } else if (options.push === false) {
       prompts.log.info("Run 'tuck push' when ready to upload");
     }
@@ -388,6 +510,31 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
   // Only show success if no push failure occurred
   if (!pushFailed) {
     prompts.outro('Synced successfully!');
+  }
+};
+
+/**
+ * Helper to push with spinner and error handling
+ */
+const pushWithSpinner = async (tuckDir: string, options: SyncOptions): Promise<boolean> => {
+  const spinner = prompts.spinner();
+  try {
+    const status = await getStatus(tuckDir);
+    const needsUpstream = !status.tracking;
+    const branch = status.branch;
+
+    spinner.start('Pushing to remote...');
+    await push(tuckDir, {
+      setUpstream: needsUpstream,
+      branch: needsUpstream ? branch : undefined,
+    });
+    spinner.stop('Pushed to remote');
+    return true;
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    spinner.stop(`Push failed: ${errorMsg}`);
+    prompts.log.warning("Run 'tuck push' to try again");
+    return false;
   }
 };
 
@@ -463,7 +610,7 @@ const runSyncCommand = async (messageArg: string | undefined, options: SyncOptio
 };
 
 export const syncCommand = new Command('sync')
-  .description('Sync changes to repository (commits and pushes)')
+  .description('Sync all dotfile changes (pull, detect, track, commit, push)')
   .argument('[message]', 'Commit message')
   .option('-m, --message <msg>', 'Commit message')
   // TODO: --all and --amend are planned for a future version
@@ -471,6 +618,8 @@ export const syncCommand = new Command('sync')
   // .option('--amend', 'Amend previous commit')
   .option('--no-commit', "Stage changes but don't commit")
   .option('--no-push', "Commit but don't push to remote")
+  .option('--no-pull', "Don't pull from remote first")
+  .option('--no-scan', "Don't scan for new dotfiles")
   .option('--no-hooks', 'Skip execution of pre/post sync hooks')
   .option('--trust-hooks', 'Trust and run hooks without confirmation (use with caution)')
   .action(async (messageArg: string | undefined, options: SyncOptions) => {
