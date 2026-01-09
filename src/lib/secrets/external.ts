@@ -9,17 +9,11 @@
 // execFile doesn't use shell interpolation, so malicious filenames can't execute arbitrary commands
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { writeFile, unlink } from 'fs/promises';
-import { tmpdir } from 'os';
-import { join } from 'path';
-import { randomBytes } from 'crypto';
 import { z } from 'zod';
 import type { SecretMatch, FileScanResult, ScanSummary } from './scanner.js';
-import { scanFiles as builtinScanFiles } from './scanner.js';
+import { scanFiles as builtinScanFiles, redactSecret } from './scanner.js';
 import type { SecretSeverity } from './patterns.js';
-
-// Security: File permission constants
-const TEMP_FILE_MODE = 0o600; // Owner read/write only
+import { collapsePath } from '../paths.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -154,17 +148,8 @@ export const scanWithGitleaks = async (filepaths: string[]): Promise<ScanSummary
   let filesWithSecrets = 0;
   const bySeverity = { critical: 0, high: 0, medium: 0, low: 0 };
 
-  // Security: Create a temporary file with cryptographically random name
-  // Using randomBytes instead of Date.now() prevents predictable temp file names
-  const randomSuffix = randomBytes(16).toString('hex');
-  const tempListFile = join(tmpdir(), `tuck-gitleaks-${randomSuffix}.txt`);
-
-  try {
-    // Security: Write with restrictive permissions (owner read/write only)
-    await writeFile(tempListFile, filepaths.join('\n'), { mode: TEMP_FILE_MODE });
-
-    // Run gitleaks on each file
-    for (const filepath of filepaths) {
+  // Run gitleaks on each file
+  for (const filepath of filepaths) {
       try {
         // Security: Use execFileAsync with array arguments to prevent command injection
         // This prevents malicious filenames from executing arbitrary shell commands
@@ -207,11 +192,9 @@ export const scanWithGitleaks = async (filepaths: string[]): Promise<ScanSummary
           bySeverity[severity]++;
           totalSecrets++;
 
-          // Redact the secret value for display
+          // Security: Use consistent redactSecret function for better security
           const secretValue = finding.Secret || finding.Match;
-          const redactedValue = secretValue.length > 8
-            ? `${secretValue.slice(0, 4)}${'*'.repeat(Math.min(16, secretValue.length - 8))}${secretValue.slice(-4)}`
-            : '*'.repeat(secretValue.length);
+          const redactedValue = redactSecret(secretValue);
 
           matches.push({
             patternId: `gitleaks-${finding.RuleID}`,
@@ -226,11 +209,8 @@ export const scanWithGitleaks = async (filepaths: string[]): Promise<ScanSummary
           });
         }
 
-        // Collapse home directory in path for display
-        const collapsedPath = filepath.replace(
-          process.env.HOME || '',
-          '~'
-        );
+        // Collapse home directory in path for display using utility function
+        const collapsedPath = collapsePath(filepath);
 
         results.push({
           path: filepath,
@@ -250,14 +230,6 @@ export const scanWithGitleaks = async (filepaths: string[]): Promise<ScanSummary
         continue;
       }
     }
-  } finally {
-    // Clean up temp file
-    try {
-      await unlink(tempListFile);
-    } catch {
-      // Ignore cleanup errors
-    }
-  }
 
   return {
     results,

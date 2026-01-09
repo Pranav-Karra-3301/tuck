@@ -28,6 +28,7 @@ import {
   scanForSecrets,
   processSecretsForRedaction,
   redactFile,
+  getSecretsPath,
   type ScanSummary,
 } from '../lib/secrets/index.js';
 
@@ -344,7 +345,7 @@ const handleSecretsDetected = async (
 
       console.log();
       logger.success(`Replaced ${totalRedacted} secret(s) with placeholders`);
-      logger.dim('Secrets stored in: ~/.tuck/secrets.local.json (never committed)');
+      logger.dim(`Secrets stored in: ${collapsePath(getSecretsPath(tuckDir))} (never committed)`);
       logger.dim("Run 'tuck secrets list' to see stored secrets");
       console.log();
 

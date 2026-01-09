@@ -42,7 +42,7 @@ export const CLOUD_PROVIDER_PATTERNS: SecretPattern[] = [
   {
     id: 'aws-session-token',
     name: 'AWS Session Token',
-    pattern: /(?:aws_session_token)\s*[=:]\s*['"]?([A-Za-z0-9/+=]{100,})['"]?/gi,
+    pattern: /(?:aws_session_token)\s*[=:]\s*['"]?([A-Za-z0-9/+=]{100,1000})['"]?/gi,
     severity: 'critical',
     description: 'AWS Session Token',
     placeholder: 'AWS_SESSION_TOKEN',
@@ -157,7 +157,7 @@ export const API_TOKEN_PATTERNS: SecretPattern[] = [
   {
     id: 'openai-api-key',
     name: 'OpenAI API Key',
-    pattern: /\b(sk-[A-Za-z0-9]{20,}T3BlbkFJ[A-Za-z0-9]{20,})\b/g,
+    pattern: /\b(sk-[A-Za-z0-9]{20,256}T3BlbkFJ[A-Za-z0-9]{20,256})\b/g,
     severity: 'critical',
     description: 'OpenAI API Key (legacy format)',
     placeholder: 'OPENAI_API_KEY',
@@ -165,7 +165,7 @@ export const API_TOKEN_PATTERNS: SecretPattern[] = [
   {
     id: 'openai-api-key-new',
     name: 'OpenAI API Key (new format)',
-    pattern: /\b(sk-proj-[A-Za-z0-9_-]{80,})\b/g,
+    pattern: /\b(sk-proj-[A-Za-z0-9_-]{80,256})\b/g,
     severity: 'critical',
     description: 'OpenAI API Key (project format)',
     placeholder: 'OPENAI_API_KEY',
@@ -173,7 +173,7 @@ export const API_TOKEN_PATTERNS: SecretPattern[] = [
   {
     id: 'openai-api-key-org',
     name: 'OpenAI Organization Key',
-    pattern: /\b(sk-[A-Za-z0-9]{48,})\b/g,
+    pattern: /\b(sk-[A-Za-z0-9]{48,256})\b/g,
     severity: 'critical',
     description: 'OpenAI API Key',
     placeholder: 'OPENAI_API_KEY',
@@ -183,7 +183,7 @@ export const API_TOKEN_PATTERNS: SecretPattern[] = [
   {
     id: 'anthropic-api-key',
     name: 'Anthropic API Key',
-    pattern: /\b(sk-ant-api[a-zA-Z0-9_-]{90,})\b/g,
+    pattern: /\b(sk-ant-api[a-zA-Z0-9_-]{90,256})\b/g,
     severity: 'critical',
     description: 'Anthropic API Key',
     placeholder: 'ANTHROPIC_API_KEY',
@@ -227,7 +227,7 @@ export const API_TOKEN_PATTERNS: SecretPattern[] = [
   {
     id: 'stripe-live-secret',
     name: 'Stripe Live Secret Key',
-    pattern: /\b(sk_live_[0-9a-zA-Z]{24,})\b/g,
+    pattern: /\b(sk_live_[0-9a-zA-Z]{24,256})\b/g,
     severity: 'critical',
     description: 'Stripe Live Secret Key',
     placeholder: 'STRIPE_SECRET_KEY',
@@ -235,7 +235,7 @@ export const API_TOKEN_PATTERNS: SecretPattern[] = [
   {
     id: 'stripe-live-publishable',
     name: 'Stripe Live Publishable Key',
-    pattern: /\b(pk_live_[0-9a-zA-Z]{24,})\b/g,
+    pattern: /\b(pk_live_[0-9a-zA-Z]{24,256})\b/g,
     severity: 'high',
     description: 'Stripe Live Publishable Key',
     placeholder: 'STRIPE_PUBLISHABLE_KEY',
@@ -243,7 +243,7 @@ export const API_TOKEN_PATTERNS: SecretPattern[] = [
   {
     id: 'stripe-test-secret',
     name: 'Stripe Test Secret Key',
-    pattern: /\b(sk_test_[0-9a-zA-Z]{24,})\b/g,
+    pattern: /\b(sk_test_[0-9a-zA-Z]{24,256})\b/g,
     severity: 'medium',
     description: 'Stripe Test Secret Key',
     placeholder: 'STRIPE_TEST_SECRET_KEY',
@@ -251,7 +251,7 @@ export const API_TOKEN_PATTERNS: SecretPattern[] = [
   {
     id: 'stripe-restricted',
     name: 'Stripe Restricted Key',
-    pattern: /\b(rk_live_[0-9a-zA-Z]{24,})\b/g,
+    pattern: /\b(rk_live_[0-9a-zA-Z]{24,256})\b/g,
     severity: 'critical',
     description: 'Stripe Restricted API Key',
     placeholder: 'STRIPE_RESTRICTED_KEY',
@@ -309,7 +309,7 @@ export const API_TOKEN_PATTERNS: SecretPattern[] = [
   {
     id: 'pypi-api-token',
     name: 'PyPI API Token',
-    pattern: /\b(pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,})\b/g,
+    pattern: /\b(pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,256})\b/g,
     severity: 'critical',
     description: 'PyPI API Token',
     placeholder: 'PYPI_TOKEN',
@@ -319,7 +319,7 @@ export const API_TOKEN_PATTERNS: SecretPattern[] = [
   {
     id: 'discord-bot-token',
     name: 'Discord Bot Token',
-    pattern: /\b([MN][A-Za-z\d]{23,}\.[\w-]{6}\.[\w-]{27})\b/g,
+    pattern: /\b([MN][A-Za-z\d]{23,256}\.[\w-]{6}\.[\w-]{27})\b/g,
     severity: 'critical',
     description: 'Discord Bot Token',
     placeholder: 'DISCORD_BOT_TOKEN',
@@ -526,7 +526,7 @@ export const GENERIC_PATTERNS: SecretPattern[] = [
   {
     id: 'api-key-assignment',
     name: 'API Key Assignment',
-    pattern: /(?:api[_-]?key|apikey)\s*[=:]\s*['"]?([A-Za-z0-9_-]{16,})['"]?/gi,
+    pattern: /(?:api[_-]?key|apikey)\s*[=:]\s*(?:['"]([A-Za-z0-9_-]{16,256})['"]|([A-Za-z0-9_-]{16,256}))/gi,
     severity: 'high',
     description: 'API key assigned in configuration',
     placeholder: 'API_KEY',
@@ -536,7 +536,7 @@ export const GENERIC_PATTERNS: SecretPattern[] = [
   {
     id: 'token-assignment',
     name: 'Token Assignment',
-    pattern: /(?:token|auth[_-]?token|access[_-]?token|bearer[_-]?token)\s*[=:]\s*['"]?([A-Za-z0-9_.-]{20,})['"]?/gi,
+    pattern: /(?:token|auth[_-]?token|access[_-]?token|bearer[_-]?token)\s*[=:]\s*(?:['"]([A-Za-z0-9_.-]{20,256})['"]|([A-Za-z0-9_.-]{20,256}))/gi,
     severity: 'high',
     description: 'Token assigned in configuration',
     placeholder: 'TOKEN',
@@ -546,7 +546,7 @@ export const GENERIC_PATTERNS: SecretPattern[] = [
   {
     id: 'secret-assignment',
     name: 'Secret Assignment',
-    pattern: /(?:secret|client[_-]?secret|app[_-]?secret|secret[_-]?key)\s*[=:]\s*['"]?([A-Za-z0-9_-]{16,})['"]?/gi,
+    pattern: /(?:secret|client[_-]?secret|app[_-]?secret|secret[_-]?key)\s*[=:]\s*(?:['"]([A-Za-z0-9_-]{16,256})['"]|([A-Za-z0-9_-]{16,256}))/gi,
     severity: 'high',
     description: 'Secret assigned in configuration',
     placeholder: 'SECRET',
@@ -556,7 +556,7 @@ export const GENERIC_PATTERNS: SecretPattern[] = [
   {
     id: 'bearer-token',
     name: 'Bearer Token',
-    pattern: /Bearer\s+([A-Za-z0-9_.-]{20,})/g,
+    pattern: /Bearer\s+([A-Za-z0-9_.-]{20,256})/g,
     severity: 'high',
     description: 'Bearer authentication token',
     placeholder: 'BEARER_TOKEN',
@@ -566,7 +566,7 @@ export const GENERIC_PATTERNS: SecretPattern[] = [
   {
     id: 'basic-auth-header',
     name: 'Basic Auth Header',
-    pattern: /Basic\s+([A-Za-z0-9+/=]{20,})/g,
+    pattern: /Basic\s+([A-Za-z0-9+/=]{20,256})/g,
     severity: 'high',
     description: 'Base64 encoded credentials',
     placeholder: 'BASIC_AUTH',
@@ -611,7 +611,7 @@ export const GENERIC_PATTERNS: SecretPattern[] = [
   {
     id: 'jwt-token',
     name: 'JWT Token',
-    pattern: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
+    pattern: /\beyJ[A-Za-z0-9_-]{10,256}\.[A-Za-z0-9_-]{10,256}\.[A-Za-z0-9_-]{10,256}\b/g,
     severity: 'high',
     description: 'JSON Web Token',
     placeholder: 'JWT_TOKEN',
@@ -621,7 +621,7 @@ export const GENERIC_PATTERNS: SecretPattern[] = [
   {
     id: 'base64-private-key',
     name: 'Base64 Private Key Content',
-    pattern: /MII[A-Za-z0-9+/]{60,}={0,2}/g,
+    pattern: /MII[A-Za-z0-9+/]{60,512}={0,2}/g,
     severity: 'high',
     description: 'Base64 encoded private key content',
     placeholder: 'PRIVATE_KEY_CONTENT',
@@ -631,7 +631,7 @@ export const GENERIC_PATTERNS: SecretPattern[] = [
   {
     id: 'encryption-key',
     name: 'Encryption Key',
-    pattern: /(?:encryption[_-]?key|aes[_-]?key|crypto[_-]?key)\s*[=:]\s*['"]?([A-Fa-f0-9]{32,})['"]?/gi,
+    pattern: /(?:encryption[_-]?key|aes[_-]?key|crypto[_-]?key)\s*[=:]\s*['"]?([A-Fa-f0-9]{32,256})['"]?/gi,
     severity: 'critical',
     description: 'Encryption key',
     placeholder: 'ENCRYPTION_KEY',
