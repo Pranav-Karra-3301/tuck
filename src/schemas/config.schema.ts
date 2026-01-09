@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { securityConfigSchema } from './secrets.schema.js';
 
 export const fileStrategySchema = z.enum(['copy', 'symlink']);
 
@@ -66,6 +67,8 @@ export const tuckConfigSchema = z.object({
     })
     .partial()
     .default({}),
+
+  security: securityConfigSchema,
 });
 
 export type TuckConfigInput = z.input<typeof tuckConfigSchema>;
@@ -96,5 +99,15 @@ export const defaultConfig: TuckConfigOutput = {
     colors: true,
     emoji: true,
     verbose: false,
+  },
+  security: {
+    scanSecrets: true,
+    blockOnSecrets: true,
+    minSeverity: 'high',
+    scanner: 'builtin',
+    customPatterns: [],
+    excludePatterns: [],
+    excludeFiles: [],
+    maxFileSize: 10 * 1024 * 1024,
   },
 };

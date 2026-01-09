@@ -15,6 +15,7 @@ import {
   applyCommand,
   undoCommand,
   scanCommand,
+  secretsCommand,
 } from './commands/index.js';
 import { handleError } from './errors.js';
 import { VERSION, DESCRIPTION } from './constants.js';
@@ -56,6 +57,7 @@ program.addCommand(configCommand);
 program.addCommand(applyCommand);
 program.addCommand(undoCommand);
 program.addCommand(scanCommand);
+program.addCommand(secretsCommand);
 
 // Default action when no command is provided
 const runDefaultAction = async (): Promise<void> => {
