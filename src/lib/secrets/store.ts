@@ -320,7 +320,7 @@ export const isValidSecretName = (name: string): boolean => {
   if (name.length < MIN_SECRET_NAME_LENGTH || name.length > MAX_SECRET_NAME_LENGTH) {
     return false;
   }
-  // Must be uppercase alphanumeric with underscores, starting with a letter
+  // Must be uppercase alphanumeric with underscores, starting with an uppercase letter (A-Z)
   return /^[A-Z][A-Z0-9_]*$/.test(name);
 };
 

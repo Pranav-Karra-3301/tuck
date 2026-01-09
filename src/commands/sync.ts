@@ -317,11 +317,9 @@ const scanAndHandleSecrets = async (
         logger.dim(`Added ${collapsePath(result.path)} to .tuckignore`);
       }
     }
-    // Remove files from changes list
+    // Filter out ignored files from changes list
     const filesToRemove = new Set(summary.results.map(r => r.path));
-    const filteredChanges = changes.filter(c => !filesToRemove.has(expandPath(c.source)));
-    changes.length = 0;
-    changes.push(...filteredChanges);
+    changes.splice(0, changes.length, ...changes.filter(c => !filesToRemove.has(expandPath(c.source))));
 
     if (changes.length === 0) {
       prompts.log.info('No remaining changes to sync');

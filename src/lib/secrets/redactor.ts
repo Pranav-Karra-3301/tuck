@@ -28,11 +28,18 @@ const atomicWriteFile = async (filepath: string, content: string): Promise<void>
   try {
     // Get original file permissions if file exists
     let mode: number | undefined;
+    let fileExists = false;
     try {
       const stats = await stat(filepath);
       mode = stats.mode;
+      fileExists = true;
     } catch {
-      // File doesn't exist, use default permissions
+      // File doesn't exist
+    }
+
+    // Security: For new security-sensitive files (e.g., dotfiles), use restrictive permissions
+    if (!fileExists && basename(filepath).startsWith('.')) {
+      mode = 0o600; // Owner read/write only
     }
 
     // Write to temp file first
@@ -111,20 +118,15 @@ export const redactContent = (
   let redactedContent = content;
   const replacements: RedactionResult['replacements'] = [];
 
-  // Sort matches by position (descending by line, then column)
-  // This way we replace from end to start to preserve indices
-  const sortedMatches = [...matches].sort((a, b) => {
-    if (a.line !== b.line) return b.line - a.line;
-    return b.column - a.column;
-  });
-
-  for (const match of sortedMatches) {
+  // Process all matches and replace secret values with placeholders
+  for (const match of matches) {
     const placeholderName = placeholderMap.get(match.value) || match.placeholder;
     const placeholder = formatPlaceholder(placeholderName);
 
     // Replace all occurrences of this secret value
     // Use a temporary marker to avoid replacing already-replaced content
-    const tempMarker = `__TUCK_TEMP_${Math.random().toString(36).slice(2)}__`;
+    // Security: Use crypto.randomBytes for unpredictable temp markers
+    const tempMarker = `__TUCK_TEMP_${randomBytes(16).toString('hex')}__`;
     redactedContent = redactedContent.split(match.value).join(tempMarker);
     redactedContent = redactedContent.split(tempMarker).join(placeholder);
 

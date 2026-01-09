@@ -95,7 +95,7 @@ const runSecretsSet = async (name: string): Promise<void> => {
 
   // Security: Always prompt for secret value interactively
   // Never accept via command-line to prevent exposure in shell history and process list
-  // Note: prompts.password handles cancellation internally by calling process.exit()
+  // Note: Cancellation or empty input is handled below by validating the returned value.
   const secretValue = await prompts.password(`Enter value for ${name}:`);
 
   if (!secretValue || secretValue.trim().length === 0) {

@@ -86,7 +86,7 @@ export interface ScanSummary {
  * Security: NEVER show any actual characters from the secret to prevent information leakage.
  * Only show length indicators and type hints.
  */
-const redactSecret = (value: string): string => {
+export const redactSecret = (value: string): string => {
   // For multiline values (like private keys), show type hint only
   if (value.includes('\n')) {
     const firstLine = value.split('\n')[0];
@@ -131,7 +131,7 @@ const getContext = (content: string, lineNum: number, secretValue: string): stri
 
   try {
     // Redact the secret in the context
-    let contextLine = line;
+    let contextLine: string;
     const secretToFind = secretValue.includes('\n') ? secretValue.split('\n')[0] : secretValue;
 
     // Security: Escape regex special characters in secret value
