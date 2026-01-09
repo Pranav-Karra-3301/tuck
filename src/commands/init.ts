@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { join, resolve, sep } from 'path';
+import { join } from 'path';
 import { writeFile } from 'fs/promises';
 import { ensureDir } from 'fs-extra';
 import { banner, nextSteps, prompts, withSpinner, logger } from '../ui/index.js';
@@ -10,9 +10,7 @@ import {
   getFilesDir,
   getCategoryDir,
   pathExists,
-  expandPath,
   collapsePath,
-  validateSafeSourcePath,
 } from '../lib/paths.js';
 import { saveConfig } from '../lib/config.js';
 import { createManifest } from '../lib/manifest.js';
@@ -43,7 +41,6 @@ import {
 } from '../lib/github.js';
 import chalk from 'chalk';
 import { detectDotfiles, DetectedFile, DETECTION_CATEGORIES } from '../lib/detect.js';
-import { createPreApplySnapshot } from '../lib/timemachine.js';
 import { copy } from 'fs-extra';
 import { tmpdir } from 'os';
 import { readFile, rm } from 'fs/promises';
@@ -833,17 +830,6 @@ interface ImportResult {
 }
 
 /**
- * Validate that a destination path stays within the tuck directory
- * Prevents path traversal attacks via malicious manifest files
- */
-const validateDestinationPath = (tuckDir: string, destination: string): boolean => {
-  const fullPath = resolve(join(tuckDir, destination));
-  const normalizedTuckDir = resolve(tuckDir);
-  // Ensure the resolved path starts with tuckDir + separator to prevent escaping
-  return fullPath.startsWith(normalizedTuckDir + sep) || fullPath === normalizedTuckDir;
-};
-
-/**
  * Import an existing GitHub dotfiles repository
  */
 const importExistingRepo = async (
@@ -859,7 +845,10 @@ const importExistingRepo = async (
     : `https://github.com/${repoName}.git`;
 
   if (analysis.type === 'valid-tuck') {
-    // Scenario A: Valid tuck repository - full import
+    // Scenario A: Valid tuck repository - import only (NO auto-apply)
+    // BREAKING CHANGE: Files are no longer automatically applied when cloning a tuck repository.
+    // This is a safer default that prevents accidental overwrites of existing configurations.
+    // User should run 'tuck apply' or 'tuck restore' manually when ready.
     prompts.log.step('Importing tuck repository...');
 
     // Copy the entire repo to tuck directory
@@ -869,85 +858,43 @@ const importExistingRepo = async (
     // Copy files from cloned repo to tuck directory
     await copy(repoDir, tuckDir, { overwrite: true });
 
-    spinner.stop('Repository copied');
+    spinner.stop('Repository imported');
 
-    // Get file count
+    // Get file count and group by category for display
     const fileCount = Object.keys(analysis.manifest.files).length;
 
-    // Track how many files are actually applied to the system
-    let appliedCount = 0;
-
-    // Apply dotfiles to system with merge strategy
-    const shouldApply = await prompts.confirm(
-      `Apply ${fileCount} dotfiles to your system?`,
-      true
-    );
-
-    if (shouldApply) {
-      // Validate and filter files once to avoid duplicate warnings
-      const validFiles: Array<typeof analysis.manifest.files[string]> = [];
-      for (const [_id, file] of Object.entries(analysis.manifest.files)) {
-        // Validate that the source path is safe (within home directory)
-        // This prevents malicious manifests from writing to arbitrary locations
-        try {
-          validateSafeSourcePath(file.source);
-        } catch (error) {
-          prompts.log.warning(`Skipping unsafe source path from manifest: ${file.source}`);
-          continue;
-        }
-
-        // Validate that the destination path stays within tuckDir
-        // This prevents path traversal attacks reading files from outside the repo
-        if (!validateDestinationPath(tuckDir, file.destination)) {
-          prompts.log.warning(`Skipping unsafe destination path from manifest: ${file.destination}`);
-          continue;
-        }
-
-        validFiles.push(file);
-      }
-
-      // Create backup before applying
-      const existingPaths: string[] = [];
-      for (const file of validFiles) {
-        const destPath = expandPath(file.source);
-        if (await pathExists(destPath)) {
-          existingPaths.push(destPath);
-        }
-      }
-
-      if (existingPaths.length > 0) {
-        const backupSpinner = prompts.spinner();
-        backupSpinner.start('Creating backup of existing files...');
-        await createPreApplySnapshot(existingPaths, repoName);
-        backupSpinner.stop('Backup created');
-      }
-
-      // Apply files using the pre-validated list
-      const applySpinner = prompts.spinner();
-      applySpinner.start('Applying dotfiles...');
-
-      for (const file of validFiles) {
-        const repoFilePath = join(tuckDir, file.destination);
-        const destPath = expandPath(file.source);
-
-        if (await pathExists(repoFilePath)) {
-          // Ensure destination directory exists
-          const destDir = join(destPath, '..');
-          await ensureDir(destDir);
-
-          // Copy file
-          await copy(repoFilePath, destPath, { overwrite: true });
-          appliedCount++;
-        }
-      }
-
-      applySpinner.stop(`Applied ${appliedCount} dotfiles`);
+    // Group files by category
+    const grouped: Record<string, string[]> = {};
+    for (const [_id, file] of Object.entries(analysis.manifest.files)) {
+      if (!grouped[file.category]) grouped[file.category] = [];
+      grouped[file.category].push(file.source);
     }
 
-    // Return both the number of files in the repo and the number applied to system
-    // filesInRepo: total files imported to ~/.tuck (always happens)
-    // filesApplied: files actually applied to system (0 if user declined)
-    return { success: true, filesInRepo: fileCount, filesApplied: appliedCount, remoteUrl };
+    // Display what's available
+    console.log();
+    prompts.log.success(`Imported ${fileCount} dotfiles to ~/.tuck`);
+    console.log();
+
+    // Show files by category with icons
+    const { DETECTION_CATEGORIES } = await import('../lib/detect.js');
+    for (const [category, files] of Object.entries(grouped)) {
+      const categoryInfo = DETECTION_CATEGORIES[category] || { icon: '-', name: category };
+      console.log(chalk.cyan(`  ${categoryInfo.icon} ${categoryInfo.name}: ${files.length} file${files.length > 1 ? 's' : ''}`));
+    }
+
+    console.log();
+    prompts.note(
+      'Your dotfiles are now in ~/.tuck but NOT applied to your system.\n\n' +
+      'To apply them to your system, run:\n' +
+      '  tuck apply    # Interactive with merge options\n' +
+      '  tuck restore  # Simple restore from backup\n\n' +
+      'To see what files are available:\n' +
+      '  tuck list',
+      'Next Steps'
+    );
+
+    // filesApplied is always 0 - user must explicitly apply via tuck apply/restore
+    return { success: true, filesInRepo: fileCount, filesApplied: 0, remoteUrl };
   }
 
   if (analysis.type === 'plain-dotfiles') {

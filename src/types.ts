@@ -91,6 +91,8 @@ export interface SyncOptions {
   // amend?: boolean;
   noCommit?: boolean;
   push?: boolean; // Commander converts --no-push to push: false
+  pull?: boolean; // Commander converts --no-pull to pull: false
+  scan?: boolean; // Commander converts --no-scan to scan: false
   noHooks?: boolean;
   trustHooks?: boolean;
 }

@@ -1,7 +1,7 @@
-import { join, basename } from 'path';
+import { join, basename, isAbsolute } from 'path';
 import { readdir, stat } from 'fs/promises';
 import { platform } from 'os';
-import { pathExists, expandPath } from './paths.js';
+import { pathExists, expandPath, collapsePath } from './paths.js';
 
 const IS_MACOS = platform() === 'darwin';
 const IS_LINUX = platform() === 'linux';
@@ -413,6 +413,161 @@ const DOTFILE_PATTERNS: Array<{
 ];
 
 /**
+ * Patterns to exclude from detection
+ * These are files/directories that should NEVER be tracked as they contain
+ * ephemeral data, caches, or large binary files
+ */
+export const DEFAULT_EXCLUSION_PATTERNS = {
+  // Cache directories - contain downloaded packages, build artifacts, etc.
+  cacheDirectories: [
+    '~/.cache',
+    '~/.npm',
+    '~/.yarn/cache',
+    '~/.pnpm-store',
+    '~/.bun/install/cache',
+    '~/.cargo/registry',
+    '~/.cargo/git',
+    '~/.rustup/toolchains',
+    '~/.go/pkg',
+    '~/.m2/repository',
+    '~/.gradle/caches',
+    '~/.gradle/wrapper',
+    '~/.ivy2/cache',
+    '~/.sbt/boot',
+    '~/.coursier/cache',
+    '~/.pip/cache',
+    '~/.local/pipx/venvs',
+    '~/.pyenv/versions',
+    '~/.rbenv/versions',
+    '~/.nvm/versions',
+    '~/.sdkman/candidates',
+    '~/.local/share/virtualenvs',
+    '~/.conda/pkgs',
+    '~/.docker/buildx',
+    '~/.docker/volumes',
+    '~/.vagrant.d/boxes',
+    '~/.terraform.d/plugins',
+    '~/.composer/cache',
+    '~/.cpan/build',
+    '~/.cpanm/work',
+    '~/.gem/ruby',
+    '~/.thumbnails',
+    '~/.local/share/Trash',
+    '~/Library/Caches',
+    '~/.node_modules',
+    '~/.electron',
+  ],
+
+  // History and log files - contain ephemeral session data
+  historyFiles: [
+    '~/.bash_history',
+    '~/.zsh_history',
+    '~/.zhistory',
+    '~/.sh_history',
+    '~/.fish_history',
+    '~/.config/fish/fish_history',
+    '~/.lesshst',
+    '~/.node_repl_history',
+    '~/.python_history',
+    '~/.irb_history',
+    '~/.pry_history',
+    '~/.mysql_history',
+    '~/.psql_history',
+    '~/.sqlite_history',
+    '~/.rediscli_history',
+    '~/.mongosh_history',
+    '~/.dbshell',
+    '~/.wget-hsts',
+    '~/.recently-used',
+    '~/.local/share/recently-used.xbel',
+    '~/.viminfo',
+    '~/.vim_mru_files',
+    '~/.netrwhist',
+  ],
+
+  // Binary file extensions - images, fonts, compiled output
+  binaryPatterns: [
+    /\.(png|jpg|jpeg|gif|ico|svg|webp|bmp|tiff?)$/i,
+    /\.(woff2?|ttf|otf|eot)$/i,
+    /\.(so|dylib|dll|exe|bin|app)$/i,
+    /\.(o|a|lib|obj|pyc|pyo|class)$/i,
+    /\.(db|sqlite|sqlite3|leveldb)$/i,
+    /\.(zip|tar|gz|bz2|xz|7z|rar)$/i,
+    /\.(pdf|doc|docx|xls|xlsx|ppt|pptx)$/i,
+    /\.(mp3|mp4|wav|flac|avi|mkv|mov)$/i,
+  ],
+
+  // Temporary and lock files
+  tempFiles: [
+    /\.lock$/i,
+    /\.lockfile$/i,
+    /\.tmp$/i,
+    /\.temp$/i,
+    /\.swp$/i,
+    /\.swo$/i,
+    /~$/,
+    /\.bak$/i,
+    /\.backup$/i,
+    /\.orig$/i,
+  ],
+};
+
+/**
+ * Check if a path should be excluded from detection/tracking
+ */
+export const shouldExcludeFile = (path: string): boolean => {
+  // Normalize path to use ~ prefix
+  // Handle both tilde paths and absolute paths that point to home directory
+  let normalizedPath: string;
+  if (path.startsWith('~/')) {
+    // Already in tilde notation
+    normalizedPath = path;
+  } else if (path.startsWith(expandPath('~/'))) {
+    // Absolute path within home directory - convert to tilde notation
+    normalizedPath = path.replace(expandPath('~/'), '~/');
+  } else if (isAbsolute(path)) {
+    // Other absolute path - try to collapse to tilde notation
+    normalizedPath = collapsePath(path);
+  } else {
+    // Relative path, keep as-is
+    normalizedPath = path;
+  }
+
+  // Check cache directories (directory-aware prefix match)
+  // Must match exactly or be a subdirectory (with /)
+  for (const cacheDir of DEFAULT_EXCLUSION_PATTERNS.cacheDirectories) {
+    if (
+      normalizedPath === cacheDir ||
+      normalizedPath.startsWith(cacheDir + '/')
+    ) {
+      return true;
+    }
+  }
+
+  // Check history files (exact match)
+  if (DEFAULT_EXCLUSION_PATTERNS.historyFiles.includes(normalizedPath)) {
+    return true;
+  }
+
+  // Check binary patterns (regex on filename)
+  const filename = basename(normalizedPath);
+  for (const pattern of DEFAULT_EXCLUSION_PATTERNS.binaryPatterns) {
+    if (pattern.test(filename)) {
+      return true;
+    }
+  }
+
+  // Check temp file patterns (regex on filename)
+  for (const pattern of DEFAULT_EXCLUSION_PATTERNS.tempFiles) {
+    if (pattern.test(filename)) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+/**
  * Check if a path should be included for current platform
  */
 const shouldIncludeForPlatform = (item: { platform?: string }): boolean => {
@@ -448,13 +603,21 @@ const isDirectory = async (path: string): Promise<boolean> => {
 
 /**
  * Scan system for existing dotfiles
+ * @param options - Optional configuration for detection
+ * @param options.includeExcluded - If true, include files that match exclusion patterns (default: false). Set to true when you need to detect all dotfiles regardless of exclusion rules, such as for manual review or special operations.
  */
-export const detectDotfiles = async (): Promise<DetectedFile[]> => {
+export const detectDotfiles = async (options?: {
+  includeExcluded?: boolean;
+}): Promise<DetectedFile[]> => {
   const detected: DetectedFile[] = [];
+  const includeExcluded = options?.includeExcluded ?? false;
 
   for (const pattern of DOTFILE_PATTERNS) {
     // Skip if not for current platform
     if (!shouldIncludeForPlatform(pattern)) continue;
+
+    // Skip if matches exclusion patterns (unless explicitly including)
+    if (!includeExcluded && shouldExcludeFile(pattern.path)) continue;
 
     const fullPath = expandPath(pattern.path);
 
