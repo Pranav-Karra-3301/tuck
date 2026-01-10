@@ -413,7 +413,7 @@ export const scanFiles = async (filepaths: string[], options: ScanOptions = {}):
 
   const results: FileScanResult[] = [];
 
-  // Scan all files in parallel (with concurrency limit)
+  // Scan files in parallel batches (with concurrency limit)
   const CONCURRENCY = 10;
   for (let i = 0; i < filepaths.length; i += CONCURRENCY) {
     const batch = filepaths.slice(i, i + CONCURRENCY);

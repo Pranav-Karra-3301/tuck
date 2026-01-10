@@ -63,13 +63,26 @@ export const loadSecretsStore = async (tuckDir: string): Promise<SecretsStore> =
     const parsed = JSON.parse(content);
     return secretsStoreSchema.parse(parsed);
   } catch (error) {
-    // Log error for debugging instead of silent failure
     const errorMsg = error instanceof Error ? error.message : String(error);
-    console.error(`[tuck] Warning: Failed to load secrets store: ${errorMsg}`);
-    return {
-      version: '1.0.0',
-      secrets: {},
-    };
+
+    // If the file disappeared between the existence check and read, treat as "no secrets yet"
+    if (typeof error === 'object' && error !== null && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+      console.warn(
+        `[tuck] Warning: Secrets store file not found when reading at '${secretsPath}': ${errorMsg}`
+      );
+      return {
+        version: '1.0.0',
+        secrets: {},
+      };
+    }
+
+    // For any other error (permissions, corruption, validation issues), surface a clear failure
+    console.error(
+      `[tuck] Error: Failed to load secrets store from '${secretsPath}': ${errorMsg}`
+    );
+    throw new Error(
+      `[tuck] Failed to load secrets store from '${secretsPath}': ${errorMsg}`
+    );
   }
 };
 

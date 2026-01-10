@@ -318,6 +318,7 @@ const scanAndHandleSecrets = async (
       }
     }
     // Filter out ignored files from changes list
+    // Note: This intentionally mutates the 'changes' array in place so callers see the filtered list
     const filesToRemove = new Set(summary.results.map(r => r.path));
     changes.splice(0, changes.length, ...changes.filter(c => !filesToRemove.has(expandPath(c.source))));
 

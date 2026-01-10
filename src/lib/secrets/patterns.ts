@@ -67,9 +67,13 @@ export const CLOUD_PROVIDER_PATTERNS: SecretPattern[] = [
   {
     id: 'azure-subscription-key',
     name: 'Azure Subscription Key',
-    pattern: /\b([a-f0-9]{32})\b/g,
-    severity: 'medium', // Lower severity due to high false positive rate
-    description: 'Azure Subscription Key (possible)',
+    // Require Azure-specific context (common variable or header names) to reduce false positives.
+    // Matches patterns like:
+    //   const AZURE_SUBSCRIPTION_KEY = "0123abcd..."; 
+    //   "Ocp-Apim-Subscription-Key": "0123abcd...";
+    pattern: /\b(?:azure[_-]?(?:subscription[_-]?key|key)|subscription[_-]?key|Ocp-Apim-Subscription-Key)\b\s*[:=]\s*['"]?([a-f0-9]{32})['"]?/gi,
+    severity: 'medium', // Lower severity due to remaining false positive risk
+    description: 'Azure Subscription Key (with context)',
     placeholder: 'AZURE_SUBSCRIPTION_KEY',
   },
   {
@@ -347,9 +351,10 @@ export const API_TOKEN_PATTERNS: SecretPattern[] = [
   {
     id: 'heroku-api-key',
     name: 'Heroku API Key',
-    pattern: /\b([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b/g,
+    // Require Heroku-specific context to reduce UUID false positives
+    pattern: /\b(?:heroku[_-]?(?:api[_-]?key|key|token)|HEROKU_API_KEY)\b\s*[:=]\s*['"]?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})['"]?/gi,
     severity: 'high',
-    description: 'Heroku API Key (UUID format)',
+    description: 'Heroku API Key (UUID format with context)',
     placeholder: 'HEROKU_API_KEY',
   },
 
@@ -357,9 +362,10 @@ export const API_TOKEN_PATTERNS: SecretPattern[] = [
   {
     id: 'datadog-api-key',
     name: 'Datadog API Key',
-    pattern: /\b([a-f0-9]{32})\b/g,
+    // Require Datadog-specific context to reduce false positives
+    pattern: /\b(?:datadog[_-]?(?:api[_-]?key|key)|DD_API_KEY)\b\s*[:=]\s*['"]?([a-f0-9]{32})['"]?/gi,
     severity: 'medium', // Lower due to false positives
-    description: 'Datadog API Key (possible)',
+    description: 'Datadog API Key (with context)',
     placeholder: 'DATADOG_API_KEY',
   },
 
@@ -377,9 +383,10 @@ export const API_TOKEN_PATTERNS: SecretPattern[] = [
   {
     id: 'travis-token',
     name: 'Travis CI Token',
-    pattern: /\b([a-zA-Z0-9]{22})\b/g,
+    // Require Travis-specific context to reduce false positives
+    pattern: /\b(?:travis[_-]?(?:token|key|api[_-]?key)|TRAVIS_TOKEN)\b\s*[:=]\s*['"]?([a-zA-Z0-9]{22})['"]?/gi,
     severity: 'medium', // Lower due to false positives
-    description: 'Travis CI Access Token (possible)',
+    description: 'Travis CI Access Token (with context)',
     placeholder: 'TRAVIS_TOKEN',
   },
 
@@ -407,9 +414,10 @@ export const API_TOKEN_PATTERNS: SecretPattern[] = [
   {
     id: 'vercel-token',
     name: 'Vercel Token',
-    pattern: /\b([A-Za-z0-9]{24})\b/g,
+    // Require Vercel-specific context to reduce false positives
+    pattern: /\b(?:vercel[_-]?(?:token|key)|VERCEL_TOKEN)\b\s*[:=]\s*['"]?([A-Za-z0-9]{24})['"]?/gi,
     severity: 'medium', // Lower due to false positives
-    description: 'Vercel Access Token (possible)',
+    description: 'Vercel Access Token (with context)',
     placeholder: 'VERCEL_TOKEN',
   },
 
@@ -783,8 +791,14 @@ export const BINARY_EXTENSIONS = new Set([
 
 /**
  * Check if a file should be skipped based on extension
+ * Note: For files with multiple dots (e.g., archive.tar.gz), only the final extension (.gz) is checked
  */
 export const shouldSkipFile = (filepath: string): boolean => {
-  const ext = filepath.slice(filepath.lastIndexOf('.')).toLowerCase();
+  const lastDotIndex = filepath.lastIndexOf('.');
+  if (lastDotIndex === -1 || lastDotIndex === filepath.length - 1) {
+    // No extension or dot is at the end
+    return false;
+  }
+  const ext = filepath.slice(lastDotIndex).toLowerCase();
   return BINARY_EXTENSIONS.has(ext);
 };

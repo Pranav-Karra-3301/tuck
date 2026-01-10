@@ -191,7 +191,14 @@ const runScanHistory = async (options: { since?: string; limit?: string }): Prom
     }
 
     // Import simpleGit directly for diff operations
-    const simpleGit = (await import('simple-git')).default;
+    let simpleGit;
+    try {
+      simpleGit = (await import('simple-git')).default;
+    } catch (importError) {
+      spinner.stop('Git integration is unavailable (simple-git module could not be loaded).');
+      logger.error?.('Failed to load simple-git for scan-history:', importError);
+      return;
+    }
     const git = simpleGit(tuckDir);
 
     const results: HistoryScanResult[] = [];
@@ -234,8 +241,15 @@ const runScanHistory = async (options: { since?: string; limit?: string }): Prom
             }
           }
         }
-      } catch {
-        // Skip commits that can't be diffed (e.g., initial commit)
+      } catch (error) {
+        // Skip commits that can't be diffed (e.g., initial commit), but log for visibility
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        logger.warn?.(
+          `Skipping commit ${entry.hash.slice(
+            0,
+            8,
+          )}: unable to diff against parent (possibly initial/root commit). ${errorMsg}`,
+        );
         continue;
       }
     }

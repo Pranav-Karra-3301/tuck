@@ -74,7 +74,7 @@ export interface AddOptions {
   category?: string;
   name?: string;
   symlink?: boolean;
-  force?: boolean; // Skip secret scanning
+  force?: boolean; // Skip secret scanning (secrets will not be detected)
   // TODO: Encryption and templating are planned for a future version
   // encrypt?: boolean;
   // template?: boolean;
