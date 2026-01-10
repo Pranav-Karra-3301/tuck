@@ -1,3 +1,51 @@
+# [1.4.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.3.0...v1.4.0) (2026-01-10)
+
+
+### Bug Fixes
+
+* add workflow_dispatch trigger to CI workflow ([b3f6976](https://github.com/Pranav-Karra-3301/tuck/commit/b3f69766ee2586f61f8c902a4b13106c20b75e4b))
+* address code review comments (simple fixes) ([6f47f34](https://github.com/Pranav-Karra-3301/tuck/commit/6f47f34294bb61d86936abb963ec9d25db329065))
+* address code review feedback from PR[#29](https://github.com/Pranav-Karra-3301/tuck/issues/29) ([c615ef0](https://github.com/Pranav-Karra-3301/tuck/commit/c615ef05475773ddedb60570ceb235e694254d5e))
+* address complex code review comments ([322d071](https://github.com/Pranav-Karra-3301/tuck/commit/322d071d040f7a332afe07a8438b915c5f98acf7))
+* address PR review comments - improve code quality, security, and type safety ([c1f1fdd](https://github.com/Pranav-Karra-3301/tuck/commit/c1f1fdd2c4d83edbf8ea6892bebe47ac19ed854a))
+* address PR review comments - improve security docs, error messages, and code quality ([29bf6f3](https://github.com/Pranav-Karra-3301/tuck/commit/29bf6f3e3d338f897413ccb91d44e45806d456d8))
+* address PR review comments - improve security, error messages, and validation ([e37a54d](https://github.com/Pranav-Karra-3301/tuck/commit/e37a54d48cc3eba7219c6d41ab7a2624b5186d37))
+* address PR review comments - improve URL validation and token format ([dce5794](https://github.com/Pranav-Karra-3301/tuck/commit/dce579470e1e4909c75d02a95e8a890936b5a582))
+* address PR review comments - security, type safety, and code quality improvements ([cf4ae39](https://github.com/Pranav-Karra-3301/tuck/commit/cf4ae392a61b9ccdc574fd4b85218f8efd833f82))
+* address PR review comments and critical issues ([89c7c30](https://github.com/Pranav-Karra-3301/tuck/commit/89c7c30b28d575312517df4b5d62f671bab8ed94))
+* address PR review feedback on secrets management ([ae945e9](https://github.com/Pranav-Karra-3301/tuck/commit/ae945e90ac1511d01b2618a4418631732f594d93))
+* correct comment inaccuracies from code review ([b29e60c](https://github.com/Pranav-Karra-3301/tuck/commit/b29e60c3d3b2ceb88baf4a3fd332f5eb14965909))
+* correct regex escaping and simplify success message logic ([79b4e83](https://github.com/Pranav-Karra-3301/tuck/commit/79b4e836026c8ec311c7614e8ff1dab10f93b03b))
+* extract GITHUB_TOKEN_PREFIXES constant and improve fallback logic ([232377c](https://github.com/Pranav-Karra-3301/tuck/commit/232377c5f65e1c8e284944a9deda505e433de503))
+* extract MIN_GITHUB_TOKEN_LENGTH constant and restore username fallback ([7fd6c63](https://github.com/Pranav-Karra-3301/tuck/commit/7fd6c63cb9d481dbb49735847ce49ac9060d455f))
+* **github:** add blank line terminator to git credential protocol input ([ba65ec7](https://github.com/Pranav-Karra-3301/tuck/commit/ba65ec78fe4642d4ab9508d5f6cd07d02f53396f))
+* **github:** properly narrow token type in updateStoredCredentials ([17b3750](https://github.com/Pranav-Karra-3301/tuck/commit/17b3750b59de334db448e9c1af7a695c794cc4bd))
+* implement --since option for scan-history command ([7ee42a7](https://github.com/Pranav-Karra-3301/tuck/commit/7ee42a7d93410894e9a1ca9ff7f733ca9f693025))
+* improve init flow with better GitHub error handling and file pre-selection ([250823f](https://github.com/Pranav-Karra-3301/tuck/commit/250823f478172d7932ae50e016fde0db4beb4e90))
+* improve known_hosts parsing and clarify GitHub URL validation context ([b242381](https://github.com/Pranav-Karra-3301/tuck/commit/b24238100b7ac705169ef25110f8192192043cf6))
+* improve known_hosts parsing to prevent hostname confusion ([fcd8577](https://github.com/Pranav-Karra-3301/tuck/commit/fcd8577757b0c0b24ee3dc816659c49f5cacee93))
+* improve URL validation and username fallback logic ([dc95131](https://github.com/Pranav-Karra-3301/tuck/commit/dc951317038dda5753e9e349ad885972d7895726))
+* improve URL validation regex and known_hosts parsing logic ([8c7e5b5](https://github.com/Pranav-Karra-3301/tuck/commit/8c7e5b577fc0e65110ba19790b8f2e51c082e56a))
+* **init:** handle case where only sensitive files are detected ([3622302](https://github.com/Pranav-Karra-3301/tuck/commit/362230297772aa05be1ac8700484f1effaeb65b9))
+* make addFilesFromPaths throw error on secrets detection ([d837c37](https://github.com/Pranav-Karra-3301/tuck/commit/d837c3792b67a415b31b6499e1d52ed6ed315569))
+* prevent duplicate secret storage when same value matched by multiple patterns ([8ea5870](https://github.com/Pranav-Karra-3301/tuck/commit/8ea5870c85f2f1149b96552ab6e7a917cfef2112))
+* remove redundant undefined and clarify GITHUB_TOKEN_PREFIXES usage ([29bf7d9](https://github.com/Pranav-Karra-3301/tuck/commit/29bf7d9d012ab34a347b07be726ad94718f1f630))
+* remove unused imports and variables (lint errors) ([aca6079](https://github.com/Pranav-Karra-3301/tuck/commit/aca60797d3e936609cd7917e3e38caf15444d902))
+* reset regex lastIndex in hasPlaceholders to prevent state pollution ([98cf7c8](https://github.com/Pranav-Karra-3301/tuck/commit/98cf7c8cffe31c75ebdff736467179050cdeb898))
+* simplify bin directory detection logic ([5c94a3f](https://github.com/Pranav-Karra-3301/tuck/commit/5c94a3f36144781f6a082da58c0f1947e4c34409))
+* update contributing docs to use development branch workflow ([4a92886](https://github.com/Pranav-Karra-3301/tuck/commit/4a92886cb6c8e4055ee62730c9887769132778e3))
+* use generic Git URL validation for manual remote entry ([0a7024a](https://github.com/Pranav-Karra-3301/tuck/commit/0a7024a0536e41e2a78bc57596691727d73f1e12))
+* use RELEASE_TOKEN for semantic-release to bypass branch protection ([92eb20b](https://github.com/Pranav-Karra-3301/tuck/commit/92eb20b3df9cc7d71407e833bdfe660079c832f6))
+
+
+### Features
+
+* add alternative GitHub authentication methods ([77b1174](https://github.com/Pranav-Karra-3301/tuck/commit/77b117456cbdee35bb8513deb58da99f742daf9f))
+* add comprehensive secrets management with security hardening ([7811465](https://github.com/Pranav-Karra-3301/tuck/commit/7811465fd9b54079cd92438501e8b703c04bd62b))
+* add large file detection and .tuckignore support ([dc4784d](https://github.com/Pranav-Karra-3301/tuck/commit/dc4784de823b6fa175e3cf38bbbc95adc4fa923e))
+* add secrets scanning and management ([dcb4ad4](https://github.com/Pranav-Karra-3301/tuck/commit/dcb4ad44b8bc1ad35d4c4ae44e450e02c77f0b54))
+* comprehensive CLI improvements and test infrastructure ([31ec82f](https://github.com/Pranav-Karra-3301/tuck/commit/31ec82f65de84d80c6641da16415e1bc5a49e55e))
+
 <img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
 # [1.3.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.2.1...v1.3.0) (2025-12-27)
