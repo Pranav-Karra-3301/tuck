@@ -183,7 +183,10 @@ const runScanHistory = async (options: { since?: string; limit?: string }): Prom
 
   try {
     // Get commit log using existing function
-    const logEntries = await getLog(tuckDir, { maxCount: limit });
+    const logEntries = await getLog(tuckDir, { 
+      maxCount: limit,
+      since: options.since,
+    });
 
     if (logEntries.length === 0) {
       spinner.stop('No commits found');

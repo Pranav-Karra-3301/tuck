@@ -224,13 +224,19 @@ export const fetch = async (dir: string, remote = 'origin'): Promise<void> => {
 
 export const getLog = async (
   dir: string,
-  options?: { maxCount?: number }
+  options?: { maxCount?: number; since?: string }
 ): Promise<GitCommit[]> => {
   try {
     const git = createGit(dir);
-    const log = await git.log({
+    const logOptions: { maxCount?: number; from?: string } = {
       maxCount: options?.maxCount || 10,
-    });
+    };
+
+    if (options?.since) {
+      logOptions.from = options.since;
+    }
+
+    const log = await git.log(logOptions);
 
     return log.all.map((entry) => ({
       hash: entry.hash,
