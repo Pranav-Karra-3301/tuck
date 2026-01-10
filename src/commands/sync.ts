@@ -8,10 +8,12 @@ import { stageAll, commit, getStatus, push, hasRemote, fetch, pull } from '../li
 import { copyFileOrDir, getFileChecksum, deleteFileOrDir, checkFileSizeThreshold, formatFileSize, SIZE_BLOCK_THRESHOLD } from '../lib/files.js';
 import { addToTuckignore, loadTuckignore, isIgnored } from '../lib/tuckignore.js';
 import { runPreSyncHook, runPostSyncHook, type HookOptions } from '../lib/hooks.js';
-import { NotInitializedError } from '../errors.js';
+import { NotInitializedError, SecretsDetectedError } from '../errors.js';
 import type { SyncOptions, FileChange } from '../types.js';
 import { detectDotfiles, DETECTION_CATEGORIES, type DetectedFile } from '../lib/detect.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
+import { scanForSecrets, isSecretScanningEnabled } from '../lib/secrets/index.js';
+import { displayScanResults } from './secrets.js';
 
 interface SyncResult {
   modified: string[];
@@ -252,6 +254,86 @@ const syncFiles = async (
   return result;
 };
 
+/**
+ * Scan modified files for secrets and handle user interaction
+ * Returns true if sync should continue, false if aborted
+ */
+const scanAndHandleSecrets = async (
+  tuckDir: string,
+  changes: FileChange[],
+  options: SyncOptions
+): Promise<boolean> => {
+  // Skip if force flag is set or scanning is disabled
+  if (options.force) {
+    return true;
+  }
+
+  // Check if scanning is enabled in config
+  const scanningEnabled = await isSecretScanningEnabled(tuckDir);
+  if (!scanningEnabled) {
+    return true;
+  }
+
+  // Get paths of modified files (not deleted)
+  const modifiedPaths = changes
+    .filter(c => c.status === 'modified')
+    .map(c => expandPath(c.source));
+
+  if (modifiedPaths.length === 0) {
+    return true;
+  }
+
+  // Scan files
+  const spinner = prompts.spinner();
+  spinner.start('Scanning for secrets...');
+  const summary = await scanForSecrets(modifiedPaths, tuckDir);
+  spinner.stop('Scan complete');
+
+  if (summary.totalSecrets === 0) {
+    return true;
+  }
+
+  // Display results
+  displayScanResults(summary);
+
+  // Prompt user for action
+  const action = await prompts.select('What would you like to do?', [
+    { value: 'abort', label: 'Abort sync' },
+    { value: 'ignore', label: 'Add files to .tuckignore and skip them' },
+    { value: 'proceed', label: 'Proceed anyway (secrets will be committed)' },
+  ]);
+
+  if (action === 'abort') {
+    prompts.cancel('Sync aborted - secrets detected');
+    return false;
+  }
+
+  if (action === 'ignore') {
+    // Add files with secrets to .tuckignore
+    for (const result of summary.results) {
+      const sourcePath = changes.find(c => expandPath(c.source) === result.path)?.source;
+      if (sourcePath) {
+        await addToTuckignore(tuckDir, sourcePath);
+        logger.dim(`Added ${collapsePath(result.path)} to .tuckignore`);
+      }
+    }
+    // Filter out ignored files from changes list
+    // Note: This intentionally mutates the 'changes' array in place so callers see the filtered list
+    const filesToRemove = new Set(summary.results.map(r => r.path));
+    changes.splice(0, changes.length, ...changes.filter(c => !filesToRemove.has(expandPath(c.source))));
+
+    if (changes.length === 0) {
+      prompts.log.info('No remaining changes to sync');
+      return false;
+    }
+    return true;
+  }
+
+  // proceed - continue with warning
+  prompts.log.warning('Proceeding with secrets - make sure your repo is private!');
+  return true;
+};
+
 const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): Promise<void> => {
   prompts.intro('tuck sync');
 
@@ -276,6 +358,14 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
   changeSpinner.start('Detecting changes to tracked files...');
   const changes = await detectChanges(tuckDir);
   changeSpinner.stop(`Found ${changes.length} changed file${changes.length !== 1 ? 's' : ''}`);
+
+  // ========== STEP 2.5: Scan modified files for secrets ==========
+  if (changes.length > 0) {
+    const shouldContinue = await scanAndHandleSecrets(tuckDir, changes, options);
+    if (!shouldContinue) {
+      return;
+    }
+  }
 
   // ========== STEP 3: Scan for new dotfiles (if enabled) ==========
   let newFiles: DetectedFile[] = [];
@@ -576,6 +666,27 @@ const runSyncCommand = async (messageArg: string | undefined, options: SyncOptio
     return;
   }
 
+  // Scan for secrets (non-interactive mode - throw error if found)
+  if (!options.force) {
+    const scanningEnabled = await isSecretScanningEnabled(tuckDir);
+    if (scanningEnabled) {
+      const modifiedPaths = changes
+        .filter(c => c.status === 'modified')
+        .map(c => expandPath(c.source));
+
+      if (modifiedPaths.length > 0) {
+        const summary = await scanForSecrets(modifiedPaths, tuckDir);
+        if (summary.totalSecrets > 0) {
+          displayScanResults(summary);
+          throw new SecretsDetectedError(
+            summary.totalSecrets,
+            summary.results.map(r => collapsePath(r.path))
+          );
+        }
+      }
+    }
+  }
+
   // Show changes
   logger.heading('Changes detected:');
   for (const change of changes) {
@@ -619,6 +730,7 @@ export const syncCommand = new Command('sync')
   .option('--no-scan', "Don't scan for new dotfiles")
   .option('--no-hooks', 'Skip execution of pre/post sync hooks')
   .option('--trust-hooks', 'Trust and run hooks without confirmation (use with caution)')
+  .option('-f, --force', 'Skip secret scanning (not recommended)')
   .action(async (messageArg: string | undefined, options: SyncOptions) => {
     await runSyncCommand(messageArg, options);
   });

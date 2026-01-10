@@ -18,6 +18,7 @@ import { smartMerge, isShellFile, generateMergePreview } from '../lib/merge.js';
 import { copyFileOrDir } from '../lib/files.js';
 import { CATEGORIES } from '../constants.js';
 import type { TuckManifest } from '../types.js';
+import { findPlaceholders } from '../lib/secrets/index.js';
 
 /**
  * Fix permissions for SSH/GPG files after apply
@@ -56,6 +57,14 @@ interface ApplyFile {
   destination: string;
   category: string;
   repoPath: string;
+}
+
+interface ApplyResult {
+  appliedCount: number;
+  filesWithPlaceholders: Array<{
+    path: string;
+    placeholders: string[];
+  }>;
 }
 
 /**
@@ -176,11 +185,23 @@ const prepareFilesToApply = async (
 /**
  * Apply files with merge strategy
  */
-const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<number> => {
-  let appliedCount = 0;
+const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<ApplyResult> => {
+  const result: ApplyResult = {
+    appliedCount: 0,
+    filesWithPlaceholders: [],
+  };
 
   for (const file of files) {
     const fileContent = await readFile(file.repoPath, 'utf-8');
+
+    // Check for placeholders that need secret values
+    const placeholders = findPlaceholders(fileContent);
+    if (placeholders.length > 0) {
+      result.filesWithPlaceholders.push({
+        path: collapsePath(file.destination),
+        placeholders,
+      });
+    }
 
     if (isShellFile(file.source) && (await pathExists(file.destination))) {
       // Use smart merge for shell files
@@ -216,19 +237,32 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<numb
       }
     }
 
-    appliedCount++;
+    result.appliedCount++;
   }
 
-  return appliedCount;
+  return result;
 };
 
 /**
  * Apply files with replace strategy
  */
-const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<number> => {
-  let appliedCount = 0;
+const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<ApplyResult> => {
+  const result: ApplyResult = {
+    appliedCount: 0,
+    filesWithPlaceholders: [],
+  };
 
   for (const file of files) {
+    // Check for placeholders that need secret values
+    const fileContent = await readFile(file.repoPath, 'utf-8');
+    const placeholders = findPlaceholders(fileContent);
+    if (placeholders.length > 0) {
+      result.filesWithPlaceholders.push({
+        path: collapsePath(file.destination),
+        placeholders,
+      });
+    }
+
     if (dryRun) {
       if (await pathExists(file.destination)) {
         logger.file('modify', `${collapsePath(file.destination)} (replace)`);
@@ -245,10 +279,61 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<nu
       );
     }
 
-    appliedCount++;
+    result.appliedCount++;
   }
 
-  return appliedCount;
+  return result;
+};
+
+/**
+ * Display warnings for files with unresolved placeholders
+ */
+const displayPlaceholderWarnings = (filesWithPlaceholders: ApplyResult['filesWithPlaceholders']): void => {
+  if (filesWithPlaceholders.length === 0) return;
+
+  console.log();
+  console.log(chalk.yellow('⚠ Warning: Some files contain unresolved placeholders:'));
+  console.log();
+
+  for (const { path, placeholders } of filesWithPlaceholders) {
+    console.log(chalk.dim(`  ${path}:`));
+
+    const maxToShow = 5;
+    if (placeholders.length <= maxToShow) {
+      // For small numbers, show all placeholders
+      for (const placeholder of placeholders) {
+        console.log(chalk.yellow(`    {{${placeholder}}}`));
+      }
+    } else {
+      // For larger numbers, show a sampling: first 3 and last 2
+      const firstCount = 3;
+      const lastCount = 2;
+      const firstPlaceholders = placeholders.slice(0, firstCount);
+      const lastPlaceholders = placeholders.slice(-lastCount);
+
+      for (const placeholder of firstPlaceholders) {
+        console.log(chalk.yellow(`    {{${placeholder}}}`));
+      }
+
+      // Indicate that some placeholders are omitted in the middle
+      console.log(chalk.dim('    ...'));
+
+      for (const placeholder of lastPlaceholders) {
+        console.log(chalk.yellow(`    {{${placeholder}}}`));
+      }
+
+      const shownCount = firstPlaceholders.length + lastPlaceholders.length;
+      const hiddenCount = placeholders.length - shownCount;
+      if (hiddenCount > 0) {
+        console.log(chalk.dim(`    ... and ${hiddenCount} more not shown`));
+      }
+    }
+  }
+
+  console.log();
+  console.log(chalk.dim('  These placeholders need to be replaced with actual values.'));
+  console.log(chalk.dim('  Use `tuck secrets set <NAME> <value>` to configure secrets,'));
+  console.log(chalk.dim('  then re-apply to populate them.'));
 };
 
 /**
@@ -407,19 +492,25 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
     }
     console.log();
 
-    let appliedCount: number;
+    let applyResult: ApplyResult;
     if (strategy === 'merge') {
-      appliedCount = await applyWithMerge(files, options.dryRun || false);
+      applyResult = await applyWithMerge(files, options.dryRun || false);
     } else {
-      appliedCount = await applyWithReplace(files, options.dryRun || false);
+      applyResult = await applyWithReplace(files, options.dryRun || false);
     }
 
     console.log();
 
     if (options.dryRun) {
-      prompts.log.info(`Would apply ${appliedCount} files`);
+      prompts.log.info(`Would apply ${applyResult.appliedCount} files`);
     } else {
-      prompts.log.success(`Applied ${appliedCount} files`);
+      prompts.log.success(`Applied ${applyResult.appliedCount} files`);
+    }
+
+    // Show placeholder warnings
+    displayPlaceholderWarnings(applyResult.filesWithPlaceholders);
+
+    if (!options.dryRun) {
       console.log();
       prompts.note(
         'To undo this apply, run:\n  tuck restore --latest\n\nTo see all backups:\n  tuck restore --list',
@@ -491,19 +582,25 @@ const runApply = async (source: string, options: ApplyOptions): Promise<void> =>
       logger.heading('Applying:');
     }
 
-    let appliedCount: number;
+    let applyResult: ApplyResult;
     if (strategy === 'merge') {
-      appliedCount = await applyWithMerge(files, options.dryRun || false);
+      applyResult = await applyWithMerge(files, options.dryRun || false);
     } else {
-      appliedCount = await applyWithReplace(files, options.dryRun || false);
+      applyResult = await applyWithReplace(files, options.dryRun || false);
     }
 
     logger.blank();
 
     if (options.dryRun) {
-      logger.info(`Would apply ${appliedCount} files`);
+      logger.info(`Would apply ${applyResult.appliedCount} files`);
     } else {
-      logger.success(`Applied ${appliedCount} files`);
+      logger.success(`Applied ${applyResult.appliedCount} files`);
+    }
+
+    // Show placeholder warnings
+    displayPlaceholderWarnings(applyResult.filesWithPlaceholders);
+
+    if (!options.dryRun) {
       logger.info('To undo: tuck restore --latest');
     }
   } finally {

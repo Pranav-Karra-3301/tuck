@@ -74,6 +74,7 @@ export interface AddOptions {
   category?: string;
   name?: string;
   symlink?: boolean;
+  force?: boolean; // Skip secret scanning (secrets will not be detected)
   // TODO: Encryption and templating are planned for a future version
   // encrypt?: boolean;
   // template?: boolean;
@@ -95,6 +96,7 @@ export interface SyncOptions {
   scan?: boolean; // Commander converts --no-scan to scan: false
   noHooks?: boolean;
   trustHooks?: boolean;
+  force?: boolean; // Skip secret scanning
 }
 
 export interface PushOptions {
