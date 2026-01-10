@@ -270,6 +270,8 @@ export const findUnresolvedPlaceholders = (
  * Check if content has any placeholders
  */
 export const hasPlaceholders = (content: string): boolean => {
+  // Reset lastIndex to avoid state pollution from global regex
+  PLACEHOLDER_REGEX.lastIndex = 0;
   return PLACEHOLDER_REGEX.test(content);
 };
 
