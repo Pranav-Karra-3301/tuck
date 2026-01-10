@@ -12,3 +12,4 @@ export { configCommand } from './config.js';
 export { applyCommand } from './apply.js';
 export { undoCommand } from './undo.js';
 export { scanCommand } from './scan.js';
+export { secretsCommand } from './secrets.js';

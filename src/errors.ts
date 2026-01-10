@@ -104,6 +104,22 @@ export class BackupError extends TuckError {
   }
 }
 
+export class SecretsDetectedError extends TuckError {
+  constructor(count: number, files: string[]) {
+    const fileList = files.slice(0, 3).join(', ') + (files.length > 3 ? ` and ${files.length - 3} more` : '');
+    super(
+      `Found ${count} potential secret(s) in: ${fileList}`,
+      'SECRETS_DETECTED',
+      [
+        'Review the detected secrets and choose how to proceed',
+        'Use --force to bypass secret scanning (not recommended)',
+        'Run `tuck secrets list` to see stored secrets',
+        'Configure scanning with `tuck config set security.scanSecrets false`',
+      ]
+    );
+  }
+}
+
 export const handleError = (error: unknown): never => {
   if (error instanceof TuckError) {
     console.error(chalk.red('x'), error.message);
