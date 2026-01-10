@@ -17,7 +17,7 @@ import {
   loadManifest,
 } from '../lib/manifest.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
-import { NotInitializedError, FileNotFoundError, FileAlreadyTrackedError } from '../errors.js';
+import { NotInitializedError, FileNotFoundError, FileAlreadyTrackedError, SecretsDetectedError } from '../errors.js';
 import { CATEGORIES } from '../constants.js';
 import type { AddOptions } from '../types.js';
 import { getDirectoryFileCount, checkFileSizeThreshold, formatFileSize } from '../lib/files.js';
@@ -503,7 +503,8 @@ const runInteractiveAdd = async (tuckDir: string): Promise<void> => {
 
 /**
  * Add files programmatically (used by scan command)
- * Note: Secret scanning is skipped for programmatic use - callers should handle this separately
+ * Note: Throws SecretsDetectedError if secrets are found (unless --force is used)
+ * Callers should catch this error and handle it appropriately
  */
 export const addFilesFromPaths = async (paths: string[], options: AddOptions = {}): Promise<number> => {
   const tuckDir = getTuckDir();
@@ -523,7 +524,6 @@ export const addFilesFromPaths = async (paths: string[], options: AddOptions = {
   }
 
   // Scan for secrets (unless --force is used)
-  // For programmatic use, we throw an error if secrets are detected
   if (!options.force) {
     const config = await loadConfig(tuckDir);
     const security = config.security || {};
@@ -533,10 +533,11 @@ export const addFilesFromPaths = async (paths: string[], options: AddOptions = {
       const summary = await scanForSecrets(filePaths, tuckDir);
 
       if (summary.filesWithSecrets > 0) {
-        // For programmatic use, we just log a warning since this is typically
-        // called from scan command which has its own flow
-        logger.warning(`Found ${summary.totalSecrets} potential secret(s) in ${summary.filesWithSecrets} file(s)`);
-        logger.dim('Use --force to skip secret scanning, or handle secrets interactively with `tuck add`');
+        // Throw error to prevent silently adding files with secrets
+        const filesWithSecrets = summary.results
+          .filter(r => r.hasSecrets)
+          .map(r => collapsePath(r.path));
+        throw new SecretsDetectedError(summary.totalSecrets, filesWithSecrets);
       }
     }
   }

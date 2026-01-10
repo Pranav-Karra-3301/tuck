@@ -183,7 +183,10 @@ const runScanHistory = async (options: { since?: string; limit?: string }): Prom
 
   try {
     // Get commit log using existing function
-    const logEntries = await getLog(tuckDir, { maxCount: limit });
+    const logEntries = await getLog(tuckDir, { 
+      maxCount: limit,
+      since: options.since,
+    });
 
     if (logEntries.length === 0) {
       spinner.stop('No commits found');
@@ -196,7 +199,8 @@ const runScanHistory = async (options: { since?: string; limit?: string }): Prom
       simpleGit = (await import('simple-git')).default;
     } catch (importError) {
       spinner.stop('Git integration is unavailable (simple-git module could not be loaded).');
-      logger.error?.('Failed to load simple-git for scan-history:', importError);
+      const errorMsg = importError instanceof Error ? importError.message : String(importError);
+      logger.error(`Failed to load simple-git for scan-history: ${errorMsg}`);
       return;
     }
     const git = simpleGit(tuckDir);
@@ -244,7 +248,7 @@ const runScanHistory = async (options: { since?: string; limit?: string }): Prom
       } catch (error) {
         // Skip commits that can't be diffed (e.g., initial commit), but log for visibility
         const errorMsg = error instanceof Error ? error.message : String(error);
-        logger.warn?.(
+        logger.warning(
           `Skipping commit ${entry.hash.slice(
             0,
             8,
