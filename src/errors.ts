@@ -107,16 +107,24 @@ export class BackupError extends TuckError {
 export class SecretsDetectedError extends TuckError {
   constructor(count: number, files: string[]) {
     const fileList = files.slice(0, 3).join(', ') + (files.length > 3 ? ` and ${files.length - 3} more` : '');
-    super(
-      `Found ${count} potential secret(s) in: ${fileList}`,
-      'SECRETS_DETECTED',
-      [
-        'Review the detected secrets and choose how to proceed',
-        'Use --force to bypass secret scanning (not recommended)',
-        'Run `tuck secrets list` to see stored secrets',
-        'Configure scanning with `tuck config set security.scanSecrets false`',
-      ]
-    );
+    
+    // Tailor suggestions based on interactive vs CI/CD context
+    const isInteractive = !!process.stdout.isTTY && process.env.CI !== 'true';
+    const suggestions = isInteractive
+      ? [
+          'Review the detected secrets and choose how to proceed',
+          'Use --force to bypass secret scanning (not recommended)',
+          'Run `tuck secrets list` to see stored secrets',
+          'Configure scanning with `tuck config set security.scanSecrets false`',
+        ]
+      : [
+          'Review the detected secrets in your source and choose how to proceed before re-running in CI',
+          'Use --force to bypass secret scanning (not recommended) if you are sure the secrets are safe to ignore',
+          'If needed, run `tuck secrets list` in a local interactive environment to inspect stored secrets',
+          'Configure scanning with `tuck config set security.scanSecrets false` if this check is not desired in CI',
+        ];
+    
+    super(`Found ${count} potential secret(s) in: ${fileList}`, 'SECRETS_DETECTED', suggestions);
   }
 }
 

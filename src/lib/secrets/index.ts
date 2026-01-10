@@ -171,7 +171,7 @@ export const processSecretsForRedaction = async (
         existingPlaceholder = placeholderMap.get(match.value);
       } else {
         // Then check previous files
-        for (const [_, map] of fileRedactionMaps) {
+        for (const map of fileRedactionMaps.values()) {
           if (map.has(match.value)) {
             existingPlaceholder = map.get(match.value);
             break;

@@ -94,7 +94,7 @@ export const formatPlaceholder = (name: string): string => {
  * Extract placeholder name from placeholder syntax
  */
 export const parsePlaceholder = (placeholder: string): string | null => {
-  const match = placeholder.match(/^\{\{([A-Z0-9_]+)\}\}$/);
+  const match = placeholder.match(/^\{\{([A-Z][A-Z0-9_]*)\}\}$/);
   return match ? match[1] : null;
 };
 
@@ -119,6 +119,9 @@ export const redactContent = (
   const replacements: RedactionResult['replacements'] = [];
 
   // Process all matches and replace secret values with placeholders
+  // Note: The split/join approach processes content multiple times, which could be
+  // optimized for large files by processing matches in reverse order by position.
+  // However, this approach is simpler and works well for typical config files.
   for (const match of matches) {
     const placeholderName = placeholderMap.get(match.value) || match.placeholder;
     const placeholder = formatPlaceholder(placeholderName);
@@ -140,7 +143,7 @@ export const redactContent = (
   return {
     originalContent: content,
     redactedContent,
-    replacements: replacements.reverse(), // Return in original line order
+    replacements: replacements.reverse(), // Return in reverse line order (last line first) so callers can safely apply replacements without affecting subsequent line positions
   };
 };
 
@@ -270,9 +273,9 @@ export const findUnresolvedPlaceholders = (
  * Check if content has any placeholders
  */
 export const hasPlaceholders = (content: string): boolean => {
-  // Reset lastIndex to avoid state pollution from global regex
-  PLACEHOLDER_REGEX.lastIndex = 0;
-  return PLACEHOLDER_REGEX.test(content);
+  // Use a cloned regex instance to avoid shared lastIndex state issues
+  const regex = new RegExp(PLACEHOLDER_REGEX.source, PLACEHOLDER_REGEX.flags);
+  return regex.test(content);
 };
 
 /**

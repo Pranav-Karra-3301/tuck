@@ -297,11 +297,36 @@ const displayPlaceholderWarnings = (filesWithPlaceholders: ApplyResult['filesWit
 
   for (const { path, placeholders } of filesWithPlaceholders) {
     console.log(chalk.dim(`  ${path}:`));
-    for (const placeholder of placeholders.slice(0, 5)) {
-      console.log(chalk.yellow(`    {{${placeholder}}}`));
-    }
-    if (placeholders.length > 5) {
-      console.log(chalk.dim(`    ... and ${placeholders.length - 5} more`));
+
+    const maxToShow = 5;
+    if (placeholders.length <= maxToShow) {
+      // For small numbers, show all placeholders
+      for (const placeholder of placeholders) {
+        console.log(chalk.yellow(`    {{${placeholder}}}`));
+      }
+    } else {
+      // For larger numbers, show a sampling: first 3 and last 2
+      const firstCount = 3;
+      const lastCount = 2;
+      const firstPlaceholders = placeholders.slice(0, firstCount);
+      const lastPlaceholders = placeholders.slice(-lastCount);
+
+      for (const placeholder of firstPlaceholders) {
+        console.log(chalk.yellow(`    {{${placeholder}}}`));
+      }
+
+      // Indicate that some placeholders are omitted in the middle
+      console.log(chalk.dim('    ...'));
+
+      for (const placeholder of lastPlaceholders) {
+        console.log(chalk.yellow(`    {{${placeholder}}}`));
+      }
+
+      const shownCount = firstPlaceholders.length + lastPlaceholders.length;
+      const hiddenCount = placeholders.length - shownCount;
+      if (hiddenCount > 0) {
+        console.log(chalk.dim(`    ... and ${hiddenCount} more not shown`));
+      }
     }
   }
 

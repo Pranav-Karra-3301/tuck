@@ -357,14 +357,19 @@ const handleSecretsDetected = async (
       const filesWithSecrets = new Set(summary.results.map((r) => r.collapsedPath));
 
       for (const file of filesToAdd) {
-        if (filesWithSecrets.has(file.source)) {
+        // Normalize both paths for comparison using collapsePath
+        const normalizedFileSource = collapsePath(file.source);
+        if (filesWithSecrets.has(normalizedFileSource)) {
           await addToTuckignore(tuckDir, file.source);
-          logger.success(`Added ${file.source} to .tuckignore`);
+          logger.success(`Added ${normalizedFileSource} to .tuckignore`);
         }
       }
 
       // Remove files with secrets from the list
-      const remainingFiles = filesToAdd.filter((f) => !filesWithSecrets.has(f.source));
+      const remainingFiles = filesToAdd.filter((f) => {
+        const normalizedSource = collapsePath(f.source);
+        return !filesWithSecrets.has(normalizedSource);
+      });
 
       if (remainingFiles.length === 0) {
         logger.info('No files remaining to track');

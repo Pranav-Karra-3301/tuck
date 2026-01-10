@@ -148,12 +148,17 @@ export const scanWithGitleaks = async (filepaths: string[]): Promise<ScanSummary
   let filesWithSecrets = 0;
   const bySeverity = { critical: 0, high: 0, medium: 0, low: 0 };
 
-  // Run gitleaks on each file
-  for (const filepath of filepaths) {
+  // Run gitleaks on files in parallel batches (with concurrency limit)
+  const CONCURRENCY = 5; // Lower concurrency for external process spawning
+
+  for (let i = 0; i < filepaths.length; i += CONCURRENCY) {
+    const batch = filepaths.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.all(
+      batch.map(async (filepath): Promise<FileScanResult | null> => {
       try {
         // Security: Use execFileAsync with array arguments to prevent command injection
         // This prevents malicious filenames from executing arbitrary shell commands
-        const { stdout } = await execFileAsync('gitleaks', [
+        const { stdout, stderr } = await execFileAsync('gitleaks', [
           'detect',
           '--source', filepath,
           '--no-git',
@@ -161,7 +166,13 @@ export const scanWithGitleaks = async (filepaths: string[]): Promise<ScanSummary
           '--exit-code', '0'
         ], { maxBuffer: 10 * 1024 * 1024 });
 
-        if (!stdout.trim()) continue;
+        // Check stderr for gitleaks errors (not just secret findings)
+        if (stderr && stderr.trim()) {
+          // Log stderr but continue - gitleaks may output warnings/errors to stderr
+          console.warn(`[tuck] Gitleaks stderr for ${filepath}: ${stderr.trim()}`);
+        }
+
+        if (!stdout.trim()) return null;
 
         // Security: Use Zod to validate external JSON input
         // This prevents prototype pollution and ensures type safety
@@ -172,25 +183,22 @@ export const scanWithGitleaks = async (filepaths: string[]): Promise<ScanSummary
 
           if (!validated.success) {
             console.warn(`[tuck] Warning: Invalid gitleaks output format for ${filepath}: ${validated.error.message}`);
-            continue;
+            return null;
           }
 
           gitleaksResults = validated.data;
         } catch (parseError) {
           // Log parse error for debugging instead of silent failure
           console.warn(`[tuck] Warning: Failed to parse gitleaks JSON for ${filepath}`);
-          continue;
+          return null;
         }
 
-        if (gitleaksResults.length === 0) continue;
+        if (gitleaksResults.length === 0) return null;
 
-        filesWithSecrets++;
         const matches: SecretMatch[] = [];
 
         for (const finding of gitleaksResults) {
           const severity = mapGitleaksSeverity(finding.RuleID);
-          bySeverity[severity]++;
-          totalSecrets++;
 
           // Security: Use consistent redactSecret function for better security
           const secretValue = finding.Secret || finding.Match;
@@ -212,7 +220,7 @@ export const scanWithGitleaks = async (filepaths: string[]): Promise<ScanSummary
         // Collapse home directory in path for display using utility function
         const collapsedPath = collapsePath(filepath);
 
-        results.push({
+        return {
           path: filepath,
           collapsedPath,
           hasSecrets: true,
@@ -222,14 +230,28 @@ export const scanWithGitleaks = async (filepaths: string[]): Promise<ScanSummary
           mediumCount: matches.filter(m => m.severity === 'medium').length,
           lowCount: matches.filter(m => m.severity === 'low').length,
           skipped: false,
-        });
+        };
       } catch (execError) {
         // Log error for debugging instead of silent failure
         const errorMsg = execError instanceof Error ? execError.message : String(execError);
         console.warn(`[tuck] Warning: Gitleaks scan failed for ${filepath}: ${errorMsg}`);
-        continue;
+        return null;
+      }
+    })
+    );
+
+    // Process batch results
+    for (const result of batchResults) {
+      if (result) {
+        results.push(result);
+        filesWithSecrets++;
+        totalSecrets += result.matches.length;
+        for (const match of result.matches) {
+          bySeverity[match.severity]++;
+        }
       }
     }
+  }
 
   return {
     results,
