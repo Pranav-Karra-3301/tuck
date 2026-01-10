@@ -165,10 +165,17 @@ export const processSecretsForRedaction = async (
     for (const match of result.matches) {
       // Check if we already have this value mapped
       let existingPlaceholder: string | undefined;
-      for (const [_, map] of fileRedactionMaps) {
-        if (map.has(match.value)) {
-          existingPlaceholder = map.get(match.value);
-          break;
+      
+      // First check the current file's map to avoid duplicates within the same file
+      if (placeholderMap.has(match.value)) {
+        existingPlaceholder = placeholderMap.get(match.value);
+      } else {
+        // Then check previous files
+        for (const [_, map] of fileRedactionMaps) {
+          if (map.has(match.value)) {
+            existingPlaceholder = map.get(match.value);
+            break;
+          }
         }
       }
 
