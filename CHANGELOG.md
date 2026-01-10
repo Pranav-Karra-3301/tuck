@@ -1,3 +1,5 @@
+<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
+
 # [1.4.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.3.0...v1.4.0) (2026-01-10)
 
 
@@ -45,8 +47,6 @@
 * add large file detection and .tuckignore support ([dc4784d](https://github.com/Pranav-Karra-3301/tuck/commit/dc4784de823b6fa175e3cf38bbbc95adc4fa923e))
 * add secrets scanning and management ([dcb4ad4](https://github.com/Pranav-Karra-3301/tuck/commit/dcb4ad44b8bc1ad35d4c4ae44e450e02c77f0b54))
 * comprehensive CLI improvements and test infrastructure ([31ec82f](https://github.com/Pranav-Karra-3301/tuck/commit/31ec82f65de84d80c6641da16415e1bc5a49e55e))
-
-<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
 # [1.3.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.2.1...v1.3.0) (2025-12-27)
 
