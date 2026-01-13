@@ -1,3 +1,5 @@
+<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
+
 ## [1.5.1](https://github.com/Pranav-Karra-3301/tuck/compare/v1.5.0...v1.5.1) (2026-01-13)
 
 
@@ -5,8 +7,6 @@
 
 * resolve diff command issues from PR review ([3d298fc](https://github.com/Pranav-Karra-3301/tuck/commit/3d298fcc73dd5be23b43f24015615e8a12c5a3c9))
 * update tests to match corrected diff behavior ([90f74f3](https://github.com/Pranav-Karra-3301/tuck/commit/90f74f3ea8c100c8fda8684c70d8bf2a734aaee8))
-
-<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
 # [1.5.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.4.1...v1.5.0) (2026-01-13)
 
