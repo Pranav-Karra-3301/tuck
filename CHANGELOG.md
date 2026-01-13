@@ -1,5 +1,18 @@
 <img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
+# [1.5.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.4.1...v1.5.0) (2026-01-13)
+
+
+### Bug Fixes
+
+* add colors export to diff.test.ts mock ([7a4b4f2](https://github.com/Pranav-Karra-3301/tuck/commit/7a4b4f27a26fba84432dd07d320c2854b5d108b4))
+* address code review issues ([15834d0](https://github.com/Pranav-Karra-3301/tuck/commit/15834d0775ff8d270994262e26feaac5818b04cc))
+
+
+### Features
+
+* enhance diff command with binary support and filtering ([d57c407](https://github.com/Pranav-Karra-3301/tuck/commit/d57c407acaa3fd5bdaea0be6bd8f520c6e04f05f))
+
 ## [1.4.1](https://github.com/Pranav-Karra-3301/tuck/compare/v1.4.0...v1.4.1) (2026-01-13)
 
 

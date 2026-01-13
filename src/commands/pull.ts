@@ -1,16 +1,8 @@
 import { Command } from 'commander';
-import chalk from 'chalk';
-import { prompts, logger, withSpinner } from '../ui/index.js';
+import { prompts, logger, withSpinner, colors as c } from '../ui/index.js';
 import { getTuckDir } from '../lib/paths.js';
 import { loadManifest } from '../lib/manifest.js';
-import {
-  pull,
-  fetch,
-  hasRemote,
-  getRemoteUrl,
-  getStatus,
-  getCurrentBranch,
-} from '../lib/git.js';
+import { pull, fetch, hasRemote, getRemoteUrl, getStatus, getCurrentBranch } from '../lib/git.js';
 import { NotInitializedError, GitError } from '../errors.js';
 import type { PullOptions } from '../types.js';
 
@@ -37,20 +29,20 @@ const runInteractivePull = async (tuckDir: string): Promise<void> => {
 
   // Show status
   console.log();
-  console.log(chalk.dim('Remote:'), remoteUrl);
-  console.log(chalk.dim('Branch:'), branch);
+  console.log(c.dim('Remote:'), remoteUrl);
+  console.log(c.dim('Branch:'), branch);
 
   if (status.behind === 0) {
     prompts.log.success('Already up to date');
     return;
   }
 
-  console.log(chalk.dim('Commits:'), chalk.yellow(`↓ ${status.behind} to pull`));
+  console.log(c.dim('Commits:'), c.yellow(`↓ ${status.behind} to pull`));
 
   if (status.ahead > 0) {
     console.log(
-      chalk.dim('Note:'),
-      chalk.yellow(`You also have ${status.ahead} local commit${status.ahead > 1 ? 's' : ''} to push`)
+      c.dim('Note:'),
+      c.yellow(`You also have ${status.ahead} local commit${status.ahead > 1 ? 's' : ''} to push`)
     );
   }
 
@@ -58,7 +50,7 @@ const runInteractivePull = async (tuckDir: string): Promise<void> => {
   if (status.modified.length > 0 || status.staged.length > 0) {
     console.log();
     prompts.log.warning('You have uncommitted changes');
-    console.log(chalk.dim('Modified:'), status.modified.join(', '));
+    console.log(c.dim('Modified:'), status.modified.join(', '));
 
     const continueAnyway = await prompts.confirm('Pull anyway? (may cause merge conflicts)');
     if (!continueAnyway) {

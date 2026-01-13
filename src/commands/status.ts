@@ -1,7 +1,14 @@
+/**
+ * Status command for tuck CLI
+ * Shows current tracking status in a compact, modern layout
+ */
+
 import { Command } from 'commander';
-import chalk from 'chalk';
 import boxen from 'boxen';
-import { prompts, formatStatus } from '../ui/index.js';
+import logSymbols from 'log-symbols';
+import figures from 'figures';
+import { colors as c, boxStyles, indent, formatStatus, categoryStyles } from '../ui/index.js';
+import { prompts } from '../ui/prompts.js';
 import { getTuckDir, collapsePath, expandPath, pathExists } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import { getStatus, hasRemote, getRemoteUrl, getCurrentBranch } from '../lib/git.js';
@@ -10,6 +17,10 @@ import { loadTuckignore } from '../lib/tuckignore.js';
 import { NotInitializedError } from '../errors.js';
 import { VERSION } from '../constants.js';
 import type { StatusOptions, FileChange } from '../types.js';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
 
 interface TuckStatus {
   tuckDir: string;
@@ -28,20 +39,22 @@ interface TuckStatus {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Status Detection
+// ─────────────────────────────────────────────────────────────────────────────
+
 const detectFileChanges = async (tuckDir: string): Promise<FileChange[]> => {
   const files = await getAllTrackedFiles(tuckDir);
   const ignoredPaths = await loadTuckignore(tuckDir);
   const changes: FileChange[] = [];
 
   for (const [, file] of Object.entries(files)) {
-    // Skip if in .tuckignore
     if (ignoredPaths.has(file.source)) {
       continue;
     }
 
     const sourcePath = expandPath(file.source);
 
-    // Check if source still exists
     if (!(await pathExists(sourcePath))) {
       changes.push({
         path: file.source,
@@ -52,7 +65,6 @@ const detectFileChanges = async (tuckDir: string): Promise<FileChange[]> => {
       continue;
     }
 
-    // Check if file has changed
     try {
       const sourceChecksum = await getFileChecksum(sourcePath);
       if (sourceChecksum !== file.checksum) {
@@ -64,7 +76,6 @@ const detectFileChanges = async (tuckDir: string): Promise<FileChange[]> => {
         });
       }
     } catch {
-      // Error reading file, mark as modified
       changes.push({
         path: file.source,
         status: 'modified',
@@ -99,7 +110,6 @@ const getFullStatus = async (tuckDir: string): Promise<TuckStatus> => {
 
   const fileChanges = await detectFileChanges(tuckDir);
 
-  // Calculate category counts
   const categoryCounts: Record<string, number> = {};
   for (const file of Object.values(manifest.files)) {
     categoryCounts[file.category] = (categoryCounts[file.category] || 0) + 1;
@@ -123,55 +133,68 @@ const getFullStatus = async (tuckDir: string): Promise<TuckStatus> => {
   };
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Output Formatting
+// ─────────────────────────────────────────────────────────────────────────────
+
+const formatRemoteUrl = (url: string): string => {
+  // Shorten common patterns
+  return url
+    .replace(/^https?:\/\//, '')
+    .replace(/\.git$/, '')
+    .replace(/^github\.com\//, '');
+};
+
 const printStatus = (status: TuckStatus): void => {
-  // Build header box content
+  // Header box
   const headerLines: string[] = [
-    `${chalk.bold.cyan('tuck')} ${chalk.dim(`v${VERSION}`)}`,
+    `${c.brandBold('tuck')} ${c.muted(`v${VERSION}`)}`,
     '',
-    `${chalk.dim('Repository:')} ${collapsePath(status.tuckDir)}`,
-    `${chalk.dim('Branch:')}     ${chalk.cyan(status.branch)}`,
+    `${c.muted('Repository:')} ${collapsePath(status.tuckDir)}`,
+    `${c.muted('Branch:')}     ${c.brand(status.branch)}`,
   ];
 
   if (status.remote) {
-    // Shorten long URLs
-    const shortRemote = status.remote.length > 40
-      ? status.remote.replace(/^https?:\/\//, '').replace(/\.git$/, '')
-      : status.remote;
-    headerLines.push(`${chalk.dim('Remote:')}     ${shortRemote}`);
+    headerLines.push(`${c.muted('Remote:')}     ${formatRemoteUrl(status.remote)}`);
   } else {
-    headerLines.push(`${chalk.dim('Remote:')}     ${chalk.yellow('not configured')}`);
+    headerLines.push(`${c.muted('Remote:')}     ${c.warning('not configured')}`);
   }
 
-  console.log(boxen(headerLines.join('\n'), {
-    padding: { top: 0, bottom: 0, left: 1, right: 1 },
-    borderColor: 'cyan',
-    borderStyle: 'round',
-  }));
+  console.log(boxen(headerLines.join('\n'), boxStyles.header));
 
   // Remote status
   if (status.remote) {
-    let remoteInfo = '';
+    console.log();
     switch (status.remoteStatus) {
       case 'up-to-date':
-        remoteInfo = chalk.green('✓ Up to date with remote');
+        console.log(logSymbols.success, c.success('Up to date with remote'));
         break;
       case 'ahead':
-        remoteInfo = chalk.yellow(`↑ ${status.ahead} commit${status.ahead > 1 ? 's' : ''} ahead of remote`);
+        console.log(
+          c.warning(figures.arrowUp),
+          c.warning(`${status.ahead} commit${status.ahead > 1 ? 's' : ''} ahead`)
+        );
         break;
       case 'behind':
-        remoteInfo = chalk.yellow(`↓ ${status.behind} commit${status.behind > 1 ? 's' : ''} behind remote`);
+        console.log(
+          c.warning(figures.arrowDown),
+          c.warning(`${status.behind} commit${status.behind > 1 ? 's' : ''} behind`)
+        );
         break;
       case 'diverged':
-        remoteInfo = chalk.red(`⚠ Diverged (${status.ahead} ahead, ${status.behind} behind)`);
+        console.log(
+          logSymbols.warning,
+          c.error(`Diverged (${status.ahead} ahead, ${status.behind} behind)`)
+        );
         break;
     }
-    console.log('\n' + remoteInfo);
   }
 
-  // Tracked files with category breakdown
+  // Tracked files summary
   console.log();
-  console.log(chalk.bold(`Tracked Files: ${status.trackedCount}`));
+  console.log(c.bold(`${status.trackedCount} files tracked`));
 
+  // Category breakdown (inline, compact)
   const categoryOrder = ['shell', 'git', 'editors', 'terminal', 'ssh', 'misc'];
   const sortedCategories = Object.keys(status.categoryCounts).sort((a, b) => {
     const aIdx = categoryOrder.indexOf(a);
@@ -183,23 +206,27 @@ const printStatus = (status: TuckStatus): void => {
   });
 
   if (sortedCategories.length > 0) {
-    for (const category of sortedCategories) {
-      const count = status.categoryCounts[category];
-      console.log(chalk.dim(`  ${category}: ${count} file${count > 1 ? 's' : ''}`));
-    }
+    const categoryLine = sortedCategories
+      .map((cat) => {
+        const style = categoryStyles[cat] || categoryStyles.misc;
+        const count = status.categoryCounts[cat];
+        return `${style.color(style.icon)} ${cat}: ${count}`;
+      })
+      .join('  ');
+    console.log(c.muted(indent() + categoryLine));
   }
 
   // File changes
   if (status.changes.length > 0) {
     console.log();
-    console.log(chalk.bold('Changes detected:'));
+    console.log(c.bold('Changes:'));
     for (const change of status.changes) {
       const statusText = formatStatus(change.status);
-      console.log(`  ${statusText}: ${chalk.cyan(change.path)}`);
+      console.log(`${indent()}${statusText} ${c.brand(change.path)}`);
     }
   }
 
-  // Git changes in repository
+  // Git changes
   const hasGitChanges =
     status.gitChanges.staged.length > 0 ||
     status.gitChanges.modified.length > 0 ||
@@ -207,37 +234,43 @@ const printStatus = (status: TuckStatus): void => {
 
   if (hasGitChanges) {
     console.log();
-    console.log(chalk.bold('Repository changes:'));
+    console.log(c.bold('Repository:'));
 
     if (status.gitChanges.staged.length > 0) {
-      console.log(chalk.green('  Staged:'));
-      status.gitChanges.staged.forEach((f) => console.log(chalk.green(`    + ${f}`)));
+      console.log(c.success(`${indent()}Staged:`));
+      status.gitChanges.staged.forEach((f) =>
+        console.log(c.success(`${indent()}${indent()}+ ${f}`))
+      );
     }
 
     if (status.gitChanges.modified.length > 0) {
-      console.log(chalk.yellow('  Modified:'));
-      status.gitChanges.modified.forEach((f) => console.log(chalk.yellow(`    ~ ${f}`)));
+      console.log(c.warning(`${indent()}Modified:`));
+      status.gitChanges.modified.forEach((f) =>
+        console.log(c.warning(`${indent()}${indent()}~ ${f}`))
+      );
     }
 
     if (status.gitChanges.untracked.length > 0) {
-      console.log(chalk.dim('  Untracked:'));
-      status.gitChanges.untracked.forEach((f) => console.log(chalk.dim(`    ? ${f}`)));
+      console.log(c.muted(`${indent()}Untracked:`));
+      status.gitChanges.untracked.forEach((f) =>
+        console.log(c.muted(`${indent()}${indent()}? ${f}`))
+      );
     }
   }
 
   console.log();
 
-  // Suggestions
+  // Next step suggestion
   if (status.changes.length > 0) {
-    prompts.note("Run 'tuck sync' to commit changes", 'Next step');
+    prompts.note("Run 'tuck sync' to commit changes", 'Next');
   } else if (status.remoteStatus === 'ahead') {
-    prompts.note("Run 'tuck push' to push changes to remote", 'Next step');
+    prompts.note("Run 'tuck push' to push changes", 'Next');
   } else if (status.remoteStatus === 'behind') {
-    prompts.note("Run 'tuck pull' to pull changes from remote", 'Next step');
+    prompts.note("Run 'tuck pull' to pull changes", 'Next');
   } else if (status.trackedCount === 0) {
-    prompts.note("Run 'tuck add <path>' to start tracking files", 'Next step');
+    prompts.note("Run 'tuck add <path>' to start tracking", 'Next');
   } else {
-    prompts.outro('Everything is up to date');
+    prompts.outro('Everything up to date');
   }
 };
 
@@ -247,21 +280,21 @@ const printShortStatus = (status: TuckStatus): void => {
   parts.push(`[${status.branch}]`);
 
   if (status.remoteStatus === 'ahead') {
-    parts.push(`↑${status.ahead}`);
+    parts.push(c.warning(`${figures.arrowUp}${status.ahead}`));
   } else if (status.remoteStatus === 'behind') {
-    parts.push(`↓${status.behind}`);
+    parts.push(c.warning(`${figures.arrowDown}${status.behind}`));
   } else if (status.remoteStatus === 'diverged') {
-    parts.push(`↑${status.ahead}↓${status.behind}`);
+    parts.push(c.error(`${figures.arrowUp}${status.ahead}${figures.arrowDown}${status.behind}`));
   }
 
   if (status.changes.length > 0) {
-    const modified = status.changes.filter((c) => c.status === 'modified').length;
-    const deleted = status.changes.filter((c) => c.status === 'deleted').length;
-    if (modified > 0) parts.push(`~${modified}`);
-    if (deleted > 0) parts.push(`-${deleted}`);
+    const modified = status.changes.filter((ch) => ch.status === 'modified').length;
+    const deleted = status.changes.filter((ch) => ch.status === 'deleted').length;
+    if (modified > 0) parts.push(c.warning(`~${modified}`));
+    if (deleted > 0) parts.push(c.error(`-${deleted}`));
   }
 
-  parts.push(`(${status.trackedCount} tracked)`);
+  parts.push(c.muted(`(${status.trackedCount} tracked)`));
 
   console.log(parts.join(' '));
 };
@@ -270,10 +303,13 @@ const printJsonStatus = (status: TuckStatus): void => {
   console.log(JSON.stringify(status, null, 2));
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Command Implementation
+// ─────────────────────────────────────────────────────────────────────────────
+
 const runStatus = async (options: StatusOptions): Promise<void> => {
   const tuckDir = getTuckDir();
 
-  // Verify tuck is initialized
   try {
     await loadManifest(tuckDir);
   } catch {

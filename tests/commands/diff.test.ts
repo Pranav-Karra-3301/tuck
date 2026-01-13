@@ -1,8 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { vol } from 'memfs';
-import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
-import { createMockTrackedFile } from '../utils/factories.js';
-import path from 'path';
 
 interface TestFileDiff {
   source: string;
@@ -72,55 +69,10 @@ describe('diff command', () => {
 
       const output = formatUnifiedDiff(diff);
 
-      expect(output).toContain('@@');
+      expect(output).toContain('File missing on system');
       expect(output).toContain('Repository content:');
       expect(output).toContain('+ line 1');
       expect(output).toContain('+ line 2');
-    });
-
-    it('should format file not in repo correctly', async () => {
-      const { formatUnifiedDiff } = await import('../../src/commands/diff.js');
-
-      const diff = {
-        source: '~/.test.txt',
-        destination: 'files/test.txt',
-        hasChanges: true,
-        systemContent: 'line 1\nline 2',
-        repoContent: '',
-      } as TestFileDiff;
-
-      const output = formatUnifiedDiff(diff);
-
-      expect(output).toContain('File not yet synced to repository');
-      expect(output).toContain('System content:');
-      expect(output).toContain('- line 1');
-      expect(output).toContain('- line 2');
-    });
-
-      const output = formatUnifiedDiff(diff);
-
-      expect(output).toContain('@@');
-      expect(output).toContain('System content:');
-      expect(output).toContain('- line 1');
-      expect(output).toContain('- line 2');
-    });
-
-    it('should format file not in repo correctly', async () => {
-      const { formatUnifiedDiff } = await import('../../src/commands/diff.js');
-
-      const diff: TestFileDiff = {
-        source: '~/.test.txt',
-        destination: 'files/test.txt',
-        hasChanges: true,
-        systemContent: 'line 1\nline 2',
-      };
-
-      const output = formatUnifiedDiff(diff);
-
-      expect(output).toContain('File not yet synced to repository');
-      expect(output).toContain('System content:');
-      expect(output).toContain('- line 1');
-      expect(output).toContain('- line 2');
     });
 
     it('should format file not in repo correctly', async () => {
@@ -179,33 +131,54 @@ describe('diff command', () => {
       expect(output).toContain('200 B');
     });
 
-    const diff = {
-      source: '~/.test.txt',
-      destination: 'files/test.txt',
-      hasChanges: true,
-      systemContent: 'content',
-      repoContent: 'content',
-    };
+    it('should format directory diff correctly', async () => {
+      const { formatUnifiedDiff } = await import('../../src/commands/diff.js');
 
-    expect(diff.source).toBe('~/.test.txt');
-    expect(diff.destination).toBe('files/test.txt');
-    expect(diff.hasChanges).toBe(true);
-    expect(diff.systemContent).toBe('content');
-    expect(diff.repoContent).toBe('content');
+      const diff: TestFileDiff = {
+        source: '~/.config/test',
+        destination: 'files/test',
+        hasChanges: true,
+        isDirectory: true,
+        fileCount: 5,
+      };
+
+      const output = formatUnifiedDiff(diff);
+
+      expect(output).toContain('Directory content changed');
+      expect(output).toContain('Contains 5 files');
+    });
   });
 
-  it('should handle optional fields', () => {
-    const diff: TestFileDiff = {
-      source: '~/.test.txt',
-      destination: 'files/test.txt',
-      hasChanges: false,
-    };
+  describe('FileDiff interface', () => {
+    it('should have required fields', () => {
+      const diff: TestFileDiff = {
+        source: '~/.test.txt',
+        destination: 'files/test.txt',
+        hasChanges: true,
+        systemContent: 'content',
+        repoContent: 'content',
+      };
 
-    expect(diff.source).toBeDefined();
-    expect(diff.destination).toBeDefined();
-    expect(diff.hasChanges).toBe(false);
-    expect(diff.isBinary).toBeUndefined();
-    expect(diff.isDirectory).toBeUndefined();
-    expect(diff.fileCount).toBeUndefined();
+      expect(diff.source).toBe('~/.test.txt');
+      expect(diff.destination).toBe('files/test.txt');
+      expect(diff.hasChanges).toBe(true);
+      expect(diff.systemContent).toBe('content');
+      expect(diff.repoContent).toBe('content');
+    });
+
+    it('should handle optional fields', () => {
+      const diff: TestFileDiff = {
+        source: '~/.test.txt',
+        destination: 'files/test.txt',
+        hasChanges: false,
+      };
+
+      expect(diff.source).toBeDefined();
+      expect(diff.destination).toBeDefined();
+      expect(diff.hasChanges).toBe(false);
+      expect(diff.isBinary).toBeUndefined();
+      expect(diff.isDirectory).toBeUndefined();
+      expect(diff.fileCount).toBeUndefined();
+    });
   });
 });

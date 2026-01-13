@@ -1,6 +1,6 @@
 {
   "name": "@prnv/tuck",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "Modern dotfiles manager with a beautiful CLI",
   "keywords": [
     "dotfiles",
@@ -54,13 +54,17 @@
     "chalk": "^5.3.0",
     "commander": "^11.1.0",
     "cosmiconfig": "^9.0.0",
+    "figures": "^6.1.0",
     "fs-extra": "^11.2.0",
     "glob": "^10.3.10",
+    "log-symbols": "^7.0.1",
     "ora": "^8.0.1",
     "simple-git": "^3.22.0",
     "zod": "^3.22.4"
   },
   "devDependencies": {
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
     "@types/fs-extra": "^11.0.4",
     "@types/node": "^20.11.0",
     "@typescript-eslint/eslint-plugin": "^6.19.0",
@@ -72,8 +76,6 @@
     "lint-staged": "^15.2.0",
     "memfs": "^4.6.0",
     "prettier": "^3.2.4",
-    "@semantic-release/changelog": "^6.0.3",
-    "@semantic-release/git": "^10.0.1",
     "semantic-release": "^23.0.0",
     "tsup": "^8.0.1",
     "typescript": "^5.3.3",

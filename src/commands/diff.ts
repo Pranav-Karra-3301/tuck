@@ -1,7 +1,7 @@
 import { Command } from 'commander';
-import chalk from 'chalk';
 import { join } from 'path';
 import { prompts, logger } from '../ui/index.js';
+import { colors as c } from '../ui/theme.js';
 import { getTuckDir, expandPath, pathExists, collapsePath, isDirectory } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles, getTrackedFileBySource } from '../lib/manifest.js';
 import { getDiff } from '../lib/git.js';
@@ -168,22 +168,22 @@ const getFileDiff = async (tuckDir: string, source: string): Promise<FileDiff | 
 const formatUnifiedDiff = (diff: FileDiff): string => {
   const lines: string[] = [];
 
-  lines.push(chalk.bold(`--- a/${diff.source} (system)`));
-  lines.push(chalk.bold(`+++ b/${diff.source} (repository)`));
+  lines.push(c.bold(`--- a/${diff.source} (system)`));
+  lines.push(c.bold(`+++ b/${diff.source} (repository)`));
 
   if (diff.isBinary) {
     const sysSize = diff.systemSize ? formatFileSize(diff.systemSize) : '0 B';
     const repoSize = diff.repoSize ? formatFileSize(diff.repoSize) : '0 B';
-    lines.push(chalk.dim('Binary files differ'));
-    lines.push(chalk.dim(`  System:  ${sysSize}`));
-    lines.push(chalk.dim(`  Repo:    ${repoSize}`));
+    lines.push(c.dim('Binary files differ'));
+    lines.push(c.dim(`  System:  ${sysSize}`));
+    lines.push(c.dim(`  Repo:    ${repoSize}`));
     return lines.join('\n');
   }
 
   if (diff.isDirectory) {
     const fileCount = diff.fileCount || 0;
-    lines.push(chalk.dim('Directory content changed'));
-    lines.push(chalk.dim(`  Contains ${fileCount} file${fileCount > 1 ? 's' : ''}`));
+    lines.push(c.dim('Directory content changed'));
+    lines.push(c.dim(`  Contains ${fileCount} file${fileCount > 1 ? 's' : ''}`));
     return lines.join('\n');
   }
 
@@ -195,17 +195,17 @@ const formatUnifiedDiff = (diff: FileDiff): string => {
 
   if (systemMissing && !repoMissing) {
     // File only in repo
-    lines.push(chalk.red('File missing on system'));
-    lines.push(chalk.dim('Repository content:'));
+    lines.push(c.red('File missing on system'));
+    lines.push(c.dim('Repository content:'));
     repoContent!.split('\n').forEach((line) => {
-      lines.push(chalk.green(`+ ${line}`));
+      lines.push(c.green(`+ ${line}`));
     });
   } else if (!systemMissing && repoMissing) {
     // File only on system
-    lines.push(chalk.yellow('File not yet synced to repository'));
-    lines.push(chalk.dim('System content:'));
+    lines.push(c.yellow('File not yet synced to repository'));
+    lines.push(c.dim('System content:'));
     systemContent!.split('\n').forEach((line) => {
-      lines.push(chalk.red(`- ${line}`));
+      lines.push(c.red(`- ${line}`));
     });
   } else if (!systemMissing && !repoMissing) {
     // Both files exist (may be empty)
@@ -231,7 +231,7 @@ const formatUnifiedDiff = (diff: FileDiff): string => {
           const endLine = Math.min(maxLines, diffStart + CONTEXT_LINES + 1);
 
           lines.push(
-            chalk.cyan(
+            c.cyan(
               `@@ -${startLine + 1},${contextLineCount + 1} +${startLine + 1},${endLine - startLine} @@`
             )
           );
@@ -240,21 +240,21 @@ const formatUnifiedDiff = (diff: FileDiff): string => {
           for (let j = startLine; j < i; j++) {
             const ctxLine = systemLines[j];
             if (ctxLine !== undefined) {
-              lines.push(chalk.dim(`  ${ctxLine}`));
+              lines.push(c.dim(`  ${ctxLine}`));
             }
           }
         }
 
         if (sysLine !== undefined) {
-          lines.push(chalk.red(`- ${sysLine}`));
+          lines.push(c.red(`- ${sysLine}`));
         }
         if (repoLine !== undefined) {
-          lines.push(chalk.green(`+ ${repoLine}`));
+          lines.push(c.green(`+ ${repoLine}`));
         }
       } else if (inDiff) {
         // Show context lines after diff changes
         if (sysLine === repoLine && sysLine !== undefined) {
-          lines.push(chalk.dim(`  ${sysLine}`));
+          lines.push(c.dim(`  ${sysLine}`));
         }
       } else {
         // Exit diff context after matching lines
@@ -353,16 +353,12 @@ const runDiff = async (paths: string[], options: DiffOptions): Promise<void> => 
     const label = options.nameOnly
       ? 'Changed files:'
       : `${changedFiles.length} file${changedFiles.length > 1 ? 's' : ''} changed:`;
-    console.log(chalk.bold(label));
+    console.log(c.bold(label));
     console.log();
 
     for (const diff of changedFiles) {
-      const status = diff.isDirectory
-        ? chalk.dim('[dir]')
-        : diff.isBinary
-          ? chalk.dim('[bin]')
-          : '';
-      console.log(`  ${chalk.yellow('~')} ${diff.source} ${status}`);
+      const status = diff.isDirectory ? c.dim('[dir]') : diff.isBinary ? c.dim('[bin]') : '';
+      console.log(`  ${c.yellow('~')} ${diff.source} ${status}`);
     }
 
     console.log();

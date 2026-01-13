@@ -2,6 +2,7 @@ import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
+import figures from 'figures';
 
 // Read version from package.json at runtime
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -48,7 +49,7 @@ export const CATEGORIES: Record<string, CategoryConfig> = {
   },
   git: {
     patterns: ['.gitconfig', '.gitignore_global', '.gitmessage', '.gitattributes'],
-    icon: '*',
+    icon: figures.star,
   },
   editors: {
     patterns: [
@@ -60,7 +61,7 @@ export const CATEGORIES: Record<string, CategoryConfig> = {
       '.ideavimrc',
       '.nanorc',
     ],
-    icon: '>',
+    icon: figures.pointer,
   },
   terminal: {
     patterns: [
@@ -76,11 +77,11 @@ export const CATEGORIES: Record<string, CategoryConfig> = {
   },
   ssh: {
     patterns: ['.ssh/config'],
-    icon: '!',
+    icon: figures.warning,
   },
   misc: {
     patterns: [],
-    icon: '-',
+    icon: figures.bullet,
   },
 };
 

@@ -1,5 +1,16 @@
-import ora, { Ora } from 'ora';
-import chalk from 'chalk';
+/**
+ * Spinner utilities for tuck CLI
+ * Uses @clack/prompts spinner as the primary implementation
+ * Provides backward-compatible API with enhanced methods
+ */
+
+import * as p from '@clack/prompts';
+import logSymbols from 'log-symbols';
+import { colors as c } from './theme.js';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
 
 export interface SpinnerInstance {
   start: (text?: string) => void;
@@ -11,39 +22,86 @@ export interface SpinnerInstance {
   text: (text: string) => void;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Create Spinner
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Create a spinner instance using @clack/prompts
+ * Provides ora-compatible API for backward compatibility
+ */
 export const createSpinner = (initialText?: string): SpinnerInstance => {
-  const spinner: Ora = ora({
-    text: initialText,
-    color: 'cyan',
-    spinner: 'dots',
-  });
+  const spinner = p.spinner();
+  let currentText = initialText || '';
+  let started = false;
 
   return {
     start: (text?: string) => {
-      if (text) spinner.text = text;
-      spinner.start();
+      currentText = text || currentText || 'Loading...';
+      spinner.start(currentText);
+      started = true;
     },
+
     stop: () => {
-      spinner.stop();
+      if (started) {
+        spinner.stop(currentText);
+        started = false;
+      }
     },
+
     succeed: (text?: string) => {
-      spinner.succeed(text ? chalk.green(text) : undefined);
+      if (started) {
+        spinner.stop(c.success(text || currentText));
+        started = false;
+      } else {
+        console.log(logSymbols.success, c.success(text || currentText));
+      }
     },
+
     fail: (text?: string) => {
-      spinner.fail(text ? chalk.red(text) : undefined);
+      if (started) {
+        spinner.stop(c.error(text || currentText));
+        started = false;
+      } else {
+        console.log(logSymbols.error, c.error(text || currentText));
+      }
     },
+
     warn: (text?: string) => {
-      spinner.warn(text ? chalk.yellow(text) : undefined);
+      if (started) {
+        spinner.stop(c.warning(text || currentText));
+        started = false;
+      } else {
+        console.log(logSymbols.warning, c.warning(text || currentText));
+      }
     },
+
     info: (text?: string) => {
-      spinner.info(text ? chalk.blue(text) : undefined);
+      if (started) {
+        spinner.stop(c.info(text || currentText));
+        started = false;
+      } else {
+        console.log(logSymbols.info, c.info(text || currentText));
+      }
     },
+
     text: (text: string) => {
-      spinner.text = text;
+      currentText = text;
+      if (started) {
+        spinner.message(text);
+      }
     },
   };
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// With Spinner Helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Execute an async function with a spinner
+ * Automatically shows success/failure based on result
+ */
 export const withSpinner = async <T>(
   text: string,
   fn: () => Promise<T>,
