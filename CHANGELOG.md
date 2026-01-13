@@ -1,3 +1,5 @@
+<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
+
 # [1.5.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.4.1...v1.5.0) (2026-01-13)
 
 
@@ -10,8 +12,6 @@
 ### Features
 
 * enhance diff command with binary support and filtering ([d57c407](https://github.com/Pranav-Karra-3301/tuck/commit/d57c407acaa3fd5bdaea0be6bd8f520c6e04f05f))
-
-<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
 ## [1.4.1](https://github.com/Pranav-Karra-3301/tuck/compare/v1.4.0...v1.4.1) (2026-01-13)
 
