@@ -132,6 +132,9 @@ export interface ListOptions {
 export interface DiffOptions {
   staged?: boolean;
   stat?: boolean;
+  category?: string;
+  nameOnly?: boolean;
+  exitCode?: boolean;
 }
 
 export interface FileChange {
