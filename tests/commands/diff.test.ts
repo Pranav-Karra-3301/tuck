@@ -4,6 +4,29 @@ import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
 import { createMockTrackedFile } from '../utils/factories.js';
 import path from 'path';
 
+// Mock colors - simple passthrough functions
+const mockColor = (str: string) => str;
+const mockColors = {
+  brand: mockColor,
+  brandBold: mockColor,
+  brandDim: mockColor,
+  brandBg: mockColor,
+  success: mockColor,
+  warning: mockColor,
+  error: mockColor,
+  info: mockColor,
+  muted: mockColor,
+  bold: mockColor,
+  highlight: mockColor,
+  cyan: mockColor,
+  green: mockColor,
+  yellow: mockColor,
+  red: mockColor,
+  blue: mockColor,
+  dim: mockColor,
+  white: mockColor,
+};
+
 // Mock UI
 vi.mock('../../src/ui/index.js', () => ({
   prompts: {
@@ -33,6 +56,26 @@ vi.mock('../../src/ui/index.js', () => ({
     warning: vi.fn(),
     error: vi.fn(),
     debug: vi.fn(),
+  },
+  colors: {
+    brand: (str: string) => str,
+    brandBold: (str: string) => str,
+    brandDim: (str: string) => str,
+    brandBg: (str: string) => str,
+    success: (str: string) => str,
+    warning: (str: string) => str,
+    error: (str: string) => str,
+    info: (str: string) => str,
+    muted: (str: string) => str,
+    bold: (str: string) => str,
+    highlight: (str: string) => str,
+    cyan: (str: string) => str,
+    green: (str: string) => str,
+    yellow: (str: string) => str,
+    red: (str: string) => str,
+    blue: (str: string) => str,
+    dim: (str: string) => str,
+    white: (str: string) => str,
   },
 }));
 
