@@ -77,7 +77,6 @@ const getFileDiff = async (tuckDir: string, source: string): Promise<FileDiff | 
 
   if (systemIsBinary || repoIsBinary) {
     diff.isBinary = true;
-    diff.hasChanges = true;
     try {
       const systemBuffer = await readFile(systemPath);
       diff.systemSize = systemBuffer.length;
@@ -90,6 +89,10 @@ const getFileDiff = async (tuckDir: string, source: string): Promise<FileDiff | 
     } catch {
       // Ignore read errors for binaries
     }
+    // Compare binary files by checksum instead of assuming they differ
+    const systemChecksum = await getFileChecksum(systemPath);
+    const repoChecksum = await getFileChecksum(repoPath);
+    diff.hasChanges = systemChecksum !== repoChecksum;
     return diff;
   }
 

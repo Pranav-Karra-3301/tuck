@@ -131,18 +131,23 @@ const processCompact = async <T>(
   const results: T[] = [];
   const total = items.length;
 
-  let lastLineLength = 0;
+  // Track if we've written output that needs clearing
+  let hasOutput = false;
 
-  const clearLine = () => {
-    if (lastLineLength > 0) {
-      process.stdout.write('\r' + ' '.repeat(lastLineLength) + '\r');
+  const clearLines = () => {
+    if (hasOutput) {
+      // Move cursor up one line, clear it, move up again, clear it
+      process.stdout.write('\x1b[1A\x1b[2K\x1b[1A\x1b[2K');
     }
   };
 
-  const writeLine = (line: string) => {
-    clearLine();
-    process.stdout.write(line);
-    lastLineLength = line.length;
+  const writeProgress = (progressBar: string, currentFile: string) => {
+    if (hasOutput) {
+      clearLines();
+    }
+    console.log(`${indent()}${progressBar}`);
+    console.log(`${indent()}${c.brand(figures.pointer)} ${currentFile}`);
+    hasOutput = true;
   };
 
   for (let i = 0; i < items.length; i++) {
@@ -151,7 +156,7 @@ const processCompact = async <T>(
     // Show progress bar + current file
     const progressBar = createProgressBarLine(i, total);
     const currentFile = c.muted(truncatePath(item.path, 40));
-    writeLine(`${indent()}${progressBar}\n${indent()}${c.brand(figures.pointer)} ${currentFile}`);
+    writeProgress(progressBar, currentFile);
 
     try {
       const result = await processor(item, i);
@@ -165,14 +170,14 @@ const processCompact = async <T>(
         await sleep(delayBetween);
       }
     } catch (error) {
-      clearLine();
+      clearLines();
       console.log(`${indent()}${logSymbols.error} ${item.path} ${c.error('failed')}`);
       throw error;
     }
   }
 
-  // Final state
-  clearLine();
+  // Final state - clear and show completed progress bar
+  clearLines();
   const finalBar = createProgressBarLine(total, total);
   console.log(`${indent()}${finalBar}`);
 
@@ -439,9 +444,16 @@ const getActionText = (action: string): string => {
 const getPastTense = (verb: string): string => {
   if (verb.endsWith('ing')) {
     const base = verb.slice(0, -3);
-    if (base.endsWith('ck') || base.endsWith('sh')) {
-      return base + 'ed';
+    // Handle consonant + y -> ied (e.g., Copy -> Copied)
+    if (base.endsWith('y') && base.length > 1) {
+      const beforeY = base[base.length - 2];
+      // Check if preceded by consonant (not a vowel)
+      if (!'aeiouAEIOU'.includes(beforeY)) {
+        return base.slice(0, -1) + 'ied';
+      }
     }
+    // Handle words ending in 'e' that was dropped (e.g., Sync -> Synced)
+    // Most -ing words just need +ed on the base
     return base + 'ed';
   }
   return verb;
