@@ -1,23 +1,30 @@
 <div align="center">
-  <img src="public/tuck.png" alt="tuck logo" width="200">
-</div>
-
-# tuck
-
-> Modern dotfiles manager with a beautiful CLI
+  <img src="public/tuck.png" alt="tuck logo" width="180">
+  
+  # tuck
+  
+  **The modern dotfiles manager**
+  
+  Simple, fast, and beautiful. Manage your dotfiles with Git, sync across machines, and never lose your configs again.
 
 [![npm version](https://img.shields.io/npm/v/@prnv/tuck.svg)](https://www.npmjs.com/package/@prnv/tuck)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/Pranav-Karra-3301/tuck/actions/workflows/ci.yml/badge.svg)](https://github.com/Pranav-Karra-3301/tuck/actions/workflows/ci.yml)
 
-## Features
+[Website](https://tuck.sh) · [Install](#installation) · [Quick Start](#quick-start) · [Commands](#commands)
 
-- **Beautiful CLI** - Gorgeous prompts, spinners, and colors powered by @clack/prompts
-- **Git-native** - Uses git under the hood but abstracts complexity
-- **Organized** - Auto-categorizes your dotfiles (shell, git, editors, terminal, etc.)
-- **Safe** - Never overwrites without confirmation, always creates backups
-- **Fast** - Written in TypeScript, runs on Node.js 18+
-- **Cross-platform** - Works on macOS and Linux
+</div>
+
+---
+
+## Why tuck?
+
+- **One command to rule them all** — `tuck init` scans your system, lets you pick what to track, and syncs to GitHub
+- **Smart detection** — Auto-categorizes dotfiles (shell, git, editors, terminal, ssh, etc.)
+- **Beautiful CLI** — Gorgeous prompts, spinners, and progress bars powered by @clack/prompts
+- **Safe by default** — Creates backups before every operation, never overwrites without asking
+- **Git-native** — Uses Git under the hood but hides the complexity
+- **Cross-platform** — Works on macOS and Linux
 
 ## Installation
 
@@ -25,133 +32,166 @@
 # npm
 npm install -g @prnv/tuck
 
+# Homebrew (macOS/Linux)
+brew install prnv/tap/tuck
+
 # pnpm
 pnpm add -g @prnv/tuck
 
 # yarn
 yarn global add @prnv/tuck
-
-# Homebrew (macOS)
-brew tap pranav-karra-3301/tuck
-brew install tuck
 ```
 
 ## Quick Start
 
+### First time setup
+
 ```bash
-# Initialize tuck (interactive)
+# Interactive setup - scans your system, pick what to track, syncs to GitHub
 tuck init
+```
 
-# Or initialize with a remote repository
-tuck init --from git@github.com:username/dotfiles.git
+That's it! `tuck init` does everything:
 
-# Add your dotfiles
-tuck add ~/.zshrc ~/.gitconfig ~/.config/nvim
+1. Creates `~/.tuck` repository
+2. Scans your system for dotfiles
+3. Lets you select which to track
+4. Creates a GitHub repo (optional)
+5. Commits and pushes
 
-# Sync changes to repository
+### Ongoing workflow
+
+```bash
+# Detect changes, find new dotfiles, commit, and push - all in one
 tuck sync
+```
 
-# Push to remote
-tuck push
+### On a new machine
+
+```bash
+# Apply dotfiles from any GitHub user
+tuck apply username
+
+# Or clone your own and restore
+tuck init --from github.com/you/dotfiles
+tuck restore --all
 ```
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `tuck init` | Initialize tuck repository |
-| `tuck add <paths>` | Track new dotfiles |
-| `tuck remove <paths>` | Stop tracking dotfiles |
-| `tuck sync` | Sync changes to repository |
-| `tuck push` | Push to remote |
+### Essential (what you'll use 99% of the time)
+
+| Command       | Description                                                             |
+| ------------- | ----------------------------------------------------------------------- |
+| `tuck init`   | Set up tuck - scans for dotfiles, select what to track, syncs to GitHub |
+| `tuck sync`   | Detect changes + new files, commit, and push (pulls first if behind)    |
+| `tuck status` | See what's tracked, what's changed, and sync status                     |
+
+### Managing Files
+
+| Command               | Description                        |
+| --------------------- | ---------------------------------- |
+| `tuck add <paths>`    | Manually track specific files      |
+| `tuck remove <paths>` | Stop tracking files                |
+| `tuck scan`           | Discover dotfiles without syncing  |
+| `tuck list`           | List all tracked files by category |
+| `tuck diff [file]`    | Show what's changed                |
+
+### Syncing
+
+| Command     | Description      |
+| ----------- | ---------------- |
+| `tuck push` | Push to remote   |
 | `tuck pull` | Pull from remote |
-| `tuck restore` | Restore dotfiles to system |
-| `tuck status` | Show tracking status |
-| `tuck list` | List tracked files |
-| `tuck diff` | Show changes |
-| `tuck config` | Manage configuration |
+
+### Restoring
+
+| Command             | Description                                            |
+| ------------------- | ------------------------------------------------------ |
+| `tuck apply <user>` | Apply dotfiles from a GitHub user (with smart merging) |
+| `tuck restore`      | Restore dotfiles from repo to system                   |
+| `tuck undo`         | Restore from Time Machine backup snapshots             |
+
+### Configuration
+
+| Command              | Description                     |
+| -------------------- | ------------------------------- |
+| `tuck config`        | View/edit configuration         |
+| `tuck config wizard` | Interactive configuration setup |
 
 ## How It Works
 
-Tuck stores your dotfiles in `~/.tuck` (configurable), organized by category:
+tuck stores your dotfiles in `~/.tuck`, organized by category:
 
 ```
 ~/.tuck/
 ├── files/
-│   ├── shell/      # .zshrc, .bashrc, etc.
+│   ├── shell/      # .zshrc, .bashrc, .profile
 │   ├── git/        # .gitconfig, .gitignore_global
-│   ├── editors/    # .vimrc, nvim config
-│   ├── terminal/   # .tmux.conf, alacritty config
-│   ├── ssh/        # ssh config
+│   ├── editors/    # .vimrc, nvim, VS Code settings
+│   ├── terminal/   # .tmux.conf, alacritty, kitty
+│   ├── ssh/        # ssh config (never keys!)
 │   └── misc/       # everything else
-├── .tuckmanifest.json  # Tracks all managed files
-├── .tuckrc.json        # Tuck configuration
-└── README.md
+├── .tuckmanifest.json
+└── .tuckrc.json
 ```
 
-When you run `tuck add ~/.zshrc`:
-1. The file is copied to `~/.tuck/files/shell/zshrc`
-2. An entry is added to the manifest with the source path and checksum
-3. Run `tuck sync` to commit and `tuck push` to upload
+**The flow:**
 
-When setting up a new machine:
-```bash
-tuck init --from git@github.com:username/dotfiles.git
-tuck restore --all
 ```
+~/.zshrc          →  ~/.tuck/files/shell/zshrc
+~/.gitconfig      →  ~/.tuck/files/git/gitconfig
+~/.config/nvim    →  ~/.tuck/files/editors/nvim
+```
+
+Run `tuck sync` anytime to detect changes and push. On a new machine, run `tuck apply username` to grab anyone's dotfiles.
 
 ## Configuration
 
-Tuck can be configured via `~/.tuck/.tuckrc.json`:
+Configure tuck via `~/.tuck/.tuckrc.json` or `tuck config wizard`:
 
 ```json
 {
   "repository": {
-    "path": "~/.tuck",
-    "defaultBranch": "main",
     "autoCommit": true,
     "autoPush": false
   },
   "files": {
     "strategy": "copy",
-    "backupOnRestore": true,
-    "backupDir": "~/.tuck-backups"
-  },
-  "ui": {
-    "colors": true,
-    "emoji": true,
-    "verbose": false
+    "backupOnRestore": true
   }
 }
 ```
 
 ### File Strategies
 
-- **copy** (default): Files are copied to the repository. Changes in your system don't affect the repo until you run `tuck sync`.
-- **symlink**: Files in your system are replaced with symlinks to the repository. Changes are immediate.
+- **copy** (default) — Files are copied. Run `tuck sync` to update the repo.
+- **symlink** — Files are symlinked. Changes are instant but require more care.
 
-## Restoring on a New Machine
+## Security
+
+tuck is designed with security in mind:
+
+- **Never tracks private keys** — SSH keys, `.env` files, and credentials are blocked by default
+- **Secret scanning** — Warns if files contain API keys or tokens
+- **Placeholder support** — Replace secrets with `{{PLACEHOLDER}}` syntax
+- **Local secrets** — Store actual values in `secrets.local.json` (never committed)
 
 ```bash
-# Option 1: Clone and restore in one step
-tuck init --from git@github.com:username/dotfiles.git
-tuck restore --all
+# Scan tracked files for secrets
+tuck secrets scan
 
-# Option 2: Clone manually
-git clone git@github.com:username/dotfiles.git ~/.tuck
-tuck restore --all
+# Set a secret value locally
+tuck secrets set API_KEY "your-actual-key"
 ```
 
 ## Hooks
 
-Run custom commands before/after sync or restore:
+Run custom commands before/after operations:
 
 ```json
 {
   "hooks": {
-    "preSync": "echo 'About to sync...'",
-    "postSync": "echo 'Sync complete!'",
-    "preRestore": "echo 'Backing up...'",
     "postRestore": "source ~/.zshrc"
   }
 }
@@ -160,26 +200,23 @@ Run custom commands before/after sync or restore:
 ## Development
 
 ```bash
-# Clone the repository
 git clone https://github.com/Pranav-Karra-3301/tuck.git
 cd tuck
-
-# Install dependencies
 pnpm install
-
-# Build
 pnpm build
-
-# Run locally
-node dist/index.js --help
-
-# Run tests
 pnpm test
-
-# Lint
-pnpm lint
 ```
+
+## Contributing
+
+Contributions are welcome! Please read our contributing guidelines and submit PRs to the `main` branch.
 
 ## License
 
-MIT - see [LICENSE](LICENSE)
+MIT — see [LICENSE](LICENSE)
+
+---
+
+<div align="center">
+  <sub>Made with love in San Francisco and State College</sub>
+</div>
