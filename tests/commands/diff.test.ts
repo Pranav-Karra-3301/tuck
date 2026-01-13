@@ -72,10 +72,55 @@ describe('diff command', () => {
 
       const output = formatUnifiedDiff(diff);
 
-      expect(output).toContain('File missing on system');
+      expect(output).toContain('@@');
       expect(output).toContain('Repository content:');
       expect(output).toContain('+ line 1');
       expect(output).toContain('+ line 2');
+    });
+
+    it('should format file not in repo correctly', async () => {
+      const { formatUnifiedDiff } = await import('../../src/commands/diff.js');
+
+      const diff = {
+        source: '~/.test.txt',
+        destination: 'files/test.txt',
+        hasChanges: true,
+        systemContent: 'line 1\nline 2',
+        repoContent: '',
+      } as TestFileDiff;
+
+      const output = formatUnifiedDiff(diff);
+
+      expect(output).toContain('File not yet synced to repository');
+      expect(output).toContain('System content:');
+      expect(output).toContain('- line 1');
+      expect(output).toContain('- line 2');
+    });
+
+      const output = formatUnifiedDiff(diff);
+
+      expect(output).toContain('@@');
+      expect(output).toContain('System content:');
+      expect(output).toContain('- line 1');
+      expect(output).toContain('- line 2');
+    });
+
+    it('should format file not in repo correctly', async () => {
+      const { formatUnifiedDiff } = await import('../../src/commands/diff.js');
+
+      const diff: TestFileDiff = {
+        source: '~/.test.txt',
+        destination: 'files/test.txt',
+        hasChanges: true,
+        systemContent: 'line 1\nline 2',
+      };
+
+      const output = formatUnifiedDiff(diff);
+
+      expect(output).toContain('File not yet synced to repository');
+      expect(output).toContain('System content:');
+      expect(output).toContain('- line 1');
+      expect(output).toContain('- line 2');
     });
 
     it('should format file not in repo correctly', async () => {
