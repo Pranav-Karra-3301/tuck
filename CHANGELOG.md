@@ -1,11 +1,11 @@
+<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
+
 ## [1.4.1](https://github.com/Pranav-Karra-3301/tuck/compare/v1.4.0...v1.4.1) (2026-01-13)
 
 
 ### Bug Fixes
 
 * correct glob pattern regex escaping for skip patterns ([60d48c0](https://github.com/Pranav-Karra-3301/tuck/commit/60d48c0b65364250f59edd2f960271cf151b7240))
-
-<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
 # [1.4.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.3.0...v1.4.0) (2026-01-10)
 
