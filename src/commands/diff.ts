@@ -52,23 +52,65 @@ const getFileDiff = async (tuckDir: string, source: string): Promise<FileDiff | 
     hasChanges: false,
   };
 
+  const systemExists = await pathExists(systemPath);
+  const repoExists = await pathExists(repoPath);
+
   // Check if system file exists
-  if (!(await pathExists(systemPath))) {
+  if (!systemExists) {
     diff.hasChanges = true;
-    if (await pathExists(repoPath)) {
-      const repoContent = await readFile(repoPath, 'utf-8');
-      diff.repoContent = repoContent;
-      diff.repoSize = repoContent.length;
+    if (repoExists) {
+      // Check if repo file is a directory
+      if (await isDirectory(repoPath)) {
+        diff.isDirectory = true;
+        const files = await getDirectoryFiles(repoPath);
+        diff.fileCount = files.length;
+      } else {
+        const repoContent = await readFile(repoPath, 'utf-8');
+        diff.repoContent = repoContent;
+        diff.repoSize = repoContent.length;
+      }
     }
     return diff;
   }
 
   // Check if repo file exists
-  if (!(await pathExists(repoPath))) {
+  if (!repoExists) {
     diff.hasChanges = true;
-    const systemContent = await readFile(systemPath, 'utf-8');
-    diff.systemContent = systemContent;
-    diff.systemSize = systemContent.length;
+    // Check if system file is a directory
+    if (await isDirectory(systemPath)) {
+      diff.isDirectory = true;
+      const files = await getDirectoryFiles(systemPath);
+      diff.fileCount = files.length;
+    } else {
+      const systemContent = await readFile(systemPath, 'utf-8');
+      diff.systemContent = systemContent;
+      diff.systemSize = systemContent.length;
+    }
+    return diff;
+  }
+
+  // Check if directory (both exist now)
+  const systemIsDir = await isDirectory(systemPath);
+  const repoIsDir = await isDirectory(repoPath);
+
+  if (systemIsDir || repoIsDir) {
+    diff.isDirectory = true;
+
+    // Get file counts for directory summary
+    if (systemIsDir) {
+      const files = await getDirectoryFiles(systemPath);
+      diff.fileCount = files.length;
+    }
+    if (repoIsDir) {
+      const files = await getDirectoryFiles(repoPath);
+      diff.fileCount = (diff.fileCount || 0) + files.length;
+    }
+
+    // Compare checksums for directories too
+    const systemChecksum = await getFileChecksum(systemPath);
+    const repoChecksum = await getFileChecksum(repoPath);
+    diff.hasChanges = systemChecksum !== repoChecksum;
+
     return diff;
   }
 
@@ -78,7 +120,12 @@ const getFileDiff = async (tuckDir: string, source: string): Promise<FileDiff | 
 
   if (systemIsBinary || repoIsBinary) {
     diff.isBinary = true;
-    diff.hasChanges = true;
+
+    // Compare binary files using checksums
+    const systemChecksum = await getFileChecksum(systemPath);
+    const repoChecksum = await getFileChecksum(repoPath);
+    diff.hasChanges = systemChecksum !== repoChecksum;
+
     try {
       const systemBuffer = await readFile(systemPath);
       diff.systemSize = systemBuffer.length;
@@ -94,27 +141,6 @@ const getFileDiff = async (tuckDir: string, source: string): Promise<FileDiff | 
     return diff;
   }
 
-  // Check if directory
-  const systemIsDir = await isDirectory(systemPath);
-  const repoIsDir = await isDirectory(repoPath);
-
-  if (systemIsDir || repoIsDir) {
-    diff.isDirectory = true;
-    diff.hasChanges = true;
-
-    // Get file counts for directory summary
-    if (systemIsDir) {
-      const files = await getDirectoryFiles(systemPath);
-      diff.fileCount = files.length;
-    }
-    if (repoIsDir) {
-      const files = await getDirectoryFiles(repoPath);
-      diff.fileCount = (diff.fileCount || 0) + files.length;
-    }
-
-    return diff;
-  }
-
   // Check file size for large files
   try {
     const systemSizeCheck = await checkFileSizeThreshold(systemPath);
@@ -126,7 +152,7 @@ const getFileDiff = async (tuckDir: string, source: string): Promise<FileDiff | 
     // Size check failed, continue with diff
   }
 
-  // Compare checksums
+  // Compare checksums for text files
   const systemChecksum = await getFileChecksum(systemPath);
   const repoChecksum = await getFileChecksum(repoPath);
 
@@ -163,31 +189,34 @@ const formatUnifiedDiff = (diff: FileDiff): string => {
 
   const { systemContent, repoContent } = diff;
 
-  if (!systemContent && repoContent) {
+  // Check if systemContent is explicitly undefined (missing) vs empty string
+  const systemMissing = systemContent === undefined;
+  const repoMissing = repoContent === undefined;
+
+  if (systemMissing && !repoMissing) {
     // File only in repo
     lines.push(chalk.red('File missing on system'));
     lines.push(chalk.dim('Repository content:'));
-    repoContent.split('\n').forEach((line) => {
+    repoContent!.split('\n').forEach((line) => {
       lines.push(chalk.green(`+ ${line}`));
     });
-  } else if (systemContent && !repoContent) {
+  } else if (!systemMissing && repoMissing) {
     // File only on system
     lines.push(chalk.yellow('File not yet synced to repository'));
     lines.push(chalk.dim('System content:'));
-    systemContent.split('\n').forEach((line) => {
+    systemContent!.split('\n').forEach((line) => {
       lines.push(chalk.red(`- ${line}`));
     });
-  } else if (systemContent && repoContent) {
-    // Simple line-by-line diff with improved context
+  } else if (!systemMissing && !repoMissing) {
+    // Both files exist (may be empty)
     const CONTEXT_LINES = 3;
-    const systemLines = systemContent.split('\n');
-    const repoLines = repoContent.split('\n');
+    const systemLines = systemContent!.split('\n');
+    const repoLines = repoContent!.split('\n');
 
     const maxLines = Math.max(systemLines.length, repoLines.length);
 
     let inDiff = false;
     let diffStart = 0;
-    let contextCount = 0;
 
     for (let i = 0; i < maxLines; i++) {
       const sysLine = systemLines[i];
@@ -198,12 +227,22 @@ const formatUnifiedDiff = (diff: FileDiff): string => {
           inDiff = true;
           diffStart = i;
           const startLine = Math.max(0, diffStart - CONTEXT_LINES + 1);
-          const endLine = Math.min(maxLines, diffStart + CONTEXT_LINES);
+          const contextLineCount = Math.min(diffStart, CONTEXT_LINES);
+          const endLine = Math.min(maxLines, diffStart + CONTEXT_LINES + 1);
+
           lines.push(
             chalk.cyan(
-              `@@ -${startLine + 1},${endLine - startLine} +${startLine + 1},${endLine - startLine} @@`
+              `@@ -${startLine + 1},${contextLineCount + 1} +${startLine + 1},${endLine - startLine} @@`
             )
           );
+
+          // Print context lines before diff
+          for (let j = startLine; j < i; j++) {
+            const ctxLine = systemLines[j];
+            if (ctxLine !== undefined) {
+              lines.push(chalk.dim(`  ${ctxLine}`));
+            }
+          }
         }
 
         if (sysLine !== undefined) {
@@ -212,14 +251,14 @@ const formatUnifiedDiff = (diff: FileDiff): string => {
         if (repoLine !== undefined) {
           lines.push(chalk.green(`+ ${repoLine}`));
         }
-        contextCount = 0;
       } else if (inDiff) {
-        // Show context lines
-        lines.push(chalk.dim(`  ${sysLine || ''}`));
-        contextCount++;
-        if (contextCount > CONTEXT_LINES * 2) {
-          inDiff = false;
+        // Show context lines after diff changes
+        if (sysLine === repoLine && sysLine !== undefined) {
+          lines.push(chalk.dim(`  ${sysLine}`));
         }
+      } else {
+        // Exit diff context after matching lines
+        inDiff = false;
       }
     }
   }
