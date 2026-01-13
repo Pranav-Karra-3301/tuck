@@ -1,6 +1,5 @@
 import { Command } from 'commander';
-import chalk from 'chalk';
-import { prompts, logger, formatCount } from '../ui/index.js';
+import { prompts, logger, formatCount, colors as c } from '../ui/index.js';
 import { getTuckDir } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import { NotInitializedError } from '../errors.js';
@@ -63,18 +62,17 @@ const printList = (groups: CategoryGroup[]): void => {
 
     console.log();
     console.log(
-      chalk.bold(`${group.icon} ${group.name}`) +
-        chalk.dim(` (${formatCount(fileCount, 'file')})`)
+      c.bold(`${group.icon} ${group.name}`) + c.dim(` (${formatCount(fileCount, 'file')})`)
     );
 
     group.files.forEach((file, index) => {
       const isLast = index === group.files.length - 1;
       const prefix = isLast ? '└── ' : '├── ';
       const name = file.source.split('/').pop() || file.source;
-      const arrow = chalk.dim(' → ');
-      const dest = chalk.dim(file.source);
+      const arrow = c.dim(' → ');
+      const dest = c.dim(file.source);
 
-      console.log(chalk.dim(prefix) + chalk.cyan(name) + arrow + dest);
+      console.log(c.dim(prefix) + c.cyan(name) + arrow + dest);
     });
   }
 

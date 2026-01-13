@@ -1,10 +1,21 @@
-import chalk from 'chalk';
-import ora, { Ora } from 'ora';
-
 /**
- * A beautiful progress tracker for file operations
- * Shows one-by-one progress with "X of Y" indicators
+ * Progress display utilities for tuck CLI
+ * Provides beautiful, adaptive progress displays for file operations
+ *
+ * Display Modes:
+ * - detailed (≤20 files): Show each file with spinner
+ * - compact (21-100 files): Progress bar with current file
+ * - minimal (>100 files): Spinner with count only
  */
+
+import * as p from '@clack/prompts';
+import logSymbols from 'log-symbols';
+import figures from 'figures';
+import { colors as c, divider, indent, DIVIDER_WIDTH, getProgressMode } from './theme.js';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
 
 export interface ProgressItem {
   label: string;
@@ -19,117 +30,13 @@ export interface ProgressTrackerOptions {
 
 export interface ProgressTracker {
   start: () => void;
-  update: (index: number, status: 'pending' | 'in_progress' | 'completed' | 'error', message?: string) => void;
+  update: (
+    index: number,
+    status: 'pending' | 'in_progress' | 'completed' | 'error',
+    message?: string
+  ) => void;
   complete: (message?: string) => void;
   fail: (message?: string) => void;
-}
-
-const ICONS = {
-  pending: chalk.dim('○'),
-  in_progress: chalk.cyan('●'),
-  completed: chalk.green('✓'),
-  error: chalk.red('✗'),
-};
-
-/**
- * Create a progress tracker for multiple items
- */
-export const createProgressTracker = (
-  items: ProgressItem[],
-  options: ProgressTrackerOptions = {}
-): ProgressTracker => {
-  const { title, showIndex = true } = options;
-  const total = items.length;
-  const statuses: ('pending' | 'in_progress' | 'completed' | 'error')[] = items.map(() => 'pending');
-  let spinner: Ora | null = null;
-  let currentIndex = -1;
-
-  const renderLine = (index: number): string => {
-    const item = items[index];
-    const status = statuses[index];
-    const icon = ICONS[status];
-    const indexStr = showIndex ? chalk.dim(`[${index + 1}/${total}]`) + ' ' : '';
-
-    let line = `  ${icon} ${indexStr}${item.label}`;
-
-    if (item.description && status !== 'in_progress') {
-      line += chalk.dim(` - ${item.description}`);
-    }
-
-    return line;
-  };
-
-  return {
-    start: () => {
-      if (title) {
-        console.log();
-        console.log(chalk.bold.cyan(title));
-        console.log(chalk.dim('─'.repeat(50)));
-      }
-    },
-
-    update: (index: number, status: 'pending' | 'in_progress' | 'completed' | 'error', message?: string) => {
-      statuses[index] = status;
-
-      if (status === 'in_progress') {
-        // Stop any existing spinner
-        if (spinner) {
-          spinner.stop();
-        }
-
-        currentIndex = index;
-        const item = items[index];
-        const indexStr = showIndex ? chalk.dim(`[${index + 1}/${total}]`) + ' ' : '';
-
-        spinner = ora({
-          text: `${indexStr}${message || item.label}`,
-          color: 'cyan',
-          spinner: 'dots',
-          indent: 2,
-        }).start();
-      } else if (status === 'completed' || status === 'error') {
-        if (spinner && currentIndex === index) {
-          spinner.stop();
-          spinner = null;
-        }
-        console.log(renderLine(index));
-      }
-    },
-
-    complete: (message?: string) => {
-      if (spinner) {
-        spinner.stop();
-        spinner = null;
-      }
-      console.log();
-      console.log(chalk.green('✓'), message || 'Completed successfully');
-    },
-
-    fail: (message?: string) => {
-      if (spinner) {
-        spinner.stop();
-        spinner = null;
-      }
-      console.log();
-      console.log(chalk.red('✗'), message || 'Operation failed');
-    },
-  };
-};
-
-/**
- * Animated file operation display
- * Shows files being processed one by one with nice animations
- * Supports multiple operation types: tracking, copying, syncing, restoring
- */
-export interface FileOperationOptions {
-  /** Delay between operations in milliseconds (automatically reduced for large batches) */
-  delayBetween?: number;
-  /** Show category information for each file */
-  showCategory?: boolean;
-  /** Callback invoked after each operation completes */
-  onProgress?: (current: number, total: number) => void;
-  /** Custom action verb for display messages */
-  actionVerb?: string;
 }
 
 export interface FileOperationItem {
@@ -139,114 +46,250 @@ export interface FileOperationItem {
   icon?: string;
 }
 
+export interface FileOperationOptions {
+  delayBetween?: number;
+  showCategory?: boolean;
+  onProgress?: (current: number, total: number) => void;
+  actionVerb?: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Progress Bar Component
+// ─────────────────────────────────────────────────────────────────────────────
+
+const createProgressBarLine = (current: number, total: number, width = 30): string => {
+  const percentage = Math.round((current / total) * 100);
+  const filled = Math.round((current / total) * width);
+  const empty = width - filled;
+
+  const bar = c.brand('█').repeat(filled) + c.muted('░').repeat(empty);
+  const stats = c.muted(`${current}/${total}`);
+  const pct = c.bold(`${percentage}%`);
+
+  return `${bar} ${pct} ${stats}`;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Detailed Mode: Show Each File
+// ─────────────────────────────────────────────────────────────────────────────
+
+const processDetailed = async <T>(
+  items: FileOperationItem[],
+  processor: (item: FileOperationItem, index: number) => Promise<T>,
+  options: FileOperationOptions
+): Promise<T[]> => {
+  const { showCategory = true, onProgress, actionVerb, delayBetween = 50 } = options;
+  const results: T[] = [];
+  const total = items.length;
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const indexStr = c.muted(`[${i + 1}/${total}]`);
+    const actionText = actionVerb || getActionText(item.action);
+
+    // Show spinner while processing
+    const spinner = p.spinner();
+    spinner.start(`${indexStr} ${actionText} ${c.brand(item.path)}`);
+
+    try {
+      const result = await processor(item, i);
+      results.push(result);
+
+      // Format completion line
+      const categoryStr =
+        showCategory && item.category ? c.muted(` [${item.icon || ''}${item.category}]`) : '';
+
+      spinner.stop(`${logSymbols.success} ${indexStr} ${item.path}${categoryStr}`);
+
+      if (onProgress) {
+        onProgress(i + 1, total);
+      }
+
+      // Small delay for visual effect (except last item)
+      if (i < items.length - 1 && delayBetween > 0) {
+        await sleep(delayBetween);
+      }
+    } catch (error) {
+      spinner.stop(`${logSymbols.error} ${indexStr} ${item.path} ${c.error('failed')}`);
+      throw error;
+    }
+  }
+
+  return results;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Compact Mode: Progress Bar + Current File
+// ─────────────────────────────────────────────────────────────────────────────
+
+const processCompact = async <T>(
+  items: FileOperationItem[],
+  processor: (item: FileOperationItem, index: number) => Promise<T>,
+  options: FileOperationOptions
+): Promise<T[]> => {
+  const { onProgress, delayBetween = 10 } = options;
+  const results: T[] = [];
+  const total = items.length;
+
+  let lastLineLength = 0;
+
+  const clearLine = () => {
+    if (lastLineLength > 0) {
+      process.stdout.write('\r' + ' '.repeat(lastLineLength) + '\r');
+    }
+  };
+
+  const writeLine = (line: string) => {
+    clearLine();
+    process.stdout.write(line);
+    lastLineLength = line.length;
+  };
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+
+    // Show progress bar + current file
+    const progressBar = createProgressBarLine(i, total);
+    const currentFile = c.muted(truncatePath(item.path, 40));
+    writeLine(`${indent()}${progressBar}\n${indent()}${c.brand(figures.pointer)} ${currentFile}`);
+
+    try {
+      const result = await processor(item, i);
+      results.push(result);
+
+      if (onProgress) {
+        onProgress(i + 1, total);
+      }
+
+      if (delayBetween > 0) {
+        await sleep(delayBetween);
+      }
+    } catch (error) {
+      clearLine();
+      console.log(`${indent()}${logSymbols.error} ${item.path} ${c.error('failed')}`);
+      throw error;
+    }
+  }
+
+  // Final state
+  clearLine();
+  const finalBar = createProgressBarLine(total, total);
+  console.log(`${indent()}${finalBar}`);
+
+  return results;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Minimal Mode: Spinner with Count
+// ─────────────────────────────────────────────────────────────────────────────
+
+const processMinimal = async <T>(
+  items: FileOperationItem[],
+  processor: (item: FileOperationItem, index: number) => Promise<T>,
+  options: FileOperationOptions
+): Promise<T[]> => {
+  const { actionVerb, onProgress, delayBetween = 5 } = options;
+  const results: T[] = [];
+  const total = items.length;
+  const actionText = actionVerb || 'Processing';
+
+  const spinner = p.spinner();
+  spinner.start(`${actionText} ${total} files...`);
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const pct = Math.round(((i + 1) / total) * 100);
+
+    spinner.message(`${actionText}... ${i + 1}/${total} (${pct}%)`);
+
+    try {
+      const result = await processor(item, i);
+      results.push(result);
+
+      if (onProgress) {
+        onProgress(i + 1, total);
+      }
+
+      if (delayBetween > 0 && i < items.length - 1) {
+        await sleep(delayBetween);
+      }
+    } catch (error) {
+      spinner.stop(`${logSymbols.error} Failed at ${item.path}`);
+      throw error;
+    }
+  }
+
+  spinner.stop(`${logSymbols.success} ${actionText} complete`);
+  return results;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main Entry Point
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
- * Display an animated file operation progress
- * Generic function for showing progress of various file operations
+ * Process files with adaptive progress display
+ * Automatically selects the best display mode based on item count
  */
 export const processFilesWithProgress = async <T>(
   items: FileOperationItem[],
   processor: (item: FileOperationItem, index: number) => Promise<T>,
   options: FileOperationOptions = {}
 ): Promise<T[]> => {
-  // Adaptive delay: reduce delay for large batches
-  let { delayBetween } = options;
-  if (delayBetween === undefined) {
-    delayBetween = items.length >= 50 ? 10 : 50; // 10ms for large batches, 50ms for small
-  }
-  
-  const { showCategory = true, onProgress, actionVerb } = options;
-  const results: T[] = [];
+  const { actionVerb } = options;
+  const total = items.length;
+  const mode = getProgressMode(total);
 
-  // Determine action text based on the operation type
-  const defaultActionText = {
-    tracking: 'Tracking',
-    copying: 'Copying',
-    syncing: 'Syncing',
-    restoring: 'Restoring',
-  }[items[0]?.action || 'tracking'];
-  
-  const displayAction = actionVerb || defaultActionText;
-  const totalItems = items.length;
-
+  // Header
+  const displayAction = actionVerb || getActionText(items[0]?.action || 'tracking');
   console.log();
-  console.log(chalk.bold.cyan(`${displayAction} ${totalItems} ${totalItems === 1 ? 'file' : 'files'}...`));
-  console.log(chalk.dim('─'.repeat(50)));
+  console.log(c.brandBold(`${displayAction} ${total} ${total === 1 ? 'file' : 'files'}...`));
+  console.log(divider(DIVIDER_WIDTH));
   console.log();
 
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    const indexStr = chalk.dim(`[${i + 1}/${totalItems}]`);
+  // Process based on mode
+  let results: T[];
 
-    // Get action text for this specific item
-    const actionText = actionVerb || {
-      tracking: 'Tracking',
-      copying: 'Copying',
-      syncing: 'Syncing',
-      restoring: 'Restoring',
-    }[item.action];
-
-    // Show spinner while processing
-    const spinner = ora({
-      text: `${indexStr} ${actionText} ${chalk.cyan(item.path)}`,
-      color: 'cyan',
-      spinner: 'dots',
-      indent: 2,
-    }).start();
-
-    try {
-      const result = await processor(item, i);
-      results.push(result);
-
-      // Show completion
-      spinner.stop();
-      const categoryStr = showCategory && item.category
-        ? chalk.dim(` [${item.icon || ''}${item.category}]`)
-        : '';
-      console.log(`  ${chalk.green('✓')} ${indexStr} ${item.path}${categoryStr}`);
-
-      // Call progress callback
-      if (onProgress) {
-        onProgress(i + 1, totalItems);
-      }
-
-      // Small delay for visual effect (unless it's the last item)
-      if (i < items.length - 1 && delayBetween > 0) {
-        await new Promise(resolve => setTimeout(resolve, delayBetween));
-      }
-    } catch (error) {
-      spinner.stop();
-      console.log(`  ${chalk.red('✗')} ${indexStr} ${item.path} ${chalk.red('- failed')}`);
-      throw error;
-    }
+  switch (mode) {
+    case 'detailed':
+      results = await processDetailed(items, processor, options);
+      break;
+    case 'compact':
+      results = await processCompact(items, processor, options);
+      break;
+    case 'minimal':
+      results = await processMinimal(items, processor, options);
+      break;
   }
 
+  // Summary
   console.log();
-  console.log(chalk.green('✓'), chalk.bold(`${displayAction === 'Tracking' ? 'Tracked' : displayAction.replace(/ing$/, 'ed')} ${totalItems} ${totalItems === 1 ? 'file' : 'files'} successfully`));
+  const pastTense = getPastTense(displayAction);
+  console.log(
+    logSymbols.success,
+    c.bold(`${pastTense} ${total} ${total === 1 ? 'file' : 'files'}`)
+  );
 
   return results;
 };
 
-/**
- * @deprecated Use processFilesWithProgress instead
- * Kept for backward compatibility
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Legacy Exports (backward compatibility)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** @deprecated Use processFilesWithProgress instead */
 export const trackFilesWithProgress = processFilesWithProgress;
 
-/**
- * @deprecated Use FileOperationItem instead
- * Kept for backward compatibility
- */
+/** @deprecated Use FileOperationItem instead */
 export type FileTrackingItem = FileOperationItem;
 
-/**
- * @deprecated Use FileOperationOptions instead
- * Kept for backward compatibility
- */
+/** @deprecated Use FileOperationOptions instead */
 export type FileTrackingOptions = FileOperationOptions;
 
-/**
- * Simple step-by-step progress display for multi-step operations
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Step Progress (for multi-step operations)
+// ─────────────────────────────────────────────────────────────────────────────
+
 export interface StepProgress {
   start: (text: string) => void;
   succeed: (text?: string) => void;
@@ -256,50 +299,50 @@ export interface StepProgress {
 
 export const createStepProgress = (totalSteps: number): StepProgress => {
   let currentStep = 0;
-  let spinner: Ora | null = null;
+  let spinner: ReturnType<typeof p.spinner> | null = null;
   let currentText = '';
 
   return {
     start: (text: string) => {
       currentStep++;
       currentText = text;
-      const stepStr = chalk.dim(`[${currentStep}/${totalSteps}]`);
-      spinner = ora({
-        text: `${stepStr} ${text}`,
-        color: 'cyan',
-        spinner: 'dots',
-      }).start();
+      const stepStr = c.muted(`[${currentStep}/${totalSteps}]`);
+      spinner = p.spinner();
+      spinner.start(`${stepStr} ${text}`);
     },
 
     succeed: (text?: string) => {
       if (spinner) {
-        const stepStr = chalk.dim(`[${currentStep}/${totalSteps}]`);
-        spinner.succeed(`${stepStr} ${text || currentText}`);
+        const stepStr = c.muted(`[${currentStep}/${totalSteps}]`);
+        spinner.stop(`${logSymbols.success} ${stepStr} ${text || currentText}`);
         spinner = null;
       }
     },
 
     fail: (text?: string) => {
       if (spinner) {
-        const stepStr = chalk.dim(`[${currentStep}/${totalSteps}]`);
-        spinner.fail(`${stepStr} ${text || currentText}`);
+        const stepStr = c.muted(`[${currentStep}/${totalSteps}]`);
+        spinner.stop(`${logSymbols.error} ${stepStr} ${text || currentText}`);
         spinner = null;
       }
     },
 
     skip: (text?: string) => {
       if (spinner) {
-        const stepStr = chalk.dim(`[${currentStep}/${totalSteps}]`);
-        spinner.info(`${stepStr} ${text || currentText} ${chalk.dim('(skipped)')}`);
+        const stepStr = c.muted(`[${currentStep}/${totalSteps}]`);
+        spinner.stop(
+          `${logSymbols.info} ${stepStr} ${text || currentText} ${c.muted('(skipped)')}`
+        );
         spinner = null;
       }
     },
   };
 };
 
-/**
- * Progress bar display for file operations
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Simple Progress Bar
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const createProgressBar = (
   total: number,
   options: { width?: number; label?: string } = {}
@@ -308,15 +351,9 @@ export const createProgressBar = (
   let lastOutput = '';
 
   const render = (current: number, currentLabel?: string) => {
-    const percentage = Math.round((current / total) * 100);
-    const filled = Math.round((current / total) * width);
-    const empty = width - filled;
-
-    const bar = chalk.cyan('█').repeat(filled) + chalk.dim('░').repeat(empty);
-    const countStr = chalk.dim(`${current}/${total}`);
+    const bar = createProgressBarLine(current, total, width);
     const labelStr = currentLabel || label;
-
-    const output = `  ${bar} ${percentage}% ${countStr} ${labelStr}`;
+    const output = `${indent()}${bar} ${labelStr}`;
 
     // Clear previous line and write new one
     if (lastOutput) {
@@ -334,37 +371,184 @@ export const createProgressBar = (
       if (lastOutput) {
         process.stdout.write('\r' + ' '.repeat(lastOutput.length) + '\r');
       }
-      console.log(`  ${chalk.green('✓')} ${label} complete`);
+      console.log(`${indent()}${logSymbols.success} ${label} complete`);
     },
   };
 };
 
-/**
- * Display a summary box after file operations
- */
-export const showOperationSummary = (stats: {
-  tracked?: number;
-  copied?: number;
-  synced?: number;
-  failed?: number;
-  skipped?: number;
-}, title = 'Summary'): void => {
+// ─────────────────────────────────────────────────────────────────────────────
+// Operation Summary
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const showOperationSummary = (
+  stats: {
+    tracked?: number;
+    copied?: number;
+    synced?: number;
+    failed?: number;
+    skipped?: number;
+  },
+  title = 'Summary'
+): void => {
   console.log();
-  console.log(chalk.bold.cyan(`${title}:`));
+  console.log(c.brandBold(`${title}:`));
 
   if (stats.tracked !== undefined && stats.tracked > 0) {
-    console.log(`  ${chalk.green('✓')} Tracked: ${stats.tracked} ${stats.tracked === 1 ? 'file' : 'files'}`);
+    console.log(
+      `${indent()}${logSymbols.success} Tracked: ${stats.tracked} ${stats.tracked === 1 ? 'file' : 'files'}`
+    );
   }
   if (stats.copied !== undefined && stats.copied > 0) {
-    console.log(`  ${chalk.green('✓')} Copied: ${stats.copied} ${stats.copied === 1 ? 'file' : 'files'}`);
+    console.log(
+      `${indent()}${logSymbols.success} Copied: ${stats.copied} ${stats.copied === 1 ? 'file' : 'files'}`
+    );
   }
   if (stats.synced !== undefined && stats.synced > 0) {
-    console.log(`  ${chalk.green('✓')} Synced: ${stats.synced} ${stats.synced === 1 ? 'file' : 'files'}`);
+    console.log(
+      `${indent()}${logSymbols.success} Synced: ${stats.synced} ${stats.synced === 1 ? 'file' : 'files'}`
+    );
   }
   if (stats.skipped !== undefined && stats.skipped > 0) {
-    console.log(`  ${chalk.yellow('○')} Skipped: ${stats.skipped} ${stats.skipped === 1 ? 'file' : 'files'}`);
+    console.log(
+      `${indent()}${c.muted(figures.circle)} Skipped: ${stats.skipped} ${stats.skipped === 1 ? 'file' : 'files'}`
+    );
   }
   if (stats.failed !== undefined && stats.failed > 0) {
-    console.log(`  ${chalk.red('✗')} Failed: ${stats.failed} ${stats.failed === 1 ? 'file' : 'files'}`);
+    console.log(
+      `${indent()}${logSymbols.error} Failed: ${stats.failed} ${stats.failed === 1 ? 'file' : 'files'}`
+    );
   }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Utilities
+// ─────────────────────────────────────────────────────────────────────────────
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+const getActionText = (action: string): string => {
+  const texts: Record<string, string> = {
+    tracking: 'Tracking',
+    copying: 'Copying',
+    syncing: 'Syncing',
+    restoring: 'Restoring',
+  };
+  return texts[action] || 'Processing';
+};
+
+const getPastTense = (verb: string): string => {
+  if (verb.endsWith('ing')) {
+    const base = verb.slice(0, -3);
+    if (base.endsWith('ck') || base.endsWith('sh')) {
+      return base + 'ed';
+    }
+    return base + 'ed';
+  }
+  return verb;
+};
+
+const truncatePath = (path: string, maxLength: number): string => {
+  if (path.length <= maxLength) return path;
+  return '...' + path.slice(-(maxLength - 3));
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Legacy Progress Tracker (for backward compatibility)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const createProgressTracker = (
+  items: ProgressItem[],
+  options: ProgressTrackerOptions = {}
+): ProgressTracker => {
+  const { title, showIndex = true } = options;
+  const total = items.length;
+  const statuses: ('pending' | 'in_progress' | 'completed' | 'error')[] = items.map(
+    () => 'pending'
+  );
+  let spinner: ReturnType<typeof p.spinner> | null = null;
+  let currentIndex = -1;
+
+  const getIcon = (status: 'pending' | 'in_progress' | 'completed' | 'error'): string => {
+    switch (status) {
+      case 'pending':
+        return c.muted(figures.circle);
+      case 'in_progress':
+        return c.brand(figures.circleFilled);
+      case 'completed':
+        return logSymbols.success;
+      case 'error':
+        return logSymbols.error;
+    }
+  };
+
+  const renderLine = (index: number): string => {
+    const item = items[index];
+    const status = statuses[index];
+    const icon = getIcon(status);
+    const indexStr = showIndex ? c.muted(`[${index + 1}/${total}]`) + ' ' : '';
+
+    let line = `${indent()}${icon} ${indexStr}${item.label}`;
+
+    if (item.description && status !== 'in_progress') {
+      line += c.muted(` - ${item.description}`);
+    }
+
+    return line;
+  };
+
+  return {
+    start: () => {
+      if (title) {
+        console.log();
+        console.log(c.brandBold(title));
+        console.log(divider(DIVIDER_WIDTH));
+      }
+    },
+
+    update: (
+      index: number,
+      status: 'pending' | 'in_progress' | 'completed' | 'error',
+      message?: string
+    ) => {
+      statuses[index] = status;
+
+      if (status === 'in_progress') {
+        if (spinner) {
+          spinner.stop();
+        }
+
+        currentIndex = index;
+        const item = items[index];
+        const indexStr = showIndex ? c.muted(`[${index + 1}/${total}]`) + ' ' : '';
+
+        spinner = p.spinner();
+        spinner.start(`${indexStr}${message || item.label}`);
+      } else if (status === 'completed' || status === 'error') {
+        if (spinner && currentIndex === index) {
+          spinner.stop(renderLine(index));
+          spinner = null;
+        } else {
+          console.log(renderLine(index));
+        }
+      }
+    },
+
+    complete: (message?: string) => {
+      if (spinner) {
+        spinner.stop();
+        spinner = null;
+      }
+      console.log();
+      console.log(logSymbols.success, message || 'Completed successfully');
+    },
+
+    fail: (message?: string) => {
+      if (spinner) {
+        spinner.stop();
+        spinner = null;
+      }
+      console.log();
+      console.log(logSymbols.error, message || 'Operation failed');
+    },
+  };
 };

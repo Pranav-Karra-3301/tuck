@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { join } from 'path';
 import { writeFile } from 'fs/promises';
 import { ensureDir } from 'fs-extra';
-import { banner, nextSteps, prompts, withSpinner, logger } from '../ui/index.js';
+import { banner, nextSteps, prompts, withSpinner, logger, colors as c } from '../ui/index.js';
 import {
   getTuckDir,
   getManifestPath,
@@ -15,7 +15,15 @@ import {
 import { saveConfig } from '../lib/config.js';
 import { createManifest } from '../lib/manifest.js';
 import type { TuckManifest } from '../types.js';
-import { initRepo, addRemote, cloneRepo, setDefaultBranch, stageAll, commit, push } from '../lib/git.js';
+import {
+  initRepo,
+  addRemote,
+  cloneRepo,
+  setDefaultBranch,
+  stageAll,
+  commit,
+  push,
+} from '../lib/git.js';
 import {
   isGhInstalled,
   isGhAuthenticated,
@@ -39,7 +47,6 @@ import {
   MIN_GITHUB_TOKEN_LENGTH,
   GITHUB_TOKEN_PREFIXES,
 } from '../lib/github.js';
-import chalk from 'chalk';
 import { detectDotfiles, DetectedFile, DETECTION_CATEGORIES } from '../lib/detect.js';
 import { copy } from 'fs-extra';
 import { tmpdir } from 'os';
@@ -77,7 +84,7 @@ const trackFilesWithProgressInit = async (
   tuckDir: string
 ): Promise<number> => {
   // Convert paths to FileToTrack
-  const filesToTrack: FileToTrack[] = selectedPaths.map(path => ({
+  const filesToTrack: FileToTrack[] = selectedPaths.map((path) => ({
     path,
   }));
 
@@ -141,14 +148,14 @@ tuck restore --all
  */
 const validateGitHubUrl = (value: string): string | undefined => {
   if (!value) return 'Repository URL is required';
-  
+
   const isGitHubHttps = value.startsWith('https://github.com/');
   const isGitHubSsh = value.startsWith('git@github.com:');
-  
+
   if (!isGitHubHttps && !isGitHubSsh) {
     return 'Please enter a valid GitHub URL';
   }
-  
+
   // Validate URL contains owner/repo pattern
   if (isGitHubHttps) {
     // HTTPS format: https://github.com/owner/repo[.git]
@@ -163,7 +170,7 @@ const validateGitHubUrl = (value: string): string | undefined => {
       return 'GitHub URL must include owner and repository name (e.g., git@github.com:owner/repo.git)';
     }
   }
-  
+
   return undefined;
 };
 
@@ -173,18 +180,18 @@ const validateGitHubUrl = (value: string): string | undefined => {
  */
 const validateGitUrl = (value: string): string | undefined => {
   if (!value) return 'Repository URL is required';
-  
+
   const trimmed = value.trim();
-  
+
   // Check for common Git URL patterns
   const isHttps = /^https?:\/\/.+\/.+/.test(trimmed); // Must have at least host/path
   const isSshScp = /^[^@]+@[^@:]+:[^:]+\/.+/.test(trimmed); // e.g. git@host:user/repo.git
-  const isSshUrl = /^ssh:\/\/.+\/.+/.test(trimmed);     // e.g. ssh://git@host/user/repo.git
-  
+  const isSshUrl = /^ssh:\/\/.+\/.+/.test(trimmed); // e.g. ssh://git@host/user/repo.git
+
   if (!isHttps && !isSshScp && !isSshUrl) {
     return 'Please enter a valid Git repository URL (HTTPS or SSH format)';
   }
-  
+
   return undefined;
 };
 
@@ -293,7 +300,7 @@ const setupAlternativeAuth = async (tuckDir: string): Promise<GitHubSetupResult>
     const diagnosis = await diagnoseAuthIssue();
     prompts.log.warning(diagnosis.issue);
     for (const suggestion of diagnosis.suggestions) {
-      console.log(chalk.dim(`  ${suggestion}`));
+      console.log(c.muted(`  ${suggestion}`));
     }
     console.log();
   }
@@ -380,7 +387,7 @@ const setupAlternativeAuth = async (tuckDir: string): Promise<GitHubSetupResult>
       if (sshInfo.publicKey) {
         console.log();
         prompts.log.info('Your public key (copy this to GitHub):');
-        console.log(chalk.cyan(sshInfo.publicKey));
+        console.log(c.brand(sshInfo.publicKey));
         console.log();
       }
     }
@@ -409,7 +416,10 @@ const setupAlternativeAuth = async (tuckDir: string): Promise<GitHubSetupResult>
   }
 
   if (authMethod === 'fine-grained' || authMethod === 'classic') {
-    return await setupTokenAuth(tuckDir, authMethod === 'fine-grained' ? 'fine-grained' : 'classic');
+    return await setupTokenAuth(
+      tuckDir,
+      authMethod === 'fine-grained' ? 'fine-grained' : 'classic'
+    );
   }
 
   return { remoteUrl: null, pushed: false };
@@ -422,18 +432,20 @@ const setupTokenAuth = async (
   tuckDir: string,
   preferredType?: 'fine-grained' | 'classic'
 ): Promise<GitHubSetupResult> => {
-  const tokenType = preferredType ?? await prompts.select('Which type of token?', [
-    {
-      value: 'fine-grained',
-      label: 'Fine-grained Token (recommended)',
-      hint: 'Limited permissions, more secure',
-    },
-    {
-      value: 'classic',
-      label: 'Classic Token',
-      hint: 'Full repo access, simpler',
-    },
-  ]);
+  const tokenType =
+    preferredType ??
+    (await prompts.select('Which type of token?', [
+      {
+        value: 'fine-grained',
+        label: 'Fine-grained Token (recommended)',
+        hint: 'Limited permissions, more secure',
+      },
+      {
+        value: 'classic',
+        label: 'Classic Token',
+        hint: 'Full repo access, simpler',
+      },
+    ]));
 
   // Show instructions for the selected token type
   console.log();
@@ -480,12 +492,12 @@ const setupTokenAuth = async (
       `Warning: Token does not start with a recognized GitHub prefix (${prefixList}). ` +
         'This may cause authentication to fail.'
     );
-    
+
     const proceedWithUnrecognizedToken = await prompts.confirm(
       'The value you entered does not look like a typical GitHub personal access token. ' +
         'Are you sure this is a GitHub token and not, for example, a password or another secret?'
     );
-    
+
     if (!proceedWithUnrecognizedToken) {
       prompts.log.error(
         'Aborting setup to avoid storing a value that may not be a GitHub token. ' +
@@ -497,10 +509,13 @@ const setupTokenAuth = async (
 
   // Auto-detect token type
   const detectedType = detectTokenType(token);
-  const finalType = detectedType !== 'unknown' ? detectedType : (tokenType as 'fine-grained' | 'classic');
+  const finalType =
+    detectedType !== 'unknown' ? detectedType : (tokenType as 'fine-grained' | 'classic');
 
   if (detectedType !== 'unknown' && detectedType !== tokenType) {
-    prompts.log.info(`Detected ${detectedType === 'fine-grained' ? 'fine-grained' : 'classic'} token`);
+    prompts.log.info(
+      `Detected ${detectedType === 'fine-grained' ? 'fine-grained' : 'classic'} token`
+    );
   }
 
   // Store credentials securely
@@ -513,7 +528,9 @@ const setupTokenAuth = async (
     prompts.log.success('Authentication configured successfully');
   } catch (error) {
     storeSpinner.stop('Failed to store credentials');
-    prompts.log.warning(`Could not store credentials: ${error instanceof Error ? error.message : String(error)}`);
+    prompts.log.warning(
+      `Could not store credentials: ${error instanceof Error ? error.message : String(error)}`
+    );
     prompts.log.info('You may be prompted for credentials when pushing');
   }
 
@@ -535,19 +552,20 @@ const promptForManualRepoUrl = async (
   preferredProtocol: 'ssh' | 'https' = 'https'
 ): Promise<GitHubSetupResult> => {
   const suggestedName = 'dotfiles';
-  const exampleUrl = preferredProtocol === 'ssh'
-    ? `git@github.com:${username || 'username'}/${suggestedName}.git`
-    : `https://github.com/${username || 'username'}/${suggestedName}.git`;
+  const exampleUrl =
+    preferredProtocol === 'ssh'
+      ? `git@github.com:${username || 'username'}/${suggestedName}.git`
+      : `https://github.com/${username || 'username'}/${suggestedName}.git`;
 
   console.log();
   prompts.note(
     `Create a repository on GitHub:\n\n` +
-    `1. Go to: https://github.com/new\n` +
-    `2. Name: ${suggestedName}\n` +
-    `3. Visibility: Private (recommended)\n` +
-    `4. Do NOT add README or .gitignore\n` +
-    `5. Click "Create repository"\n` +
-    `6. Copy the ${preferredProtocol.toUpperCase()} URL`,
+      `1. Go to: https://github.com/new\n` +
+      `2. Name: ${suggestedName}\n` +
+      `3. Visibility: Private (recommended)\n` +
+      `4. Do NOT add README or .gitignore\n` +
+      `5. Click "Create repository"\n` +
+      `6. Copy the ${preferredProtocol.toUpperCase()} URL`,
     'Manual Repository Setup'
   );
   console.log();
@@ -569,7 +587,9 @@ const promptForManualRepoUrl = async (
     prompts.log.success('Remote configured');
     return { remoteUrl: repoUrl, pushed: false };
   } catch (error) {
-    prompts.log.error(`Failed to add remote: ${error instanceof Error ? error.message : String(error)}`);
+    prompts.log.error(
+      `Failed to add remote: ${error instanceof Error ? error.message : String(error)}`
+    );
     return { remoteUrl: null, pushed: false };
   }
 };
@@ -626,7 +646,9 @@ const setupGitHubRepo = async (tuckDir: string): Promise<GitHubSetupResult> => {
         return await setupAlternativeAuth(tuckDir);
       }
     } catch (error) {
-      prompts.log.warning(`Authentication failed: ${error instanceof Error ? error.message : String(error)}`);
+      prompts.log.warning(
+        `Authentication failed: ${error instanceof Error ? error.message : String(error)}`
+      );
       const useAlt = await prompts.confirm('Try alternative authentication?', true);
       if (useAlt) {
         return await setupAlternativeAuth(tuckDir);
@@ -679,7 +701,9 @@ const setupGitHubRepo = async (tuckDir: string): Promise<GitHubSetupResult> => {
 
     spinner.stop(`Repository created: ${repo.fullName}`);
   } catch (error) {
-    prompts.log.error(`Failed to create repository: ${error instanceof Error ? error.message : String(error)}`);
+    prompts.log.error(
+      `Failed to create repository: ${error instanceof Error ? error.message : String(error)}`
+    );
     return { remoteUrl: null, pushed: false };
   }
 
@@ -714,7 +738,9 @@ const setupGitHubRepo = async (tuckDir: string): Promise<GitHubSetupResult> => {
 
       return { remoteUrl, pushed: true };
     } catch (error) {
-      prompts.log.error(`Failed to push: ${error instanceof Error ? error.message : String(error)}`);
+      prompts.log.error(
+        `Failed to push: ${error instanceof Error ? error.message : String(error)}`
+      );
       return { remoteUrl, pushed: false };
     }
   }
@@ -757,8 +783,17 @@ const analyzeRepository = async (repoDir: string): Promise<RepositoryAnalysis> =
 
   // Look for common dotfile patterns in the repo
   const commonPatterns = [
-    '.zshrc', '.bashrc', '.bash_profile', '.gitconfig', '.vimrc',
-    '.tmux.conf', '.profile', 'zshrc', 'bashrc', 'gitconfig', 'vimrc',
+    '.zshrc',
+    '.bashrc',
+    '.bash_profile',
+    '.gitconfig',
+    '.vimrc',
+    '.tmux.conf',
+    '.profile',
+    'zshrc',
+    'bashrc',
+    'gitconfig',
+    'vimrc',
   ];
 
   const foundFiles: string[] = [];
@@ -770,7 +805,9 @@ const analyzeRepository = async (repoDir: string): Promise<RepositoryAnalysis> =
       const categories = await readdir(filesDir);
       for (const category of categories) {
         const categoryPath = join(filesDir, category);
-        const categoryStats = await import('fs/promises').then((fs) => fs.stat(categoryPath).catch(() => null));
+        const categoryStats = await import('fs/promises').then((fs) =>
+          fs.stat(categoryPath).catch(() => null)
+        );
         if (categoryStats?.isDirectory()) {
           const files = await readdir(categoryPath);
           foundFiles.push(...files);
@@ -840,9 +877,8 @@ const importExistingRepo = async (
 ): Promise<ImportResult> => {
   const { getPreferredRemoteProtocol } = await import('../lib/github.js');
   const protocol = await getPreferredRemoteProtocol();
-  const remoteUrl = protocol === 'ssh'
-    ? `git@github.com:${repoName}.git`
-    : `https://github.com/${repoName}.git`;
+  const remoteUrl =
+    protocol === 'ssh' ? `git@github.com:${repoName}.git` : `https://github.com/${repoName}.git`;
 
   if (analysis.type === 'valid-tuck') {
     // Scenario A: Valid tuck repository - import only (NO auto-apply)
@@ -879,17 +915,21 @@ const importExistingRepo = async (
     const { DETECTION_CATEGORIES } = await import('../lib/detect.js');
     for (const [category, files] of Object.entries(grouped)) {
       const categoryInfo = DETECTION_CATEGORIES[category] || { icon: '-', name: category };
-      console.log(chalk.cyan(`  ${categoryInfo.icon} ${categoryInfo.name}: ${files.length} file${files.length > 1 ? 's' : ''}`));
+      console.log(
+        c.brand(
+          `  ${categoryInfo.icon} ${categoryInfo.name}: ${files.length} file${files.length > 1 ? 's' : ''}`
+        )
+      );
     }
 
     console.log();
     prompts.note(
       'Your dotfiles are now in ~/.tuck but NOT applied to your system.\n\n' +
-      'To apply them to your system, run:\n' +
-      '  tuck apply    # Interactive with merge options\n' +
-      '  tuck restore  # Simple restore from backup\n\n' +
-      'To see what files are available:\n' +
-      '  tuck list',
+        'To apply them to your system, run:\n' +
+        '  tuck apply    # Interactive with merge options\n' +
+        '  tuck restore  # Simple restore from backup\n\n' +
+        'To see what files are available:\n' +
+        '  tuck list',
       'Next Steps'
     );
 
@@ -930,11 +970,15 @@ const importExistingRepo = async (
     try {
       // Remove existing origin if present and add the correct one
       const { removeRemote } = await import('../lib/git.js');
-      await removeRemote(tuckDir, 'origin').catch(() => { /* ignore if not exists */ });
+      await removeRemote(tuckDir, 'origin').catch(() => {
+        /* ignore if not exists */
+      });
       await addRemote(tuckDir, 'origin', remoteUrl);
     } catch {
       // If removing fails, try adding anyway
-      await addRemote(tuckDir, 'origin', remoteUrl).catch(() => { /* ignore if already exists */ });
+      await addRemote(tuckDir, 'origin', remoteUrl).catch(() => {
+        /* ignore if already exists */
+      });
     }
 
     // Detect dotfiles on system that could be tracked
@@ -979,7 +1023,8 @@ const importExistingRepo = async (
         let count = 0;
         const entries = await readdir(dir);
         for (const entry of entries) {
-          if (entry === '.git' || entry === '.tuckmanifest.json' || entry === '.tuckrc.json') continue;
+          if (entry === '.git' || entry === '.tuckmanifest.json' || entry === '.tuckrc.json')
+            continue;
           const fullPath = join(dir, entry);
           const stats = await stat(fullPath).catch(() => null);
           if (stats?.isDirectory()) {
@@ -1047,7 +1092,9 @@ const importExistingRepo = async (
 
   if (action === 'fresh') {
     prompts.log.info('Tuck initialized. When you push, it will replace the repository contents.');
-    prompts.log.info("Run 'tuck add' to track files, then 'tuck sync && tuck push --force' to update remote");
+    prompts.log.info(
+      "Run 'tuck add' to track files, then 'tuck sync && tuck push --force' to update remote"
+    );
   } else {
     prompts.log.info('Tuck initialized with remote configured');
     prompts.log.info("Run 'tuck add' to start tracking files");
@@ -1120,10 +1167,7 @@ const runInteractiveInit = async (): Promise<void> => {
       if (existingRepoName) {
         spinner.stop(`Found repository: ${existingRepoName}`);
 
-        const importRepo = await prompts.confirm(
-          `Import dotfiles from ${existingRepoName}?`,
-          true
-        );
+        const importRepo = await prompts.confirm(`Import dotfiles from ${existingRepoName}?`, true);
 
         if (importRepo) {
           // Clone to temp directory
@@ -1163,7 +1207,9 @@ const runInteractiveInit = async (): Promise<void> => {
                 if (result.filesApplied > 0) {
                   prompts.log.info(`Applied ${result.filesApplied} files to your system`);
                 } else if (result.filesInRepo > 0) {
-                  prompts.log.info('Files are ready in ~/.tuck. Run "tuck restore" to apply them to your system');
+                  prompts.log.info(
+                    'Files are ready in ~/.tuck. Run "tuck restore" to apply them to your system'
+                  );
                 }
               } else {
                 prompts.log.success(`Tuck initialized with ${existingRepoName} as remote`);
@@ -1194,9 +1240,7 @@ const runInteractiveInit = async (): Promise<void> => {
             } else if (phase === 'importing') {
               prompts.log.warning(errorMessage);
             } else {
-              prompts.log.warning(
-                `Could not clone repository: ${errorMessage}`
-              );
+              prompts.log.warning(`Could not clone repository: ${errorMessage}`);
             }
             console.log();
 
@@ -1286,9 +1330,10 @@ const runInteractiveInit = async (): Promise<void> => {
   // If we have an existing repo to use as remote, set it up now
   if (existingRepoToUseAsRemote) {
     const protocol = await getPreferredRemoteProtocol();
-    remoteUrl = protocol === 'ssh'
-      ? `git@github.com:${existingRepoToUseAsRemote}.git`
-      : `https://github.com/${existingRepoToUseAsRemote}.git`;
+    remoteUrl =
+      protocol === 'ssh'
+        ? `git@github.com:${existingRepoToUseAsRemote}.git`
+        : `https://github.com/${existingRepoToUseAsRemote}.git`;
 
     await addRemote(tuckDir, 'origin', remoteUrl);
     prompts.log.success(`Remote set to ${existingRepoToUseAsRemote}`);
@@ -1298,7 +1343,10 @@ const runInteractiveInit = async (): Promise<void> => {
 
   // ========== STEP 1: Remote Setup (if not already configured) ==========
   if (!remoteUrl) {
-    const wantsRemote = await prompts.confirm('Would you like to set up a remote repository?', true);
+    const wantsRemote = await prompts.confirm(
+      'Would you like to set up a remote repository?',
+      true
+    );
 
     if (wantsRemote) {
       // Try GitHub auto-setup
@@ -1314,19 +1362,19 @@ const runInteractiveInit = async (): Promise<void> => {
         console.log();
         prompts.note(
           `To create a GitHub repository manually:\n\n` +
-          `1. Go to: https://github.com/new\n` +
-          `2. Repository name: ${suggestedName}\n` +
-          `3. Description: My dotfiles managed with tuck\n` +
-          `4. Visibility: Private (recommended)\n` +
-          `5. IMPORTANT: Do NOT initialize with:\n` +
-          `   - NO README\n` +
-          `   - NO .gitignore\n` +
-          `   - NO license\n` +
-          `6. Click "Create repository"\n` +
-          `7. Copy the URL shown\n\n` +
-          `Example URLs:\n` +
-          `  SSH:   git@github.com:${user?.login || 'username'}/${suggestedName}.git\n` +
-          `  HTTPS: https://github.com/${user?.login || 'username'}/${suggestedName}.git`,
+            `1. Go to: https://github.com/new\n` +
+            `2. Repository name: ${suggestedName}\n` +
+            `3. Description: My dotfiles managed with tuck\n` +
+            `4. Visibility: Private (recommended)\n` +
+            `5. IMPORTANT: Do NOT initialize with:\n` +
+            `   - NO README\n` +
+            `   - NO .gitignore\n` +
+            `   - NO license\n` +
+            `6. Click "Create repository"\n` +
+            `7. Copy the URL shown\n\n` +
+            `Example URLs:\n` +
+            `  SSH:   git@github.com:${user?.login || 'username'}/${suggestedName}.git\n` +
+            `  HTTPS: https://github.com/${user?.login || 'username'}/${suggestedName}.git`,
           'Manual Repository Setup'
         );
         console.log();
@@ -1413,7 +1461,7 @@ const runInteractiveInit = async (): Promise<void> => {
         prompts.log.warning(`Found ${sensitiveFiles.length} sensitive file(s):`);
 
         for (const sf of sensitiveFiles) {
-          console.log(chalk.yellow(`  ! ${collapsePath(sf.path)} - ${sf.description || sf.category}`));
+          console.log(c.warning(`  ! ${collapsePath(sf.path)} - ${sf.description || sf.category}`));
         }
 
         console.log();
@@ -1424,10 +1472,7 @@ const runInteractiveInit = async (): Promise<void> => {
 
         if (trackSensitive) {
           for (const sf of sensitiveFiles) {
-            const track = await prompts.confirm(
-              `Track ${collapsePath(sf.path)}?`,
-              false
-            );
+            const track = await prompts.confirm(`Track ${collapsePath(sf.path)}?`, false);
             if (track) {
               filesToTrack.push(sf.path);
             }
@@ -1450,7 +1495,7 @@ const runInteractiveInit = async (): Promise<void> => {
     prompts.log.warning(`Found ${sensitiveFiles.length} sensitive file(s):`);
 
     for (const sf of sensitiveFiles) {
-      console.log(chalk.yellow(`  ! ${collapsePath(sf.path)} - ${sf.description || sf.category}`));
+      console.log(c.warning(`  ! ${collapsePath(sf.path)} - ${sf.description || sf.category}`));
     }
 
     console.log();
@@ -1462,10 +1507,7 @@ const runInteractiveInit = async (): Promise<void> => {
     if (trackSensitive) {
       const filesToTrack: string[] = [];
       for (const sf of sensitiveFiles) {
-        const track = await prompts.confirm(
-          `Track ${collapsePath(sf.path)}?`,
-          false
-        );
+        const track = await prompts.confirm(`Track ${collapsePath(sf.path)}?`, false);
         if (track) {
           filesToTrack.push(sf.path);
         }
@@ -1531,7 +1573,9 @@ const runInteractiveInit = async (): Promise<void> => {
             // Show success with URL
             let viewUrl = remoteUrl;
             if (viewUrl.startsWith('git@github.com:')) {
-              viewUrl = viewUrl.replace('git@github.com:', 'https://github.com/').replace('.git', '');
+              viewUrl = viewUrl
+                .replace('git@github.com:', 'https://github.com/')
+                .replace('.git', '');
             } else if (viewUrl.startsWith('https://github.com/')) {
               viewUrl = viewUrl.replace('.git', '');
             }
@@ -1539,7 +1583,7 @@ const runInteractiveInit = async (): Promise<void> => {
             console.log();
             prompts.note(
               `Your dotfiles are now live at:\n${viewUrl}\n\n` +
-              `On a new machine, run:\n  tuck init --from ${viewUrl}`,
+                `On a new machine, run:\n  tuck init --from ${viewUrl}`,
               'Success!'
             );
           } catch (error) {

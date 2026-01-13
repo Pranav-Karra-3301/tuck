@@ -1,4 +1,13 @@
-import chalk from 'chalk';
+/**
+ * Table utilities for tuck CLI
+ * Provides formatted table output
+ */
+
+import { colors as c } from './theme.js';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
 
 export interface TableColumn {
   header: string;
@@ -14,7 +23,16 @@ export interface TableOptions {
   padding?: number;
 }
 
-const padString = (str: string, width: number, align: 'left' | 'right' | 'center' = 'left'): string => {
+// ─────────────────────────────────────────────────────────────────────────────
+// Utilities
+// ─────────────────────────────────────────────────────────────────────────────
+
+const padString = (
+  str: string,
+  width: number,
+  align: 'left' | 'right' | 'center' = 'left'
+): string => {
+  // Strip ANSI codes for length calculation
   // eslint-disable-next-line no-control-regex
   const visibleLength = str.replace(/\x1b\[[0-9;]*m/g, '').length;
   const padding = Math.max(0, width - visibleLength);
@@ -32,10 +50,11 @@ const padString = (str: string, width: number, align: 'left' | 'right' | 'center
   }
 };
 
-export const createTable = (
-  data: Record<string, unknown>[],
-  options: TableOptions
-): string => {
+// ─────────────────────────────────────────────────────────────────────────────
+// Table Creation
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const createTable = (data: Record<string, unknown>[], options: TableOptions): string => {
   const { columns, border = false, padding = 2 } = options;
 
   // Calculate column widths
@@ -53,19 +72,21 @@ export const createTable = (
   const lines: string[] = [];
   const pad = ' '.repeat(padding);
 
-  // Header
+  // Header row
   const headerRow = columns
-    .map((col, i) => chalk.bold(padString(col.header, widths[i], col.align)))
+    .map((col, i) => c.bold(padString(col.header, widths[i], col.align)))
     .join(pad);
 
+  // Border line
+  const borderLine = c.muted(widths.map((w) => '─'.repeat(w)).join(pad));
+
   if (border) {
-    const borderLine = widths.map((w) => '─'.repeat(w)).join(pad);
-    lines.push(chalk.dim(borderLine));
+    lines.push(borderLine);
     lines.push(headerRow);
-    lines.push(chalk.dim(borderLine));
+    lines.push(borderLine);
   } else {
     lines.push(headerRow);
-    lines.push(chalk.dim(widths.map((w) => '─'.repeat(w)).join(pad)));
+    lines.push(borderLine);
   }
 
   // Data rows
@@ -80,7 +101,7 @@ export const createTable = (
   });
 
   if (border) {
-    lines.push(chalk.dim(widths.map((w) => '─'.repeat(w)).join(pad)));
+    lines.push(borderLine);
   }
 
   return lines.join('\n');

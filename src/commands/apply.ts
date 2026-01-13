@@ -3,16 +3,10 @@ import { join } from 'path';
 import { readFile, rm, chmod, stat } from 'fs/promises';
 import { ensureDir, pathExists as fsPathExists } from 'fs-extra';
 import { tmpdir } from 'os';
-import chalk from 'chalk';
-import { banner, prompts, logger } from '../ui/index.js';
+import { banner, prompts, logger, colors as c } from '../ui/index.js';
 import { expandPath, pathExists, collapsePath, validateSafeSourcePath } from '../lib/paths.js';
 import { cloneRepo } from '../lib/git.js';
-import {
-  isGhInstalled,
-  findDotfilesRepo,
-  ghCloneRepo,
-  repoExists,
-} from '../lib/github.js';
+import { isGhInstalled, findDotfilesRepo, ghCloneRepo, repoExists } from '../lib/github.js';
 import { createPreApplySnapshot } from '../lib/timemachine.js';
 import { smartMerge, isShellFile, generateMergePreview } from '../lib/merge.js';
 import { copyFileOrDir } from '../lib/files.js';
@@ -208,7 +202,10 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
       const mergeResult = await smartMerge(file.destination, fileContent);
 
       if (dryRun) {
-        logger.file('merge', `${collapsePath(file.destination)} (${mergeResult.preservedBlocks} blocks preserved)`);
+        logger.file(
+          'merge',
+          `${collapsePath(file.destination)} (${mergeResult.preservedBlocks} blocks preserved)`
+        );
       } else {
         const { writeFile } = await import('fs/promises');
         const { ensureDir } = await import('fs-extra');
@@ -230,10 +227,7 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
         const fileExists = await pathExists(file.destination);
         await copyFileOrDir(file.repoPath, file.destination, { overwrite: true });
         await fixSecurePermissions(file.destination);
-        logger.file(
-          fileExists ? 'modify' : 'add',
-          collapsePath(file.destination)
-        );
+        logger.file(fileExists ? 'modify' : 'add', collapsePath(file.destination));
       }
     }
 
@@ -273,10 +267,7 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
       const fileExists = await pathExists(file.destination);
       await copyFileOrDir(file.repoPath, file.destination, { overwrite: true });
       await fixSecurePermissions(file.destination);
-      logger.file(
-        fileExists ? 'modify' : 'add',
-        collapsePath(file.destination)
-      );
+      logger.file(fileExists ? 'modify' : 'add', collapsePath(file.destination));
     }
 
     result.appliedCount++;
@@ -288,21 +279,23 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
 /**
  * Display warnings for files with unresolved placeholders
  */
-const displayPlaceholderWarnings = (filesWithPlaceholders: ApplyResult['filesWithPlaceholders']): void => {
+const displayPlaceholderWarnings = (
+  filesWithPlaceholders: ApplyResult['filesWithPlaceholders']
+): void => {
   if (filesWithPlaceholders.length === 0) return;
 
   console.log();
-  console.log(chalk.yellow('⚠ Warning: Some files contain unresolved placeholders:'));
+  console.log(c.yellow('⚠ Warning: Some files contain unresolved placeholders:'));
   console.log();
 
   for (const { path, placeholders } of filesWithPlaceholders) {
-    console.log(chalk.dim(`  ${path}:`));
+    console.log(c.dim(`  ${path}:`));
 
     const maxToShow = 5;
     if (placeholders.length <= maxToShow) {
       // For small numbers, show all placeholders
       for (const placeholder of placeholders) {
-        console.log(chalk.yellow(`    {{${placeholder}}}`));
+        console.log(c.yellow(`    {{${placeholder}}}`));
       }
     } else {
       // For larger numbers, show a sampling: first 3 and last 2
@@ -312,28 +305,28 @@ const displayPlaceholderWarnings = (filesWithPlaceholders: ApplyResult['filesWit
       const lastPlaceholders = placeholders.slice(-lastCount);
 
       for (const placeholder of firstPlaceholders) {
-        console.log(chalk.yellow(`    {{${placeholder}}}`));
+        console.log(c.yellow(`    {{${placeholder}}}`));
       }
 
       // Indicate that some placeholders are omitted in the middle
-      console.log(chalk.dim('    ...'));
+      console.log(c.dim('    ...'));
 
       for (const placeholder of lastPlaceholders) {
-        console.log(chalk.yellow(`    {{${placeholder}}}`));
+        console.log(c.yellow(`    {{${placeholder}}}`));
       }
 
       const shownCount = firstPlaceholders.length + lastPlaceholders.length;
       const hiddenCount = placeholders.length - shownCount;
       if (hiddenCount > 0) {
-        console.log(chalk.dim(`    ... and ${hiddenCount} more not shown`));
+        console.log(c.dim(`    ... and ${hiddenCount} more not shown`));
       }
     }
   }
 
   console.log();
-  console.log(chalk.dim('  These placeholders need to be replaced with actual values.'));
-  console.log(chalk.dim('  Use `tuck secrets set <NAME> <value>` to configure secrets,'));
-  console.log(chalk.dim('  then re-apply to populate them.'));
+  console.log(c.dim('  These placeholders need to be replaced with actual values.'));
+  console.log(c.dim('  Use `tuck secrets set <NAME> <value>` to configure secrets,'));
+  console.log(c.dim('  then re-apply to populate them.'));
 };
 
 /**
@@ -404,11 +397,11 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
 
     for (const [category, categoryFiles] of Object.entries(byCategory)) {
       const categoryConfig = CATEGORIES[category] || { icon: '📄' };
-      console.log(chalk.bold(`  ${categoryConfig.icon} ${category}`));
+      console.log(c.bold(`  ${categoryConfig.icon} ${category}`));
       for (const file of categoryFiles) {
         const exists = await pathExists(file.destination);
-        const status = exists ? chalk.yellow('(will update)') : chalk.green('(new)');
-        console.log(chalk.dim(`    ${collapsePath(file.destination)} ${status}`));
+        const status = exists ? c.yellow('(will update)') : c.green('(new)');
+        console.log(c.dim(`    ${collapsePath(file.destination)} ${status}`));
       }
     }
     console.log();

@@ -1,6 +1,5 @@
 import { Command } from 'commander';
-import chalk from 'chalk';
-import { prompts, logger } from '../ui/index.js';
+import { prompts, logger, colors as c } from '../ui/index.js';
 import { collapsePath } from '../lib/paths.js';
 import {
   listSnapshots,
@@ -43,11 +42,11 @@ const showSnapshotList = async (): Promise<void> => {
     const date = formatSnapshotDate(snapshot.id);
     const fileCount = snapshot.files.filter((f) => f.existed).length;
 
-    console.log(chalk.cyan(`  ${snapshot.id}`));
-    console.log(chalk.dim(`    Date:    ${date}`));
-    console.log(chalk.dim(`    Reason:  ${snapshot.reason}`));
-    console.log(chalk.dim(`    Files:   ${fileCount} file(s) backed up`));
-    console.log(chalk.dim(`    Machine: ${snapshot.machine}`));
+    console.log(c.cyan(`  ${snapshot.id}`));
+    console.log(c.dim(`    Date:    ${date}`));
+    console.log(c.dim(`    Reason:  ${snapshot.reason}`));
+    console.log(c.dim(`    Files:   ${fileCount} file(s) backed up`));
+    console.log(c.dim(`    Machine: ${snapshot.machine}`));
     console.log();
   }
 
@@ -63,19 +62,19 @@ const showSnapshotList = async (): Promise<void> => {
  */
 const showSnapshotDetails = (snapshot: Snapshot): void => {
   console.log();
-  console.log(chalk.bold('Snapshot Details:'));
-  console.log(chalk.dim(`  ID:      ${snapshot.id}`));
-  console.log(chalk.dim(`  Date:    ${formatSnapshotDate(snapshot.id)}`));
-  console.log(chalk.dim(`  Reason:  ${snapshot.reason}`));
-  console.log(chalk.dim(`  Machine: ${snapshot.machine}`));
+  console.log(c.bold('Snapshot Details:'));
+  console.log(c.dim(`  ID:      ${snapshot.id}`));
+  console.log(c.dim(`  Date:    ${formatSnapshotDate(snapshot.id)}`));
+  console.log(c.dim(`  Reason:  ${snapshot.reason}`));
+  console.log(c.dim(`  Machine: ${snapshot.machine}`));
   console.log();
-  console.log(chalk.bold('Files in snapshot:'));
+  console.log(c.bold('Files in snapshot:'));
 
   for (const file of snapshot.files) {
     if (file.existed) {
-      console.log(chalk.dim(`  ok ${collapsePath(file.originalPath)}`));
+      console.log(c.dim(`  ok ${collapsePath(file.originalPath)}`));
     } else {
-      console.log(chalk.dim(`  - ${collapsePath(file.originalPath)} (did not exist)`));
+      console.log(c.dim(`  - ${collapsePath(file.originalPath)} (did not exist)`));
     }
   }
   console.log();
@@ -84,10 +83,7 @@ const showSnapshotDetails = (snapshot: Snapshot): void => {
 /**
  * Restore from a specific snapshot
  */
-const restoreFromSnapshot = async (
-  snapshotId: string,
-  options: UndoOptions
-): Promise<void> => {
+const restoreFromSnapshot = async (snapshotId: string, options: UndoOptions): Promise<void> => {
   const snapshot = await getSnapshot(snapshotId);
 
   if (!snapshot) {
@@ -220,10 +216,7 @@ const runInteractiveUndo = async (): Promise<void> => {
     hint: `${s.files.filter((f) => f.existed).length} files`,
   }));
 
-  const selectedId = await prompts.select(
-    'Select a snapshot to restore:',
-    snapshotOptions
-  );
+  const selectedId = await prompts.select('Select a snapshot to restore:', snapshotOptions);
 
   const snapshot = await getSnapshot(selectedId);
   if (!snapshot) {
@@ -236,11 +229,11 @@ const runInteractiveUndo = async (): Promise<void> => {
   prompts.log.info('Files in this snapshot:');
   for (const file of snapshot.files.slice(0, 10)) {
     if (file.existed) {
-      console.log(chalk.dim(`  ${collapsePath(file.originalPath)}`));
+      console.log(c.dim(`  ${collapsePath(file.originalPath)}`));
     }
   }
   if (snapshot.files.length > 10) {
-    console.log(chalk.dim(`  ... and ${snapshot.files.length - 10} more`));
+    console.log(c.dim(`  ... and ${snapshot.files.length - 10} more`));
   }
   console.log();
 
