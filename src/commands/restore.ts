@@ -1,6 +1,6 @@
 import { Command } from 'commander';
-import chalk from 'chalk';
 import { join } from 'path';
+import { colors as c } from '../ui/theme.js';
 import { chmod, stat } from 'fs/promises';
 import { prompts, logger, withSpinner } from '../ui/index.js';
 import { getTuckDir, expandPath, pathExists, collapsePath } from '../lib/paths.js';
@@ -200,7 +200,7 @@ const runInteractiveRestore = async (tuckDir: string): Promise<void> => {
   // Let user select files to restore
   const fileOptions = files.map((file) => {
     const categoryConfig = CATEGORIES[file.category] || { icon: '📄' };
-    const status = file.existsAtTarget ? chalk.yellow('(exists, will backup)') : '';
+    const status = file.existsAtTarget ? c.yellow('(exists, will backup)') : '';
 
     return {
       value: file.id,
@@ -209,7 +209,9 @@ const runInteractiveRestore = async (tuckDir: string): Promise<void> => {
     };
   });
 
-  const selectedIds = await prompts.multiselect('Select files to restore:', fileOptions, { required: true });
+  const selectedIds = await prompts.multiselect('Select files to restore:', fileOptions, {
+    required: true,
+  });
 
   if (selectedIds.length === 0) {
     prompts.cancel('No files selected');
@@ -225,7 +227,7 @@ const runInteractiveRestore = async (tuckDir: string): Promise<void> => {
     prompts.log.warning(
       `${existingFiles.length} file${existingFiles.length > 1 ? 's' : ''} will be backed up:`
     );
-    existingFiles.forEach((f) => console.log(chalk.dim(`  ${f.source}`)));
+    existingFiles.forEach((f) => console.log(c.dim(`  ${f.source}`)));
     console.log();
   }
 

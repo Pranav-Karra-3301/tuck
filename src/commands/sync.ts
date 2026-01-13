@@ -1,11 +1,23 @@
 import { Command } from 'commander';
-import chalk from 'chalk';
 import { join } from 'path';
-import { prompts, logger, withSpinner } from '../ui/index.js';
+import { prompts, logger, withSpinner, colors as c } from '../ui/index.js';
 import { getTuckDir, expandPath, pathExists, collapsePath } from '../lib/paths.js';
-import { loadManifest, getAllTrackedFiles, updateFileInManifest, removeFileFromManifest, getTrackedFileBySource } from '../lib/manifest.js';
+import {
+  loadManifest,
+  getAllTrackedFiles,
+  updateFileInManifest,
+  removeFileFromManifest,
+  getTrackedFileBySource,
+} from '../lib/manifest.js';
 import { stageAll, commit, getStatus, push, hasRemote, fetch, pull } from '../lib/git.js';
-import { copyFileOrDir, getFileChecksum, deleteFileOrDir, checkFileSizeThreshold, formatFileSize, SIZE_BLOCK_THRESHOLD } from '../lib/files.js';
+import {
+  copyFileOrDir,
+  getFileChecksum,
+  deleteFileOrDir,
+  checkFileSizeThreshold,
+  formatFileSize,
+  SIZE_BLOCK_THRESHOLD,
+} from '../lib/files.js';
 import { addToTuckignore, loadTuckignore, isIgnored } from '../lib/tuckignore.js';
 import { runPreSyncHook, runPostSyncHook, type HookOptions } from '../lib/hooks.js';
 import { NotInitializedError, SecretsDetectedError } from '../errors.js';
@@ -138,12 +150,12 @@ const generateCommitMessage = (result: SyncResult): string => {
 
   // List changes
   const changes: string[] = [];
-  
+
   if (result.modified.length > 0) {
     if (result.modified.length <= 5) {
       // List individual files if 5 or fewer
       changes.push('Modified:');
-      result.modified.forEach(file => {
+      result.modified.forEach((file) => {
         changes.push(`• ${file}`);
       });
     } else {
@@ -154,11 +166,13 @@ const generateCommitMessage = (result: SyncResult): string => {
   if (result.deleted.length > 0) {
     if (result.deleted.length <= 5) {
       changes.push(result.modified.length > 0 ? '\nDeleted:' : 'Deleted:');
-      result.deleted.forEach(file => {
+      result.deleted.forEach((file) => {
         changes.push(`• ${file}`);
       });
     } else {
-      changes.push(`${result.modified.length > 0 ? '\n' : ''}Deleted: ${result.deleted.length} files`);
+      changes.push(
+        `${result.modified.length > 0 ? '\n' : ''}Deleted: ${result.deleted.length} files`
+      );
     }
   }
 
@@ -169,7 +183,7 @@ const generateCommitMessage = (result: SyncResult): string => {
   // Footer with branding and metadata
   message += `\n---\n`;
   message += `📦 Managed by tuck (tuck.sh) • ${date}`;
-  
+
   if (totalCount > 0) {
     message += ` • ${totalCount} file${totalCount > 1 ? 's' : ''} changed`;
   }
@@ -276,8 +290,8 @@ const scanAndHandleSecrets = async (
 
   // Get paths of modified files (not deleted)
   const modifiedPaths = changes
-    .filter(c => c.status === 'modified')
-    .map(c => expandPath(c.source));
+    .filter((c) => c.status === 'modified')
+    .map((c) => expandPath(c.source));
 
   if (modifiedPaths.length === 0) {
     return true;
@@ -311,7 +325,7 @@ const scanAndHandleSecrets = async (
   if (action === 'ignore') {
     // Add files with secrets to .tuckignore
     for (const result of summary.results) {
-      const sourcePath = changes.find(c => expandPath(c.source) === result.path)?.source;
+      const sourcePath = changes.find((c) => expandPath(c.source) === result.path)?.source;
       if (sourcePath) {
         await addToTuckignore(tuckDir, sourcePath);
         logger.dim(`Added ${collapsePath(result.path)} to .tuckignore`);
@@ -319,8 +333,12 @@ const scanAndHandleSecrets = async (
     }
     // Filter out ignored files from changes list
     // Note: This intentionally mutates the 'changes' array in place so callers see the filtered list
-    const filesToRemove = new Set(summary.results.map(r => r.path));
-    changes.splice(0, changes.length, ...changes.filter(c => !filesToRemove.has(expandPath(c.source))));
+    const filesToRemove = new Set(summary.results.map((r) => r.path));
+    changes.splice(
+      0,
+      changes.length,
+      ...changes.filter((c) => !filesToRemove.has(expandPath(c.source)))
+    );
 
     if (changes.length === 0) {
       prompts.log.info('No remaining changes to sync');
@@ -347,7 +365,9 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
       pullSpinner.stop(`Could not pull: ${pullResult.error}`);
       prompts.log.warning('Continuing with local changes...');
     } else if (pullResult.pulled) {
-      pullSpinner.stop(`Pulled ${pullResult.behind} commit${pullResult.behind > 1 ? 's' : ''} from remote`);
+      pullSpinner.stop(
+        `Pulled ${pullResult.behind} commit${pullResult.behind > 1 ? 's' : ''} from remote`
+      );
     } else {
       pullSpinner.stop('Up to date with remote');
     }
@@ -406,12 +426,12 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
   // ========== STEP 5: Show changes to tracked files ==========
   if (changes.length > 0) {
     console.log();
-    console.log(chalk.bold('Changes to tracked files:'));
+    console.log(c.bold('Changes to tracked files:'));
     for (const change of changes) {
       if (change.status === 'modified') {
-        console.log(chalk.yellow(`  ~ ${change.path}`));
+        console.log(c.yellow(`  ~ ${change.path}`));
       } else if (change.status === 'deleted') {
-        console.log(chalk.red(`  - ${change.path}`));
+        console.log(c.red(`  - ${change.path}`));
       }
     }
   }
@@ -421,7 +441,7 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
 
   if (newFiles.length > 0) {
     console.log();
-    console.log(chalk.bold(`New dotfiles found (${newFiles.length}):`));
+    console.log(c.bold(`New dotfiles found (${newFiles.length}):`));
 
     // Group by category for display
     const grouped: Record<string, DetectedFile[]> = {};
@@ -432,28 +452,33 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
 
     for (const [category, files] of Object.entries(grouped)) {
       const categoryInfo = DETECTION_CATEGORIES[category] || { icon: '-', name: category };
-      console.log(chalk.cyan(`  ${categoryInfo.icon} ${categoryInfo.name}: ${files.length} file${files.length > 1 ? 's' : ''}`));
+      console.log(
+        c.cyan(
+          `  ${categoryInfo.icon} ${categoryInfo.name}: ${files.length} file${files.length > 1 ? 's' : ''}`
+        )
+      );
     }
 
     console.log();
-    const trackNewFiles = await prompts.confirm('Would you like to track some of these new files?', true);
+    const trackNewFiles = await prompts.confirm(
+      'Would you like to track some of these new files?',
+      true
+    );
 
     if (trackNewFiles) {
       // Create multiselect options (pre-select non-sensitive files)
       const selectOptions = newFiles.map((f) => ({
         value: f.path,
-        label: `${collapsePath(expandPath(f.path))}${f.sensitive ? chalk.yellow(' [sensitive]') : ''}`,
+        label: `${collapsePath(expandPath(f.path))}${f.sensitive ? c.yellow(' [sensitive]') : ''}`,
         hint: f.category,
       }));
 
       const nonSensitiveFiles = newFiles.filter((f) => !f.sensitive);
       const initialValues = nonSensitiveFiles.map((f) => f.path);
 
-      const selected = await prompts.multiselect(
-        'Select files to track:',
-        selectOptions,
-        { initialValues }
-      );
+      const selected = await prompts.multiselect('Select files to track:', selectOptions, {
+        initialValues,
+      });
 
       filesToTrack = selected.map((path) => ({ path: path as string }));
     }
@@ -479,12 +504,12 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
 
   if (largeFiles.length > 0) {
     console.log();
-    console.log(chalk.yellow('Large files detected:'));
+    console.log(c.yellow('Large files detected:'));
     for (const file of largeFiles) {
-      console.log(chalk.yellow(`  ${file.path} (${file.size})`));
+      console.log(c.yellow(`  ${file.path} (${file.size})`));
     }
     console.log();
-    console.log(chalk.dim('GitHub has a 50MB warning and 100MB hard limit.'));
+    console.log(c.dim('GitHub has a 50MB warning and 100MB hard limit.'));
     console.log();
 
     const hasBlockers = largeFiles.some((f) => f.sizeBytes >= SIZE_BLOCK_THRESHOLD);
@@ -566,15 +591,24 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
       });
 
     console.log();
-    console.log(chalk.dim('Commit message:'));
-    console.log(chalk.cyan(message.split('\n').map((line) => `  ${line}`).join('\n')));
+    console.log(c.dim('Commit message:'));
+    console.log(
+      c.cyan(
+        message
+          .split('\n')
+          .map((line) => `  ${line}`)
+          .join('\n')
+      )
+    );
     console.log();
 
     result = await syncFiles(tuckDir, changes, { ...options, message });
   } else if (filesToTrack.length > 0) {
     // Only new files were added, commit them
     if (!options.noCommit) {
-      const message = options.message || `Add ${filesToTrack.length} new dotfile${filesToTrack.length > 1 ? 's' : ''}`;
+      const message =
+        options.message ||
+        `Add ${filesToTrack.length} new dotfile${filesToTrack.length > 1 ? 's' : ''}`;
       await stageAll(tuckDir);
       result.commitHash = await commit(tuckDir, message);
     }
@@ -642,7 +676,10 @@ export const runSync = async (options: SyncOptions = {}): Promise<void> => {
   await runInteractiveSync(tuckDir, options);
 };
 
-const runSyncCommand = async (messageArg: string | undefined, options: SyncOptions): Promise<void> => {
+const runSyncCommand = async (
+  messageArg: string | undefined,
+  options: SyncOptions
+): Promise<void> => {
   const tuckDir = getTuckDir();
 
   // Verify tuck is initialized
@@ -671,8 +708,8 @@ const runSyncCommand = async (messageArg: string | undefined, options: SyncOptio
     const scanningEnabled = await isSecretScanningEnabled(tuckDir);
     if (scanningEnabled) {
       const modifiedPaths = changes
-        .filter(c => c.status === 'modified')
-        .map(c => expandPath(c.source));
+        .filter((c) => c.status === 'modified')
+        .map((c) => expandPath(c.source));
 
       if (modifiedPaths.length > 0) {
         const summary = await scanForSecrets(modifiedPaths, tuckDir);
@@ -680,7 +717,7 @@ const runSyncCommand = async (messageArg: string | undefined, options: SyncOptio
           displayScanResults(summary);
           throw new SecretsDetectedError(
             summary.totalSecrets,
-            summary.results.map(r => collapsePath(r.path))
+            summary.results.map((r) => collapsePath(r.path))
           );
         }
       }
@@ -718,7 +755,9 @@ const runSyncCommand = async (messageArg: string | undefined, options: SyncOptio
 };
 
 export const syncCommand = new Command('sync')
-  .description('Sync all dotfile changes (pull, detect changes, scan for new files, track, commit, push)')
+  .description(
+    'Sync all dotfile changes (pull, detect changes, scan for new files, track, commit, push)'
+  )
   .argument('[message]', 'Commit message')
   .option('-m, --message <msg>', 'Commit message')
   // TODO: --all and --amend are planned for a future version

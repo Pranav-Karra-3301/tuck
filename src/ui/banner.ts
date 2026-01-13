@@ -1,90 +1,98 @@
-import chalk from 'chalk';
+/**
+ * Banner and box utilities for tuck CLI
+ * Provides ASCII art banner and styled boxes
+ */
+
 import boxen from 'boxen';
+import { colors as c, boxStyles, indent } from './theme.js';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ASCII Art Banner (only for init and help)
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const banner = (): void => {
   const art = `
  ████████╗██╗   ██╗ ██████╗██╗  ██╗
  ╚══██╔══╝██║   ██║██╔════╝██║ ██╔╝
-    ██║   ██║   ██║██║     █████╔╝
-    ██║   ██║   ██║██║     ██╔═██╗
+    ██║   ██║   ██║██║     █████╔╝ 
+    ██║   ██║   ██║██║     ██╔═██╗ 
     ██║   ╚██████╔╝╚██████╗██║  ██╗
     ╚═╝    ╚═════╝  ╚═════╝╚═╝  ╚═╝`;
 
-  console.log(chalk.cyan(art));
-  console.log(chalk.dim('    Modern Dotfiles Manager\n'));
+  console.log(c.brand(art));
+  console.log(c.muted('    Modern Dotfiles Manager\n'));
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Mini Banner (compact version for other contexts)
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const miniBanner = (): void => {
-  console.log(
-    boxen(chalk.cyan.bold('tuck') + chalk.dim(' · Modern Dotfiles Manager'), {
-      padding: { top: 0, bottom: 0, left: 1, right: 1 },
-      borderStyle: 'round',
-      borderColor: 'cyan',
-    })
-  );
+  console.log(boxen(c.brandBold('tuck') + c.muted(' · Modern Dotfiles Manager'), boxStyles.header));
   console.log();
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Help Text
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const customHelp = (version: string): string => {
-  const title = boxen(chalk.cyan.bold('tuck') + chalk.dim(` v${version}`), {
-    padding: { top: 0, bottom: 0, left: 1, right: 1 },
-    borderStyle: 'round',
-    borderColor: 'cyan',
-  });
+  const title = boxen(c.brandBold('tuck') + c.muted(` v${version}`), boxStyles.header);
 
   const quickStart = `
-${chalk.bold.cyan('Quick Start:')}
-  ${chalk.cyan('tuck init')}          Set up tuck (auto-creates GitHub repo)
-  ${chalk.cyan('tuck add <file>')}    Start tracking a dotfile
-  ${chalk.cyan('tuck sync')}          Commit your changes
-  ${chalk.cyan('tuck push')}          Push to GitHub
+${c.brandBold('Quick Start:')}
+${indent()}${c.brand('tuck init')}          Set up tuck
+${indent()}${c.brand('tuck add <file>')}    Track a dotfile
+${indent()}${c.brand('tuck sync')}          Commit changes
+${indent()}${c.brand('tuck push')}          Push to remote
 
-${chalk.bold.cyan('On a New Machine:')}
-  ${chalk.cyan('tuck apply <user>')}  Apply dotfiles from GitHub
+${c.brandBold('New Machine:')}
+${indent()}${c.brand('tuck apply <user>')}  Apply dotfiles from GitHub
 `;
 
   const commands = `
-${chalk.bold.cyan('Commands:')}
-  ${chalk.cyan('Getting Started')}
-    init              Initialize tuck repository
-    scan              Auto-detect and select dotfiles to track
-    apply <source>    Apply dotfiles from a repository
+${c.brandBold('Commands:')}
+${indent()}${c.brand('Getting Started')}
+${indent()}${indent()}init              Initialize tuck
+${indent()}${indent()}scan              Detect dotfiles
+${indent()}${indent()}apply <source>    Apply from repo
 
-  ${chalk.cyan('Managing Files')}
-    add <paths...>    Track dotfile(s)
-    remove <paths...> Stop tracking dotfile(s)
-    list              List all tracked files
-    status            Show repository status
+${indent()}${c.brand('Managing Files')}
+${indent()}${indent()}add <paths...>    Track files
+${indent()}${indent()}remove <paths...> Untrack files
+${indent()}${indent()}list              List tracked
+${indent()}${indent()}status            Show status
 
-  ${chalk.cyan('Syncing')}
-    sync              Sync changes to repository
-    push              Push to remote
-    pull              Pull from remote
-    diff              Show pending changes
+${indent()}${c.brand('Syncing')}
+${indent()}${indent()}sync              Commit changes
+${indent()}${indent()}push              Push to remote
+${indent()}${indent()}pull              Pull from remote
+${indent()}${indent()}diff              Show changes
 
-  ${chalk.cyan('Restoring')}
-    restore           Restore dotfiles to system
-    undo              Undo last apply (Time Machine backup)
+${indent()}${c.brand('Restoring')}
+${indent()}${indent()}restore           Restore files
+${indent()}${indent()}undo              Undo last apply
 
-  ${chalk.cyan('Configuration')}
-    config            Manage tuck configuration
+${indent()}${c.brand('Config')}
+${indent()}${indent()}config            Manage settings
 `;
 
   const footer = `
-${chalk.dim('Run')} ${chalk.cyan('tuck <command> --help')} ${chalk.dim('for detailed command info')}
-${chalk.dim('Documentation:')} ${chalk.cyan('https://github.com/Pranav-Karra-3301/tuck')}
+${c.muted('Run')} ${c.brand('tuck <command> --help')} ${c.muted('for details')}
+${c.muted('Docs:')} ${c.brand('https://github.com/Pranav-Karra-3301/tuck')}
 `;
 
   return `${title}\n${quickStart}${commands}${footer}`;
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Styled Boxes
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const welcomeBox = (message: string, title?: string): void => {
   console.log(
     boxen(message, {
-      padding: 1,
-      margin: 1,
-      borderStyle: 'round',
-      borderColor: 'cyan',
+      ...boxStyles.info,
       title,
       titleAlignment: 'center',
     })
@@ -94,10 +102,7 @@ export const welcomeBox = (message: string, title?: string): void => {
 export const successBox = (message: string, title?: string): void => {
   console.log(
     boxen(message, {
-      padding: 1,
-      margin: { top: 1, bottom: 1, left: 0, right: 0 },
-      borderStyle: 'round',
-      borderColor: 'green',
+      ...boxStyles.success,
       title: title || 'Success',
       titleAlignment: 'center',
     })
@@ -107,10 +112,7 @@ export const successBox = (message: string, title?: string): void => {
 export const errorBox = (message: string, title?: string): void => {
   console.log(
     boxen(message, {
-      padding: 1,
-      margin: { top: 1, bottom: 1, left: 0, right: 0 },
-      borderStyle: 'round',
-      borderColor: 'red',
+      ...boxStyles.error,
       title: title || 'Error',
       titleAlignment: 'center',
     })
@@ -120,18 +122,19 @@ export const errorBox = (message: string, title?: string): void => {
 export const infoBox = (message: string, title?: string): void => {
   console.log(
     boxen(message, {
-      padding: 1,
-      margin: { top: 1, bottom: 1, left: 0, right: 0 },
-      borderStyle: 'round',
-      borderColor: 'blue',
+      ...boxStyles.info,
       title,
       titleAlignment: 'center',
     })
   );
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Next Steps Box
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const nextSteps = (steps: string[]): void => {
-  const content = steps.map((step, i) => `${chalk.cyan(`${i + 1}.`)} ${step}`).join('\n');
+  const content = steps.map((step, i) => `${c.brand(`${i + 1}.`)} ${step}`).join('\n');
 
   console.log(
     boxen(content, {

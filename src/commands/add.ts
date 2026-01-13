@@ -1,7 +1,6 @@
 import { Command } from 'commander';
 import { basename } from 'path';
-import chalk from 'chalk';
-import { prompts, logger } from '../ui/index.js';
+import { prompts, logger, colors as c } from '../ui/index.js';
 import {
   getTuckDir,
   expandPath,
@@ -12,12 +11,14 @@ import {
   sanitizeFilename,
   getDestinationPath,
 } from '../lib/paths.js';
-import {
-  isFileTracked,
-  loadManifest,
-} from '../lib/manifest.js';
+import { isFileTracked, loadManifest } from '../lib/manifest.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
-import { NotInitializedError, FileNotFoundError, FileAlreadyTrackedError, SecretsDetectedError } from '../errors.js';
+import {
+  NotInitializedError,
+  FileNotFoundError,
+  FileAlreadyTrackedError,
+  SecretsDetectedError,
+} from '../errors.js';
 import { CATEGORIES } from '../constants.js';
 import type { AddOptions } from '../types.js';
 import { getDirectoryFileCount, checkFileSizeThreshold, formatFileSize } from '../lib/files.js';
@@ -38,10 +39,10 @@ const PRIVATE_KEY_PATTERNS = [
   /^id_dsa$/,
   /^id_ecdsa$/,
   /^id_ed25519$/,
-  /^id_.*$/,  // Any id_ file without .pub
+  /^id_.*$/, // Any id_ file without .pub
   /\.pem$/,
   /\.key$/,
-  /^.*_key$/,  // aws_key, github_key, etc.
+  /^.*_key$/, // aws_key, github_key, etc.
 ];
 
 // Files that should trigger a warning
@@ -49,7 +50,7 @@ const SENSITIVE_FILE_PATTERNS = [
   /^\.netrc$/,
   /^\.aws\/credentials$/,
   /^\.docker\/config\.json$/,
-  /^\.npmrc$/,      // May contain tokens
+  /^\.npmrc$/, // May contain tokens
   /^\.pypirc$/,
   /^\.kube\/config$/,
   /^\.ssh\/config$/,
@@ -125,8 +126,8 @@ const validateAndPrepareFiles = async (
     if (isPrivateKey(collapsedPath)) {
       throw new Error(
         `Cannot track private key: ${path}\n` +
-        `Private keys should NEVER be committed to a repository.\n` +
-        `If you need to backup SSH keys, use a secure password manager.`
+          `Private keys should NEVER be committed to a repository.\n` +
+          `If you need to backup SSH keys, use a secure password manager.`
       );
     }
 
@@ -151,7 +152,7 @@ const validateAndPrepareFiles = async (
       const sizeCheck = await checkFileSizeThreshold(expandedPath);
       logger.info(
         `Skipping binary executable: ${path}${sizeCheck.size > 0 ? ` (${formatFileSize(sizeCheck.size)})` : ''}` +
-        ` - Add to .tuckignore to customize`
+          ` - Add to .tuckignore to customize`
       );
       continue;
     }
@@ -164,15 +165,12 @@ const validateAndPrepareFiles = async (
       logger.warning(
         `File ${path} is ${formatFileSize(sizeCheck.size)} (exceeds GitHub's 100MB limit)`
       );
-      
-      const action = await prompts.select(
-        'How would you like to proceed?',
-        [
-          { value: 'ignore', label: 'Add to .tuckignore and skip' },
-          { value: 'cancel', label: 'Cancel operation' },
-        ]
-      );
-      
+
+      const action = await prompts.select('How would you like to proceed?', [
+        { value: 'ignore', label: 'Add to .tuckignore and skip' },
+        { value: 'cancel', label: 'Cancel operation' },
+      ]);
+
       if (action === 'ignore') {
         await addToTuckignore(tuckDir, collapsedPath);
         logger.success(`Added ${path} to .tuckignore`);
@@ -186,18 +184,15 @@ const validateAndPrepareFiles = async (
       // 50-100MB: Warn and confirm
       logger.warning(
         `File ${path} is ${formatFileSize(sizeCheck.size)}. ` +
-        `GitHub recommends files under 50MB.`
+          `GitHub recommends files under 50MB.`
       );
-      
-      const action = await prompts.select(
-        'How would you like to proceed?',
-        [
-          { value: 'continue', label: 'Track it anyway' },
-          { value: 'ignore', label: 'Add to .tuckignore and skip' },
-          { value: 'cancel', label: 'Cancel operation' },
-        ]
-      );
-      
+
+      const action = await prompts.select('How would you like to proceed?', [
+        { value: 'continue', label: 'Track it anyway' },
+        { value: 'ignore', label: 'Add to .tuckignore and skip' },
+        { value: 'cancel', label: 'Cancel operation' },
+      ]);
+
       if (action === 'ignore') {
         await addToTuckignore(tuckDir, collapsedPath);
         logger.success(`Added ${path} to .tuckignore`);
@@ -244,7 +239,7 @@ const addFiles = async (
   options: AddOptions
 ): Promise<void> => {
   // Convert FileToAdd to FileToTrack
-  const filesToTrack: FileToTrack[] = filesToAdd.map(f => ({
+  const filesToTrack: FileToTrack[] = filesToAdd.map((f) => ({
     path: f.source,
     category: f.category,
   }));
@@ -266,24 +261,26 @@ const addFiles = async (
  */
 const displaySecretWarning = (summary: ScanSummary): void => {
   console.log();
-  console.log(chalk.bold.red(`  Security Warning: Found ${summary.totalSecrets} potential secret(s)`));
+  console.log(
+    c.error(c.bold(`  Security Warning: Found ${summary.totalSecrets} potential secret(s)`))
+  );
   console.log();
 
   for (const result of summary.results) {
-    console.log(`  ${chalk.cyan(result.collapsedPath)}`);
+    console.log(`  ${c.brand(result.collapsedPath)}`);
 
     for (const match of result.matches) {
       const severityColor =
         match.severity === 'critical'
-          ? chalk.red
+          ? c.error
           : match.severity === 'high'
-            ? chalk.yellow
+            ? c.warning
             : match.severity === 'medium'
-              ? chalk.blue
-              : chalk.dim;
+              ? c.info
+              : c.muted;
 
       console.log(
-        `    ${chalk.dim(`Line ${match.line}:`)} ${match.redactedValue} ${severityColor(`[${match.severity}]`)}`
+        `    ${c.muted(`Line ${match.line}:`)} ${match.redactedValue} ${severityColor(`[${match.severity}]`)}`
       );
     }
     console.log();
@@ -382,7 +379,7 @@ const handleSecretsDetected = async (
     case 'proceed': {
       // Double-confirm for dangerous action
       const confirmed = await prompts.confirm(
-        chalk.red('Are you SURE you want to track files containing secrets?'),
+        c.error('Are you SURE you want to track files containing secrets?'),
         false
       );
 
@@ -506,7 +503,10 @@ const runInteractiveAdd = async (tuckDir: string): Promise<void> => {
  * Note: Throws SecretsDetectedError if secrets are found (unless --force is used)
  * Callers should catch this error and handle it appropriately
  */
-export const addFilesFromPaths = async (paths: string[], options: AddOptions = {}): Promise<number> => {
+export const addFilesFromPaths = async (
+  paths: string[],
+  options: AddOptions = {}
+): Promise<number> => {
   const tuckDir = getTuckDir();
 
   // Verify tuck is initialized
@@ -535,8 +535,8 @@ export const addFilesFromPaths = async (paths: string[], options: AddOptions = {
       if (summary.filesWithSecrets > 0) {
         // Throw error to prevent silently adding files with secrets
         const filesWithSecrets = summary.results
-          .filter(r => r.hasSecrets)
-          .map(r => collapsePath(r.path));
+          .filter((r) => r.hasSecrets)
+          .map((r) => collapsePath(r.path));
         throw new SecretsDetectedError(summary.totalSecrets, filesWithSecrets);
       }
     }

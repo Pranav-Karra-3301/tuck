@@ -10,8 +10,7 @@
  */
 
 import { Command } from 'commander';
-import chalk from 'chalk';
-import { prompts, logger } from '../ui/index.js';
+import { prompts, logger, colors as c } from '../ui/index.js';
 import { getTuckDir, expandPath, pathExists } from '../lib/paths.js';
 import { loadManifest } from '../lib/manifest.js';
 import {
@@ -47,25 +46,25 @@ const runSecretsList = async (): Promise<void> => {
     logger.dim(`Secrets file: ${getSecretsPath(tuckDir)}`);
     console.log();
     logger.dim('Secrets are stored when you choose to replace detected secrets with placeholders.');
-    logger.dim("You can also manually add secrets with: tuck secrets set <NAME> <value>");
+    logger.dim('You can also manually add secrets with: tuck secrets set <NAME> <value>');
     return;
   }
 
   console.log();
-  console.log(chalk.bold.cyan(`Stored Secrets (${secrets.length})`));
-  console.log(chalk.dim('─'.repeat(50)));
+  console.log(c.bold.cyan(`Stored Secrets (${secrets.length})`));
+  console.log(c.dim('─'.repeat(50)));
   console.log();
 
   for (const secret of secrets) {
-    console.log(`  ${chalk.green(secret.name)}`);
-    console.log(`    ${chalk.dim('Placeholder:')} ${chalk.cyan(secret.placeholder)}`);
+    console.log(`  ${c.green(secret.name)}`);
+    console.log(`    ${c.dim('Placeholder:')} ${c.cyan(secret.placeholder)}`);
     if (secret.description) {
-      console.log(`    ${chalk.dim('Type:')} ${secret.description}`);
+      console.log(`    ${c.dim('Type:')} ${secret.description}`);
     }
     if (secret.source) {
-      console.log(`    ${chalk.dim('Source:')} ${secret.source}`);
+      console.log(`    ${c.dim('Source:')} ${secret.source}`);
     }
-    console.log(`    ${chalk.dim('Added:')} ${new Date(secret.addedAt).toLocaleDateString()}`);
+    console.log(`    ${c.dim('Added:')} ${new Date(secret.addedAt).toLocaleDateString()}`);
     console.log();
   }
 
@@ -183,7 +182,7 @@ const runScanHistory = async (options: { since?: string; limit?: string }): Prom
 
   try {
     // Get commit log using existing function
-    const logEntries = await getLog(tuckDir, { 
+    const logEntries = await getLog(tuckDir, {
       maxCount: limit,
       since: options.since,
     });
@@ -251,8 +250,8 @@ const runScanHistory = async (options: { since?: string; limit?: string }): Prom
         logger.warning(
           `Skipping commit ${entry.hash.slice(
             0,
-            8,
-          )}: unable to diff against parent (possibly initial/root commit). ${errorMsg}`,
+            8
+          )}: unable to diff against parent (possibly initial/root commit). ${errorMsg}`
         );
         continue;
       }
@@ -269,26 +268,27 @@ const runScanHistory = async (options: { since?: string; limit?: string }): Prom
 
     // Display results
     console.log();
-    console.log(chalk.bold.red(`Found potential secrets in ${results.length} commits`));
-    console.log(chalk.dim('─'.repeat(60)));
+    console.log(c.bold.red(`Found potential secrets in ${results.length} commits`));
+    console.log(c.dim('─'.repeat(60)));
     console.log();
 
     for (const result of results) {
-      console.log(chalk.yellow(`Commit: ${result.commit}`));
-      console.log(chalk.dim(`  Author: ${result.author}`));
-      console.log(chalk.dim(`  Date: ${result.date}`));
-      console.log(chalk.dim(`  Message: ${result.message}`));
+      console.log(c.yellow(`Commit: ${result.commit}`));
+      console.log(c.dim(`  Author: ${result.author}`));
+      console.log(c.dim(`  Date: ${result.date}`));
+      console.log(c.dim(`  Message: ${result.message}`));
       console.log();
 
       for (const secret of result.secrets) {
-        const severityColor = secret.severity === 'critical' ? chalk.red : secret.severity === 'high' ? chalk.yellow : chalk.dim;
+        const severityColor =
+          secret.severity === 'critical' ? c.red : secret.severity === 'high' ? c.yellow : c.dim;
         console.log(`    ${severityColor(`[${secret.severity}]`)} ${secret.pattern}`);
-        console.log(chalk.dim(`      Value: ${secret.redactedValue}`));
+        console.log(c.dim(`      Value: ${secret.redactedValue}`));
       }
       console.log();
     }
 
-    console.log(chalk.dim('─'.repeat(60)));
+    console.log(c.dim('─'.repeat(60)));
     console.log();
     logger.warning('If these secrets are still valid, rotate them immediately!');
     console.log();
@@ -296,7 +296,7 @@ const runScanHistory = async (options: { since?: string; limit?: string }): Prom
     logger.dim('  - git filter-branch');
     logger.dim('  - BFG Repo-Cleaner (https://rtyley.github.io/bfg-repo-cleaner/)');
 
-    prompts.outro(chalk.red(`${results.length} commits with potential secrets`));
+    prompts.outro(c.red(`${results.length} commits with potential secrets`));
   } catch (error) {
     spinner.stop('Scan failed');
     throw error;
@@ -366,35 +366,47 @@ const runScanFiles = async (paths: string[]): Promise<void> => {
  */
 export const displayScanResults = (summary: ScanSummary): void => {
   console.log();
-  console.log(chalk.bold.red(`Found ${summary.totalSecrets} potential secret(s) in ${summary.filesWithSecrets} file(s)`));
-  console.log(chalk.dim('─'.repeat(60)));
+  console.log(
+    c.bold.red(
+      `Found ${summary.totalSecrets} potential secret(s) in ${summary.filesWithSecrets} file(s)`
+    )
+  );
+  console.log(c.dim('─'.repeat(60)));
   console.log();
 
   // Summary by severity
   if (summary.bySeverity.critical > 0) {
-    console.log(chalk.red(`  Critical: ${summary.bySeverity.critical}`));
+    console.log(c.red(`  Critical: ${summary.bySeverity.critical}`));
   }
   if (summary.bySeverity.high > 0) {
-    console.log(chalk.yellow(`  High: ${summary.bySeverity.high}`));
+    console.log(c.yellow(`  High: ${summary.bySeverity.high}`));
   }
   if (summary.bySeverity.medium > 0) {
-    console.log(chalk.blue(`  Medium: ${summary.bySeverity.medium}`));
+    console.log(c.blue(`  Medium: ${summary.bySeverity.medium}`));
   }
   if (summary.bySeverity.low > 0) {
-    console.log(chalk.dim(`  Low: ${summary.bySeverity.low}`));
+    console.log(c.dim(`  Low: ${summary.bySeverity.low}`));
   }
   console.log();
 
   // Details by file
   for (const result of summary.results) {
-    console.log(chalk.cyan(result.collapsedPath));
+    console.log(c.cyan(result.collapsedPath));
 
     for (const match of result.matches) {
       const severityColor =
-        match.severity === 'critical' ? chalk.red : match.severity === 'high' ? chalk.yellow : match.severity === 'medium' ? chalk.blue : chalk.dim;
+        match.severity === 'critical'
+          ? c.red
+          : match.severity === 'high'
+            ? c.yellow
+            : match.severity === 'medium'
+              ? c.blue
+              : c.dim;
 
-      console.log(`  ${chalk.dim(`Line ${match.line}:`)} ${severityColor(`[${match.severity}]`)} ${match.patternName}`);
-      console.log(chalk.dim(`    ${match.context}`));
+      console.log(
+        `  ${c.dim(`Line ${match.line}:`)} ${severityColor(`[${match.severity}]`)} ${match.patternName}`
+      );
+      console.log(c.dim(`    ${match.context}`));
     }
     console.log();
   }
@@ -427,11 +439,7 @@ export const secretsCommand = new Command('secrets')
       .argument('<name>', 'Secret name to remove')
       .action(runSecretsUnset)
   )
-  .addCommand(
-    new Command('path')
-      .description('Show path to secrets file')
-      .action(runSecretsPath)
-  )
+  .addCommand(new Command('path').description('Show path to secrets file').action(runSecretsPath))
   .addCommand(
     new Command('scan')
       .description('Scan files for secrets')

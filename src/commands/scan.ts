@@ -1,13 +1,8 @@
 import { Command } from 'commander';
-import chalk from 'chalk';
-import { prompts, logger, banner } from '../ui/index.js';
+import { prompts, logger, banner, colors as c } from '../ui/index.js';
 import { getTuckDir, collapsePath, expandPath } from '../lib/paths.js';
 import { loadManifest, getTrackedFileBySource } from '../lib/manifest.js';
-import {
-  detectDotfiles,
-  DETECTION_CATEGORIES,
-  DetectedFile,
-} from '../lib/detect.js';
+import { detectDotfiles, DETECTION_CATEGORIES, DetectedFile } from '../lib/detect.js';
 import { NotInitializedError } from '../errors.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
 import { shouldExcludeFromBin } from '../lib/binary.js';
@@ -28,9 +23,7 @@ interface SelectableFile extends DetectedFile {
 /**
  * Group selectable files by category
  */
-const groupSelectableByCategory = (
-  files: SelectableFile[]
-): Record<string, SelectableFile[]> => {
+const groupSelectableByCategory = (files: SelectableFile[]): Record<string, SelectableFile[]> => {
   const grouped: Record<string, SelectableFile[]> = {};
 
   for (const file of files) {
@@ -46,10 +39,7 @@ const groupSelectableByCategory = (
 /**
  * Display detected files grouped by category
  */
-const displayGroupedFiles = (
-  files: SelectableFile[],
-  showAll: boolean
-): void => {
+const displayGroupedFiles = (files: SelectableFile[], showAll: boolean): void => {
   const grouped = groupSelectableByCategory(files);
   const categories = Object.keys(grouped).sort((a, b) => {
     // Sort by category order in DETECTION_CATEGORIES
@@ -65,22 +55,22 @@ const displayGroupedFiles = (
 
     console.log();
     console.log(
-      chalk.bold(`${config.icon} ${config.name}`) +
-        chalk.dim(` (${newFiles.length} new, ${trackedFiles.length} tracked)`)
+      c.bold(`${config.icon} ${config.name}`) +
+        c.dim(` (${newFiles.length} new, ${trackedFiles.length} tracked)`)
     );
-    console.log(chalk.dim('─'.repeat(50)));
+    console.log(c.dim('─'.repeat(50)));
 
     for (const file of categoryFiles) {
       if (!showAll && file.alreadyTracked) continue;
 
-      const status = file.selected ? chalk.green('[x]') : chalk.dim('[ ]');
+      const status = file.selected ? c.green('[x]') : c.dim('[ ]');
       const name = file.path;
-      const tracked = file.alreadyTracked ? chalk.dim(' (tracked)') : '';
-      const sensitive = file.sensitive ? chalk.yellow(' [!]') : '';
-      const dir = file.isDirectory ? chalk.cyan(' [dir]') : '';
+      const tracked = file.alreadyTracked ? c.dim(' (tracked)') : '';
+      const sensitive = file.sensitive ? c.yellow(' [!]') : '';
+      const dir = file.isDirectory ? c.cyan(' [dir]') : '';
 
       console.log(`  ${status} ${name}${dir}${sensitive}${tracked}`);
-      console.log(chalk.dim(`      ${file.description}`));
+      console.log(c.dim(`      ${file.description}`));
     }
   }
 };
@@ -88,9 +78,7 @@ const displayGroupedFiles = (
 /**
  * Interactive file selection
  */
-const runInteractiveSelection = async (
-  files: SelectableFile[]
-): Promise<SelectableFile[]> => {
+const runInteractiveSelection = async (files: SelectableFile[]): Promise<SelectableFile[]> => {
   const newFiles = files.filter((f) => !f.alreadyTracked);
 
   if (newFiles.length === 0) {
@@ -107,18 +95,18 @@ const runInteractiveSelection = async (
     const config = DETECTION_CATEGORIES[category] || { icon: '-', name: category };
 
     console.log();
-    console.log(chalk.bold(`${config.icon} ${config.name}`));
-    console.log(chalk.dim(config.description || ''));
+    console.log(c.bold(`${config.icon} ${config.name}`));
+    console.log(c.dim(config.description || ''));
     console.log();
 
     // Create options for multiselect
     const options = categoryFiles.map((file: SelectableFile) => {
       let label = file.path;
       if (file.sensitive) {
-        label += chalk.yellow(' [!]');
+        label += c.yellow(' [!]');
       }
       if (file.isDirectory) {
-        label += chalk.cyan(' [dir]');
+        label += c.cyan(' [dir]');
       }
 
       return {
@@ -159,14 +147,14 @@ const runQuickScan = async (files: SelectableFile[]): Promise<void> => {
 
   console.log();
   console.log(
-    chalk.bold.cyan('Detected Dotfiles: ') +
-      chalk.white(`${newFiles.length} new, ${trackedFiles.length} already tracked`)
+    c.bold.cyan('Detected Dotfiles: ') +
+      c.white(`${newFiles.length} new, ${trackedFiles.length} already tracked`)
   );
 
   displayGroupedFiles(files, false);
 
   console.log();
-  console.log(chalk.dim('─'.repeat(60)));
+  console.log(c.dim('─'.repeat(60)));
   console.log();
 
   if (newFiles.length > 0) {
@@ -188,19 +176,19 @@ const showSummary = (selected: SelectableFile[]): void => {
   }
 
   console.log();
-  console.log(chalk.bold.cyan(`Selected ${selected.length} files to track:`));
-  console.log(chalk.dim('─'.repeat(50)));
+  console.log(c.bold.cyan(`Selected ${selected.length} files to track:`));
+  console.log(c.dim('─'.repeat(50)));
   console.log();
 
   const grouped = groupSelectableByCategory(selected);
 
   for (const [category, files] of Object.entries(grouped)) {
     const config = DETECTION_CATEGORIES[category] || { icon: '-', name: category };
-    console.log(chalk.bold(`${config.icon} ${config.name}`));
+    console.log(c.bold(`${config.icon} ${config.name}`));
 
     for (const file of files) {
-      const sensitive = file.sensitive ? chalk.yellow(' ⚠') : '';
-      console.log(chalk.dim(`  • ${collapsePath(file.path)}${sensitive}`));
+      const sensitive = file.sensitive ? c.yellow(' ⚠') : '';
+      console.log(c.dim(`  • ${collapsePath(file.path)}${sensitive}`));
     }
     console.log();
   }
@@ -208,8 +196,8 @@ const showSummary = (selected: SelectableFile[]): void => {
   // Show warnings for sensitive files
   const sensitiveFiles = selected.filter((f) => f.sensitive);
   if (sensitiveFiles.length > 0) {
-    console.log(chalk.yellow('⚠ Warning: Some files may contain sensitive data'));
-    console.log(chalk.dim('  Make sure your repository is private!'));
+    console.log(c.yellow('⚠ Warning: Some files may contain sensitive data'));
+    console.log(c.dim('  Make sure your repository is private!'));
     console.log();
   }
 };
@@ -222,7 +210,7 @@ const addFilesWithProgress = async (
   tuckDir: string
 ): Promise<number> => {
   // Convert SelectableFile to FileToTrack
-  const filesToTrack: FileToTrack[] = selected.map(f => ({
+  const filesToTrack: FileToTrack[] = selected.map((f) => ({
     path: f.path,
     category: f.category,
   }));
@@ -267,12 +255,12 @@ const runScan = async (options: ScanOptions): Promise<void> => {
 
   for (const file of detected) {
     const tracked = await getTrackedFileBySource(tuckDir, file.path);
-    
+
     // Skip if in .tuckignore
     if (await isIgnored(tuckDir, file.path)) {
       continue;
     }
-    
+
     // Skip if binary executable in bin directory
     if (await shouldExcludeFromBin(expandPath(file.path))) {
       continue;
@@ -293,7 +281,7 @@ const runScan = async (options: ScanOptions): Promise<void> => {
       logger.warning(`No dotfiles found in category: ${options.category}`);
       logger.info('Available categories:');
       for (const [key, config] of Object.entries(DETECTION_CATEGORIES)) {
-        console.log(chalk.dim(`  ${config.icon} ${key} - ${config.name}`));
+        console.log(c.dim(`  ${config.icon} ${key} - ${config.name}`));
       }
       return;
     }
@@ -369,10 +357,7 @@ const runScan = async (options: ScanOptions): Promise<void> => {
   // Show summary of what will be tracked
   showSummary(selected);
 
-  const confirmed = await prompts.confirm(
-    `Track these ${selected.length} files?`,
-    true
-  );
+  const confirmed = await prompts.confirm(`Track these ${selected.length} files?`, true);
 
   if (!confirmed) {
     prompts.cancel('Operation cancelled');

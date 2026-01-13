@@ -1,5 +1,14 @@
+/**
+ * Prompts wrapper for tuck CLI
+ * Uses @clack/prompts for consistent, beautiful interactive prompts
+ */
+
 import * as p from '@clack/prompts';
-import chalk from 'chalk';
+import { colors as c } from './theme.js';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
 
 export interface SelectOption<T> {
   value: T;
@@ -7,15 +16,28 @@ export interface SelectOption<T> {
   hint?: string;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Main Prompts Object
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const prompts = {
+  /**
+   * Display command intro header
+   */
   intro: (title: string): void => {
-    p.intro(chalk.bgCyan(chalk.black(` ${title} `)));
+    p.intro(c.brandBg(` ${title} `));
   },
 
+  /**
+   * Display command outro/success message
+   */
   outro: (message: string): void => {
-    p.outro(chalk.green(message));
+    p.outro(c.success(message));
   },
 
+  /**
+   * Confirm dialog (yes/no)
+   */
   confirm: async (message: string, initial = false): Promise<boolean> => {
     const result = await p.confirm({ message, initialValue: initial });
     if (p.isCancel(result)) {
@@ -24,6 +46,9 @@ export const prompts = {
     return result as boolean;
   },
 
+  /**
+   * Single select from options
+   */
   select: async <T>(message: string, options: SelectOption<T>[]): Promise<T> => {
     const result = await p.select({
       message,
@@ -39,6 +64,9 @@ export const prompts = {
     return result as T;
   },
 
+  /**
+   * Multi-select from options
+   */
   multiselect: async <T>(
     message: string,
     options: SelectOption<T>[],
@@ -47,24 +75,16 @@ export const prompts = {
       initialValues?: T[];
     }
   ): Promise<T[]> => {
-    // Always include hint property to ensure consistent object shape, defaulting to empty string
     const mappedOptions = options.map((opt) => ({
       value: opt.value,
       label: opt.label,
       hint: opt.hint ?? '',
     }));
 
-    // Type assertion needed: @clack/prompts uses a conditional type Option<T> that checks
-    // if T extends Primitive. When T is a generic type parameter, TypeScript cannot narrow
-    // this conditional type properly, causing a type mismatch. The mapped options satisfy
-    // the Option<T> contract at runtime (value, label, hint properties). We must use 'any'
-    // here because more specific assertions like 'as SelectOption<T>[]' still fail due to
-    // the conditional type. Alternative approaches (type guards, custom interfaces) would
-    // require significant refactoring. Since the runtime types are correct and this is a
-    // known limitation of conditional types with generics, 'any' is the pragmatic solution.
     const result = await p.multiselect({
       message,
-      options: mappedOptions as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      options: mappedOptions as any,
       required: config?.required ?? false,
       initialValues: config?.initialValues,
     });
@@ -74,6 +94,9 @@ export const prompts = {
     return result as T[];
   },
 
+  /**
+   * Text input
+   */
   text: async (
     message: string,
     options?: {
@@ -94,6 +117,9 @@ export const prompts = {
     return result as string;
   },
 
+  /**
+   * Password input (hidden)
+   */
   password: async (message: string): Promise<string> => {
     const result = await p.password({ message });
     if (p.isCancel(result)) {
@@ -102,17 +128,29 @@ export const prompts = {
     return result as string;
   },
 
+  /**
+   * Create a spinner for async operations
+   */
   spinner: () => p.spinner(),
 
+  /**
+   * Display a note/info box
+   */
   note: (message: string, title?: string): void => {
     p.note(message, title);
   },
 
+  /**
+   * Cancel operation and exit
+   */
   cancel: (message = 'Operation cancelled'): never => {
     p.cancel(message);
     process.exit(0);
   },
 
+  /**
+   * Logging helpers
+   */
   log: {
     info: (message: string): void => {
       p.log.info(message);
@@ -134,6 +172,9 @@ export const prompts = {
     },
   },
 
+  /**
+   * Group multiple prompts
+   */
   group: async <T>(
     steps: Record<string, () => Promise<T | symbol>>,
     options?: { onCancel?: () => void }
@@ -150,5 +191,9 @@ export const prompts = {
     return results as Record<string, T>;
   },
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Utility Exports
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const isCancel = p.isCancel;

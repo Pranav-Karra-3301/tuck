@@ -1,6 +1,5 @@
 import { Command } from 'commander';
-import chalk from 'chalk';
-import { prompts, logger, withSpinner } from '../ui/index.js';
+import { prompts, logger, withSpinner, colors as c } from '../ui/index.js';
 import { getTuckDir } from '../lib/paths.js';
 import { loadManifest } from '../lib/manifest.js';
 import {
@@ -53,15 +52,15 @@ const runInteractivePush = async (tuckDir: string): Promise<void> => {
 
   // Show what will be pushed
   console.log();
-  console.log(chalk.dim('Remote:'), remoteUrl);
-  console.log(chalk.dim('Branch:'), branch);
+  console.log(c.dim('Remote:'), remoteUrl);
+  console.log(c.dim('Branch:'), branch);
 
   if (status.ahead > 0) {
-    console.log(chalk.dim('Commits:'), chalk.green(`↑ ${status.ahead} to push`));
+    console.log(c.dim('Commits:'), c.green(`↑ ${status.ahead} to push`));
   }
 
   if (status.behind > 0) {
-    console.log(chalk.dim('Warning:'), chalk.yellow(`↓ ${status.behind} commits behind remote`));
+    console.log(c.dim('Warning:'), c.yellow(`↓ ${status.behind} commits behind remote`));
 
     const pullFirst = await prompts.confirm('Pull changes first?', true);
     if (pullFirst) {
@@ -115,12 +114,10 @@ const runInteractivePush = async (tuckDir: string): Promise<void> => {
     // Extract repo URL for display
     let viewUrl = remoteUrl;
     if (remoteUrl.startsWith('git@github.com:')) {
-      viewUrl = remoteUrl
-        .replace('git@github.com:', 'https://github.com/')
-        .replace('.git', '');
+      viewUrl = remoteUrl.replace('git@github.com:', 'https://github.com/').replace('.git', '');
     }
     console.log();
-    console.log(chalk.dim('View at:'), chalk.cyan(viewUrl));
+    console.log(c.dim('View at:'), c.cyan(viewUrl));
   }
 
   prompts.outro('');
