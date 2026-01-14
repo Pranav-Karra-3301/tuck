@@ -33,14 +33,9 @@ program
   .configureOutput({
     outputError: (str, write) => write(chalk.red(str)),
   })
-  .addHelpText('beforeAll', customHelp(VERSION))
+  .addHelpText('before', customHelp(VERSION))
   .helpOption('-h, --help', 'Display this help message')
   .showHelpAfterError(false);
-
-// Override default help to use our custom version
-program.configureHelp({
-  formatHelp: () => '',
-});
 
 // Register commands
 program.addCommand(initCommand);
@@ -132,9 +127,9 @@ const runDefaultAction = async (): Promise<void> => {
 };
 
 // Check if no command provided
-const hasCommand = process.argv.slice(2).some(
-  (arg) => !arg.startsWith('-') && arg !== '--help' && arg !== '-h'
-);
+const hasCommand = process.argv
+  .slice(2)
+  .some((arg) => !arg.startsWith('-') && arg !== '--help' && arg !== '-h');
 
 // Global error handling
 process.on('uncaughtException', handleError);
@@ -143,7 +138,13 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // Parse and execute
-if (!hasCommand && !process.argv.includes('--help') && !process.argv.includes('-h') && !process.argv.includes('--version') && !process.argv.includes('-v')) {
+if (
+  !hasCommand &&
+  !process.argv.includes('--help') &&
+  !process.argv.includes('-h') &&
+  !process.argv.includes('--version') &&
+  !process.argv.includes('-v')
+) {
   runDefaultAction().catch(handleError);
 } else {
   program.parseAsync(process.argv).catch(handleError);
