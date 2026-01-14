@@ -1,3 +1,10 @@
+# [1.6.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.5.2...v1.6.0) (2026-01-14)
+
+
+### Features
+
+* add auto-update checking with interactive prompt ([67f1dcd](https://github.com/Pranav-Karra-3301/tuck/commit/67f1dcdd02c09fe0faf8b9c417233a55619d16c4))
+
 <img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
 ## [1.5.2](https://github.com/Pranav-Karra-3301/tuck/compare/v1.5.1...v1.5.2) (2026-01-14)
