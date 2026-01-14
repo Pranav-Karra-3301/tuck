@@ -19,6 +19,7 @@ import {
 } from './commands/index.js';
 import { handleError } from './errors.js';
 import { VERSION, DESCRIPTION } from './constants.js';
+import { checkForUpdates } from './lib/updater.js';
 import { customHelp, miniBanner } from './ui/banner.js';
 import { getTuckDir, pathExists } from './lib/paths.js';
 import { loadManifest } from './lib/manifest.js';
@@ -132,9 +133,9 @@ const runDefaultAction = async (): Promise<void> => {
 };
 
 // Check if no command provided
-const hasCommand = process.argv.slice(2).some(
-  (arg) => !arg.startsWith('-') && arg !== '--help' && arg !== '-h'
-);
+const hasCommand = process.argv
+  .slice(2)
+  .some((arg) => !arg.startsWith('-') && arg !== '--help' && arg !== '-h');
 
 // Global error handling
 process.on('uncaughtException', handleError);
@@ -142,9 +143,26 @@ process.on('unhandledRejection', (reason) => {
   handleError(reason instanceof Error ? reason : new Error(String(reason)));
 });
 
-// Parse and execute
-if (!hasCommand && !process.argv.includes('--help') && !process.argv.includes('-h') && !process.argv.includes('--version') && !process.argv.includes('-v')) {
-  runDefaultAction().catch(handleError);
-} else {
-  program.parseAsync(process.argv).catch(handleError);
-}
+// Check if this is a help or version request (skip update check for these)
+const isHelpOrVersion =
+  process.argv.includes('--help') ||
+  process.argv.includes('-h') ||
+  process.argv.includes('--version') ||
+  process.argv.includes('-v');
+
+// Main execution
+const main = async (): Promise<void> => {
+  // Check for updates (skipped for help/version)
+  if (!isHelpOrVersion) {
+    await checkForUpdates();
+  }
+
+  // Parse and execute
+  if (!hasCommand && !isHelpOrVersion) {
+    await runDefaultAction();
+  } else {
+    await program.parseAsync(process.argv);
+  }
+};
+
+main().catch(handleError);
