@@ -1,11 +1,11 @@
+<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
+
 ## [1.5.2](https://github.com/Pranav-Karra-3301/tuck/compare/v1.5.1...v1.5.2) (2026-01-14)
 
 
 ### Bug Fixes
 
 * show command-specific help instead of full help for subcommands ([24f5656](https://github.com/Pranav-Karra-3301/tuck/commit/24f5656e23a78a553c12ca318dc875b8eb2be2e5))
-
-<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
 ## [1.5.1](https://github.com/Pranav-Karra-3301/tuck/compare/v1.5.0...v1.5.1) (2026-01-13)
 
