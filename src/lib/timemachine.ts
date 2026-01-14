@@ -59,12 +59,14 @@ const getSnapshotPath = (snapshotId: string): string => {
  * e.g., ~/.zshrc -> .zshrc
  * e.g., ~/.config/nvim -> .config/nvim
  * e.g., ~/.foo.bar -> .foo.bar (distinct from ~/.foo-bar -> .foo-bar)
+ *
+ * Works with both Unix (/) and Windows (\) path separators.
  */
 const toBackupPath = (originalPath: string): string => {
   const collapsed = collapsePath(originalPath);
-  // Remove ~/ prefix to get a path relative to home directory
+  // Remove ~/ or ~\ prefix to get a path relative to home directory
   // This preserves the full directory structure, preventing collisions
-  return collapsed.replace(/^~\//, '');
+  return collapsed.replace(/^~[/\\]/, '');
 };
 
 /**
@@ -113,11 +115,7 @@ export const createSnapshot = async (
     profile,
   };
 
-  await writeFile(
-    join(snapshotPath, 'metadata.json'),
-    JSON.stringify(metadata, null, 2),
-    'utf-8'
-  );
+  await writeFile(join(snapshotPath, 'metadata.json'), JSON.stringify(metadata, null, 2), 'utf-8');
 
   return {
     id: snapshotId,

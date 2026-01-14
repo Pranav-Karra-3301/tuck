@@ -85,7 +85,8 @@ export const CATEGORIES: Record<string, CategoryConfig> = {
   },
 };
 
-export const COMMON_DOTFILES = [
+// Common dotfiles for Unix systems (macOS, Linux)
+export const COMMON_DOTFILES_UNIX = [
   { path: '~/.zshrc', category: 'shell' },
   { path: '~/.bashrc', category: 'shell' },
   { path: '~/.bash_profile', category: 'shell' },
@@ -96,3 +97,19 @@ export const COMMON_DOTFILES = [
   { path: '~/.ssh/config', category: 'ssh' },
   { path: '~/.config/starship.toml', category: 'terminal' },
 ];
+
+// Common dotfiles for Windows (beta)
+// Note: These paths use ~ which will be expanded to %USERPROFILE%
+export const COMMON_DOTFILES_WINDOWS = [
+  { path: '~/.gitconfig', category: 'git' },
+  { path: '~/.ssh/config', category: 'ssh' },
+  { path: '~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1', category: 'shell' },
+  { path: '~/.config/starship.toml', category: 'terminal' },
+  // Note: VS Code and Windows Terminal are detected dynamically in detect.ts
+  // because they use %APPDATA% and %LOCALAPPDATA% paths
+];
+
+// Platform-specific common dotfiles export
+// On Windows, returns Windows-specific files; otherwise Unix files
+export const COMMON_DOTFILES =
+  process.platform === 'win32' ? COMMON_DOTFILES_WINDOWS : COMMON_DOTFILES_UNIX;

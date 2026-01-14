@@ -1,10 +1,7 @@
 import { join, basename, isAbsolute } from 'path';
 import { readdir, stat } from 'fs/promises';
-import { platform } from 'os';
 import { pathExists, expandPath, collapsePath } from './paths.js';
-
-const IS_MACOS = platform() === 'darwin';
-const IS_LINUX = platform() === 'linux';
+import { IS_WINDOWS, IS_MACOS, IS_LINUX, normalizePath, getWindowsPaths } from './platform.js';
 
 export interface DetectedFile {
   path: string;
@@ -84,6 +81,11 @@ export const DETECTION_CATEGORIES: Record<string, DetectionCategory> = {
     icon: '^',
     description: 'macOS-specific configurations',
   },
+  windows: {
+    name: 'Windows',
+    icon: 'W',
+    description: 'Windows-specific configurations (beta)',
+  },
   misc: {
     name: 'Other',
     icon: '-',
@@ -100,7 +102,7 @@ const DOTFILE_PATTERNS: Array<{
   description: string;
   sensitive?: boolean;
   exclude?: string[];
-  platform?: 'darwin' | 'linux' | 'all';
+  platform?: 'darwin' | 'linux' | 'win32' | 'all';
 }> = [
   // ==================== SHELL CONFIGURATION ====================
   // Bash
@@ -146,7 +148,12 @@ const DOTFILE_PATTERNS: Array<{
   // ==================== EDITORS & IDES ====================
   // Vim/Neovim
   { path: '~/.vimrc', category: 'editors', description: 'Vim configuration' },
-  { path: '~/.vim', category: 'editors', description: 'Vim directory', exclude: ['plugged', 'bundle', '.netrwhist'] },
+  {
+    path: '~/.vim',
+    category: 'editors',
+    description: 'Vim directory',
+    exclude: ['plugged', 'bundle', '.netrwhist'],
+  },
   { path: '~/.config/nvim', category: 'editors', description: 'Neovim configuration' },
   { path: '~/.ideavimrc', category: 'editors', description: 'IdeaVim (JetBrains) config' },
 
@@ -157,22 +164,66 @@ const DOTFILE_PATTERNS: Array<{
   { path: '~/.spacemacs', category: 'editors', description: 'Spacemacs config' },
 
   // VS Code
-  { path: '~/.config/Code/User/settings.json', category: 'editors', description: 'VS Code settings', platform: 'linux' },
-  { path: '~/.config/Code/User/keybindings.json', category: 'editors', description: 'VS Code keybindings', platform: 'linux' },
-  { path: '~/.config/Code/User/snippets', category: 'editors', description: 'VS Code snippets', platform: 'linux' },
-  { path: '~/Library/Application Support/Code/User/settings.json', category: 'editors', description: 'VS Code settings', platform: 'darwin' },
-  { path: '~/Library/Application Support/Code/User/keybindings.json', category: 'editors', description: 'VS Code keybindings', platform: 'darwin' },
-  { path: '~/Library/Application Support/Code/User/snippets', category: 'editors', description: 'VS Code snippets', platform: 'darwin' },
+  {
+    path: '~/.config/Code/User/settings.json',
+    category: 'editors',
+    description: 'VS Code settings',
+    platform: 'linux',
+  },
+  {
+    path: '~/.config/Code/User/keybindings.json',
+    category: 'editors',
+    description: 'VS Code keybindings',
+    platform: 'linux',
+  },
+  {
+    path: '~/.config/Code/User/snippets',
+    category: 'editors',
+    description: 'VS Code snippets',
+    platform: 'linux',
+  },
+  {
+    path: '~/Library/Application Support/Code/User/settings.json',
+    category: 'editors',
+    description: 'VS Code settings',
+    platform: 'darwin',
+  },
+  {
+    path: '~/Library/Application Support/Code/User/keybindings.json',
+    category: 'editors',
+    description: 'VS Code keybindings',
+    platform: 'darwin',
+  },
+  {
+    path: '~/Library/Application Support/Code/User/snippets',
+    category: 'editors',
+    description: 'VS Code snippets',
+    platform: 'darwin',
+  },
 
   // Cursor (VS Code fork)
-  { path: '~/.config/Cursor/User/settings.json', category: 'editors', description: 'Cursor settings', platform: 'linux' },
-  { path: '~/Library/Application Support/Cursor/User/settings.json', category: 'editors', description: 'Cursor settings', platform: 'darwin' },
+  {
+    path: '~/.config/Cursor/User/settings.json',
+    category: 'editors',
+    description: 'Cursor settings',
+    platform: 'linux',
+  },
+  {
+    path: '~/Library/Application Support/Cursor/User/settings.json',
+    category: 'editors',
+    description: 'Cursor settings',
+    platform: 'darwin',
+  },
 
   // Other editors
   { path: '~/.nanorc', category: 'editors', description: 'Nano configuration' },
   { path: '~/.config/micro', category: 'editors', description: 'Micro editor config' },
   { path: '~/.config/helix', category: 'editors', description: 'Helix editor config' },
-  { path: '~/.sublime-text/Packages/User', category: 'editors', description: 'Sublime Text settings' },
+  {
+    path: '~/.sublime-text/Packages/User',
+    category: 'editors',
+    description: 'Sublime Text settings',
+  },
 
   // ==================== TERMINAL & MULTIPLEXERS ====================
   // Tmux
@@ -193,7 +244,12 @@ const DOTFILE_PATTERNS: Array<{
   { path: '~/.config/foot', category: 'terminal', description: 'Foot terminal config' },
   { path: '~/.config/terminator', category: 'terminal', description: 'Terminator config' },
   { path: '~/.config/tilix', category: 'terminal', description: 'Tilix terminal config' },
-  { path: '~/Library/Preferences/com.googlecode.iterm2.plist', category: 'terminal', description: 'iTerm2 preferences', platform: 'darwin' },
+  {
+    path: '~/Library/Preferences/com.googlecode.iterm2.plist',
+    category: 'terminal',
+    description: 'iTerm2 preferences',
+    platform: 'darwin',
+  },
 
   // ==================== PROMPT & THEMES ====================
   { path: '~/.config/starship.toml', category: 'prompt', description: 'Starship prompt config' },
@@ -342,43 +398,128 @@ const DOTFILE_PATTERNS: Array<{
   { path: '~/.config/user-dirs.dirs', category: 'xdg', description: 'XDG user directories' },
   { path: '~/.config/autostart', category: 'xdg', description: 'Autostart applications' },
   { path: '~/.config/environment.d', category: 'xdg', description: 'Environment variables' },
-  { path: '~/.config/systemd/user', category: 'xdg', description: 'User systemd services', platform: 'linux' },
-  { path: '~/.config/dunst', category: 'xdg', description: 'Dunst notifications', platform: 'linux' },
+  {
+    path: '~/.config/systemd/user',
+    category: 'xdg',
+    description: 'User systemd services',
+    platform: 'linux',
+  },
+  {
+    path: '~/.config/dunst',
+    category: 'xdg',
+    description: 'Dunst notifications',
+    platform: 'linux',
+  },
   { path: '~/.config/rofi', category: 'xdg', description: 'Rofi launcher', platform: 'linux' },
   { path: '~/.config/wofi', category: 'xdg', description: 'Wofi launcher', platform: 'linux' },
 
   // ==================== DESKTOP & WINDOW MANAGERS ====================
   // i3/sway
-  { path: '~/.config/i3', category: 'desktop', description: 'i3 window manager', platform: 'linux' },
-  { path: '~/.config/sway', category: 'desktop', description: 'Sway (Wayland i3)', platform: 'linux' },
-  { path: '~/.config/i3status', category: 'desktop', description: 'i3status bar', platform: 'linux' },
-  { path: '~/.config/i3status-rust', category: 'desktop', description: 'i3status-rust bar', platform: 'linux' },
+  {
+    path: '~/.config/i3',
+    category: 'desktop',
+    description: 'i3 window manager',
+    platform: 'linux',
+  },
+  {
+    path: '~/.config/sway',
+    category: 'desktop',
+    description: 'Sway (Wayland i3)',
+    platform: 'linux',
+  },
+  {
+    path: '~/.config/i3status',
+    category: 'desktop',
+    description: 'i3status bar',
+    platform: 'linux',
+  },
+  {
+    path: '~/.config/i3status-rust',
+    category: 'desktop',
+    description: 'i3status-rust bar',
+    platform: 'linux',
+  },
   { path: '~/.config/waybar', category: 'desktop', description: 'Waybar', platform: 'linux' },
   { path: '~/.config/polybar', category: 'desktop', description: 'Polybar', platform: 'linux' },
 
   // Hyprland
-  { path: '~/.config/hypr', category: 'desktop', description: 'Hyprland config', platform: 'linux' },
+  {
+    path: '~/.config/hypr',
+    category: 'desktop',
+    description: 'Hyprland config',
+    platform: 'linux',
+  },
 
   // Other WMs
   { path: '~/.config/bspwm', category: 'desktop', description: 'bspwm config', platform: 'linux' },
   { path: '~/.config/sxhkd', category: 'desktop', description: 'sxhkd hotkeys', platform: 'linux' },
-  { path: '~/.config/awesome', category: 'desktop', description: 'AwesomeWM config', platform: 'linux' },
-  { path: '~/.config/openbox', category: 'desktop', description: 'Openbox config', platform: 'linux' },
+  {
+    path: '~/.config/awesome',
+    category: 'desktop',
+    description: 'AwesomeWM config',
+    platform: 'linux',
+  },
+  {
+    path: '~/.config/openbox',
+    category: 'desktop',
+    description: 'Openbox config',
+    platform: 'linux',
+  },
   { path: '~/.config/qtile', category: 'desktop', description: 'Qtile config', platform: 'linux' },
-  { path: '~/.config/herbstluftwm', category: 'desktop', description: 'herbstluftwm config', platform: 'linux' },
+  {
+    path: '~/.config/herbstluftwm',
+    category: 'desktop',
+    description: 'herbstluftwm config',
+    platform: 'linux',
+  },
 
   // macOS window managers
   { path: '~/.yabairc', category: 'desktop', description: 'yabai config', platform: 'darwin' },
-  { path: '~/.config/yabai', category: 'desktop', description: 'yabai config (XDG)', platform: 'darwin' },
+  {
+    path: '~/.config/yabai',
+    category: 'desktop',
+    description: 'yabai config (XDG)',
+    platform: 'darwin',
+  },
   { path: '~/.skhdrc', category: 'desktop', description: 'skhd hotkeys', platform: 'darwin' },
-  { path: '~/.config/skhd', category: 'desktop', description: 'skhd config (XDG)', platform: 'darwin' },
-  { path: '~/.config/spacebar', category: 'desktop', description: 'spacebar config', platform: 'darwin' },
-  { path: '~/.config/borders', category: 'desktop', description: 'borders config', platform: 'darwin' },
-  { path: '~/.aerospace.toml', category: 'desktop', description: 'AeroSpace config', platform: 'darwin' },
+  {
+    path: '~/.config/skhd',
+    category: 'desktop',
+    description: 'skhd config (XDG)',
+    platform: 'darwin',
+  },
+  {
+    path: '~/.config/spacebar',
+    category: 'desktop',
+    description: 'spacebar config',
+    platform: 'darwin',
+  },
+  {
+    path: '~/.config/borders',
+    category: 'desktop',
+    description: 'borders config',
+    platform: 'darwin',
+  },
+  {
+    path: '~/.aerospace.toml',
+    category: 'desktop',
+    description: 'AeroSpace config',
+    platform: 'darwin',
+  },
 
   // Picom/Compton
-  { path: '~/.config/picom', category: 'desktop', description: 'Picom compositor', platform: 'linux' },
-  { path: '~/.config/picom.conf', category: 'desktop', description: 'Picom config (alt)', platform: 'linux' },
+  {
+    path: '~/.config/picom',
+    category: 'desktop',
+    description: 'Picom compositor',
+    platform: 'linux',
+  },
+  {
+    path: '~/.config/picom.conf',
+    category: 'desktop',
+    description: 'Picom config (alt)',
+    platform: 'linux',
+  },
 
   // ==================== SCRIPTS & BINS ====================
   { path: '~/.local/bin', category: 'scripts', description: 'Local scripts and binaries' },
@@ -386,10 +527,79 @@ const DOTFILE_PATTERNS: Array<{
   { path: '~/.scripts', category: 'scripts', description: 'Custom scripts' },
 
   // ==================== MACOS SPECIFIC ====================
-  { path: '~/.finicky.js', category: 'macos', description: 'Finicky browser picker', platform: 'darwin' },
-  { path: '~/.config/karabiner', category: 'macos', description: 'Karabiner key remapping', platform: 'darwin' },
-  { path: '~/.hammerspoon', category: 'macos', description: 'Hammerspoon automation', platform: 'darwin' },
-  { path: '~/.config/raycast', category: 'macos', description: 'Raycast config', platform: 'darwin' },
+  {
+    path: '~/.finicky.js',
+    category: 'macos',
+    description: 'Finicky browser picker',
+    platform: 'darwin',
+  },
+  {
+    path: '~/.config/karabiner',
+    category: 'macos',
+    description: 'Karabiner key remapping',
+    platform: 'darwin',
+  },
+  {
+    path: '~/.hammerspoon',
+    category: 'macos',
+    description: 'Hammerspoon automation',
+    platform: 'darwin',
+  },
+  {
+    path: '~/.config/raycast',
+    category: 'macos',
+    description: 'Raycast config',
+    platform: 'darwin',
+  },
+
+  // ==================== WINDOWS SPECIFIC (BETA) ====================
+  // Note: Windows paths are expanded at runtime using getWindowsConfigPath()
+  // These use ~ prefix for consistency, but actual detection uses %APPDATA% etc.
+
+  // PowerShell profiles
+  {
+    path: '~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1',
+    category: 'shell',
+    description: 'PowerShell 7+ profile',
+    platform: 'win32',
+  },
+  {
+    path: '~/Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1',
+    category: 'shell',
+    description: 'PowerShell 5.x profile',
+    platform: 'win32',
+  },
+
+  // Windows Terminal (stored in LocalAppData - we'll handle specially)
+  // Note: The actual path varies by Windows Terminal installation type
+
+  // Git (same location on Windows, just different path separators)
+  {
+    path: '~/.gitconfig',
+    category: 'git',
+    description: 'Git global configuration',
+    platform: 'win32',
+  },
+
+  // SSH (same location on Windows)
+  {
+    path: '~/.ssh/config',
+    category: 'ssh',
+    description: 'SSH client configuration',
+    sensitive: true,
+    platform: 'win32',
+  },
+
+  // npm (Windows location)
+  { path: '~/.npmrc', category: 'languages', description: 'npm configuration', platform: 'win32' },
+
+  // Cargo/Rust (same location)
+  {
+    path: '~/.cargo/config.toml',
+    category: 'languages',
+    description: 'Cargo configuration',
+    platform: 'win32',
+  },
 
   // ==================== MISCELLANEOUS ====================
   { path: '~/.config/neofetch', category: 'misc', description: 'Neofetch config' },
@@ -513,39 +723,45 @@ export const DEFAULT_EXCLUSION_PATTERNS = {
 };
 
 /**
- * Check if a path should be excluded from detection/tracking
+ * Check if a path should be excluded from detection/tracking.
+ * Handles both Unix and Windows paths.
  */
 export const shouldExcludeFile = (path: string): boolean => {
-  // Normalize path to use ~ prefix
+  // Normalize path to use ~ prefix and forward slashes
   // Handle both tilde paths and absolute paths that point to home directory
   let normalizedPath: string;
-  if (path.startsWith('~/')) {
-    // Already in tilde notation
-    normalizedPath = path;
+  if (path.startsWith('~/') || path.startsWith('~\\')) {
+    // Already in tilde notation - normalize separators
+    normalizedPath = normalizePath(path);
   } else if (path.startsWith(expandPath('~/'))) {
     // Absolute path within home directory - convert to tilde notation
-    normalizedPath = path.replace(expandPath('~/'), '~/');
+    normalizedPath = normalizePath(path.replace(expandPath('~/'), '~/'));
   } else if (isAbsolute(path)) {
     // Other absolute path - try to collapse to tilde notation
-    normalizedPath = collapsePath(path);
+    normalizedPath = normalizePath(collapsePath(path));
   } else {
-    // Relative path, keep as-is
-    normalizedPath = path;
+    // Relative path, just normalize separators
+    normalizedPath = normalizePath(path);
   }
+
+  // Get exclusion patterns (includes Windows-specific ones on Windows)
+  const exclusionPatterns = getExclusionPatterns();
 
   // Check cache directories (directory-aware prefix match)
   // Must match exactly or be a subdirectory (with /)
-  for (const cacheDir of DEFAULT_EXCLUSION_PATTERNS.cacheDirectories) {
+  for (const cacheDir of exclusionPatterns.cacheDirectories) {
+    const normalizedCacheDir = normalizePath(cacheDir);
     if (
-      normalizedPath === cacheDir ||
-      normalizedPath.startsWith(cacheDir + '/')
+      normalizedPath === normalizedCacheDir ||
+      normalizedPath.startsWith(normalizedCacheDir + '/')
     ) {
       return true;
     }
   }
 
   // Check history files (exact match)
-  if (DEFAULT_EXCLUSION_PATTERNS.historyFiles.includes(normalizedPath)) {
+  const normalizedHistoryFiles = exclusionPatterns.historyFiles.map(normalizePath);
+  if (normalizedHistoryFiles.includes(normalizedPath)) {
     return true;
   }
 
@@ -568,12 +784,42 @@ export const shouldExcludeFile = (path: string): boolean => {
 };
 
 /**
+ * Get exclusion patterns including Windows-specific ones when on Windows.
+ */
+const getExclusionPatterns = (): typeof DEFAULT_EXCLUSION_PATTERNS => {
+  if (!IS_WINDOWS) {
+    return DEFAULT_EXCLUSION_PATTERNS;
+  }
+
+  // Add Windows-specific cache directories
+  const winPaths = getWindowsPaths();
+  const windowsCacheDirectories = [
+    // npm cache (Windows location)
+    `${winPaths.localAppData}/npm-cache`,
+    // Windows Temp
+    `${winPaths.localAppData}/Temp`,
+    // Various app caches
+    `${winPaths.appData}/npm/cache`,
+    `${winPaths.localAppData}/Microsoft/Windows/INetCache`,
+    `${winPaths.localAppData}/Packages`, // UWP app data
+  ]
+    .filter(Boolean)
+    .map(normalizePath);
+
+  return {
+    ...DEFAULT_EXCLUSION_PATTERNS,
+    cacheDirectories: [...DEFAULT_EXCLUSION_PATTERNS.cacheDirectories, ...windowsCacheDirectories],
+  };
+};
+
+/**
  * Check if a path should be included for current platform
  */
 const shouldIncludeForPlatform = (item: { platform?: string }): boolean => {
   if (!item.platform || item.platform === 'all') return true;
   if (item.platform === 'darwin' && IS_MACOS) return true;
   if (item.platform === 'linux' && IS_LINUX) return true;
+  if (item.platform === 'win32' && IS_WINDOWS) return true;
   return false;
 };
 
@@ -602,6 +848,117 @@ const isDirectory = async (path: string): Promise<boolean> => {
 };
 
 /**
+ * Get Windows-specific dotfiles that require dynamic path resolution.
+ * These paths use environment variables like %APPDATA% that need to be
+ * resolved at runtime.
+ */
+const getWindowsDotfiles = async (): Promise<DetectedFile[]> => {
+  if (!IS_WINDOWS) {
+    return [];
+  }
+
+  const detected: DetectedFile[] = [];
+  const winPaths = getWindowsPaths();
+
+  // Windows-specific config files with their resolved paths
+  const windowsConfigs: Array<{
+    path: string;
+    collapsedPath: string;
+    category: string;
+    description: string;
+    sensitive?: boolean;
+  }> = [
+    // VS Code (Windows uses %APPDATA%)
+    {
+      path: join(winPaths.appData, 'Code', 'User', 'settings.json'),
+      collapsedPath: '~/AppData/Roaming/Code/User/settings.json',
+      category: 'editors',
+      description: 'VS Code settings',
+    },
+    {
+      path: join(winPaths.appData, 'Code', 'User', 'keybindings.json'),
+      collapsedPath: '~/AppData/Roaming/Code/User/keybindings.json',
+      category: 'editors',
+      description: 'VS Code keybindings',
+    },
+    {
+      path: join(winPaths.appData, 'Code', 'User', 'snippets'),
+      collapsedPath: '~/AppData/Roaming/Code/User/snippets',
+      category: 'editors',
+      description: 'VS Code snippets',
+    },
+    // Cursor (VS Code fork)
+    {
+      path: join(winPaths.appData, 'Cursor', 'User', 'settings.json'),
+      collapsedPath: '~/AppData/Roaming/Cursor/User/settings.json',
+      category: 'editors',
+      description: 'Cursor settings',
+    },
+    // Windows Terminal (LocalAppData - common installation)
+    {
+      path: join(
+        winPaths.localAppData,
+        'Packages',
+        'Microsoft.WindowsTerminal_8wekyb3d8bbwe',
+        'LocalState',
+        'settings.json'
+      ),
+      collapsedPath:
+        '~/AppData/Local/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json',
+      category: 'terminal',
+      description: 'Windows Terminal settings',
+    },
+    // Windows Terminal Preview
+    {
+      path: join(
+        winPaths.localAppData,
+        'Packages',
+        'Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe',
+        'LocalState',
+        'settings.json'
+      ),
+      collapsedPath:
+        '~/AppData/Local/Packages/Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe/LocalState/settings.json',
+      category: 'terminal',
+      description: 'Windows Terminal Preview settings',
+    },
+    // Alacritty (Windows)
+    {
+      path: join(winPaths.appData, 'alacritty', 'alacritty.toml'),
+      collapsedPath: '~/AppData/Roaming/alacritty/alacritty.toml',
+      category: 'terminal',
+      description: 'Alacritty terminal config',
+    },
+    // Starship (Windows)
+    {
+      path: join(winPaths.userProfile, '.config', 'starship.toml'),
+      collapsedPath: '~/.config/starship.toml',
+      category: 'prompt',
+      description: 'Starship prompt config',
+    },
+  ];
+
+  for (const config of windowsConfigs) {
+    if (await pathExists(config.path)) {
+      const isDir = await isDirectory(config.path);
+      const size = await getSize(config.path);
+
+      detected.push({
+        path: config.collapsedPath,
+        name: basename(config.path),
+        category: config.category,
+        description: config.description,
+        isDirectory: isDir,
+        size,
+        sensitive: config.sensitive,
+      });
+    }
+  }
+
+  return detected;
+};
+
+/**
  * Scan system for existing dotfiles
  * @param options - Optional configuration for detection
  * @param options.includeExcluded - If true, include files that match exclusion patterns (default: false). Set to true when you need to detect all dotfiles regardless of exclusion rules, such as for manual review or special operations.
@@ -612,6 +969,7 @@ export const detectDotfiles = async (options?: {
   const detected: DetectedFile[] = [];
   const includeExcluded = options?.includeExcluded ?? false;
 
+  // Detect standard dotfiles from patterns
   for (const pattern of DOTFILE_PATTERNS) {
     // Skip if not for current platform
     if (!shouldIncludeForPlatform(pattern)) continue;
@@ -638,15 +996,19 @@ export const detectDotfiles = async (options?: {
     }
   }
 
+  // Add Windows-specific dotfiles (resolved from %APPDATA% etc.)
+  if (IS_WINDOWS) {
+    const windowsDotfiles = await getWindowsDotfiles();
+    detected.push(...windowsDotfiles);
+  }
+
   return detected;
 };
 
 /**
  * Group detected files by category
  */
-export const groupByCategory = (
-  files: DetectedFile[]
-): Record<string, DetectedFile[]> => {
+export const groupByCategory = (files: DetectedFile[]): Record<string, DetectedFile[]> => {
   const grouped: Record<string, DetectedFile[]> = {};
 
   for (const file of files) {
@@ -708,9 +1070,7 @@ export const formatSize = (bytes: number | undefined): string => {
 /**
  * Get count of files in each category
  */
-export const getCategoryCounts = (
-  files: DetectedFile[]
-): Record<string, number> => {
+export const getCategoryCounts = (files: DetectedFile[]): Record<string, number> => {
   const counts: Record<string, number> = {};
 
   for (const file of files) {

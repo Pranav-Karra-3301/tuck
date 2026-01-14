@@ -7,6 +7,7 @@ import {
 } from '../schemas/manifest.schema.js';
 import { getManifestPath, pathExists } from './paths.js';
 import { ManifestError } from '../errors.js';
+import { normalizePath } from './platform.js';
 
 let cachedManifest: TuckManifestOutput | null = null;
 let cachedManifestDir: string | null = null;
@@ -147,14 +148,22 @@ export const getTrackedFile = async (
   return manifest.files[id] || null;
 };
 
+/**
+ * Find a tracked file by its source path.
+ * Normalizes path separators for cross-platform compatibility.
+ */
 export const getTrackedFileBySource = async (
   tuckDir: string,
   source: string
 ): Promise<{ id: string; file: TrackedFileOutput } | null> => {
   const manifest = await loadManifest(tuckDir);
+  // Normalize source path for comparison (handles Windows backslashes)
+  const normalizedSource = normalizePath(source);
 
   for (const [id, file] of Object.entries(manifest.files)) {
-    if (file.source === source) {
+    // Normalize stored path for comparison
+    const normalizedFileSource = normalizePath(file.source);
+    if (normalizedFileSource === normalizedSource) {
       return { id, file };
     }
   }

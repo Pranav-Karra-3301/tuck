@@ -42,16 +42,15 @@ export const createBackup = async (
   }
 
   // Create backup directory with date
-  const backupRoot = customBackupDir
-    ? expandPath(customBackupDir)
-    : getTimestampedBackupDir(date);
+  const backupRoot = customBackupDir ? expandPath(customBackupDir) : getTimestampedBackupDir(date);
   await ensureDir(backupRoot);
 
   // Generate backup filename that preserves structure
+  // Handle both Unix (/) and Windows (\) path separators
   const collapsed = collapsePath(expandedSource);
   const backupName = collapsed
-    .replace(/^~\//, '')
-    .replace(/\//g, '_')
+    .replace(/^~[/\\]/, '') // Remove ~/ or ~\ prefix
+    .replace(/[/\\]/g, '_') // Replace path separators with underscore
     .replace(/^\./, 'dot-');
 
   // Add timestamp to handle multiple backups of same file in a day

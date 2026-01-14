@@ -63,13 +63,17 @@ const SENSITIVE_FILE_PATTERNS = [
 ];
 
 /**
- * Check if a path is a private key (should never be tracked)
+ * Check if a path is a private key (should never be tracked).
+ * Handles both Unix and Windows path separators.
  */
 const isPrivateKey = (path: string): boolean => {
   const name = basename(path);
+  // Normalize path separators for consistent checking
+  const normalizedPath = path.replace(/\\/g, '/');
 
   // SSH private keys (without .pub extension)
-  if (path.includes('.ssh/') && !name.endsWith('.pub')) {
+  // Check for both .ssh/ and .ssh\ patterns
+  if (normalizedPath.includes('.ssh/') && !name.endsWith('.pub')) {
     for (const pattern of PRIVATE_KEY_PATTERNS) {
       if (pattern.test(name)) {
         return true;
@@ -86,12 +90,15 @@ const isPrivateKey = (path: string): boolean => {
 };
 
 /**
- * Check if a path contains potentially sensitive data
+ * Check if a path contains potentially sensitive data.
+ * Handles both Unix and Windows path separators.
  */
 const isSensitiveFile = (path: string): boolean => {
+  // Normalize path separators for consistent checking
+  const normalizedPath = path.replace(/\\/g, '/');
   // Strip ~/ prefix if present, since patterns with ^ anchor expect paths without it
   // e.g., ~/.netrc should match /^\.netrc$/ pattern
-  const pathToTest = path.startsWith('~/') ? path.slice(2) : path;
+  const pathToTest = normalizedPath.startsWith('~/') ? normalizedPath.slice(2) : normalizedPath;
 
   for (const pattern of SENSITIVE_FILE_PATTERNS) {
     if (pattern.test(pathToTest)) {

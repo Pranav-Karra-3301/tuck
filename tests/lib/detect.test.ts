@@ -2,32 +2,26 @@ import { describe, it, expect } from 'vitest';
 import {
   shouldExcludeFile,
   DEFAULT_EXCLUSION_PATTERNS,
+  DETECTION_CATEGORIES,
 } from '../../src/lib/detect.js';
+import { IS_WINDOWS, IS_MACOS, IS_LINUX } from '../../src/lib/platform.js';
 
 describe('detect', () => {
   describe('DEFAULT_EXCLUSION_PATTERNS', () => {
     it('should have cache directories defined', () => {
       expect(DEFAULT_EXCLUSION_PATTERNS.cacheDirectories).toContain('~/.cache');
       expect(DEFAULT_EXCLUSION_PATTERNS.cacheDirectories).toContain('~/.npm');
-      expect(DEFAULT_EXCLUSION_PATTERNS.cacheDirectories).toContain(
-        '~/.yarn/cache'
-      );
+      expect(DEFAULT_EXCLUSION_PATTERNS.cacheDirectories).toContain('~/.yarn/cache');
     });
 
     it('should have history files defined', () => {
-      expect(DEFAULT_EXCLUSION_PATTERNS.historyFiles).toContain(
-        '~/.bash_history'
-      );
-      expect(DEFAULT_EXCLUSION_PATTERNS.historyFiles).toContain(
-        '~/.zsh_history'
-      );
+      expect(DEFAULT_EXCLUSION_PATTERNS.historyFiles).toContain('~/.bash_history');
+      expect(DEFAULT_EXCLUSION_PATTERNS.historyFiles).toContain('~/.zsh_history');
       expect(DEFAULT_EXCLUSION_PATTERNS.historyFiles).toContain('~/.lesshst');
     });
 
     it('should have binary patterns defined', () => {
-      expect(DEFAULT_EXCLUSION_PATTERNS.binaryPatterns.length).toBeGreaterThan(
-        0
-      );
+      expect(DEFAULT_EXCLUSION_PATTERNS.binaryPatterns.length).toBeGreaterThan(0);
     });
 
     it('should have temp file patterns defined', () => {
@@ -186,6 +180,83 @@ describe('detect', () => {
         expect(shouldExcludeFile('~/.cache-config')).toBe(false); // Different from ~/.cache
         expect(shouldExcludeFile('~/.history-manager')).toBe(false);
       });
+    });
+
+    // ============================================================================
+    // Windows Compatibility Tests (Beta)
+    // ============================================================================
+    describe('Windows path handling', () => {
+      it('should handle Windows-style backslashes in cache paths', () => {
+        // shouldExcludeFile normalizes paths, so backslashes should work
+        expect(shouldExcludeFile('~\\.cache')).toBe(true);
+        expect(shouldExcludeFile('~\\.cache\\some\\nested\\file')).toBe(true);
+        expect(shouldExcludeFile('~\\.npm')).toBe(true);
+      });
+
+      it('should handle Windows-style backslashes in history paths', () => {
+        expect(shouldExcludeFile('~\\.bash_history')).toBe(true);
+        expect(shouldExcludeFile('~\\.zsh_history')).toBe(true);
+      });
+
+      it('should handle mixed separators', () => {
+        expect(shouldExcludeFile('~/.cache\\nested/deep\\file')).toBe(true);
+        expect(shouldExcludeFile('~\\.npm/_cacache')).toBe(true);
+      });
+
+      it('should NOT exclude Windows config files', () => {
+        expect(shouldExcludeFile('~\\.gitconfig')).toBe(false);
+        expect(shouldExcludeFile('~\\Documents\\PowerShell\\profile.ps1')).toBe(false);
+      });
+    });
+  });
+
+  // ============================================================================
+  // Detection Categories Tests
+  // ============================================================================
+  describe('DETECTION_CATEGORIES', () => {
+    it('should have Windows category defined', () => {
+      expect(DETECTION_CATEGORIES.windows).toBeDefined();
+      expect(DETECTION_CATEGORIES.windows.name).toBe('Windows');
+      expect(DETECTION_CATEGORIES.windows.description).toContain('beta');
+    });
+
+    it('should have all standard categories defined', () => {
+      expect(DETECTION_CATEGORIES.shell).toBeDefined();
+      expect(DETECTION_CATEGORIES.git).toBeDefined();
+      expect(DETECTION_CATEGORIES.editors).toBeDefined();
+      expect(DETECTION_CATEGORIES.terminal).toBeDefined();
+      expect(DETECTION_CATEGORIES.ssh).toBeDefined();
+      expect(DETECTION_CATEGORIES.macos).toBeDefined();
+      expect(DETECTION_CATEGORIES.misc).toBeDefined();
+    });
+  });
+
+  // ============================================================================
+  // Platform Detection Tests
+  // ============================================================================
+  describe('Platform detection', () => {
+    it('should have platform constants defined', () => {
+      // Exactly one of these should be true
+      const platforms = [IS_WINDOWS, IS_MACOS, IS_LINUX];
+      const truePlatforms = platforms.filter(Boolean);
+      expect(truePlatforms.length).toBe(1);
+    });
+
+    it('should detect current platform correctly', () => {
+      // This test verifies the platform matches process.platform
+      if (process.platform === 'win32') {
+        expect(IS_WINDOWS).toBe(true);
+        expect(IS_MACOS).toBe(false);
+        expect(IS_LINUX).toBe(false);
+      } else if (process.platform === 'darwin') {
+        expect(IS_WINDOWS).toBe(false);
+        expect(IS_MACOS).toBe(true);
+        expect(IS_LINUX).toBe(false);
+      } else if (process.platform === 'linux') {
+        expect(IS_WINDOWS).toBe(false);
+        expect(IS_MACOS).toBe(false);
+        expect(IS_LINUX).toBe(true);
+      }
     });
   });
 });

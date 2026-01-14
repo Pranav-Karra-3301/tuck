@@ -5,6 +5,7 @@ import { join, dirname, basename } from 'path';
 import { constants } from 'fs';
 import { FileNotFoundError, PermissionError } from '../errors.js';
 import { expandPath, pathExists, isDirectory } from './paths.js';
+import { IS_WINDOWS } from './platform.js';
 
 export interface FileInfo {
   path: string;
@@ -98,8 +99,8 @@ export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
 
   for (const entry of entries) {
     const entryPath = join(expandedPath, entry.name);
-    
-    const shouldSkip = skipPatterns.some(pattern => {
+
+    const shouldSkip = skipPatterns.some((pattern) => {
       if (pattern.includes('*')) {
         // Escape special regex characters (especially .) before replacing * with .*
         const escapedPattern = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
@@ -108,7 +109,7 @@ export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
       }
       return entry.name === pattern;
     });
-    
+
     if (shouldSkip) {
       continue;
     }
@@ -164,14 +165,14 @@ export const copyFileOrDir = async (
 
     if (sourceIsDir) {
       // Copy directory but skip .git and other problematic files
-      await copy(expandedSource, expandedDest, { 
+      await copy(expandedSource, expandedDest, {
         overwrite: shouldOverwrite,
         filter: (src: string) => {
           const name = basename(src);
           // Skip .git directories, node_modules, and cache directories
           const skipDirs = ['.git', 'node_modules', '.cache', '__pycache__', '.DS_Store'];
           return !skipDirs.includes(name);
-        }
+        },
       });
       const fileCount = await getDirectoryFileCount(expandedDest);
       const files = await getDirectoryFiles(expandedDest);
@@ -187,13 +188,29 @@ export const copyFileOrDir = async (
       const copyFlags = shouldOverwrite ? 0 : constants.COPYFILE_EXCL;
       await copyFile(expandedSource, expandedDest, copyFlags);
       const stats = await stat(expandedDest);
-      return { source: expandedSource, destination: expandedDest, fileCount: 1, totalSize: stats.size };
+      return {
+        source: expandedSource,
+        destination: expandedDest,
+        fileCount: 1,
+        totalSize: stats.size,
+      };
     }
   } catch (error) {
     throw new PermissionError(destination, 'write');
   }
 };
 
+/**
+ * Create a symbolic link (or junction on Windows for directories).
+ *
+ * On Windows:
+ * - Directories use 'junction' type (no admin privileges required)
+ * - Files use regular symlinks (may require Developer Mode or admin)
+ *
+ * @param target - The target path the symlink points to
+ * @param linkPath - The path where the symlink will be created
+ * @param options - Optional settings (overwrite existing)
+ */
 export const createSymlink = async (
   target: string,
   linkPath: string,
@@ -215,8 +232,28 @@ export const createSymlink = async (
   }
 
   try {
-    await symlink(expandedTarget, expandedLink);
+    // On Windows, use junctions for directories (no admin required)
+    // For files, use regular symlinks (may require Developer Mode)
+    if (IS_WINDOWS) {
+      const isDir = await isDirectory(expandedTarget);
+      if (isDir) {
+        // Junction requires absolute path and works without admin privileges
+        await symlink(expandedTarget, expandedLink, 'junction');
+      } else {
+        // File symlinks on Windows - may require Developer Mode or admin
+        await symlink(expandedTarget, expandedLink, 'file');
+      }
+    } else {
+      // Unix: regular symlinks work fine
+      await symlink(expandedTarget, expandedLink);
+    }
   } catch (error) {
+    if (IS_WINDOWS) {
+      throw new PermissionError(
+        linkPath,
+        'create symlink (Windows may require Administrator privileges or Developer Mode enabled)'
+      );
+    }
     throw new PermissionError(linkPath, 'create symlink');
   }
 };
@@ -253,10 +290,7 @@ export const moveFile = async (
   await deleteFileOrDir(source);
 };
 
-export const hasFileChanged = async (
-  file1: string,
-  file2: string
-): Promise<boolean> => {
+export const hasFileChanged = async (file1: string, file2: string): Promise<boolean> => {
   const expandedFile1 = expandPath(file1);
   const expandedFile2 = expandPath(file2);
 
@@ -277,7 +311,22 @@ export const getFilePermissions = async (filepath: string): Promise<string> => {
   return (stats.mode & 0o777).toString(8).padStart(3, '0');
 };
 
+/**
+ * Set file permissions using Unix-style octal mode.
+ *
+ * Note: On Windows, this function is a no-op because Windows uses
+ * a different security model (ACLs) that doesn't map directly to
+ * Unix permission modes.
+ *
+ * @param filepath - Path to the file
+ * @param mode - Octal permission mode (e.g., '644', '755')
+ */
 export const setFilePermissions = async (filepath: string, mode: string): Promise<void> => {
+  // Skip on Windows - different security model (ACLs vs Unix permissions)
+  if (IS_WINDOWS) {
+    return;
+  }
+
   const expandedPath = expandPath(filepath);
   const { chmod } = await import('fs/promises');
   await chmod(expandedPath, parseInt(mode, 8));

@@ -1,4 +1,5 @@
 import { readFile } from 'fs/promises';
+import { basename } from 'path';
 import { expandPath, pathExists } from './paths.js';
 
 /**
@@ -80,13 +81,13 @@ export interface ParsedFunction {
 }
 
 /**
- * Check if a file is a shell configuration file
+ * Check if a file is a shell configuration file.
+ * Works with both Unix and Windows path separators.
  */
 export const isShellFile = (filePath: string): boolean => {
-  const fileName = filePath.split('/').pop() || '';
-  return SHELL_FILE_PATTERNS.some(
-    (pattern) => fileName === pattern || fileName.endsWith(pattern)
-  );
+  // Use path.basename for cross-platform compatibility
+  const fileName = basename(filePath);
+  return SHELL_FILE_PATTERNS.some((pattern) => fileName === pattern || fileName.endsWith(pattern));
 };
 
 /**
@@ -186,7 +187,12 @@ export const findPreservedBlocks = (content: string): MergeBlock[] => {
       // Check if we should end the current block
       // End if: empty line followed by non-indented content, or end of file
       const isEndOfBlock =
-        (trimmedLine === '' && i + 1 < lines.length && !lines[i + 1].startsWith(' ') && !lines[i + 1].startsWith('\t') && lines[i + 1].trim() !== '' && !lines[i + 1].trim().startsWith('#')) ||
+        (trimmedLine === '' &&
+          i + 1 < lines.length &&
+          !lines[i + 1].startsWith(' ') &&
+          !lines[i + 1].startsWith('\t') &&
+          lines[i + 1].trim() !== '' &&
+          !lines[i + 1].trim().startsWith('#')) ||
         i === lines.length - 1;
 
       if (isEndOfBlock) {
@@ -344,9 +350,7 @@ export const generateMergePreview = async (
   }
 
   // Show export changes
-  const newExports = incomingExports.filter(
-    (e) => !localExports.find((l) => l.name === e.name)
-  );
+  const newExports = incomingExports.filter((e) => !localExports.find((l) => l.name === e.name));
   const changedExports = incomingExports.filter((e) => {
     const local = localExports.find((l) => l.name === e.name);
     return local && local.value !== e.value;
@@ -367,7 +371,9 @@ export const generateMergePreview = async (
     lines.push(`🔄 ${changedExports.length} export(s) will be updated:`);
     for (const exp of changedExports.slice(0, 5)) {
       const local = localExports.find((l) => l.name === exp.name);
-      lines.push(`   ~ ${exp.name}: "${local?.value.slice(0, 20)}..." → "${exp.value.slice(0, 20)}..."`);
+      lines.push(
+        `   ~ ${exp.name}: "${local?.value.slice(0, 20)}..." → "${exp.value.slice(0, 20)}..."`
+      );
     }
     if (changedExports.length > 5) {
       lines.push(`   ... and ${changedExports.length - 5} more`);

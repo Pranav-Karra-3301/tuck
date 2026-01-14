@@ -7,6 +7,7 @@ import {
   sanitizeFilename,
   generateFileId,
 } from '../../src/lib/paths.js';
+import { normalizePath, normalizeForComparison } from '../../src/lib/platform.js';
 
 describe('paths', () => {
   describe('expandPath', () => {
@@ -90,6 +91,68 @@ describe('paths', () => {
     it('should handle nested paths', () => {
       const id = generateFileId('~/.config/nvim');
       expect(id).toBe('config_nvim');
+    });
+
+    it('should handle Windows-style backslashes in paths', () => {
+      // generateFileId should handle both / and \ separators
+      const id = generateFileId('~\\.config\\nvim');
+      expect(id).toBe('config_nvim');
+    });
+  });
+
+  // ============================================================================
+  // Windows Compatibility Tests (Beta)
+  // These tests verify that path functions handle Windows-style paths correctly
+  // even when running on Unix systems. On actual Windows, ~ expands to %USERPROFILE%.
+  // ============================================================================
+  describe('Windows path compatibility', () => {
+    describe('normalizePath', () => {
+      it('should convert backslashes to forward slashes', () => {
+        expect(normalizePath('C:\\Users\\test\\.gitconfig')).toBe('C:/Users/test/.gitconfig');
+        expect(normalizePath('~\\.config\\nvim')).toBe('~/.config/nvim');
+      });
+
+      it('should not modify paths that already use forward slashes', () => {
+        expect(normalizePath('~/.config/nvim')).toBe('~/.config/nvim');
+        expect(normalizePath('/home/user/.zshrc')).toBe('/home/user/.zshrc');
+      });
+
+      it('should handle mixed separators', () => {
+        expect(normalizePath('~/.config\\nvim/init.lua')).toBe('~/.config/nvim/init.lua');
+      });
+    });
+
+    describe('normalizeForComparison', () => {
+      it('should normalize and remove trailing slashes', () => {
+        expect(normalizeForComparison('~/.config/')).toBe('~/.config');
+        expect(normalizeForComparison('~\\.config\\')).toBe('~/.config');
+      });
+    });
+
+    describe('expandPath with Windows-style paths', () => {
+      it('should expand ~\\ prefix (Windows backslash)', () => {
+        const home = homedir();
+        // expandPath should handle both ~/ and ~\
+        expect(expandPath('~\\.gitconfig')).toBe(`${home}/.gitconfig`);
+      });
+
+      it('should expand $HOME\\ prefix', () => {
+        const home = homedir();
+        expect(expandPath('$HOME\\.config')).toBe(`${home}/.config`);
+      });
+    });
+
+    describe('generateFileId with Windows paths', () => {
+      it('should handle Windows AppData-style paths', () => {
+        // These paths simulate what Windows users might have
+        const id = generateFileId('~/AppData/Roaming/Code/User/settings.json');
+        expect(id).toBe('AppData_Roaming_Code_User_settings-json');
+      });
+
+      it('should handle backslashes in nested paths', () => {
+        const id = generateFileId('~\\Documents\\PowerShell\\profile.ps1');
+        expect(id).toBe('Documents_PowerShell_profile-ps1');
+      });
     });
   });
 });

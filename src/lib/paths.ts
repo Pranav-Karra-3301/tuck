@@ -2,22 +2,73 @@ import { homedir } from 'os';
 import { join, basename, dirname, relative, isAbsolute, resolve, sep } from 'path';
 import { stat, access } from 'fs/promises';
 import { constants } from 'fs';
-import { DEFAULT_TUCK_DIR, FILES_DIR, MANIFEST_FILE, CONFIG_FILE, CATEGORIES } from '../constants.js';
+import {
+  DEFAULT_TUCK_DIR,
+  FILES_DIR,
+  MANIFEST_FILE,
+  CONFIG_FILE,
+  CATEGORIES,
+} from '../constants.js';
+import { IS_WINDOWS, expandWindowsEnvVars, normalizePath } from './platform.js';
 
+/**
+ * Expand a path with home directory or environment variable prefixes to an absolute path.
+ * Supports:
+ * - Unix: ~/, $HOME/
+ * - Windows: ~/, ~\, %USERPROFILE%, %APPDATA%, %LOCALAPPDATA%
+ *
+ * @param path - Path to expand
+ * @returns Absolute path with all prefixes resolved
+ */
 export const expandPath = (path: string): string => {
-  if (path.startsWith('~/')) {
+  // Handle Unix-style home directory (works on all platforms)
+  if (path.startsWith('~/') || path.startsWith('~\\')) {
     return join(homedir(), path.slice(2));
   }
-  if (path.startsWith('$HOME/')) {
+  // Handle $HOME (Unix style, but support on all platforms for portability)
+  if (path.startsWith('$HOME/') || path.startsWith('$HOME\\')) {
     return join(homedir(), path.slice(6));
+  }
+  // Handle Windows environment variables
+  if (IS_WINDOWS) {
+    // Check for %USERPROFILE% (case-insensitive)
+    if (path.toLowerCase().startsWith('%userprofile%')) {
+      const remainder = path.slice(13).replace(/^[/\\]/, '');
+      return join(homedir(), remainder);
+    }
+    // Expand other Windows environment variables (%APPDATA%, %LOCALAPPDATA%, etc.)
+    const expanded = expandWindowsEnvVars(path);
+    if (expanded !== path) {
+      return isAbsolute(expanded) ? expanded : resolve(expanded);
+    }
   }
   return isAbsolute(path) ? path : resolve(path);
 };
 
+/**
+ * Collapse an absolute path to use the ~ prefix for home directory.
+ * Always uses forward slashes after ~ for cross-platform manifest consistency.
+ *
+ * @param path - Absolute path to collapse
+ * @returns Path with home directory replaced by ~
+ */
 export const collapsePath = (path: string): string => {
   const home = homedir();
-  if (path.startsWith(home)) {
-    return '~' + path.slice(home.length);
+  // Normalize both paths for comparison on Windows
+  const normalizedPath = normalizePath(path);
+  const normalizedHome = normalizePath(home);
+
+  if (normalizedPath.startsWith(normalizedHome)) {
+    // Always use forward slash after ~ for cross-platform consistency
+    const relativePart = normalizedPath.slice(normalizedHome.length);
+    // Ensure the relative part starts with / (or is empty for home itself)
+    if (relativePart === '' || relativePart.startsWith('/')) {
+      return '~' + relativePart;
+    }
+    // Handle case where path is like /home/userextra (not actually under home)
+    if (relativePart.startsWith('/') || path.startsWith(home + sep)) {
+      return '~' + relativePart;
+    }
   }
   return path;
 };
@@ -154,14 +205,21 @@ export const isPathWithinHome = (path: string): boolean => {
 /**
  * Validate that a source path from a manifest is safe to use.
  * Throws an error if the path is unsafe (path traversal attempt).
+ * Works on both Unix and Windows paths.
  */
 export const validateSafeSourcePath = (source: string): void => {
+  // Normalize the path for consistent checking
+  const normalizedSource = normalizePath(source);
+  const normalizedHome = normalizePath(homedir());
+
   // Reject absolute paths that don't start with home-relative prefixes
-  if (isAbsolute(source) && !source.startsWith(homedir())) {
-    throw new Error(`Unsafe path detected: ${source} - absolute paths outside home directory are not allowed`);
+  if (isAbsolute(source) && !normalizedSource.startsWith(normalizedHome)) {
+    throw new Error(
+      `Unsafe path detected: ${source} - absolute paths outside home directory are not allowed`
+    );
   }
 
-  // Reject obvious path traversal attempts
+  // Reject obvious path traversal attempts (check both separators)
   if (source.includes('../') || source.includes('..\\')) {
     throw new Error(`Unsafe path detected: ${source} - path traversal is not allowed`);
   }
@@ -172,13 +230,21 @@ export const validateSafeSourcePath = (source: string): void => {
   }
 };
 
+/**
+ * Generate a unique file ID from a source path.
+ * Handles both Unix and Windows path separators.
+ *
+ * @param source - Source path to generate ID from
+ * @returns Unique, filesystem-safe ID
+ */
 export const generateFileId = (source: string): string => {
   // Create a unique ID from the source path
   const collapsed = collapsePath(source);
   // Remove special characters and create a readable ID
+  // Handle both / and \ path separators for cross-platform support
   return collapsed
-    .replace(/^~\//, '')
-    .replace(/\//g, '_')
-    .replace(/\./g, '-')
-    .replace(/^-/, '');
+    .replace(/^~[/\\]/, '') // Remove ~/ or ~\ prefix
+    .replace(/[/\\]/g, '_') // Replace path separators with underscore
+    .replace(/\./g, '-') // Replace dots with dashes
+    .replace(/^-/, ''); // Remove leading dash
 };

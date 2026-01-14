@@ -15,13 +15,21 @@ import type { TuckManifest } from '../types.js';
 import { findPlaceholders } from '../lib/secrets/index.js';
 
 /**
- * Fix permissions for SSH/GPG files after apply
+ * Fix permissions for SSH/GPG files after apply.
+ * On Windows, this is a no-op because Windows uses ACLs instead of Unix permissions.
  */
 const fixSecurePermissions = async (path: string): Promise<void> => {
+  // Skip on Windows - different security model (ACLs)
+  if (process.platform === 'win32') {
+    return;
+  }
+
   const collapsedPath = collapsePath(path);
+  // Normalize path for checking (handle both / and \)
+  const normalizedPath = collapsedPath.replace(/\\/g, '/');
 
   // Only fix permissions for SSH and GPG files
-  if (!collapsedPath.includes('.ssh/') && !collapsedPath.includes('.gnupg/')) {
+  if (!normalizedPath.includes('.ssh/') && !normalizedPath.includes('.gnupg/')) {
     return;
   }
 
@@ -34,7 +42,7 @@ const fixSecurePermissions = async (path: string): Promise<void> => {
       await chmod(path, 0o600);
     }
   } catch {
-    // Ignore permission errors (might be on Windows)
+    // Ignore permission errors
   }
 };
 
