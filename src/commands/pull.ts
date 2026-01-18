@@ -2,12 +2,51 @@ import { Command } from 'commander';
 import { prompts, logger, withSpinner, colors as c } from '../ui/index.js';
 import { getTuckDir } from '../lib/paths.js';
 import { loadManifest } from '../lib/manifest.js';
+import { loadConfig } from '../lib/config.js';
 import { pull, fetch, hasRemote, getRemoteUrl, getStatus, getCurrentBranch } from '../lib/git.js';
 import { NotInitializedError, GitError } from '../errors.js';
 import type { PullOptions } from '../types.js';
 
+/**
+ * Check if tuck is in local-only mode
+ */
+const checkLocalMode = async (tuckDir: string): Promise<boolean> => {
+  try {
+    const config = await loadConfig(tuckDir);
+    if (config.remote?.mode === 'local') {
+      return true;
+    }
+  } catch {
+    // Config not found or invalid - proceed with pull
+  }
+  return false;
+};
+
+/**
+ * Show local mode warning
+ */
+const showLocalModeWarning = async (): Promise<void> => {
+  prompts.log.warning('Tuck is configured for local-only mode (no remote sync).');
+  console.log();
+  prompts.note(
+    'Your dotfiles are tracked locally but not synced to a remote.\n\n' +
+      'To enable remote sync, run:\n' +
+      '  tuck config remote\n\n' +
+      'Or re-initialize with:\n' +
+      '  tuck init',
+    'Local Mode'
+  );
+};
+
 const runInteractivePull = async (tuckDir: string): Promise<void> => {
   prompts.intro('tuck pull');
+
+  // Check for local-only mode
+  if (await checkLocalMode(tuckDir)) {
+    await showLocalModeWarning();
+    prompts.outro('');
+    return;
+  }
 
   // Check if remote exists
   const hasRemoteRepo = await hasRemote(tuckDir);
@@ -88,6 +127,14 @@ const runPull = async (options: PullOptions): Promise<void> => {
     await loadManifest(tuckDir);
   } catch {
     throw new NotInitializedError();
+  }
+
+  // Check for local-only mode
+  if (await checkLocalMode(tuckDir)) {
+    throw new GitError(
+      'Cannot pull in local-only mode',
+      "Run 'tuck config remote' to configure a remote repository"
+    );
   }
 
   // If no options, run interactive

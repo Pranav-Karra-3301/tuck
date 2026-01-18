@@ -4,8 +4,11 @@ import { prompts, logger, banner, colors as c } from '../ui/index.js';
 import { getTuckDir, getConfigPath, collapsePath } from '../lib/paths.js';
 import { loadConfig, saveConfig, resetConfig } from '../lib/config.js';
 import { loadManifest } from '../lib/manifest.js';
+import { addRemote, removeRemote, hasRemote } from '../lib/git.js';
 import { NotInitializedError, ConfigError } from '../errors.js';
 import type { TuckConfigOutput } from '../schemas/config.schema.js';
+import { setupProvider } from '../lib/providerSetup.js';
+import { describeProviderConfig, getProvider } from '../lib/providers/index.js';
 
 /**
  * Configuration key metadata for validation and help
@@ -261,6 +264,14 @@ const runConfigReset = async (): Promise<void> => {
 const showConfigView = async (config: TuckConfigOutput): Promise<void> => {
   const configObj = config as unknown as Record<string, unknown>;
 
+  // Show remote configuration first
+  if (config.remote) {
+    console.log(c.bold.cyan('~ Remote Provider'));
+    console.log(c.dim('-'.repeat(40)));
+    console.log(`  ${describeProviderConfig(config.remote)}`);
+    console.log();
+  }
+
   const sections = [
     { key: 'repository', title: 'Repository Settings', icon: '*' },
     { key: 'files', title: 'File Management', icon: '>' },
@@ -426,6 +437,7 @@ const runInteractiveConfig = async (): Promise<void> => {
   const action = (await prompts.select('What would you like to do?', [
     { value: 'view', label: 'View current configuration', hint: 'See all settings' },
     { value: 'edit', label: 'Edit a setting', hint: 'Modify a specific value' },
+    { value: 'remote', label: 'Configure remote', hint: 'Set up GitHub, GitLab, or local mode' },
     { value: 'wizard', label: 'Run setup wizard', hint: 'Guided configuration' },
     { value: 'reset', label: 'Reset to defaults', hint: 'Restore default values' },
     { value: 'open', label: 'Open in editor', hint: `Edit with ${process.env.EDITOR || 'vim'}` },
@@ -440,6 +452,9 @@ const runInteractiveConfig = async (): Promise<void> => {
     case 'edit':
       await editConfigInteractive(config, tuckDir);
       break;
+    case 'remote':
+      await runConfigRemote();
+      return; // runConfigRemote has its own outro
     case 'wizard':
       await runConfigWizard(config, tuckDir);
       break;
@@ -451,6 +466,140 @@ const runInteractiveConfig = async (): Promise<void> => {
       break;
   }
 
+  prompts.outro('Done!');
+};
+
+/**
+ * Run the remote provider configuration flow
+ */
+const runConfigRemote = async (): Promise<void> => {
+  banner();
+  prompts.intro('tuck config remote');
+
+  const tuckDir = getTuckDir();
+  const config = await loadConfig(tuckDir);
+
+  // Show current configuration
+  if (config.remote) {
+    console.log();
+    console.log(c.dim('Current remote configuration:'));
+    console.log(`  ${describeProviderConfig(config.remote)}`);
+    console.log();
+  }
+
+  // Ask if they want to change
+  const shouldChange = await prompts.confirm('Configure remote provider?', true);
+
+  if (!shouldChange) {
+    prompts.outro('No changes made');
+    return;
+  }
+
+  // Run provider setup
+  const result = await setupProvider();
+
+  if (!result) {
+    prompts.outro('Configuration cancelled');
+    return;
+  }
+
+  // Update config with new remote settings
+  const updatedConfig: TuckConfigOutput = {
+    ...config,
+    remote: result.config,
+  };
+
+  await saveConfig(updatedConfig, tuckDir);
+
+  // If a remote URL was provided, update git remote
+  if (result.remoteUrl) {
+    try {
+      // Check if origin already exists
+      if (await hasRemote(tuckDir)) {
+        // Remove existing remote
+        await removeRemote(tuckDir, 'origin');
+      }
+      // Add new remote
+      await addRemote(tuckDir, 'origin', result.remoteUrl);
+      prompts.log.success('Git remote updated');
+    } catch (error) {
+      prompts.log.warning(
+        `Could not update git remote: ${error instanceof Error ? error.message : String(error)}`
+      );
+      prompts.log.info(`Manually add remote: git remote add origin ${result.remoteUrl}`);
+    }
+  }
+
+  // If switching to a provider that can create repos, offer to create one
+  if (result.mode !== 'local' && result.mode !== 'custom' && !result.remoteUrl) {
+    const shouldCreateRepo = await prompts.confirm(
+      'Would you like to create a repository now?',
+      true
+    );
+
+    if (shouldCreateRepo) {
+      const provider = getProvider(result.mode, result.config);
+
+      const repoName = await prompts.text('Repository name:', {
+        defaultValue: 'dotfiles',
+        placeholder: 'dotfiles',
+        validate: (value) => {
+          if (!value) return 'Repository name is required';
+          if (!/^[a-zA-Z0-9._-]+$/.test(value)) {
+            return 'Invalid repository name';
+          }
+          return undefined;
+        },
+      });
+
+      const visibility = await prompts.select('Repository visibility:', [
+        { value: 'private', label: 'Private (recommended)', hint: 'Only you can see it' },
+        { value: 'public', label: 'Public', hint: 'Anyone can see it' },
+      ]);
+
+      try {
+        const spinner = prompts.spinner();
+        spinner.start('Creating repository...');
+
+        const repo = await provider.createRepo({
+          name: repoName,
+          description: 'My dotfiles managed with tuck',
+          isPrivate: visibility === 'private',
+        });
+
+        spinner.stop(`Repository created: ${repo.fullName}`);
+
+        // Get preferred URL and add as remote
+        const remoteUrl = await provider.getPreferredRepoUrl(repo);
+
+        try {
+          if (await hasRemote(tuckDir)) {
+            await removeRemote(tuckDir, 'origin');
+          }
+          await addRemote(tuckDir, 'origin', remoteUrl);
+          prompts.log.success('Remote configured');
+        } catch (error) {
+          prompts.log.warning(
+            `Could not add remote: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+
+        // Update config with repo name
+        updatedConfig.remote = {
+          ...updatedConfig.remote,
+          repoName,
+        };
+        await saveConfig(updatedConfig, tuckDir);
+      } catch (error) {
+        prompts.log.error(
+          `Failed to create repository: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+  }
+
+  console.log();
+  prompts.log.success(`Remote configured: ${describeProviderConfig(result.config)}`);
   prompts.outro('Done!');
 };
 
@@ -525,5 +674,16 @@ export const configCommand = new Command('config')
         throw new NotInitializedError();
       }
       await runConfigReset();
+    })
+  )
+  .addCommand(
+    new Command('remote').description('Configure remote provider').action(async () => {
+      const tuckDir = getTuckDir();
+      try {
+        await loadManifest(tuckDir);
+      } catch {
+        throw new NotInitializedError();
+      }
+      await runConfigRemote();
     })
   );

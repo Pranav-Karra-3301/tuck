@@ -1,5 +1,22 @@
 export type FileStrategy = 'copy' | 'symlink';
 
+/** Supported git provider modes */
+export type ProviderMode = 'github' | 'gitlab' | 'local' | 'custom';
+
+/** Remote/provider configuration */
+export interface RemoteConfig {
+  /** Provider mode */
+  mode: ProviderMode;
+  /** Custom remote URL (for custom mode) */
+  url?: string;
+  /** Provider instance URL (for self-hosted GitLab, etc.) */
+  providerUrl?: string;
+  /** Cached username from provider */
+  username?: string;
+  /** Repository name */
+  repoName?: string;
+}
+
 export interface TuckConfig {
   repository: {
     path: string;
@@ -40,6 +57,8 @@ export interface TuckConfig {
     emoji: boolean;
     verbose: boolean;
   };
+  /** Remote/provider configuration */
+  remote?: RemoteConfig;
 }
 
 export interface TrackedFile {

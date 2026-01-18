@@ -3,6 +3,29 @@ import { securityConfigSchema } from './secrets.schema.js';
 
 export const fileStrategySchema = z.enum(['copy', 'symlink']);
 
+// ============================================================================
+// Remote/Provider Configuration
+// ============================================================================
+
+/** Supported git provider modes */
+export const providerModeSchema = z.enum(['github', 'gitlab', 'local', 'custom']);
+
+/** Remote configuration schema */
+export const remoteConfigSchema = z
+  .object({
+    /** Provider mode (github, gitlab, local, custom) */
+    mode: providerModeSchema.default('local'),
+    /** Custom remote URL (for custom mode or manual override) */
+    url: z.string().optional(),
+    /** Provider instance URL (for self-hosted GitLab, etc.) */
+    providerUrl: z.string().optional(),
+    /** Cached username from provider */
+    username: z.string().optional(),
+    /** Repository name (without owner) */
+    repoName: z.string().optional(),
+  })
+  .default({ mode: 'local' });
+
 export const categoryConfigSchema = z.object({
   patterns: z.array(z.string()),
   icon: z.string().optional(),
@@ -69,10 +92,15 @@ export const tuckConfigSchema = z.object({
     .default({}),
 
   security: securityConfigSchema,
+
+  /** Remote/provider configuration */
+  remote: remoteConfigSchema,
 });
 
 export type TuckConfigInput = z.input<typeof tuckConfigSchema>;
 export type TuckConfigOutput = z.output<typeof tuckConfigSchema>;
+export type ProviderMode = z.infer<typeof providerModeSchema>;
+export type RemoteConfigOutput = z.output<typeof remoteConfigSchema>;
 
 export const defaultConfig: TuckConfigOutput = {
   repository: {
@@ -109,5 +137,8 @@ export const defaultConfig: TuckConfigOutput = {
     excludePatterns: [],
     excludeFiles: [],
     maxFileSize: 10 * 1024 * 1024,
+  },
+  remote: {
+    mode: 'local',
   },
 };
