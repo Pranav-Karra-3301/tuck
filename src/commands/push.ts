@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { prompts, logger, withSpinner, colors as c } from '../ui/index.js';
 import { getTuckDir } from '../lib/paths.js';
 import { loadManifest } from '../lib/manifest.js';
+import { checkLocalMode, showLocalModeWarningForPush } from '../lib/remoteChecks.js';
 import {
   push,
   hasRemote,
@@ -15,6 +16,13 @@ import type { PushOptions } from '../types.js';
 
 const runInteractivePush = async (tuckDir: string): Promise<void> => {
   prompts.intro('tuck push');
+
+  // Check for local-only mode
+  if (await checkLocalMode(tuckDir)) {
+    await showLocalModeWarningForPush();
+    prompts.outro('');
+    return;
+  }
 
   // Check if remote exists
   const hasRemoteRepo = await hasRemote(tuckDir);
@@ -131,6 +139,14 @@ const runPush = async (options: PushOptions): Promise<void> => {
     await loadManifest(tuckDir);
   } catch {
     throw new NotInitializedError();
+  }
+
+  // Check for local-only mode
+  if (await checkLocalMode(tuckDir)) {
+    throw new GitError(
+      'Cannot push in local-only mode',
+      "Run 'tuck config remote' to configure a remote repository"
+    );
   }
 
   // If no options, run interactive

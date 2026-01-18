@@ -14,7 +14,7 @@ import {
 } from '../lib/paths.js';
 import { saveConfig } from '../lib/config.js';
 import { createManifest } from '../lib/manifest.js';
-import type { TuckManifest } from '../types.js';
+import type { TuckManifest, RemoteConfig } from '../types.js';
 import {
   initRepo,
   addRemote,
@@ -24,6 +24,12 @@ import {
   commit,
   push,
 } from '../lib/git.js';
+import {
+  setupProvider,
+  detectProviderFromUrl,
+  type ProviderSetupResult,
+} from '../lib/providerSetup.js';
+import { getProvider, describeProviderConfig, buildRemoteConfig } from '../lib/providers/index.js';
 import {
   isGhInstalled,
   isGhAuthenticated,
@@ -222,7 +228,7 @@ const createDefaultFiles = async (tuckDir: string, machine?: string): Promise<vo
 
 const initFromScratch = async (
   tuckDir: string,
-  options: { remote?: string; bare?: boolean }
+  options: { remote?: string; bare?: boolean; remoteConfig?: RemoteConfig }
 ): Promise<void> => {
   // Check if already initialized
   if (await pathExists(getManifestPath(tuckDir))) {
@@ -246,12 +252,13 @@ const initFromScratch = async (
     await createManifest(tuckDir, hostname);
   });
 
-  // Create config
+  // Create config with remote settings
   await withSpinner('Creating configuration...', async () => {
     await saveConfig(
       {
         ...defaultConfig,
         repository: { ...defaultConfig.repository, path: tuckDir },
+        remote: options.remoteConfig || defaultConfig.remote,
       },
       tuckDir
     );
@@ -1147,14 +1154,40 @@ const runInteractiveInit = async (): Promise<void> => {
     return;
   }
 
+  // ========== STEP 0: Provider Selection ==========
+  console.log();
+  let providerResult: ProviderSetupResult | null = null;
+
+  // Run provider selection and setup
+  providerResult = await setupProvider();
+
+  if (!providerResult) {
+    // User cancelled provider selection - use local mode
+    providerResult = {
+      success: true,
+      mode: 'local',
+      config: buildRemoteConfig('local'),
+      provider: getProvider('local'),
+    };
+  }
+
+  // Display the chosen provider
+  console.log();
+  prompts.log.info(`Provider: ${describeProviderConfig(providerResult.config)}`);
+
   // Flow control flags
   let skipExistingRepoQuestion = false;
-  let remoteUrl: string | null = null;
+  let remoteUrl: string | null = providerResult.remoteUrl || null;
   let existingRepoToUseAsRemote: string | null = null;
 
-  // Auto-detect existing GitHub dotfiles repository
+  // Auto-detect existing dotfiles repository (only for GitHub/GitLab providers)
+  const canSearchForRepos = providerResult.mode === 'github' || providerResult.mode === 'gitlab';
   const ghInstalled = await isGhInstalled();
-  const ghAuth = ghInstalled && (await isGhAuthenticated());
+  const ghAuth =
+    canSearchForRepos &&
+    providerResult.mode === 'github' &&
+    ghInstalled &&
+    (await isGhAuthenticated());
 
   if (ghAuth) {
     const spinner = prompts.spinner();
@@ -1324,8 +1357,8 @@ const runInteractiveInit = async (): Promise<void> => {
     }
   }
 
-  // Initialize from scratch
-  await initFromScratch(tuckDir, {});
+  // Initialize from scratch with provider config
+  await initFromScratch(tuckDir, { remoteConfig: providerResult.config });
 
   // If we have an existing repo to use as remote, set it up now
   if (existingRepoToUseAsRemote) {
@@ -1341,8 +1374,9 @@ const runInteractiveInit = async (): Promise<void> => {
     console.log();
   }
 
-  // ========== STEP 1: Remote Setup (if not already configured) ==========
-  if (!remoteUrl) {
+  // ========== STEP 1: Remote Setup (if not already configured and not local mode) ==========
+  // Skip remote setup if we already have a URL or if we're in local mode
+  if (!remoteUrl && providerResult.mode !== 'local') {
     const wantsRemote = await prompts.confirm(
       'Would you like to set up a remote repository?',
       true
@@ -1634,9 +1668,15 @@ const runInit = async (options: InitOptions): Promise<void> => {
   }
 
   // Initialize from scratch
+  // If remote URL is provided, detect provider from URL
+  const detectedConfig = options.remote
+    ? buildRemoteConfig(detectProviderFromUrl(options.remote), { url: options.remote })
+    : buildRemoteConfig('local');
+
   await initFromScratch(tuckDir, {
     remote: options.remote,
     bare: options.bare,
+    remoteConfig: detectedConfig,
   });
 
   logger.success(`Tuck initialized at ${collapsePath(tuckDir)}`);

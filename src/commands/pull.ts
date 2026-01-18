@@ -2,12 +2,20 @@ import { Command } from 'commander';
 import { prompts, logger, withSpinner, colors as c } from '../ui/index.js';
 import { getTuckDir } from '../lib/paths.js';
 import { loadManifest } from '../lib/manifest.js';
+import { checkLocalMode, showLocalModeWarningForPull } from '../lib/remoteChecks.js';
 import { pull, fetch, hasRemote, getRemoteUrl, getStatus, getCurrentBranch } from '../lib/git.js';
 import { NotInitializedError, GitError } from '../errors.js';
 import type { PullOptions } from '../types.js';
 
 const runInteractivePull = async (tuckDir: string): Promise<void> => {
   prompts.intro('tuck pull');
+
+  // Check for local-only mode
+  if (await checkLocalMode(tuckDir)) {
+    await showLocalModeWarningForPull();
+    prompts.outro('');
+    return;
+  }
 
   // Check if remote exists
   const hasRemoteRepo = await hasRemote(tuckDir);
@@ -88,6 +96,14 @@ const runPull = async (options: PullOptions): Promise<void> => {
     await loadManifest(tuckDir);
   } catch {
     throw new NotInitializedError();
+  }
+
+  // Check for local-only mode
+  if (await checkLocalMode(tuckDir)) {
+    throw new GitError(
+      'Cannot pull in local-only mode',
+      "Run 'tuck config remote' to configure a remote repository"
+    );
   }
 
   // If no options, run interactive
