@@ -48,8 +48,9 @@ const PRIVATE_IP_PATTERNS = [
  * @param provider Provider name for error messages
  * @throws Error if validation fails
  */
-export function validateRepoName(repoName: string, provider: string): void {
+export function validateRepoName(repoName: string, _provider: string): void {
   // Check for control characters and null bytes
+  // eslint-disable-next-line no-control-regex
   if (/[\x00-\x1F\x7F]/.test(repoName)) {
     throw new Error('Repository name contains invalid control characters');
   }
@@ -113,7 +114,7 @@ function validateHttpUrl(url: string, provider: string): void {
 /**
  * Validate SSH URL (git@host:path format)
  */
-function validateSshUrl(url: string, provider: string): void {
+function validateSshUrl(url: string, _provider: string): void {
   // Check for shell metacharacters before pattern matching
   if (/[;&|`$(){}[\]<>!#*?'"\\]/.test(url)) {
     throw new Error('URL contains invalid characters');
@@ -157,6 +158,7 @@ export function validateDescription(description: string, maxLength: number = 350
   }
 
   // Check for invalid characters including quotes, newlines, and shell metacharacters
+  // eslint-disable-next-line no-control-regex
   if (/[;&|`$(){}[\]<>!#*?'"\\n\r\t\x00-\x1F\x7F]/.test(description)) {
     throw new Error(
       'Description contains invalid characters. Cannot contain: ; & | ` $ ( ) { } [ ] < > ! # * ? \' " \\ newlines or control characters'
@@ -221,6 +223,7 @@ export function validateHostname(hostname: string): void {
  */
 export function validateGitUrl(url: string): boolean {
   // Check for control characters
+  // eslint-disable-next-line no-control-regex
   if (/[\x00-\x1F\x7F]/.test(url)) {
     return false;
   }

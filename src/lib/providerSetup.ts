@@ -15,7 +15,7 @@ import {
   type GitProvider,
   type ProviderOption,
 } from './providers/index.js';
-import { validateHostname, sanitizeErrorMessage } from './validation.js';
+import { validateHostname } from './validation.js';
 
 // ============================================================================
 // Types
