@@ -1,3 +1,5 @@
+<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
+
 # [1.7.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.6.0...v1.7.0) (2026-01-18)
 
 
@@ -11,8 +13,6 @@
 ### Features
 
 * add multi-provider support with provider abstraction layer ([44381c1](https://github.com/Pranav-Karra-3301/tuck/commit/44381c1f95862440ddaa06f853a5e2f457818ddb))
-
-<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
 # [1.6.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.5.2...v1.6.0) (2026-01-14)
 
