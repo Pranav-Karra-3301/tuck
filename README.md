@@ -13,13 +13,16 @@
 
 [Website](https://tuck.sh) · [Install](#installation) · [Quick Start](#quick-start) · [Commands](#commands)
 
+<img src="public/tuck_preview.png" alt="tuck preview" width="650">
+
 </div>
 
 ---
 
 ## Why tuck?
 
-- **One command to rule them all** — `tuck init` scans your system, lets you pick what to track, and syncs to GitHub
+- **One command to rule them all** — `tuck init` scans your system, lets you pick what to track, and syncs to your remote
+- **Multi-provider support** — GitHub, GitLab (including self-hosted), local-only, or any custom git remote
 - **Smart detection** — Auto-categorizes dotfiles (shell, git, editors, terminal, ssh, etc.)
 - **Beautiful CLI** — Gorgeous prompts, spinners, and progress bars powered by @clack/prompts
 - **Safe by default** — Creates backups before every operation, never overwrites without asking
@@ -53,11 +56,12 @@ tuck init
 
 That's it! `tuck init` does everything:
 
-1. Creates `~/.tuck` repository
-2. Scans your system for dotfiles
-3. Lets you select which to track
-4. Creates a GitHub repo (optional)
-5. Commits and pushes
+1. **Asks where to store** — GitHub, GitLab, local-only, or custom remote
+2. Creates `~/.tuck` repository
+3. Scans your system for dotfiles
+4. Lets you select which to track
+5. Creates a remote repo (if using GitHub/GitLab)
+6. Commits and pushes
 
 ### Ongoing workflow
 
@@ -114,10 +118,11 @@ tuck restore --all
 
 ### Configuration
 
-| Command              | Description                     |
-| -------------------- | ------------------------------- |
-| `tuck config`        | View/edit configuration         |
-| `tuck config wizard` | Interactive configuration setup |
+| Command              | Description                                  |
+| -------------------- | -------------------------------------------- |
+| `tuck config`        | View/edit configuration                      |
+| `tuck config remote` | Configure git provider (GitHub/GitLab/local) |
+| `tuck config wizard` | Interactive configuration setup              |
 
 ## How It Works
 
@@ -146,6 +151,39 @@ tuck stores your dotfiles in `~/.tuck`, organized by category:
 
 Run `tuck sync` anytime to detect changes and push. On a new machine, run `tuck apply username` to grab anyone's dotfiles.
 
+## Git Providers
+
+tuck supports multiple git hosting providers, detected automatically during setup:
+
+| Provider | CLI Required | Features |
+|----------|--------------|----------|
+| **GitHub** | `gh` | Auto-create repos, full integration |
+| **GitLab** | `glab` | Auto-create repos, self-hosted support |
+| **Local** | None | No remote sync, local git only |
+| **Custom** | None | Any git URL (Bitbucket, Gitea, etc.) |
+
+### Switching Providers
+
+```bash
+# Change provider anytime
+tuck config remote
+
+# Or via interactive config menu
+tuck config
+# → Select "Configure remote"
+```
+
+### Self-Hosted GitLab
+
+tuck supports self-hosted GitLab instances:
+
+```bash
+tuck init
+# → Select GitLab
+# → Select "Self-hosted"
+# → Enter your GitLab host (e.g., gitlab.company.com)
+```
+
 ## Configuration
 
 Configure tuck via `~/.tuck/.tuckrc.json` or `tuck config wizard`:
@@ -159,6 +197,10 @@ Configure tuck via `~/.tuck/.tuckrc.json` or `tuck config wizard`:
   "files": {
     "strategy": "copy",
     "backupOnRestore": true
+  },
+  "remote": {
+    "mode": "github",
+    "username": "your-username"
   }
 }
 ```
