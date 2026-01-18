@@ -1,3 +1,17 @@
+# [1.7.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.6.0...v1.7.0) (2026-01-18)
+
+
+### Bug Fixes
+
+* implement security hardening and code quality improvements ([58df03a](https://github.com/Pranav-Karra-3301/tuck/commit/58df03a6fdf9e1a7e3fb9c6b524d02b033a3c938))
+* resolve ESLint warnings in validation utilities ([fbbc76a](https://github.com/Pranav-Karra-3301/tuck/commit/fbbc76a01acb4f753d97885f4cc194a6af16276c))
+* restore provider parameter in validateRepoName ([66d9076](https://github.com/Pranav-Karra-3301/tuck/commit/66d9076571333704de3ac64486b4cf468c98b569))
+
+
+### Features
+
+* add multi-provider support with provider abstraction layer ([44381c1](https://github.com/Pranav-Karra-3301/tuck/commit/44381c1f95862440ddaa06f853a5e2f457818ddb))
+
 <img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
 # [1.6.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.5.2...v1.6.0) (2026-01-14)
