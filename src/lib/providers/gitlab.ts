@@ -15,6 +15,11 @@ import type {
   ProviderDetection,
 } from './types.js';
 import { ProviderError } from './types.js';
+import {
+  validateRepoName as validateRepoNameUtil,
+  validateDescription as validateDescriptionUtil,
+  sanitizeErrorMessage,
+} from '../validation.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -90,8 +95,9 @@ export class GitLabProvider implements GitProvider {
         name: data.name || null,
         email: data.email || null,
       };
-    } catch {
-      // Fallback: try to parse from auth status
+    } catch (error) {
+      // Primary API call failed - try fallback method
+      // This is expected if user doesn't have API access
       try {
         const { stdout, stderr } = await execFileAsync('glab', ['auth', 'status', '-h', this.host]);
         const output = stderr || stdout || '';
@@ -104,8 +110,9 @@ export class GitLabProvider implements GitProvider {
             email: null,
           };
         }
-      } catch {
-        // Ignore fallback errors
+      } catch (fallbackError) {
+        // Both methods failed - gracefully return null
+        // This allows the application to continue with limited user info
       }
       return null;
     }
@@ -178,19 +185,27 @@ export class GitLabProvider implements GitProvider {
       throw new ProviderError('Could not get GitLab user information', 'gitlab');
     }
 
+    // Validate inputs BEFORE checking if repo exists (to fail fast)
+    this.validateRepoName(options.name);
+
+    // Validate description if provided (improved validation)
+    if (options.description) {
+      try {
+        validateDescriptionUtil(options.description, 2000); // GitLab allows 2000 chars
+      } catch (error) {
+        throw new ProviderError(
+          error instanceof Error ? error.message : 'Invalid description',
+          'gitlab'
+        );
+      }
+    }
+
     const fullName = `${user.login}/${options.name}`;
 
     if (await this.repoExists(fullName)) {
       throw new ProviderError(`Repository "${fullName}" already exists`, 'gitlab', [
         `Use a different name or import the existing repo`,
       ]);
-    }
-
-    this.validateRepoName(options.name);
-
-    // Validate description if provided
-    if (options.description && /[;&|`$(){}[\]<>!#*?]/.test(options.description)) {
-      throw new ProviderError('Description contains invalid characters', 'gitlab');
     }
 
     const args: string[] = ['repo', 'create', options.name, '-h', this.host];
@@ -226,8 +241,9 @@ export class GitLabProvider implements GitProvider {
         isPrivate: options.isPrivate !== false,
       };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      throw new ProviderError(`Failed to create repository: ${errorMessage}`, 'gitlab', [
+      // Sanitize error message to prevent information disclosure
+      const sanitizedMessage = sanitizeErrorMessage(error, 'Failed to create repository');
+      throw new ProviderError(sanitizedMessage, 'gitlab', [
         `Try creating the repository manually at https://${this.host}/projects/new`,
       ]);
     }
@@ -388,22 +404,13 @@ https://docs.gitlab.com/ee/user/ssh.html`;
   // -------------------------------------------------------------------------
 
   private validateRepoName(repoName: string): void {
-    // Allow full URLs
-    if (repoName.includes('://') || repoName.startsWith('git@')) {
-      if (/[;&|`$(){}[\]<>!#*?]/.test(repoName.replace(/[/:@.]/g, ''))) {
-        throw new ProviderError(`Invalid repository URL: ${repoName}`, 'gitlab');
-      }
-      return;
-    }
-
-    // For owner/repo or repo format, validate strictly
-    // GitLab allows groups with slashes, so we're a bit more lenient
-    const validPattern = /^[a-zA-Z0-9._-]+(?:\/[a-zA-Z0-9._-]+)+$|^[a-zA-Z0-9._-]+$/;
-    if (!validPattern.test(repoName)) {
-      throw new ProviderError(`Invalid repository name: ${repoName}`, 'gitlab', [
-        'Repository names can only contain alphanumeric characters, hyphens, underscores, and dots',
-        'Format: "owner/repo", "group/subgroup/repo", or "repo"',
-      ]);
+    try {
+      validateRepoNameUtil(repoName, 'gitlab');
+    } catch (error) {
+      throw new ProviderError(
+        error instanceof Error ? error.message : 'Invalid repository name',
+        'gitlab'
+      );
     }
   }
 

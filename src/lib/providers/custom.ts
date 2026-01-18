@@ -15,6 +15,11 @@ import type {
   ProviderDetection,
 } from './types.js';
 import { ProviderError } from './types.js';
+import {
+  validateGitUrl as validateGitUrlUtil,
+  GIT_OPERATION_TIMEOUTS,
+  sanitizeErrorMessage,
+} from '../validation.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -115,7 +120,9 @@ export class CustomProvider implements GitProvider {
   async repoExists(repoUrl: string): Promise<boolean> {
     // Try to list remote refs to check if repo exists and is accessible
     try {
-      await execFileAsync('git', ['ls-remote', repoUrl], { timeout: 10000 });
+      await execFileAsync('git', ['ls-remote', repoUrl], {
+        timeout: GIT_OPERATION_TIMEOUTS.LS_REMOTE,
+      });
       return true;
     } catch {
       return false;
@@ -151,10 +158,22 @@ export class CustomProvider implements GitProvider {
 
   async cloneRepo(repoUrl: string, targetDir: string): Promise<void> {
     try {
-      await execFileAsync('git', ['clone', repoUrl, targetDir]);
+      await execFileAsync('git', ['clone', repoUrl, targetDir], {
+        timeout: GIT_OPERATION_TIMEOUTS.CLONE,
+        maxBuffer: 10 * 1024 * 1024, // 10MB output limit
+      });
     } catch (error) {
-      throw new ProviderError(`Failed to clone repository`, 'custom', [
-        String(error),
+      // Check if operation timed out
+      if (error && typeof error === 'object' && 'killed' in error && error.killed) {
+        throw new ProviderError('Clone operation timed out', 'custom', [
+          'The repository may be too large or the connection is too slow',
+          'Try using git clone directly for large repositories',
+        ]);
+      }
+
+      // Sanitize error message
+      const sanitizedMessage = sanitizeErrorMessage(error, 'Failed to clone repository');
+      throw new ProviderError(sanitizedMessage, 'custom', [
         'Check that the URL is correct and you have access',
         'You may need to set up SSH keys or credentials',
       ]);
@@ -176,8 +195,8 @@ export class CustomProvider implements GitProvider {
   }
 
   validateUrl(url: string): boolean {
-    // Accept any valid git URL
-    return this.isValidGitUrl(url);
+    // Use centralized validation with security checks
+    return validateGitUrlUtil(url);
   }
 
   buildRepoUrl(_username: string, _repoName: string, _protocol: 'ssh' | 'https'): string {
@@ -230,31 +249,6 @@ Or use git credential manager for more secure storage.`;
   // -------------------------------------------------------------------------
   // Private Helpers
   // -------------------------------------------------------------------------
-
-  private isValidGitUrl(url: string): boolean {
-    // SSH format: git@host:path.git or git@host:path
-    const sshPattern = /^git@[\w.-]+:[\w./-]+(?:\.git)?$/;
-
-    // SSH URL format: ssh://git@host/path
-    const sshUrlPattern = /^ssh:\/\/git@[\w.-]+\/[\w./-]+(?:\.git)?$/;
-
-    // HTTPS format: https://host/path.git or https://host/path
-    const httpsPattern = /^https?:\/\/[\w.-]+\/[\w./-]+(?:\.git)?$/;
-
-    // Git protocol: git://host/path
-    const gitPattern = /^git:\/\/[\w.-]+\/[\w./-]+(?:\.git)?$/;
-
-    // File path (local): /path/to/repo or file:///path/to/repo
-    const filePattern = /^(?:file:\/\/)?\/[\w./-]+$/;
-
-    return (
-      sshPattern.test(url) ||
-      sshUrlPattern.test(url) ||
-      httpsPattern.test(url) ||
-      gitPattern.test(url) ||
-      filePattern.test(url)
-    );
-  }
 
   private extractRepoName(url: string): string {
     // Remove .git suffix

@@ -15,6 +15,7 @@ import {
   type GitProvider,
   type ProviderOption,
 } from './providers/index.js';
+import { validateHostname, sanitizeErrorMessage } from './validation.js';
 
 // ============================================================================
 // Types
@@ -256,9 +257,8 @@ async function setupGitHubProvider(provider: GitProvider): Promise<ProviderSetup
 
       prompts.log.success(`Authenticated as @${recheck.authStatus.user?.login}`);
     } catch (error) {
-      prompts.log.error(
-        `Authentication failed: ${error instanceof Error ? error.message : String(error)}`
-      );
+      // Sanitize error message to prevent information disclosure
+      prompts.log.error('Authentication failed. Please try again or run `gh auth login` manually.');
       return null;
     }
   }
@@ -302,16 +302,22 @@ async function setupGitLabProvider(provider: GitProvider): Promise<ProviderSetup
     const host = await prompts.text('Enter your GitLab host:', {
       placeholder: 'gitlab.example.com',
       validate: (value) => {
-        if (!value) return 'Host is required';
-        // Basic hostname validation
-        if (!/^[\w.-]+$/.test(value)) {
-          return 'Invalid hostname format';
+        try {
+          validateHostname(value);
+          return undefined;
+        } catch (error) {
+          return error instanceof Error ? error.message : 'Invalid hostname';
         }
-        return undefined;
       },
     });
 
     providerUrl = `https://${host}`;
+
+    // Warn about self-signed certificates
+    prompts.log.info(
+      'For self-hosted instances with self-signed certificates, ' +
+        'you may need to configure git to skip SSL verification'
+    );
 
     // Create provider for this host
     const { GitLabProvider } = await import('./providers/gitlab.js');
@@ -388,9 +394,8 @@ async function setupGitLabProvider(provider: GitProvider): Promise<ProviderSetup
 
       prompts.log.success(`Authenticated as @${recheck.authStatus.user?.login}`);
     } catch (error) {
-      prompts.log.error(
-        `Authentication failed: ${error instanceof Error ? error.message : String(error)}`
-      );
+      // Sanitize error message to prevent information disclosure
+      prompts.log.error('Authentication failed. Please try again or run `glab auth login` manually.');
       return null;
     }
   }

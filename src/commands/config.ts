@@ -545,8 +545,9 @@ const runConfigRemote = async (): Promise<void> => {
         placeholder: 'dotfiles',
         validate: (value) => {
           if (!value) return 'Repository name is required';
-          if (!/^[a-zA-Z0-9._-]+$/.test(value)) {
-            return 'Invalid repository name';
+          // Ensure name starts and ends with alphanumeric
+          if (!/^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$/.test(value)) {
+            return 'Repository name must start and end with alphanumeric characters';
           }
           return undefined;
         },

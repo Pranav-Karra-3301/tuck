@@ -90,30 +90,38 @@ export async function detectProviders(): Promise<ProviderDetection[]> {
 export async function getProviderOptions(): Promise<ProviderOption[]> {
   const detections = await detectProviders();
 
+  // Create a Map for efficient lookups instead of repeated .find() calls
+  const detectionMap = new Map<ProviderMode, ProviderDetection>();
+  for (const detection of detections) {
+    detectionMap.set(detection.mode, detection);
+  }
+
+  const github = detectionMap.get('github');
+  const gitlab = detectionMap.get('gitlab');
+  const custom = detectionMap.get('custom');
+
   const options: ProviderOption[] = [
     {
       mode: 'github',
       displayName: 'GitHub',
       description: 'Store dotfiles on GitHub (recommended)',
-      available: detections.find((d) => d.mode === 'github')?.available ?? false,
+      available: github?.available ?? false,
       authStatus: {
-        authenticated:
-          detections.find((d) => d.mode === 'github')?.authStatus.authenticated ?? false,
-        username: detections.find((d) => d.mode === 'github')?.authStatus.user?.login,
+        authenticated: github?.authStatus.authenticated ?? false,
+        username: github?.authStatus.user?.login,
       },
-      unavailableReason: detections.find((d) => d.mode === 'github')?.unavailableReason,
+      unavailableReason: github?.unavailableReason,
     },
     {
       mode: 'gitlab',
       displayName: 'GitLab',
       description: 'Store dotfiles on GitLab (supports self-hosted)',
-      available: detections.find((d) => d.mode === 'gitlab')?.available ?? false,
+      available: gitlab?.available ?? false,
       authStatus: {
-        authenticated:
-          detections.find((d) => d.mode === 'gitlab')?.authStatus.authenticated ?? false,
-        username: detections.find((d) => d.mode === 'gitlab')?.authStatus.user?.login,
+        authenticated: gitlab?.authStatus.authenticated ?? false,
+        username: gitlab?.authStatus.user?.login,
       },
-      unavailableReason: detections.find((d) => d.mode === 'gitlab')?.unavailableReason,
+      unavailableReason: gitlab?.unavailableReason,
     },
     {
       mode: 'local',
@@ -125,7 +133,7 @@ export async function getProviderOptions(): Promise<ProviderOption[]> {
       mode: 'custom',
       displayName: 'Custom Remote',
       description: 'Use any git remote URL (Bitbucket, Gitea, etc.)',
-      available: detections.find((d) => d.mode === 'custom')?.available ?? true,
+      available: custom?.available ?? true,
     },
   ];
 

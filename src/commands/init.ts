@@ -24,7 +24,11 @@ import {
   commit,
   push,
 } from '../lib/git.js';
-import { setupProvider, type ProviderSetupResult } from '../lib/providerSetup.js';
+import {
+  setupProvider,
+  detectProviderFromUrl,
+  type ProviderSetupResult,
+} from '../lib/providerSetup.js';
 import { getProvider, describeProviderConfig, buildRemoteConfig } from '../lib/providers/index.js';
 import {
   isGhInstalled,
@@ -1666,14 +1670,7 @@ const runInit = async (options: InitOptions): Promise<void> => {
   // Initialize from scratch
   // If remote URL is provided, detect provider from URL
   const detectedConfig = options.remote
-    ? buildRemoteConfig(
-        options.remote.includes('github.com')
-          ? 'github'
-          : options.remote.includes('gitlab')
-            ? 'gitlab'
-            : 'custom',
-        { url: options.remote }
-      )
+    ? buildRemoteConfig(detectProviderFromUrl(options.remote), { url: options.remote })
     : buildRemoteConfig('local');
 
   await initFromScratch(tuckDir, {

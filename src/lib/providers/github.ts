@@ -14,6 +14,11 @@ import type {
   ProviderDetection,
 } from './types.js';
 import { ProviderError } from './types.js';
+import {
+  validateRepoName as validateRepoNameUtil,
+  validateDescription as validateDescriptionUtil,
+  sanitizeErrorMessage,
+} from '../validation.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -147,19 +152,27 @@ export class GitHubProvider implements GitProvider {
       throw new ProviderError('Could not get GitHub user information', 'github');
     }
 
+    // Validate inputs BEFORE checking if repo exists (to fail fast)
+    this.validateRepoName(options.name);
+
+    // Validate description if provided (improved validation)
+    if (options.description) {
+      try {
+        validateDescriptionUtil(options.description, 350);
+      } catch (error) {
+        throw new ProviderError(
+          error instanceof Error ? error.message : 'Invalid description',
+          'github'
+        );
+      }
+    }
+
     const fullName = `${user.login}/${options.name}`;
 
     if (await this.repoExists(fullName)) {
       throw new ProviderError(`Repository "${fullName}" already exists`, 'github', [
         `Use a different name or import the existing repo`,
       ]);
-    }
-
-    this.validateRepoName(options.name);
-
-    // Validate description if provided
-    if (options.description && /[;&|`$(){}[\]<>!#*?]/.test(options.description)) {
-      throw new ProviderError('Description contains invalid characters', 'github');
     }
 
     const args: string[] = ['repo', 'create', options.name];
@@ -189,8 +202,9 @@ export class GitHubProvider implements GitProvider {
         isPrivate: options.isPrivate !== false,
       };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      throw new ProviderError(`Failed to create repository: ${errorMessage}`, 'github', [
+      // Sanitize error message to prevent information disclosure
+      const sanitizedMessage = sanitizeErrorMessage(error, 'Failed to create repository');
+      throw new ProviderError(sanitizedMessage, 'github', [
         'Try creating the repository manually at github.com/new',
       ]);
     }
@@ -341,21 +355,13 @@ https://docs.github.com/en/authentication`;
   // -------------------------------------------------------------------------
 
   private validateRepoName(repoName: string): void {
-    // Allow full URLs
-    if (repoName.includes('://') || repoName.startsWith('git@')) {
-      if (/[;&|`$(){}[\]<>!#*?]/.test(repoName.replace(/[/:@.]/g, ''))) {
-        throw new ProviderError(`Invalid repository URL: ${repoName}`, 'github');
-      }
-      return;
-    }
-
-    // For owner/repo or repo format, validate strictly
-    const validPattern = /^[a-zA-Z0-9._-]+(?:\/[a-zA-Z0-9._-]+)?$/;
-    if (!validPattern.test(repoName)) {
-      throw new ProviderError(`Invalid repository name: ${repoName}`, 'github', [
-        'Repository names can only contain alphanumeric characters, hyphens, underscores, and dots',
-        'Format: "owner/repo" or "repo"',
-      ]);
+    try {
+      validateRepoNameUtil(repoName, 'github');
+    } catch (error) {
+      throw new ProviderError(
+        error instanceof Error ? error.message : 'Invalid repository name',
+        'github'
+      );
     }
   }
 
