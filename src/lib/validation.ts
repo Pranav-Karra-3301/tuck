@@ -48,7 +48,7 @@ const PRIVATE_IP_PATTERNS = [
  * @param provider Provider name for error messages
  * @throws Error if validation fails
  */
-export function validateRepoName(repoName: string, _provider: string): void {
+export function validateRepoName(repoName: string, provider: string): void {
   // Check for control characters and null bytes
   // eslint-disable-next-line no-control-regex
   if (/[\x00-\x1F\x7F]/.test(repoName)) {
