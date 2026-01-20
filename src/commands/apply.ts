@@ -4,7 +4,7 @@ import { readFile, rm, chmod, stat } from 'fs/promises';
 import { ensureDir, pathExists as fsPathExists } from 'fs-extra';
 import { tmpdir } from 'os';
 import { banner, prompts, logger, colors as c } from '../ui/index.js';
-import { expandPath, pathExists, collapsePath, validateSafeSourcePath } from '../lib/paths.js';
+import { expandPath, pathExists, collapsePath, validateSafeSourcePath, getTuckDir } from '../lib/paths.js';
 import { cloneRepo } from '../lib/git.js';
 import { isGhInstalled, findDotfilesRepo, ghCloneRepo, repoExists } from '../lib/github.js';
 import { createPreApplySnapshot } from '../lib/timemachine.js';
@@ -12,7 +12,7 @@ import { smartMerge, isShellFile, generateMergePreview } from '../lib/merge.js';
 import { copyFileOrDir } from '../lib/files.js';
 import { CATEGORIES } from '../constants.js';
 import type { TuckManifest } from '../types.js';
-import { findPlaceholders } from '../lib/secrets/index.js';
+import { findPlaceholders, restoreFiles as restoreSecrets, getAllSecrets, getSecretCount } from '../lib/secrets/index.js';
 
 /**
  * Fix permissions for SSH/GPG files after apply
@@ -330,6 +330,86 @@ const displayPlaceholderWarnings = (
 };
 
 /**
+ * Attempt to restore secrets from local store for files with placeholders
+ * Returns info about what was restored
+ */
+const tryRestoreSecretsFromLocalStore = async (
+  filesWithPlaceholders: ApplyResult['filesWithPlaceholders'],
+  interactive: boolean
+): Promise<{ restored: number; unresolved: string[] }> => {
+  if (filesWithPlaceholders.length === 0) {
+    return { restored: 0, unresolved: [] };
+  }
+
+  const allPlaceholders = filesWithPlaceholders.flatMap(f => f.placeholders);
+
+  // Check if local tuck is initialized and has secrets
+  let tuckDir: string;
+  try {
+    tuckDir = getTuckDir();
+  } catch {
+    // Tuck not initialized locally - can't restore secrets
+    return { restored: 0, unresolved: allPlaceholders };
+  }
+
+  try {
+    // Check if we have any secrets stored locally
+    const secretCount = await getSecretCount(tuckDir);
+    if (secretCount === 0) {
+      return { restored: 0, unresolved: allPlaceholders };
+    }
+
+    // Get all stored secrets
+    const secrets = await getAllSecrets(tuckDir);
+    const secretNames = new Set(Object.keys(secrets));
+
+    // Check which placeholders can be resolved
+    const uniquePlaceholders = new Set(allPlaceholders);
+    const resolvable = [...uniquePlaceholders].filter(p => secretNames.has(p));
+
+    if (resolvable.length === 0) {
+      return { restored: 0, unresolved: [...uniquePlaceholders] };
+    }
+
+    // In interactive mode, ask if user wants to restore
+    if (interactive) {
+      console.log();
+      prompts.log.info(`Found ${resolvable.length} placeholder${resolvable.length > 1 ? 's' : ''} that can be restored from local secrets store.`);
+
+      const shouldRestore = await prompts.confirm(
+        'Would you like to restore secrets from your local store?',
+        true
+      );
+
+      if (!shouldRestore) {
+        return { restored: 0, unresolved: [...uniquePlaceholders] };
+      }
+    }
+
+    // Restore secrets in the applied files
+    const pathsToRestore = filesWithPlaceholders.map(f => expandPath(f.path));
+    const result = await restoreSecrets(pathsToRestore, tuckDir);
+
+    if (interactive && result.totalRestored > 0) {
+      prompts.log.success(`Restored ${result.totalRestored} secret${result.totalRestored > 1 ? 's' : ''} from local store`);
+    }
+
+    return {
+      restored: result.totalRestored,
+      unresolved: result.allUnresolved,
+    };
+  } catch (error) {
+    // Secret restoration failed - log warning but don't fail the apply
+    if (interactive) {
+      prompts.log.warning('Failed to restore secrets from local store');
+    } else {
+      logger.warning('Failed to restore secrets from local store');
+    }
+    return { restored: 0, unresolved: allPlaceholders };
+  }
+};
+
+/**
  * Run interactive apply flow
  */
 const runInteractiveApply = async (source: string, options: ApplyOptions): Promise<void> => {
@@ -503,6 +583,11 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
     // Show placeholder warnings
     displayPlaceholderWarnings(applyResult.filesWithPlaceholders);
 
+    // Try to restore secrets from local store (only in non-dry-run mode)
+    if (!options.dryRun && applyResult.filesWithPlaceholders.length > 0) {
+      await tryRestoreSecretsFromLocalStore(applyResult.filesWithPlaceholders, true);
+    }
+
     if (!options.dryRun) {
       console.log();
       prompts.note(
@@ -592,6 +677,17 @@ const runApply = async (source: string, options: ApplyOptions): Promise<void> =>
 
     // Show placeholder warnings
     displayPlaceholderWarnings(applyResult.filesWithPlaceholders);
+
+    // Try to restore secrets from local store (automatically in non-interactive mode)
+    if (!options.dryRun && applyResult.filesWithPlaceholders.length > 0) {
+      const secretResult = await tryRestoreSecretsFromLocalStore(applyResult.filesWithPlaceholders, false);
+      if (secretResult.restored > 0) {
+        logger.success(`Restored ${secretResult.restored} secret${secretResult.restored > 1 ? 's' : ''} from local store`);
+      }
+      if (secretResult.unresolved.length > 0) {
+        logger.warning(`${secretResult.unresolved.length} placeholder${secretResult.unresolved.length > 1 ? 's remain' : ' remains'} unresolved`);
+      }
+    }
 
     if (!options.dryRun) {
       logger.info('To undo: tuck restore --latest');

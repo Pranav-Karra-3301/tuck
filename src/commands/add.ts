@@ -27,6 +27,7 @@ import { addToTuckignore, isIgnored } from '../lib/tuckignore.js';
 import { loadConfig } from '../lib/config.js';
 import {
   scanForSecrets,
+  shouldBlockOnSecrets,
   processSecretsForRedaction,
   redactFile,
   getSecretsPath,
@@ -533,11 +534,19 @@ export const addFilesFromPaths = async (
       const summary = await scanForSecrets(filePaths, tuckDir);
 
       if (summary.filesWithSecrets > 0) {
-        // Throw error to prevent silently adding files with secrets
-        const filesWithSecrets = summary.results
-          .filter((r) => r.hasSecrets)
-          .map((r) => collapsePath(r.path));
-        throw new SecretsDetectedError(summary.totalSecrets, filesWithSecrets);
+        // Check if we should block or just warn
+        const shouldBlock = await shouldBlockOnSecrets(tuckDir);
+        if (shouldBlock) {
+          // Throw error to prevent silently adding files with secrets
+          const filesWithSecrets = summary.results
+            .filter((r) => r.hasSecrets)
+            .map((r) => collapsePath(r.path));
+          throw new SecretsDetectedError(summary.totalSecrets, filesWithSecrets);
+        } else {
+          // Warn but continue
+          logger.warning('Secrets detected but blockOnSecrets is disabled - proceeding with add');
+          logger.warning('Make sure your repository is private!');
+        }
       }
     }
   }
