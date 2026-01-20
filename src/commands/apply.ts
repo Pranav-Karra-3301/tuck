@@ -1,18 +1,19 @@
 import { Command } from 'commander';
-import { join } from 'path';
-import { readFile, rm, chmod, stat } from 'fs/promises';
+import { join, dirname } from 'path';
+import { readFile, writeFile, rm, chmod, stat } from 'fs/promises';
 import { ensureDir, pathExists as fsPathExists } from 'fs-extra';
 import { tmpdir } from 'os';
 import { banner, prompts, logger, colors as c } from '../ui/index.js';
-import { expandPath, pathExists, collapsePath, validateSafeSourcePath } from '../lib/paths.js';
+import { expandPath, pathExists, collapsePath, validateSafeSourcePath, getTuckDir } from '../lib/paths.js';
 import { cloneRepo } from '../lib/git.js';
 import { isGhInstalled, findDotfilesRepo, ghCloneRepo, repoExists } from '../lib/github.js';
 import { createPreApplySnapshot } from '../lib/timemachine.js';
 import { smartMerge, isShellFile, generateMergePreview } from '../lib/merge.js';
-import { copyFileOrDir } from '../lib/files.js';
 import { CATEGORIES } from '../constants.js';
 import type { TuckManifest } from '../types.js';
-import { findPlaceholders } from '../lib/secrets/index.js';
+import { findPlaceholders, restoreContent } from '../lib/secrets/index.js';
+import { createResolver } from '../lib/secretBackends/index.js';
+import { loadConfig } from '../lib/config.js';
 
 /**
  * Fix permissions for SSH/GPG files after apply
@@ -177,6 +178,47 @@ const prepareFilesToApply = async (
 };
 
 /**
+ * Resolve placeholders in file content using the configured backend
+ * @returns Object with resolved content and any unresolved placeholder names
+ */
+const resolveFileSecrets = async (
+  content: string,
+  tuckDir: string
+): Promise<{ content: string; unresolved: string[] }> => {
+  const placeholders = findPlaceholders(content);
+
+  if (placeholders.length === 0) {
+    return { content, unresolved: [] };
+  }
+
+  try {
+    const config = await loadConfig(tuckDir);
+    const resolver = createResolver(tuckDir, config.security);
+
+    // Resolve all placeholders
+    // Use failOnAuthRequired to prevent interactive prompts during apply
+    const secrets = await resolver.resolveToMap(placeholders, { failOnAuthRequired: true });
+
+    // Replace placeholders with resolved values
+    const result = restoreContent(content, secrets);
+
+    return {
+      content: result.restoredContent,
+      unresolved: result.unresolved,
+    };
+  } catch (error) {
+    // If resolver fails, log the error and return original content with all placeholders as unresolved
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.debug?.(`Secret resolution failed: ${errorMsg}`);
+    logger.warning?.(
+      `Failed to resolve secrets for file content. ${placeholders.length} placeholder(s) will remain unresolved. ` +
+        `Reason: ${errorMsg}`
+    );
+    return { content, unresolved: placeholders };
+  }
+};
+
+/**
  * Apply files with merge strategy
  */
 const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<ApplyResult> => {
@@ -185,15 +227,21 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
     filesWithPlaceholders: [],
   };
 
-  for (const file of files) {
-    const fileContent = await readFile(file.repoPath, 'utf-8');
+  // Get tuck directory for secret resolution
+  const tuckDir = getTuckDir();
 
-    // Check for placeholders that need secret values
-    const placeholders = findPlaceholders(fileContent);
-    if (placeholders.length > 0) {
+  for (const file of files) {
+    let fileContent = await readFile(file.repoPath, 'utf-8');
+
+    // Resolve placeholders using configured backend (1Password, Bitwarden, pass, or local)
+    const secretsResult = await resolveFileSecrets(fileContent, tuckDir);
+    fileContent = secretsResult.content;
+
+    // Track only unresolved placeholders
+    if (secretsResult.unresolved.length > 0) {
       result.filesWithPlaceholders.push({
         path: collapsePath(file.destination),
-        placeholders,
+        placeholders: secretsResult.unresolved,
       });
     }
 
@@ -207,10 +255,6 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
           `${collapsePath(file.destination)} (${mergeResult.preservedBlocks} blocks preserved)`
         );
       } else {
-        const { writeFile } = await import('fs/promises');
-        const { ensureDir } = await import('fs-extra');
-        const { dirname } = await import('path');
-
         await ensureDir(dirname(file.destination));
         await writeFile(file.destination, mergeResult.content, 'utf-8');
         logger.file('merge', collapsePath(file.destination));
@@ -225,7 +269,9 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
         }
       } else {
         const fileExists = await pathExists(file.destination);
-        await copyFileOrDir(file.repoPath, file.destination, { overwrite: true });
+        // Write file content directly instead of copying (to preserve resolved secrets)
+        await ensureDir(dirname(file.destination));
+        await writeFile(file.destination, fileContent, 'utf-8');
         await fixSecurePermissions(file.destination);
         logger.file(fileExists ? 'modify' : 'add', collapsePath(file.destination));
       }
@@ -246,14 +292,21 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
     filesWithPlaceholders: [],
   };
 
+  // Get tuck directory for secret resolution
+  const tuckDir = getTuckDir();
+
   for (const file of files) {
-    // Check for placeholders that need secret values
-    const fileContent = await readFile(file.repoPath, 'utf-8');
-    const placeholders = findPlaceholders(fileContent);
-    if (placeholders.length > 0) {
+    let fileContent = await readFile(file.repoPath, 'utf-8');
+
+    // Resolve placeholders using configured backend (1Password, Bitwarden, pass, or local)
+    const secretsResult = await resolveFileSecrets(fileContent, tuckDir);
+    fileContent = secretsResult.content;
+
+    // Track only unresolved placeholders
+    if (secretsResult.unresolved.length > 0) {
       result.filesWithPlaceholders.push({
         path: collapsePath(file.destination),
-        placeholders,
+        placeholders: secretsResult.unresolved,
       });
     }
 
@@ -265,7 +318,9 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
       }
     } else {
       const fileExists = await pathExists(file.destination);
-      await copyFileOrDir(file.repoPath, file.destination, { overwrite: true });
+      // Write file content directly instead of copying (to preserve resolved secrets)
+      await ensureDir(dirname(file.destination));
+      await writeFile(file.destination, fileContent, 'utf-8');
       await fixSecurePermissions(file.destination);
       logger.file(fileExists ? 'modify' : 'add', collapsePath(file.destination));
     }
