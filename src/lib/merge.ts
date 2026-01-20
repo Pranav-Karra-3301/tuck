@@ -1,10 +1,13 @@
 import { readFile } from 'fs/promises';
+import { basename } from 'path';
 import { expandPath, pathExists } from './paths.js';
 
 /**
  * Markers that indicate content should be preserved during merge
+ * Includes both Unix shell (#) and PowerShell (<# #>) comment styles
  */
 const PRESERVE_MARKERS = [
+  // Unix shell style comments
   '# local',
   '# LOCAL',
   '# machine-specific',
@@ -19,12 +22,20 @@ const PRESERVE_MARKERS = [
   '# tuck:preserve',
   '# tuck:keep',
   '# tuck:local',
+  // PowerShell block comment style
+  '<# local #>',
+  '<# LOCAL #>',
+  '<# tuck:preserve #>',
+  '<# tuck:keep #>',
+  '<# tuck:local #>',
 ];
 
 /**
  * Shell file patterns that are known to be shell configuration
+ * Includes both Unix shells and Windows PowerShell
  */
 const SHELL_FILE_PATTERNS = [
+  // Unix shells
   '.zshrc',
   '.bashrc',
   '.bash_profile',
@@ -34,7 +45,16 @@ const SHELL_FILE_PATTERNS = [
   '.bash_aliases',
   '.aliases',
   '.functions',
+  'config.fish',  // Fish shell
+  // Windows PowerShell
+  'Microsoft.PowerShell_profile.ps1',
+  'profile.ps1',
 ];
+
+/**
+ * PowerShell file extensions for special handling
+ */
+const POWERSHELL_EXTENSIONS = ['.ps1', '.psm1', '.psd1'];
 
 export interface MergeBlock {
   type: 'preserved' | 'incoming' | 'local';
@@ -83,10 +103,18 @@ export interface ParsedFunction {
  * Check if a file is a shell configuration file
  */
 export const isShellFile = (filePath: string): boolean => {
-  const fileName = filePath.split('/').pop() || '';
+  const fileName = basename(filePath);
   return SHELL_FILE_PATTERNS.some(
     (pattern) => fileName === pattern || fileName.endsWith(pattern)
   );
+};
+
+/**
+ * Check if a file is a PowerShell script
+ */
+export const isPowerShellFile = (filePath: string): boolean => {
+  const fileName = basename(filePath).toLowerCase();
+  return POWERSHELL_EXTENSIONS.some((ext) => fileName.endsWith(ext));
 };
 
 /**

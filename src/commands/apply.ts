@@ -13,15 +13,32 @@ import { copyFileOrDir } from '../lib/files.js';
 import { CATEGORIES } from '../constants.js';
 import type { TuckManifest } from '../types.js';
 import { findPlaceholders } from '../lib/secrets/index.js';
+import { IS_WINDOWS } from '../lib/platform.js';
+
+// Track if Windows permission warning has been shown this session
+let windowsPermissionWarningShown = false;
 
 /**
  * Fix permissions for SSH/GPG files after apply
+ * On Windows, Unix-style permissions don't apply, so we log a warning instead
  */
 const fixSecurePermissions = async (path: string): Promise<void> => {
   const collapsedPath = collapsePath(path);
 
   // Only fix permissions for SSH and GPG files
   if (!collapsedPath.includes('.ssh/') && !collapsedPath.includes('.gnupg/')) {
+    return;
+  }
+
+  // On Windows, chmod is limited and Unix-style permissions don't apply
+  if (IS_WINDOWS) {
+    if (!windowsPermissionWarningShown) {
+      logger.warning(
+        'Note: On Windows, file permissions cannot be restricted like on Unix systems. ' +
+        'Ensure your SSH/GPG files are stored in a secure location.'
+      );
+      windowsPermissionWarningShown = true;
+    }
     return;
   }
 
@@ -34,7 +51,7 @@ const fixSecurePermissions = async (path: string): Promise<void> => {
       await chmod(path, 0o600);
     }
   } catch {
-    // Ignore permission errors (might be on Windows)
+    // Ignore permission errors
   }
 };
 

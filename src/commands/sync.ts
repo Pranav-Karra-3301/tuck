@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { join } from 'path';
+import { join, basename } from 'path';
 import { prompts, logger, withSpinner, colors as c } from '../ui/index.js';
 import { getTuckDir, expandPath, pathExists, collapsePath } from '../lib/paths.js';
 import {
@@ -231,7 +231,7 @@ const syncFiles = async (
           });
         }
       });
-      result.modified.push(change.path.split('/').pop() || change.path);
+      result.modified.push(basename(change.path) || change.path);
     } else if (change.status === 'deleted') {
       await withSpinner(`Removing ${change.path}...`, async () => {
         // Delete the file from the tuck repository
@@ -245,7 +245,7 @@ const syncFiles = async (
           await removeFileFromManifest(tuckDir, fileId);
         }
       });
-      result.deleted.push(change.path.split('/').pop() || change.path);
+      result.deleted.push(basename(change.path) || change.path);
     }
   }
 

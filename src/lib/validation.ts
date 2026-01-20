@@ -4,6 +4,8 @@
  * Centralized validation functions with security-hardened checks.
  */
 
+import { IS_WINDOWS } from './platform.js';
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -15,7 +17,7 @@ export const GIT_OPERATION_TIMEOUTS = {
   PUSH: 60000, // 1 minute
 } as const;
 
-const BLOCKED_SYSTEM_PATHS = [
+const BLOCKED_SYSTEM_PATHS_UNIX = [
   '/etc/',
   '/proc/',
   '/sys/',
@@ -25,6 +27,32 @@ const BLOCKED_SYSTEM_PATHS = [
   '/var/run/',
   '/var/log/',
 ] as const;
+
+const BLOCKED_SYSTEM_PATHS_WINDOWS = [
+  'C:\\Windows\\',
+  'C:\\Windows\\System32\\',
+  'C:\\Windows\\SysWOW64\\',
+  'C:\\Program Files\\',
+  'C:\\Program Files (x86)\\',
+  'C:\\ProgramData\\',
+  // Also block with forward slashes for URL-style paths
+  'C:/Windows/',
+  'C:/Windows/System32/',
+  'C:/Windows/SysWOW64/',
+  'C:/Program Files/',
+  'C:/Program Files (x86)/',
+  'C:/ProgramData/',
+] as const;
+
+/**
+ * Get blocked system paths for the current platform
+ */
+const getBlockedSystemPaths = (): readonly string[] => {
+  if (IS_WINDOWS) {
+    return BLOCKED_SYSTEM_PATHS_WINDOWS;
+  }
+  return BLOCKED_SYSTEM_PATHS_UNIX;
+};
 
 const PRIVATE_IP_PATTERNS = [
   /^localhost$/i,
@@ -270,25 +298,54 @@ function validateFileUrl(url: string): boolean {
   const path = url.replace(/^file:\/\//, '');
 
   // Block sensitive system paths
-  for (const blockedPath of BLOCKED_SYSTEM_PATHS) {
-    if (path.startsWith(blockedPath)) {
-      return false;
+  const blockedPaths = getBlockedSystemPaths();
+  for (const blockedPath of blockedPaths) {
+    // Case-insensitive comparison for Windows
+    if (IS_WINDOWS) {
+      if (path.toLowerCase().startsWith(blockedPath.toLowerCase())) {
+        return false;
+      }
+    } else {
+      if (path.startsWith(blockedPath)) {
+        return false;
+      }
     }
   }
 
-  // Block path traversal
-  if (path.includes('../') || path.includes('/..')) {
+  // Block path traversal (both Unix and Windows style)
+  if (path.includes('../') || path.includes('/..') || path.includes('..\\') || path.includes('\\..')) {
     return false;
   }
 
   // Require absolute paths
-  if (!path.startsWith('/')) {
-    return false;
-  }
+  if (IS_WINDOWS) {
+    // Windows absolute path: drive letter (C:\, D:\, etc.) or UNC path (\\server\share)
+    const hasDriveLetter = /^[A-Za-z]:[/\\]/.test(path);
+    const isUncPath = path.startsWith('\\\\');
 
-  // Basic path pattern
-  const filePattern = /^\/[a-zA-Z0-9._/-]+$/;
-  return filePattern.test(path);
+    if (!hasDriveLetter && !isUncPath) {
+      return false;
+    }
+
+    // Validate UNC paths separately (\\server\share format)
+    if (isUncPath) {
+      // UNC path pattern: \\server\share followed by optional path
+      // Server and share names can contain alphanumeric, dots, hyphens
+      const uncPattern = /^\\\\[a-zA-Z0-9._-]+\\[a-zA-Z0-9._ -]+([/\\][a-zA-Z0-9._ /\\-]*)?$/;
+      return uncPattern.test(path);
+    }
+
+    // Allow Windows paths with drive letters (spaces are common in Windows paths)
+    const windowsFilePattern = /^[A-Za-z]:[/\\][a-zA-Z0-9._ /\\-]+$/;
+    return windowsFilePattern.test(path);
+  } else {
+    if (!path.startsWith('/')) {
+      return false;
+    }
+    // Basic path pattern for Unix
+    const filePattern = /^\/[a-zA-Z0-9._/-]+$/;
+    return filePattern.test(path);
+  }
 }
 
 // ============================================================================

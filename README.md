@@ -27,22 +27,26 @@
 - **Beautiful CLI** — Gorgeous prompts, spinners, and progress bars powered by @clack/prompts
 - **Safe by default** — Creates backups before every operation, never overwrites without asking
 - **Git-native** — Uses Git under the hood but hides the complexity
-- **Cross-platform** — Works on macOS and Linux
+- **Cross-platform** — Works on macOS, Linux, and Windows
 
 ## Installation
 
 ```bash
-# npm
+# npm (all platforms)
 npm install -g @prnv/tuck
 
 # Homebrew (macOS/Linux)
 brew install prnv/tap/tuck
 
-# pnpm
+# pnpm (all platforms)
 pnpm add -g @prnv/tuck
 
-# yarn
+# yarn (all platforms)
 yarn global add @prnv/tuck
+
+# Windows (PowerShell)
+npm install -g @prnv/tuck
+# Or download the binary from GitHub Releases
 ```
 
 ## Quick Start
@@ -209,6 +213,40 @@ Configure tuck via `~/.tuck/.tuckrc.json` or `tuck config wizard`:
 
 - **copy** (default) — Files are copied. Run `tuck sync` to update the repo.
 - **symlink** — Files are symlinked. Changes are instant but require more care.
+
+## Windows Support
+
+tuck fully supports Windows with platform-specific handling:
+
+### Detected Windows Dotfiles
+
+| Category | Files |
+|----------|-------|
+| **Shell** | PowerShell profiles (`Microsoft.PowerShell_profile.ps1`) |
+| **Terminal** | Windows Terminal settings, ConEmu/Cmder configs |
+| **Editors** | VS Code, Cursor, Neovim (in `%LOCALAPPDATA%`) |
+| **Git** | `.gitconfig`, `.gitignore_global` |
+| **SSH** | SSH config in `%USERPROFILE%\.ssh` |
+| **Misc** | WSL config (`.wslconfig`), Docker, Kubernetes |
+
+### Windows-Specific Behavior
+
+- **Symlinks**: On Windows, tuck uses directory junctions (don't require admin privileges) or falls back to copying files
+- **Permissions**: Unix-style file permissions (chmod) don't apply on Windows; tuck handles this gracefully
+- **Paths**: Windows environment variables (`%APPDATA%`, `%LOCALAPPDATA%`, `%USERPROFILE%`) are automatically expanded
+- **Hooks**: tuck uses PowerShell Core (`pwsh`) or Windows PowerShell for hook execution
+
+### PowerShell Profile Merging
+
+tuck supports smart merging for PowerShell profiles with preserve markers:
+
+```powershell
+# In your PowerShell profile, mark local-only sections:
+<# tuck:preserve #>
+# Machine-specific aliases
+Set-Alias code "C:\Program Files\Microsoft VS Code\Code.exe"
+<# /tuck:preserve #>
+```
 
 ## Security
 

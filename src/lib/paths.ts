@@ -3,8 +3,14 @@ import { join, basename, dirname, relative, isAbsolute, resolve, sep } from 'pat
 import { stat, access } from 'fs/promises';
 import { constants } from 'fs';
 import { DEFAULT_TUCK_DIR, FILES_DIR, MANIFEST_FILE, CONFIG_FILE, CATEGORIES } from '../constants.js';
+import { IS_WINDOWS, expandWindowsEnvVars, toPosixPath } from './platform.js';
 
 export const expandPath = (path: string): string => {
+  // Handle Windows environment variables first
+  if (IS_WINDOWS) {
+    path = expandWindowsEnvVars(path);
+  }
+
   if (path.startsWith('~/')) {
     return join(homedir(), path.slice(2));
   }
@@ -175,8 +181,10 @@ export const validateSafeSourcePath = (source: string): void => {
 export const generateFileId = (source: string): string => {
   // Create a unique ID from the source path
   const collapsed = collapsePath(source);
+  // Normalize to POSIX-style (forward slashes) before processing for cross-platform consistency
+  const normalized = toPosixPath(collapsed);
   // Remove special characters and create a readable ID
-  return collapsed
+  return normalized
     .replace(/^~\//, '')
     .replace(/\//g, '_')
     .replace(/\./g, '-')
