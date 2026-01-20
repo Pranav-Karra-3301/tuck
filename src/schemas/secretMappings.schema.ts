@@ -4,7 +4,8 @@
  * This file maps placeholder names to backend-specific paths,
  * allowing the same dotfiles to work with different password managers.
  *
- * Unlike secrets.local.json, this file IS version controlled.
+ * Unlike secrets.local.json, this file is intended to be version controlled
+ * (ensure your version control configuration does not ignore it).
  */
 
 import { z } from 'zod';

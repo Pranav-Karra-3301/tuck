@@ -476,6 +476,16 @@ const runBackendSet = async (backend: string, options: BackendSetOptions): Promi
       logger.dim('URL must be a valid URL (e.g., https://vault.example.com)');
       return;
     }
+    // Warn if a non-HTTPS URL is provided, as HTTPS is recommended for Bitwarden
+    try {
+      const parsedUrl = new URL(options.serverUrl);
+      if (parsedUrl.protocol !== 'https:') {
+        logger.warning(`Bitwarden server URL is not using HTTPS: ${options.serverUrl}`);
+        logger.dim('Using HTTPS is strongly recommended for Bitwarden to protect your secrets.');
+      }
+    } catch {
+      // isValidUrl already validated the URL; this is a safety net
+    }
   }
 
   if (backend === 'pass' && options.storePath) {
@@ -518,7 +528,7 @@ const runBackendSet = async (backend: string, options: BackendSetOptions): Promi
     ...(Object.keys(updatedBackends).length > 0 ? { backends: { ...existingBackends, ...updatedBackends } } : {}),
   };
 
-  // Type is now properly narrowed thanks to the type guard above
+  // Save updated security configuration
   await saveConfig({ security: updatedSecurity }, tuckDir);
   logger.success(`Secret backend set to: ${backend}`);
 

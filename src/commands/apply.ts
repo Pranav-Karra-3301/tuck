@@ -210,6 +210,10 @@ const resolveFileSecrets = async (
     // If resolver fails, log the error and return original content with all placeholders as unresolved
     const errorMsg = error instanceof Error ? error.message : String(error);
     logger.debug?.(`Secret resolution failed: ${errorMsg}`);
+    logger.warning?.(
+      `Failed to resolve secrets for file content. ${placeholders.length} placeholder(s) will remain unresolved. ` +
+        `Reason: ${errorMsg}`
+    );
     return { content, unresolved: placeholders };
   }
 };

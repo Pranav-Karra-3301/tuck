@@ -118,8 +118,12 @@ export class PassBackend implements SecretBackend {
         return stdout.trim();
       }
 
+      // Distinguish between "no output at all" (null) and an empty first line (empty password)
+      if (stdout === '') {
+        return null;
+      }
       const firstLine = stdout.split('\n')[0];
-      return firstLine || null;
+      return firstLine;
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
 
@@ -165,7 +169,7 @@ export class PassBackend implements SecretBackend {
         }
 
         // Remove tree characters and extract path
-        const path = line.replace(/[├──└│ ]/g, '').trim();
+        const path = line.replace(/[├└│─ ]/g, '').trim();
         if (path && !path.endsWith('/')) {
           secrets.push({
             name: path,

@@ -73,7 +73,11 @@ export class SecretResolver {
    * Get the primary backend
    */
   getPrimaryBackend(): SecretBackend {
-    return this.backends.get(this.primaryBackend)!;
+    const backend = this.backends.get(this.primaryBackend);
+    if (!backend) {
+      throw new BackendNotAvailableError(this.primaryBackend, 'Primary backend is not configured');
+    }
+    return backend;
   }
 
   /**
@@ -132,15 +136,15 @@ export class SecretResolver {
   async autoDetectBackend(): Promise<BackendName> {
     // Priority order: check environment variables first
     if (process.env.OP_SERVICE_ACCOUNT_TOKEN) {
-      const op = this.backends.get('1password')!;
-      if ((await op.isAvailable()) && (await op.isAuthenticated())) {
+      const op = this.backends.get('1password');
+      if (op && (await op.isAvailable()) && (await op.isAuthenticated())) {
         return '1password';
       }
     }
 
     if (process.env.BW_SESSION) {
-      const bw = this.backends.get('bitwarden')!;
-      if ((await bw.isAvailable()) && (await bw.isAuthenticated())) {
+      const bw = this.backends.get('bitwarden');
+      if (bw && (await bw.isAvailable()) && (await bw.isAuthenticated())) {
         return 'bitwarden';
       }
     }
@@ -148,8 +152,8 @@ export class SecretResolver {
     // Check each backend in order
     const order: BackendName[] = ['1password', 'bitwarden', 'pass', 'local'];
     for (const name of order) {
-      const backend = this.backends.get(name)!;
-      if ((await backend.isAvailable()) && (await backend.isAuthenticated())) {
+      const backend = this.backends.get(name);
+      if (backend && (await backend.isAvailable()) && (await backend.isAuthenticated())) {
         return name;
       }
     }
