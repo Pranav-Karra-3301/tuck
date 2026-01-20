@@ -285,11 +285,11 @@ const runInteractiveRestore = async (tuckDir: string, options: RestoreOptions = 
 
   // Display secret restoration info
   if (result.secretsRestored > 0) {
-    prompts.log.success(`Restored ${result.secretsRestored} secret${result.secretsRestored > 1 ? 's' : ''}`);
+    prompts.log.success(`Restored ${result.secretsRestored} secret${result.secretsRestored !== 1 ? 's' : ''}`);
   }
   if (result.unresolvedPlaceholders.length > 0) {
     prompts.log.warning(
-      `${result.unresolvedPlaceholders.length} unresolved placeholder${result.unresolvedPlaceholders.length > 1 ? 's' : ''}:`
+      `${result.unresolvedPlaceholders.length} unresolved placeholder${result.unresolvedPlaceholders.length !== 1 ? 's' : ''}:`
     );
     result.unresolvedPlaceholders.slice(0, 5).forEach((p) => console.log(c.dim(`  {{${p}}}`)));
     if (result.unresolvedPlaceholders.length > 5) {
@@ -298,7 +298,7 @@ const runInteractiveRestore = async (tuckDir: string, options: RestoreOptions = 
     prompts.note("Use 'tuck secrets set <NAME>' to add missing secrets", 'Tip');
   }
 
-  prompts.outro(`Restored ${result.restoredCount} file${result.restoredCount > 1 ? 's' : ''}`);
+  prompts.outro(`Restored ${result.restoredCount} file${result.restoredCount !== 1 ? 's' : ''}`);
 };
 
 /**
@@ -306,11 +306,11 @@ const runInteractiveRestore = async (tuckDir: string, options: RestoreOptions = 
  */
 const displaySecretSummary = (result: RestoreResult): void => {
   if (result.secretsRestored > 0) {
-    logger.success(`Restored ${result.secretsRestored} secret${result.secretsRestored > 1 ? 's' : ''}`);
+    logger.success(`Restored ${result.secretsRestored} secret${result.secretsRestored !== 1 ? 's' : ''}`);
   }
   if (result.unresolvedPlaceholders.length > 0) {
     logger.warning(
-      `${result.unresolvedPlaceholders.length} unresolved placeholder${result.unresolvedPlaceholders.length > 1 ? 's' : ''}:`
+      `${result.unresolvedPlaceholders.length} unresolved placeholder${result.unresolvedPlaceholders.length !== 1 ? 's' : ''}:`
     );
     result.unresolvedPlaceholders.slice(0, 5).forEach((p) => console.log(c.dim(`  {{${p}}}`)));
     if (result.unresolvedPlaceholders.length > 5) {
@@ -348,7 +348,7 @@ export const runRestore = async (options: RestoreOptions): Promise<void> => {
 
     logger.blank();
     displaySecretSummary(result);
-    logger.success(`Restored ${result.restoredCount} file${result.restoredCount > 1 ? 's' : ''}`);
+    logger.success(`Restored ${result.restoredCount} file${result.restoredCount !== 1 ? 's' : ''}`);
   } else {
     await runInteractiveRestore(tuckDir, options);
   }
@@ -394,7 +394,7 @@ const runRestoreCommand = async (paths: string[], options: RestoreOptions): Prom
     logger.info(`Would restore ${files.length} file${files.length > 1 ? 's' : ''}`);
   } else {
     displaySecretSummary(result);
-    logger.success(`Restored ${result.restoredCount} file${result.restoredCount > 1 ? 's' : ''}`);
+    logger.success(`Restored ${result.restoredCount} file${result.restoredCount !== 1 ? 's' : ''}`);
   }
 };
 

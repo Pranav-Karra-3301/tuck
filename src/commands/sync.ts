@@ -342,7 +342,7 @@ const scanAndHandleSecrets = async (
         }
       }
 
-      spinner.stop(`Redacted secrets in ${redactedCount} file${redactedCount > 1 ? 's' : ''}`);
+      spinner.stop(`Redacted secrets in ${redactedCount} file${redactedCount !== 1 ? 's' : ''}`);
       prompts.log.success('Secrets stored locally and replaced with placeholders');
       prompts.note("Use 'tuck secrets list' to see stored secrets", 'Tip');
     } catch (error) {

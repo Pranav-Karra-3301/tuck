@@ -374,7 +374,7 @@ const tryRestoreSecretsFromLocalStore = async (
     // In interactive mode, ask if user wants to restore
     if (interactive) {
       console.log();
-      prompts.log.info(`Found ${resolvable.length} placeholder${resolvable.length > 1 ? 's' : ''} that can be restored from local secrets store.`);
+      prompts.log.info(`Found ${resolvable.length} placeholder${resolvable.length !== 1 ? 's' : ''} that can be restored from local secrets store.`);
 
       const shouldRestore = await prompts.confirm(
         'Would you like to restore secrets from your local store?',
@@ -391,7 +391,7 @@ const tryRestoreSecretsFromLocalStore = async (
     const result = await restoreSecrets(pathsToRestore, tuckDir);
 
     if (interactive && result.totalRestored > 0) {
-      prompts.log.success(`Restored ${result.totalRestored} secret${result.totalRestored > 1 ? 's' : ''} from local store`);
+      prompts.log.success(`Restored ${result.totalRestored} secret${result.totalRestored !== 1 ? 's' : ''} from local store`);
     }
 
     return {
@@ -682,10 +682,10 @@ const runApply = async (source: string, options: ApplyOptions): Promise<void> =>
     if (!options.dryRun && applyResult.filesWithPlaceholders.length > 0) {
       const secretResult = await tryRestoreSecretsFromLocalStore(applyResult.filesWithPlaceholders, false);
       if (secretResult.restored > 0) {
-        logger.success(`Restored ${secretResult.restored} secret${secretResult.restored > 1 ? 's' : ''} from local store`);
+        logger.success(`Restored ${secretResult.restored} secret${secretResult.restored !== 1 ? 's' : ''} from local store`);
       }
       if (secretResult.unresolved.length > 0) {
-        logger.warning(`${secretResult.unresolved.length} placeholder${secretResult.unresolved.length > 1 ? 's remain' : ' remains'} unresolved`);
+        logger.warning(`${secretResult.unresolved.length} placeholder${secretResult.unresolved.length !== 1 ? 's remain' : ' remains'} unresolved`);
       }
     }
 
