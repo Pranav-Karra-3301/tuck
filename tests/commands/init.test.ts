@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { vol } from 'memfs';
-import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
+import { TEST_HOME, TEST_TUCK_DIR, TEST_TUCK_DIR_NATIVE } from '../setup.js';
 import { createMockManifest, createMockConfig } from '../utils/factories.js';
 import path from 'path';
 
@@ -251,12 +251,14 @@ describe('init command', () => {
   describe('directory paths', () => {
     it('should use home directory for tuck storage', () => {
       const expectedPath = path.join(TEST_HOME, '.tuck');
-      expect(expectedPath).toBe(TEST_TUCK_DIR);
+      // Use platform-native path constant for comparison with path.join() result
+      expect(expectedPath).toBe(TEST_TUCK_DIR_NATIVE);
     });
 
     it('should expand tilde in paths', () => {
       const tildePath = '~/.tuck';
       const expandedPath = tildePath.replace('~', TEST_HOME);
+      // String replacement preserves forward slashes from TEST_HOME
       expect(expandedPath).toBe(TEST_TUCK_DIR);
     });
   });

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { vol } from 'memfs';
-import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
+import { TEST_HOME, TEST_TUCK_DIR, TEST_HOME_NATIVE } from '../setup.js';
 import { initTestTuck, createTestDotfile, getTestManifest } from '../utils/testHelpers.js';
 import { createMockTrackedFile } from '../utils/factories.js';
 import path from 'path';
@@ -218,9 +218,10 @@ describe('add command', () => {
   describe('path handling', () => {
     it('should expand tilde in paths', () => {
       const tildePath = '~/.zshrc';
+      // String replacement preserves forward slashes from TEST_HOME
       const expanded = tildePath.replace('~', TEST_HOME);
-
-      expect(expanded).toBe(path.join(TEST_HOME, '.zshrc'));
+      // Compare with a similarly constructed path using string concatenation
+      expect(expanded).toBe(TEST_HOME + '/.zshrc');
     });
 
     it('should handle absolute paths', async () => {
