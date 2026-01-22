@@ -35,8 +35,8 @@
 # npm
 npm install -g @prnv/tuck
 
-# Homebrew (macOS/Linux)
-brew install prnv/tap/tuck
+# Homebrew (macOS/Linux) - coming soon
+brew install pranav-karra-3301/tap/tuck
 
 # pnpm
 pnpm add -g @prnv/tuck
