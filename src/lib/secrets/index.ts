@@ -71,6 +71,10 @@ export {
   countPlaceholders,
   restoreFiles,
   previewRestoration,
+  // Resolver-based functions (password manager integration)
+  restoreFileWithResolver,
+  restoreFilesWithResolver,
+  previewRestorationWithResolver,
 } from './redactor.js';
 
 // Re-export schema types

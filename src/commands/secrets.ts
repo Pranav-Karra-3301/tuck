@@ -7,12 +7,17 @@
  *   tuck secrets unset <name>  - Remove a secret
  *   tuck secrets path          - Show path to secrets file
  *   tuck secrets scan-history  - Scan git history for leaked secrets
+ *   tuck secrets backend       - Manage secret backends (1Password, Bitwarden, pass)
+ *   tuck secrets map           - Map placeholder to backend path
+ *   tuck secrets mappings      - List all mappings
+ *   tuck secrets test          - Test backend connectivity
  */
 
 import { Command } from 'commander';
 import { prompts, logger, colors as c } from '../ui/index.js';
 import { getTuckDir, expandPath, pathExists } from '../lib/paths.js';
 import { loadManifest } from '../lib/manifest.js';
+import { loadConfig, saveConfig } from '../lib/config.js';
 import {
   listSecrets,
   setSecret,
@@ -23,8 +28,34 @@ import {
   scanForSecrets,
   type ScanSummary,
 } from '../lib/secrets/index.js';
+import {
+  createResolver,
+  setMapping,
+  listMappings,
+  BACKEND_NAMES,
+  type BackendName,
+} from '../lib/secretBackends/index.js';
 import { NotInitializedError } from '../errors.js';
 import { getLog } from '../lib/git.js';
+
+/**
+ * Type guard to check if a string is a valid BackendName
+ */
+const isBackendName = (value: string): value is BackendName => {
+  return (BACKEND_NAMES as readonly string[]).includes(value);
+};
+
+/**
+ * Validate URL format (basic validation)
+ */
+const isValidUrl = (value: string): boolean => {
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 // ============================================================================
 // List Command
@@ -413,6 +444,344 @@ export const displayScanResults = (summary: ScanSummary): void => {
 };
 
 // ============================================================================
+// Backend Commands
+// ============================================================================
+
+interface BackendSetOptions {
+  vault?: string;
+  serverUrl?: string;
+  storePath?: string;
+}
+
+const runBackendSet = async (backend: string, options: BackendSetOptions): Promise<void> => {
+  const tuckDir = getTuckDir();
+
+  try {
+    await loadManifest(tuckDir);
+  } catch {
+    throw new NotInitializedError();
+  }
+
+  // Validate backend name using type guard
+  if (!isBackendName(backend)) {
+    logger.error(`Invalid backend: ${backend}`);
+    logger.dim(`Valid backends: ${BACKEND_NAMES.join(', ')}`);
+    return;
+  }
+
+  // Validate backend-specific options
+  if (backend === 'bitwarden' && options.serverUrl) {
+    if (!isValidUrl(options.serverUrl)) {
+      logger.error(`Invalid server URL: ${options.serverUrl}`);
+      logger.dim('URL must be a valid URL (e.g., https://vault.example.com)');
+      return;
+    }
+    // Warn if a non-HTTPS URL is provided, as HTTPS is recommended for Bitwarden
+    try {
+      const parsedUrl = new URL(options.serverUrl);
+      if (parsedUrl.protocol !== 'https:') {
+        logger.warning(`Bitwarden server URL is not using HTTPS: ${options.serverUrl}`);
+        logger.dim('Using HTTPS is strongly recommended for Bitwarden to protect your secrets.');
+      }
+    } catch {
+      // isValidUrl already validated the URL; this is a safety net
+    }
+  }
+
+  if (backend === 'pass' && options.storePath) {
+    const expandedPath = expandPath(options.storePath);
+    if (!(await pathExists(expandedPath))) {
+      logger.warning(`Password store path does not exist: ${options.storePath}`);
+      logger.dim('The path will be used anyway, but make sure it exists before using pass.');
+    }
+  }
+
+  const config = await loadConfig(tuckDir);
+
+  // Build updated security config
+  const existingBackends = config.security.backends || {};
+  const updatedBackends: Record<string, Record<string, unknown>> = {};
+
+  // Add backend-specific config
+  if (backend === '1password' && options.vault) {
+    updatedBackends['1password'] = {
+      ...(existingBackends['1password'] || {}),
+      vault: options.vault,
+    };
+  }
+  if (backend === 'bitwarden' && options.serverUrl) {
+    updatedBackends.bitwarden = {
+      ...(existingBackends.bitwarden || {}),
+      serverUrl: options.serverUrl,
+    };
+  }
+  if (backend === 'pass' && options.storePath) {
+    updatedBackends.pass = {
+      ...(existingBackends.pass || {}),
+      storePath: options.storePath,
+    };
+  }
+
+  const updatedSecurity = {
+    ...config.security,
+    secretBackend: backend,
+    ...(Object.keys(updatedBackends).length > 0 ? { backends: { ...existingBackends, ...updatedBackends } } : {}),
+  };
+
+  // Save updated security configuration
+  await saveConfig({ security: updatedSecurity }, tuckDir);
+  logger.success(`Secret backend set to: ${backend}`);
+
+  // Show setup instructions if not local
+  if (backend !== 'local') {
+    const resolver = createResolver(tuckDir, { ...config.security, secretBackend: backend });
+    const backendImpl = resolver.getBackend(backend);
+    if (backendImpl) {
+      console.log();
+      console.log(c.dim(backendImpl.getSetupInstructions()));
+    }
+  }
+};
+
+const runBackendStatus = async (): Promise<void> => {
+  const tuckDir = getTuckDir();
+
+  try {
+    await loadManifest(tuckDir);
+  } catch {
+    throw new NotInitializedError();
+  }
+
+  const config = await loadConfig(tuckDir);
+  const resolver = createResolver(tuckDir, config.security);
+  const statuses = await resolver.getBackendStatuses();
+
+  console.log();
+  console.log(c.bold.cyan('Secret Backend Status'));
+  console.log(c.dim('─'.repeat(50)));
+  console.log();
+
+  for (const status of statuses) {
+    const primaryMark = status.isPrimary ? c.cyan(' (active)') : '';
+    const availableIcon = status.available ? c.green('✓') : c.red('✗');
+    const authIcon = status.authenticated ? c.green('✓') : c.yellow('○');
+
+    console.log(`  ${status.displayName}${primaryMark}`);
+    console.log(`    ${availableIcon} CLI installed: ${status.available ? 'Yes' : 'No'}`);
+    if (status.available) {
+      console.log(`    ${authIcon} Authenticated: ${status.authenticated ? 'Yes' : 'No'}`);
+    }
+    console.log();
+  }
+
+  console.log(c.dim(`Current backend: ${config.security.secretBackend || 'local'}`));
+};
+
+const runBackendList = async (): Promise<void> => {
+  console.log();
+  console.log(c.bold.cyan('Available Secret Backends'));
+  console.log(c.dim('─'.repeat(50)));
+  console.log();
+
+  const backends = [
+    { name: 'local', desc: 'Local secrets file (default)' },
+    { name: '1password', desc: '1Password password manager' },
+    { name: 'bitwarden', desc: 'Bitwarden password manager' },
+    { name: 'pass', desc: 'Standard Unix password store' },
+  ];
+
+  for (const b of backends) {
+    console.log(`  ${c.green(b.name)}`);
+    console.log(`    ${c.dim(b.desc)}`);
+    console.log();
+  }
+
+  console.log(c.dim('Set backend with: tuck secrets backend set <name>'));
+};
+
+// ============================================================================
+// Mapping Commands
+// ============================================================================
+
+interface MapOptions {
+  '1password'?: string;
+  bitwarden?: string;
+  pass?: string;
+  local?: boolean;
+}
+
+const runMap = async (name: string, options: MapOptions): Promise<void> => {
+  const tuckDir = getTuckDir();
+
+  try {
+    await loadManifest(tuckDir);
+  } catch {
+    throw new NotInitializedError();
+  }
+
+  // Validate name
+  if (!isValidSecretName(name)) {
+    const normalized = normalizeSecretName(name);
+    logger.warning(`Secret name normalized to: ${normalized}`);
+    name = normalized;
+  }
+
+  let mappingsAdded = 0;
+
+  if (options['1password']) {
+    await setMapping(tuckDir, name, '1password', options['1password']);
+    logger.success(`Mapped ${name} → 1Password: ${options['1password']}`);
+    mappingsAdded++;
+  }
+
+  if (options.bitwarden) {
+    await setMapping(tuckDir, name, 'bitwarden', options.bitwarden);
+    logger.success(`Mapped ${name} → Bitwarden: ${options.bitwarden}`);
+    mappingsAdded++;
+  }
+
+  if (options.pass) {
+    await setMapping(tuckDir, name, 'pass', options.pass);
+    logger.success(`Mapped ${name} → pass: ${options.pass}`);
+    mappingsAdded++;
+  }
+
+  if (options.local) {
+    await setMapping(tuckDir, name, 'local', true);
+    logger.success(`Mapped ${name} → local store`);
+    mappingsAdded++;
+  }
+
+  if (mappingsAdded === 0) {
+    logger.error('No backend specified');
+    logger.dim('Usage: tuck secrets map <name> --1password "op://..." --bitwarden "..." --pass "..."');
+  }
+};
+
+const runMappings = async (): Promise<void> => {
+  const tuckDir = getTuckDir();
+
+  try {
+    await loadManifest(tuckDir);
+  } catch {
+    throw new NotInitializedError();
+  }
+
+  const mappings = await listMappings(tuckDir);
+  const entries = Object.entries(mappings);
+
+  if (entries.length === 0) {
+    logger.info('No secret mappings configured');
+    console.log();
+    logger.dim('Add mappings with: tuck secrets map <name> --1password "op://..."');
+    return;
+  }
+
+  console.log();
+  console.log(c.bold.cyan(`Secret Mappings (${entries.length})`));
+  console.log(c.dim('─'.repeat(50)));
+  console.log();
+
+  for (const [name, mapping] of entries) {
+    console.log(`  ${c.green(name)}`);
+    if (mapping['1password']) {
+      console.log(`    ${c.dim('1Password:')} ${mapping['1password']}`);
+    }
+    if (mapping.bitwarden) {
+      console.log(`    ${c.dim('Bitwarden:')} ${mapping.bitwarden}`);
+    }
+    if (mapping.pass) {
+      console.log(`    ${c.dim('pass:')} ${mapping.pass}`);
+    }
+    if (mapping.local) {
+      console.log(`    ${c.dim('local:')} yes`);
+    }
+    console.log();
+  }
+};
+
+// ============================================================================
+// Test Command
+// ============================================================================
+
+interface TestOptions {
+  backend?: string;
+}
+
+const runTest = async (options: TestOptions): Promise<void> => {
+  const tuckDir = getTuckDir();
+
+  try {
+    await loadManifest(tuckDir);
+  } catch {
+    throw new NotInitializedError();
+  }
+
+  const config = await loadConfig(tuckDir);
+  const resolver = createResolver(tuckDir, config.security);
+
+  // Validate and narrow backend name
+  const rawBackendName = options.backend || config.security.secretBackend || 'local';
+  if (!isBackendName(rawBackendName)) {
+    logger.error(`Invalid backend: ${rawBackendName}`);
+    logger.dim(`Valid backends: ${BACKEND_NAMES.join(', ')}`);
+    return;
+  }
+  const backendName = rawBackendName;
+
+  prompts.intro(`tuck secrets test (${backendName})`);
+
+  const spinner = prompts.spinner();
+  spinner.start('Checking backend availability...');
+
+  const backend = resolver.getBackend(backendName);
+  if (!backend) {
+    spinner.stop('Unknown backend');
+    logger.error(`Unknown backend: ${backendName}`);
+    return;
+  }
+
+  // Check availability
+  const available = await backend.isAvailable();
+  if (!available) {
+    spinner.stop('Backend not available');
+    console.log();
+    logger.error(`${backend.displayName} CLI is not installed`);
+    console.log();
+    console.log(c.dim(backend.getSetupInstructions()));
+    return;
+  }
+
+  spinner.message('Checking authentication...');
+
+  // Check authentication
+  const authenticated = await backend.isAuthenticated();
+  if (!authenticated) {
+    spinner.stop('Not authenticated');
+    console.log();
+    logger.warning(`Not authenticated with ${backend.displayName}`);
+    console.log();
+    console.log(c.dim(backend.getSetupInstructions()));
+    return;
+  }
+
+  spinner.stop('Backend ready');
+  console.log();
+  logger.success(`${backend.displayName} is available and authenticated`);
+
+  // Try to list secrets if supported
+  if (backend.listSecrets) {
+    const secrets = await backend.listSecrets();
+    if (secrets.length > 0) {
+      console.log();
+      logger.info(`Found ${secrets.length} secret(s) in ${backend.displayName}`);
+    }
+  }
+
+  prompts.outro('Backend test passed!');
+};
+
+// ============================================================================
 // Command Definition
 // ============================================================================
 
@@ -452,4 +821,51 @@ export const secretsCommand = new Command('secrets')
       .option('--since <date>', 'Only scan commits after this date (e.g., 2024-01-01)')
       .option('--limit <n>', 'Maximum number of commits to scan', '50')
       .action(runScanHistory)
+  )
+  // Backend management commands
+  .addCommand(
+    new Command('backend')
+      .description('Manage secret backends (1Password, Bitwarden, pass)')
+      .addCommand(
+        new Command('set')
+          .description('Set the secret backend')
+          .argument('<backend>', 'Backend name: local, 1password, bitwarden, pass')
+          .option('--vault <vault>', 'Default vault (1Password)')
+          .option('--server-url <url>', 'Server URL (Bitwarden)')
+          .option('--store-path <path>', 'Password store path (pass)')
+          .action(runBackendSet)
+      )
+      .addCommand(
+        new Command('status')
+          .description('Show backend status')
+          .action(runBackendStatus)
+      )
+      .addCommand(
+        new Command('list')
+          .description('List available backends')
+          .action(runBackendList)
+      )
+  )
+  // Mapping commands
+  .addCommand(
+    new Command('map')
+      .description('Map placeholder to backend path')
+      .argument('<name>', 'Placeholder name (e.g., GITHUB_TOKEN)')
+      .option('--1password <path>', '1Password path (op://vault/item/field)')
+      .option('--bitwarden <id>', 'Bitwarden item ID or name')
+      .option('--pass <path>', 'pass path')
+      .option('--local', 'Mark as available in local store')
+      .action(runMap)
+  )
+  .addCommand(
+    new Command('mappings')
+      .description('List all secret mappings')
+      .action(runMappings)
+  )
+  // Test command
+  .addCommand(
+    new Command('test')
+      .description('Test backend connectivity')
+      .option('--backend <name>', 'Specific backend to test')
+      .action(runTest)
   );

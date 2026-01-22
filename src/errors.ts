@@ -107,7 +107,7 @@ export class BackupError extends TuckError {
 export class SecretsDetectedError extends TuckError {
   constructor(count: number, files: string[]) {
     const fileList = files.slice(0, 3).join(', ') + (files.length > 3 ? ` and ${files.length - 3} more` : '');
-    
+
     // Tailor suggestions based on interactive vs CI/CD context
     const isInteractive = !!process.stdout.isTTY && process.env.CI !== 'true';
     const suggestions = isInteractive
@@ -123,8 +123,76 @@ export class SecretsDetectedError extends TuckError {
           'If needed, run `tuck secrets list` in a local interactive environment to inspect stored secrets',
           'Configure scanning with `tuck config set security.scanSecrets false` if this check is not desired in CI',
         ];
-    
+
     super(`Found ${count} potential secret(s) in: ${fileList}`, 'SECRETS_DETECTED', suggestions);
+  }
+}
+
+// ============================================================================
+// Password Manager Backend Errors
+// ============================================================================
+
+export class SecretBackendError extends TuckError {
+  constructor(backend: string, message: string, suggestions?: string[]) {
+    super(
+      `${backend} error: ${message}`,
+      'SECRET_BACKEND_ERROR',
+      suggestions || [
+        `Check if ${backend} CLI is installed and authenticated`,
+        'Run `tuck secrets backend status` to diagnose',
+      ]
+    );
+  }
+}
+
+export class SecretNotFoundError extends TuckError {
+  constructor(name: string, backend: string) {
+    super(`Secret "${name}" not found in ${backend}`, 'SECRET_NOT_FOUND', [
+      'Check the mapping in secrets.mappings.json',
+      `Run \`tuck secrets map ${name} --${backend} <path>\` to configure`,
+      'Run `tuck secrets list` to see available secrets',
+    ]);
+  }
+}
+
+export class BackendNotAvailableError extends TuckError {
+  constructor(backend: string, reason: string) {
+    const installHints: Record<string, string> = {
+      '1password': 'Install from: https://1password.com/downloads/command-line/',
+      bitwarden: 'Install from: https://bitwarden.com/help/cli/',
+      pass: 'Install from: https://www.passwordstore.org/',
+    };
+
+    super(`Backend "${backend}" is not available: ${reason}`, 'BACKEND_NOT_AVAILABLE', [
+      installHints[backend] || `Install the ${backend} CLI`,
+      'Run `tuck secrets backend list` to see available backends',
+    ]);
+  }
+}
+
+export class BackendAuthenticationError extends TuckError {
+  constructor(backend: string) {
+    const authHints: Record<string, string[]> = {
+      '1password': ['Run `op signin` to authenticate', 'Or set OP_SERVICE_ACCOUNT_TOKEN for CI/CD'],
+      bitwarden: ['Run `bw login` then `bw unlock`', 'Or set BW_SESSION environment variable'],
+      pass: ['Ensure GPG key is available', 'Run `gpg --list-keys` to verify'],
+    };
+
+    super(`Not authenticated with ${backend}`, 'BACKEND_AUTH_ERROR', authHints[backend] || [
+      `Run the ${backend} authentication command`,
+    ]);
+  }
+}
+
+export class UnresolvedSecretsError extends TuckError {
+  constructor(secrets: string[], backend: string) {
+    const secretList = secrets.slice(0, 5).join(', ') + (secrets.length > 5 ? ` and ${secrets.length - 5} more` : '');
+
+    super(`Could not resolve ${secrets.length} secret(s): ${secretList}`, 'UNRESOLVED_SECRETS', [
+      `Ensure the secrets are configured in ${backend}`,
+      'Run `tuck secrets mappings` to check mappings',
+      'Run `tuck secrets test` to diagnose backend connectivity',
+    ]);
   }
 }
 
