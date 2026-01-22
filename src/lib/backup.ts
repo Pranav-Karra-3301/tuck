@@ -3,6 +3,7 @@ import { readdir, rm } from 'fs/promises';
 import { copy, ensureDir, pathExists } from 'fs-extra';
 import { BACKUP_DIR } from '../constants.js';
 import { expandPath, collapsePath, pathExists as checkPathExists } from './paths.js';
+import { toPosixPath } from './platform.js';
 
 export interface BackupInfo {
   path: string;
@@ -48,7 +49,8 @@ export const createBackup = async (
   await ensureDir(backupRoot);
 
   // Generate backup filename that preserves structure
-  const collapsed = collapsePath(expandedSource);
+  // Normalize to POSIX-style (forward slashes) for consistent backup naming across platforms
+  const collapsed = toPosixPath(collapsePath(expandedSource));
   const backupName = collapsed
     .replace(/^~\//, '')
     .replace(/\//g, '_')
