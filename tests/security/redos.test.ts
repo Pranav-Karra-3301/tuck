@@ -272,7 +272,7 @@ describe('ReDoS Security', () => {
       ).join('\n');
 
       const memBefore = process.memoryUsage().heapUsed;
-      const matches = scanContent(content);
+      scanContent(content);
       const memAfter = process.memoryUsage().heapUsed;
 
       // Memory increase should be reasonable

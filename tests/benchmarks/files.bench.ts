@@ -13,7 +13,7 @@
 
 import { describe, bench } from 'vitest';
 import { join } from 'path';
-import { writeFileSync, mkdirSync } from 'fs';
+import { writeFileSync } from 'fs';
 import {
   createTempDir,
   generateRandomFile,

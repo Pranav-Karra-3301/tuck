@@ -61,7 +61,7 @@ describe('Full Workflow Integration', () => {
       await initTestTuck();
 
       // Create a dotfile to track
-      const zshrcPath = createTestDotfile('.zshrc', 'export PATH=$PATH:/usr/local/bin');
+      createTestDotfile('.zshrc', 'export PATH=$PATH:/usr/local/bin');
 
       // Verify manifest exists
       const manifest = getTestManifest();

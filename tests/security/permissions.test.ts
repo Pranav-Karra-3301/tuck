@@ -5,11 +5,11 @@
  * and does not expose sensitive files or escalate privileges.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { vol } from 'memfs';
 import { join } from 'path';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
-import { pathExists, isReadable, isWritable, isDirectory, isFile } from '../../src/lib/paths.js';
+import { pathExists, isReadable, isWritable } from '../../src/lib/paths.js';
 import {
   getFilePermissions,
   setFilePermissions,
@@ -212,7 +212,7 @@ describe('Permissions Security', () => {
       const outsidePath = '/etc/passwd';
 
       // Any operation should fail or be rejected
-      const exists = await pathExists(outsidePath);
+      await pathExists(outsidePath);
       // In test environment, this should return false or be handled safely
     });
 
