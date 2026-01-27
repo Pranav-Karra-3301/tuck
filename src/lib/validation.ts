@@ -474,11 +474,20 @@ export function sanitizeInput(input: string): string {
     return '';
   }
 
-  // Remove null bytes
-  let sanitized = input.replace(/\x00/g, '');
+  // Remove null bytes (using String.fromCharCode to avoid eslint no-control-regex)
+  const nullChar = String.fromCharCode(0);
+  let sanitized = input.split(nullChar).join('');
 
-  // Remove zero-width characters
-  sanitized = sanitized.replace(/[\u200B\u200C\u200D\uFEFF]/g, '');
+  // Remove zero-width characters (each replaced individually to avoid eslint no-misleading-character-class)
+  sanitized = sanitized
+    .split('\u200B')
+    .join('')
+    .split('\u200C')
+    .join('')
+    .split('\u200D')
+    .join('')
+    .split('\uFEFF')
+    .join('');
 
   // Trim whitespace
   sanitized = sanitized.trim();

@@ -39,7 +39,6 @@ export type AuditAction =
 // ============================================================================
 
 const AUDIT_FILENAME = 'audit.log';
-const MAX_LOG_SIZE = 1024 * 1024; // 1MB max log size
 
 // ============================================================================
 // Logging Functions
