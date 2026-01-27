@@ -2,7 +2,7 @@
  * Secret scanner unit tests
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { vol } from 'memfs';
 import { join } from 'path';
 import {
@@ -107,7 +107,7 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn
 
     it('should deduplicate matches', () => {
       const content = 'AKIAIOSFODNN7EXAMPLE AKIAIOSFODNN7EXAMPLE';
-      const matches = scanContent(content);
+      scanContent(content);
 
       // Same secret at different positions should still be tracked
       // but with unique keys

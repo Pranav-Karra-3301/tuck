@@ -10,7 +10,6 @@ import { vol } from 'memfs';
 import { join } from 'path';
 import {
   expandPath,
-  collapsePath,
   isPathWithinHome,
   validateSafeSourcePath,
   getTuckDir,
@@ -76,8 +75,8 @@ describe('Path Traversal Security', () => {
 
     it('should handle encoded path traversal', () => {
       // URL-encoded traversal attempts
-      const path1 = '~/%2e%2e/etc/passwd';
-      const path2 = '~/..%00/etc/passwd';
+      '~/%2e%2e/etc/passwd';
+      '~/..%00/etc/passwd';
       // These should be caught when normalized
       // The actual behavior depends on path normalization
     });
@@ -121,7 +120,7 @@ describe('Path Traversal Security', () => {
 
     it('should reject symbolic traversal patterns', () => {
       // Even if the path looks innocent, the resolved path matters
-      const maliciousPath = '~/.../.../etc/passwd';
+      '~/.../.../etc/passwd';
       // This depends on filesystem behavior
     });
   });
@@ -207,7 +206,7 @@ describe('Path Traversal Security', () => {
     it('should reject custom paths outside home', () => {
       // This tests whether getTuckDir properly validates custom paths
       // Current implementation may not validate - this documents the risk
-      const dangerousCustom = getTuckDir('/etc/tuck');
+      getTuckDir('/etc/tuck');
       // Ideally this should throw or return a safe default
     });
   });

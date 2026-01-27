@@ -4,10 +4,10 @@
  * Tests the complete backup and restore workflow.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { vol } from 'memfs';
 import { join } from 'path';
-import { TEST_HOME, TEST_TUCK_DIR, TEST_BACKUPS_DIR } from '../utils/testHelpers.js';
+import { TEST_HOME, TEST_BACKUPS_DIR } from '../utils/testHelpers.js';
 import { initTestTuck, createTestDotfile } from '../utils/testHelpers.js';
 
 describe('Backup and Restore Cycle', () => {

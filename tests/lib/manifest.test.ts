@@ -2,7 +2,7 @@
  * Manifest module unit tests
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { vol } from 'memfs';
 import { join } from 'path';
 import {
@@ -21,7 +21,7 @@ import {
   getCategories,
   clearManifestCache,
 } from '../../src/lib/manifest.js';
-import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
+import { TEST_TUCK_DIR } from '../setup.js';
 import { createMockManifest, createMockTrackedFile } from '../utils/factories.js';
 
 describe('manifest', () => {

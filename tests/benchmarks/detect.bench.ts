@@ -215,14 +215,14 @@ describe('Dotfile Detection Benchmarks', () => {
   describe('Detection Filtering', () => {
     bench('filter by category after detection', async () => {
       const detected = await detectDotfiles();
-      const shellFiles = detected.filter((f) => f.category === 'shell');
-      const gitFiles = detected.filter((f) => f.category === 'git');
-      const editorFiles = detected.filter((f) => f.category === 'editors');
+      detected.filter((f) => f.category === 'shell');
+      detected.filter((f) => f.category === 'git');
+      detected.filter((f) => f.category === 'editors');
     });
 
     bench('filter sensitive files', async () => {
       const detected = await detectDotfiles();
-      const sensitiveFiles = detected.filter((f) => f.sensitive === true);
+      detected.filter((f) => f.sensitive === true);
     });
 
     bench('group by category', async () => {

@@ -7,7 +7,6 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { vol } from 'memfs';
-import { join } from 'path';
 import {
   sanitizeFilename,
   generateFileId,
