@@ -1,0 +1,1 @@
+export { PaintingFrame } from './PaintingFrame';

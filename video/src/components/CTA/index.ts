@@ -1,0 +1,1 @@
+export { TuckCTA } from './TuckCTA';

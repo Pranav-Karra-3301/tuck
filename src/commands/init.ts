@@ -62,6 +62,7 @@ import { CATEGORIES } from '../constants.js';
 import { defaultConfig } from '../schemas/config.schema.js';
 import type { InitOptions } from '../types.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
+import { errorToMessage } from '../lib/validation.js';
 
 const GITIGNORE_TEMPLATE = `# OS generated files
 .DS_Store
@@ -813,7 +814,10 @@ const analyzeRepository = async (repoDir: string): Promise<RepositoryAnalysis> =
       for (const category of categories) {
         const categoryPath = join(filesDir, category);
         const categoryStats = await import('fs/promises').then((fs) =>
-          fs.stat(categoryPath).catch(() => null)
+          fs.stat(categoryPath).catch((e) => {
+            logger.debug?.(errorToMessage(e, `Failed to stat category path ${categoryPath}`));
+            return null;
+          })
         );
         if (categoryStats?.isDirectory()) {
           const files = await readdir(categoryPath);
@@ -977,14 +981,14 @@ const importExistingRepo = async (
     try {
       // Remove existing origin if present and add the correct one
       const { removeRemote } = await import('../lib/git.js');
-      await removeRemote(tuckDir, 'origin').catch(() => {
-        /* ignore if not exists */
+      await removeRemote(tuckDir, 'origin').catch((e) => {
+        logger.debug?.(errorToMessage(e, 'Remote origin does not exist (expected)'));
       });
       await addRemote(tuckDir, 'origin', remoteUrl);
     } catch {
       // If removing fails, try adding anyway
-      await addRemote(tuckDir, 'origin', remoteUrl).catch(() => {
-        /* ignore if already exists */
+      await addRemote(tuckDir, 'origin', remoteUrl).catch((e) => {
+        logger.debug?.(errorToMessage(e, 'Remote origin already exists (expected)'));
       });
     }
 
@@ -1033,7 +1037,10 @@ const importExistingRepo = async (
           if (entry === '.git' || entry === '.tuckmanifest.json' || entry === '.tuckrc.json')
             continue;
           const fullPath = join(dir, entry);
-          const stats = await stat(fullPath).catch(() => null);
+          const stats = await stat(fullPath).catch((e) => {
+            logger.debug?.(errorToMessage(e, `Failed to stat ${fullPath}`));
+            return null;
+          });
           if (stats?.isDirectory()) {
             count += await countFiles(fullPath);
           } else if (stats?.isFile()) {
@@ -1390,7 +1397,10 @@ const runInteractiveInit = async (): Promise<void> => {
       // If GitHub setup didn't add a remote, show manual instructions
       if (!ghResult.remoteUrl) {
         // Get user info for examples
-        const user = await getAuthenticatedUser().catch(() => null);
+        const user = await getAuthenticatedUser().catch((e) => {
+          logger.debug?.(errorToMessage(e, 'Could not get authenticated user'));
+          return null;
+        });
         const suggestedName = 'dotfiles';
 
         console.log();
