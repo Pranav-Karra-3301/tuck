@@ -59,9 +59,10 @@ fi
 In Node.js:
 
 ```typescript
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 
-exec('tuck status', (error, stdout, stderr) => {
+// Use execFile instead of exec to avoid shell injection vulnerabilities
+execFile('tuck', ['status'], (error, stdout, stderr) => {
   if (stderr.includes('NOT_INITIALIZED')) {
     console.log('Tuck needs to be initialized first');
   }
@@ -100,6 +101,18 @@ Suggestions:
 ### Force Bypass Warning
 
 Using `--force` to bypass secret scanning is logged in `~/.tuck/audit.log` for security tracking. This audit trail helps identify when potentially sensitive operations occurred.
+
+### Non-Interactive Mode (CI/Scripts)
+
+When running tuck in non-interactive environments (CI pipelines, scripts), dangerous operations that normally require typed confirmation will fail by default.
+
+To bypass confirmation in automated environments, set:
+
+```bash
+TUCK_FORCE_DANGEROUS=true tuck push --force
+```
+
+> **⚠️ SECURITY WARNING**: This environment variable bypasses safety confirmations. Only use in trusted CI/CD pipelines where you control the inputs. Never set this in interactive shells or user environments. All operations are still logged to the audit trail.
 
 ---
 

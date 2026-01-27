@@ -474,11 +474,16 @@ export function sanitizeInput(input: string): string {
     return '';
   }
 
-  // Remove null bytes (using String.fromCharCode to avoid eslint no-control-regex)
+  // Remove null bytes and zero-width characters
+  // NOTE: We use split().join() instead of regex.replace() to satisfy ESLint rules:
+  // - no-control-regex: Disallows control characters in regex (like \x00)
+  // - no-misleading-character-class: Warns about confusing character classes
+  // This approach is slightly less performant but avoids lint warnings and is
+  // more explicit about what characters are being removed.
   const nullChar = String.fromCharCode(0);
   let sanitized = input.split(nullChar).join('');
 
-  // Remove zero-width characters (each replaced individually to avoid eslint no-misleading-character-class)
+  // Zero-width characters: ZWSP, ZWNJ, ZWJ, BOM
   sanitized = sanitized
     .split('\u200B')
     .join('')
