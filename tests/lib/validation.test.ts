@@ -151,4 +151,79 @@ describe('validation', () => {
       expect(GIT_OPERATION_TIMEOUTS.PUSH).toBeDefined();
     });
   });
+
+  describe('errorToMessage', () => {
+    beforeEach(() => {
+      mockIsWindows.mockReturnValue(false);
+    });
+
+    it('should extract message from Error objects', async () => {
+      const { errorToMessage } = await import('../../src/lib/validation.js');
+      const error = new Error('Something went wrong');
+      expect(errorToMessage(error)).toBe('Something went wrong');
+    });
+
+    it('should handle string errors', async () => {
+      const { errorToMessage } = await import('../../src/lib/validation.js');
+      expect(errorToMessage('Plain string error')).toBe('Plain string error');
+    });
+
+    it('should handle null errors', async () => {
+      const { errorToMessage } = await import('../../src/lib/validation.js');
+      expect(errorToMessage(null)).toBe('null error');
+    });
+
+    it('should handle undefined errors', async () => {
+      const { errorToMessage } = await import('../../src/lib/validation.js');
+      expect(errorToMessage(undefined)).toBe('undefined error');
+    });
+
+    it('should add context when provided', async () => {
+      const { errorToMessage } = await import('../../src/lib/validation.js');
+      const error = new Error('File not found');
+      expect(errorToMessage(error, 'Failed to read config')).toBe(
+        'Failed to read config: File not found'
+      );
+    });
+
+    it('should truncate very long messages', async () => {
+      const { errorToMessage } = await import('../../src/lib/validation.js');
+      const longMessage = 'x'.repeat(1000);
+      const error = new Error(longMessage);
+      const result = errorToMessage(error);
+      expect(result.length).toBeLessThanOrEqual(503); // 500 + '...'
+      expect(result.endsWith('...')).toBe(true);
+    });
+
+    it('should redact potential passwords', async () => {
+      const { errorToMessage } = await import('../../src/lib/validation.js');
+      const error = new Error('Connection failed: password=secret123');
+      const result = errorToMessage(error);
+      expect(result).not.toContain('secret123');
+      expect(result).toContain('[REDACTED]');
+    });
+
+    it('should redact potential tokens', async () => {
+      const { errorToMessage } = await import('../../src/lib/validation.js');
+      const error = new Error('Auth failed: token=ghp_abcdef123456');
+      const result = errorToMessage(error);
+      expect(result).not.toContain('ghp_abcdef123456');
+      expect(result).toContain('[REDACTED]');
+    });
+
+    it('should redact potential API keys', async () => {
+      const { errorToMessage } = await import('../../src/lib/validation.js');
+      const error = new Error('API error: key=AKIAIOSFODNN7EXAMPLE');
+      const result = errorToMessage(error);
+      expect(result).not.toContain('AKIAIOSFODNN7EXAMPLE');
+      expect(result).toContain('[REDACTED]');
+    });
+
+    it('should handle objects by converting to string', async () => {
+      const { errorToMessage } = await import('../../src/lib/validation.js');
+      const obj = { code: 'ENOENT', message: 'File not found' };
+      const result = errorToMessage(obj);
+      expect(result).toContain('object');
+    });
+  });
 });

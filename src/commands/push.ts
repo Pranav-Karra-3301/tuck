@@ -13,6 +13,7 @@ import {
 } from '../lib/git.js';
 import { NotInitializedError, GitError } from '../errors.js';
 import type { PushOptions } from '../types.js';
+import { logForcePush } from '../lib/audit.js';
 
 const runInteractivePush = async (tuckDir: string): Promise<void> => {
   prompts.intro('tuck push');
@@ -162,6 +163,22 @@ const runPush = async (options: PushOptions): Promise<void> => {
   }
 
   const branch = await getCurrentBranch(tuckDir);
+
+  // Require explicit confirmation for force push
+  if (options.force) {
+    const confirmed = await prompts.confirmDangerous(
+      'Force push will overwrite remote history.\n' +
+        'This can cause data loss for collaborators and is generally discouraged.',
+      'force'
+    );
+    if (!confirmed) {
+      logger.info('Push cancelled');
+      return;
+    }
+    logger.warning('Force pushing to remote...');
+    // Audit log for security tracking
+    await logForcePush(branch);
+  }
 
   try {
     await withSpinner('Pushing...', async () => {

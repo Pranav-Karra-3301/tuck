@@ -25,6 +25,7 @@ import { getDirectoryFileCount, checkFileSizeThreshold, formatFileSize } from '.
 import { shouldExcludeFromBin } from '../lib/binary.js';
 import { addToTuckignore, isIgnored } from '../lib/tuckignore.js';
 import { loadConfig } from '../lib/config.js';
+import { logForceSecretBypass } from '../lib/audit.js';
 import {
   scanForSecrets,
   shouldBlockOnSecrets,
@@ -411,8 +412,25 @@ const scanAndHandleSecrets = async (
   const config = await loadConfig(tuckDir);
   const security = config.security || {};
 
-  // Skip scanning if disabled or --force is used
-  if (security.scanSecrets === false || options.force) {
+  // Skip scanning if disabled in config
+  if (security.scanSecrets === false) {
+    return { continue: true, filesToAdd };
+  }
+
+  // If --force is used, require explicit confirmation
+  if (options.force) {
+    const confirmed = await prompts.confirmDangerous(
+      'Using --force bypasses secret scanning.\n' +
+        'Any secrets in these files may be committed to git and potentially exposed.',
+      'force'
+    );
+    if (!confirmed) {
+      logger.info('Operation cancelled');
+      return { continue: false, filesToAdd: [] };
+    }
+    logger.warning('Secret scanning bypassed with --force');
+    // Audit log for security tracking
+    await logForceSecretBypass('tuck add --force', filesToAdd.length);
     return { continue: true, filesToAdd };
   }
 

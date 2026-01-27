@@ -75,9 +75,18 @@ export const tuckConfigSchema = z.object({
 
   encryption: z
     .object({
+      /** Master switch for encryption features */
       enabled: z.boolean().default(false),
+      /** Enable encryption for backups */
+      backupsEnabled: z.boolean().default(false),
+      /** GPG key for encryption (optional) */
       gpgKey: z.string().optional(),
+      /** Files to encrypt */
       files: z.array(z.string()).default([]),
+      /** Internal: Salt for password verification (hex encoded) */
+      _verificationSalt: z.string().optional(),
+      /** Internal: Hash for password verification */
+      _verificationHash: z.string().optional(),
     })
     .partial()
     .default({}),
@@ -121,6 +130,7 @@ export const defaultConfig: TuckConfigOutput = {
   },
   encryption: {
     enabled: false,
+    backupsEnabled: false,
     files: [],
   },
   ui: {

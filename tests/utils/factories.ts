@@ -8,9 +8,7 @@ import type { TuckManifestOutput, TrackedFileOutput } from '../../src/schemas/ma
 /**
  * Create a valid mock config object
  */
-export const createMockConfig = (
-  overrides?: Partial<TuckConfigOutput>
-): TuckConfigOutput => {
+export const createMockConfig = (overrides?: Partial<TuckConfigOutput>): TuckConfigOutput => {
   return {
     repository: {
       path: '/test-home/.tuck',
@@ -44,15 +42,31 @@ export const createMockConfig = (
       verbose: false,
       ...overrides?.ui,
     },
+    security: {
+      scanSecrets: true,
+      blockOnSecrets: true,
+      minSeverity: 'high',
+      scanner: 'builtin',
+      customPatterns: [],
+      excludePatterns: [],
+      excludeFiles: [],
+      maxFileSize: 10 * 1024 * 1024,
+      secretBackend: 'local',
+      cacheSecrets: true,
+      secretMappings: 'secrets.mappings.json',
+      ...overrides?.security,
+    },
+    remote: {
+      mode: 'local',
+      ...overrides?.remote,
+    },
   };
 };
 
 /**
  * Create a valid mock manifest object
  */
-export const createMockManifest = (
-  overrides?: Partial<TuckManifestOutput>
-): TuckManifestOutput => {
+export const createMockManifest = (overrides?: Partial<TuckManifestOutput>): TuckManifestOutput => {
   const now = new Date().toISOString();
   return {
     version: '1.0.0',

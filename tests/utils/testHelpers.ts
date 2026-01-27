@@ -3,7 +3,7 @@
  */
 
 import { vol } from 'memfs';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { createMockConfig, createMockManifest } from './factories.js';
 import type { TuckConfigOutput } from '../../src/schemas/config.schema.js';
 import type { TuckManifestOutput } from '../../src/schemas/manifest.schema.js';
@@ -43,17 +43,11 @@ export const initTestTuck = async (options?: {
 
   // Create config file
   const config = createMockConfig(options?.config);
-  vol.writeFileSync(
-    join(TEST_TUCK_DIR, '.tuckrc.json'),
-    JSON.stringify(config, null, 2)
-  );
+  vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckrc.json'), JSON.stringify(config, null, 2));
 
   // Create manifest file
   const manifest = createMockManifest(options?.manifest);
-  vol.writeFileSync(
-    join(TEST_TUCK_DIR, '.tuckmanifest.json'),
-    JSON.stringify(manifest, null, 2)
-  );
+  vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
 
   // Create .gitignore
   vol.writeFileSync(join(TEST_TUCK_DIR, '.gitignore'), '.DS_Store\n*.bak\n');
@@ -80,10 +74,7 @@ export const initTestTuck = async (options?: {
 
   // Initialize git directory (mock)
   vol.mkdirSync(join(TEST_TUCK_DIR, '.git'), { recursive: true });
-  vol.writeFileSync(
-    join(TEST_TUCK_DIR, '.git', 'HEAD'),
-    'ref: refs/heads/main'
-  );
+  vol.writeFileSync(join(TEST_TUCK_DIR, '.git', 'HEAD'), 'ref: refs/heads/main');
 };
 
 /**
@@ -94,12 +85,12 @@ export const createTestDotfile = (
   content: string,
   options?: { subdir?: string }
 ): string => {
-  const basePath = options?.subdir
-    ? join(TEST_HOME, options.subdir)
-    : TEST_HOME;
+  const basePath = options?.subdir ? join(TEST_HOME, options.subdir) : TEST_HOME;
   const fullPath = join(basePath, name);
 
-  vol.mkdirSync(basePath, { recursive: true });
+  // Create the parent directory of the full path (handles nested paths like .local/bin/script.sh)
+  const parentDir = dirname(fullPath);
+  vol.mkdirSync(parentDir, { recursive: true });
   vol.writeFileSync(fullPath, content);
 
   return fullPath;
@@ -143,9 +134,7 @@ export const readTestJson = <T>(path: string): T => {
  * Get the test manifest
  */
 export const getTestManifest = (): TuckManifestOutput => {
-  return readTestJson<TuckManifestOutput>(
-    join(TEST_TUCK_DIR, '.tuckmanifest.json')
-  );
+  return readTestJson<TuckManifestOutput>(join(TEST_TUCK_DIR, '.tuckmanifest.json'));
 };
 
 /**

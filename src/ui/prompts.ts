@@ -190,6 +190,57 @@ export const prompts = {
     });
     return results as Record<string, T>;
   },
+
+  /**
+   * Confirm a dangerous operation by requiring the user to type a confirmation word.
+   * This provides stronger protection than a simple yes/no prompt.
+   *
+   * @param message - Describes what the dangerous operation will do
+   * @param confirmWord - The word the user must type (default: "yes")
+   * @returns true if confirmed, false otherwise
+   *
+   * @example
+   * ```typescript
+   * if (options.force) {
+   *   const confirmed = await prompts.confirmDangerous(
+   *     'This will bypass secret scanning. Secrets may be committed to git.',
+   *     'force'
+   *   );
+   *   if (!confirmed) return;
+   * }
+   * ```
+   */
+  confirmDangerous: async (message: string, confirmWord = 'yes'): Promise<boolean> => {
+    // In non-interactive mode, don't allow dangerous operations without explicit CI flag
+    if (!process.stdout.isTTY) {
+      if (process.env.TUCK_FORCE_DANGEROUS === 'true') {
+        return true;
+      }
+      prompts.log.error(`Cannot confirm dangerous operation in non-interactive mode.`);
+      prompts.log.info(`Set TUCK_FORCE_DANGEROUS=true to bypass (use with extreme caution).`);
+      return false;
+    }
+
+    prompts.log.warning(message);
+    console.log();
+
+    const result = await p.text({
+      message: `Type "${confirmWord}" to confirm:`,
+      placeholder: confirmWord,
+      validate: (value) => {
+        if (value.toLowerCase() !== confirmWord.toLowerCase()) {
+          return `Please type "${confirmWord}" to confirm, or press Ctrl+C to cancel`;
+        }
+        return undefined;
+      },
+    });
+
+    if (p.isCancel(result)) {
+      prompts.cancel('Operation cancelled');
+    }
+
+    return (result as string).toLowerCase() === confirmWord.toLowerCase();
+  },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -45,6 +45,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:security": "vitest run --dir tests/security",
+    "test:integration": "vitest run --dir tests/integration",
+    "test:unit": "vitest run --dir tests/lib --dir tests/commands",
+    "bench": "vitest bench --config vitest.bench.config.ts",
+    "bench:watch": "vitest bench --config vitest.bench.config.ts --watch",
     "prepare": "husky install",
     "prepublishOnly": "pnpm build"
   },
