@@ -104,6 +104,9 @@ export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
     entries = await readdir(expandedPath, { withFileTypes: true });
   } catch (error) {
     // Handle permission errors and other read failures gracefully
+    if (process.env.DEBUG) {
+      console.warn(`[tuck] Warning: Could not read directory ${expandedPath}:`, error);
+    }
     return files;
   }
 
@@ -139,8 +142,11 @@ export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
       } else if (entry.isFile()) {
         files.push(entryPath);
       }
-    } catch {
+    } catch (error) {
       // Skip entries we can't access (permission errors, etc.)
+      if (process.env.DEBUG) {
+        console.warn(`[tuck] Warning: Could not access ${entryPath}:`, error);
+      }
       continue;
     }
   }

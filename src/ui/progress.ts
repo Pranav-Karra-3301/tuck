@@ -289,19 +289,6 @@ export const processFilesWithProgress = async <T>(
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Legacy Exports (backward compatibility)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** @deprecated Use processFilesWithProgress instead */
-export const trackFilesWithProgress = processFilesWithProgress;
-
-/** @deprecated Use FileOperationItem instead */
-export type FileTrackingItem = FileOperationItem;
-
-/** @deprecated Use FileOperationOptions instead */
-export type FileTrackingOptions = FileOperationOptions;
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Step Progress (for multi-step operations)
 // ─────────────────────────────────────────────────────────────────────────────
 

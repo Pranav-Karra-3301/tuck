@@ -177,8 +177,11 @@ export const listSnapshots = async (): Promise<Snapshot[]> => {
         machine: metadata.machine,
         profile: metadata.profile,
       });
-    } catch {
+    } catch (error) {
       // Skip invalid snapshots
+      if (process.env.DEBUG) {
+        console.warn(`[tuck] Warning: Skipping invalid snapshot:`, error);
+      }
     }
   }
 
