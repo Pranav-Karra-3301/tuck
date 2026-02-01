@@ -1,3 +1,29 @@
+# [1.8.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.7.0...v1.8.0) (2026-02-01)
+
+
+### Bug Fixes
+
+* add longer timeouts for git tests on Windows CI ([a63a439](https://github.com/Pranav-Karra-3301/tuck/commit/a63a439eecabe063a55d0bb2860526377977454a))
+* address additional Copilot code review feedback ([7a8dc65](https://github.com/Pranav-Karra-3301/tuck/commit/7a8dc65b27a77fe5224fe2d50f08bcc300b90ce3))
+* address code review feedback ([7b4393b](https://github.com/Pranav-Karra-3301/tuck/commit/7b4393b48a986f4d5c56b661583067b2a4dfe4c0))
+* address code review issues for password manager integration ([9929af0](https://github.com/Pranav-Karra-3301/tuck/commit/9929af0e510b9ded5db8dac208c55e81144de739))
+* address comprehensive code review findings ([cbc37ac](https://github.com/Pranav-Karra-3301/tuck/commit/cbc37ac33e7a0feb3475e44341096df49a20bac1))
+* comprehensive bug fixes and expanded test coverage ([e81c31f](https://github.com/Pranav-Karra-3301/tuck/commit/e81c31f2aaa358588d11be86821630c2c39c2ce7))
+* correct Homebrew tap name in README ([4807b47](https://github.com/Pranav-Karra-3301/tuck/commit/4807b47f3aab42cd9325ea06aacbb09980dc6ec3)), closes [#74](https://github.com/Pranav-Karra-3301/tuck/issues/74)
+* make tests cross-platform for Windows CI ([88c7ae6](https://github.com/Pranav-Karra-3301/tuck/commit/88c7ae6513b0ae24423ad54f410e5d5f49935cdf))
+* remove unused variables and imports from test files ([7bc2543](https://github.com/Pranav-Karra-3301/tuck/commit/7bc25438231f928fb1eb858fdf468377147b614c))
+* resolve lint errors and remove remotion/video files ([968a290](https://github.com/Pranav-Karra-3301/tuck/commit/968a2902b8dac0d4a2a33ff1b5e4808fd703bad5))
+* resolve Windows test failures in paths.test.ts ([85ac358](https://github.com/Pranav-Karra-3301/tuck/commit/85ac3583f14917966970cf151615522ee30e2aa4))
+* resolve Windows test failures in paths.test.ts ([f103c67](https://github.com/Pranav-Karra-3301/tuck/commit/f103c676cde62a1e0e529c7b4506670969dd9686))
+* use !== 1 for pluralization in status messages ([8bd62c3](https://github.com/Pranav-Karra-3301/tuck/commit/8bd62c34fcf1ff3445b9a58b7e698ea444ad5902))
+
+
+### Features
+
+* add security hardening, audit logging, and comprehensive testing ([a2939f2](https://github.com/Pranav-Karra-3301/tuck/commit/a2939f2316faffbd12c3abdd01881e1f92145de4))
+* add Windows compatibility support ([42e8fb0](https://github.com/Pranav-Karra-3301/tuck/commit/42e8fb00b7628a77e98c6e2e06da8335d5b5ec53))
+* enhance secret management with auto-restore and configurable blocking ([01c1816](https://github.com/Pranav-Karra-3301/tuck/commit/01c181699d24c6ab94ce6c99fc8b6d1f75dbc34f))
+
 <img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
 # [1.7.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.6.0...v1.7.0) (2026-01-18)
