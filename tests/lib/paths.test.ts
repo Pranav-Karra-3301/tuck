@@ -8,19 +8,20 @@ import {
   sanitizeFilename,
   generateFileId,
 } from '../../src/lib/paths.js';
+import { TEST_HOME } from '../setup.js';
 
 describe('paths', () => {
   describe('expandPath', () => {
     it('should expand ~ to home directory', () => {
-      const home = homedir();
-      // Use path.join for cross-platform compatibility
-      expect(expandPath('~/.zshrc')).toBe(join(home, '.zshrc'));
+      // The mock returns TEST_HOME for homedir()
+      const result = expandPath('~/.zshrc');
+      // Result should be TEST_HOME/.zshrc (with platform-appropriate separators)
+      expect(result.replace(/\\/g, '/')).toBe(`${TEST_HOME}/.zshrc`);
     });
 
     it('should expand $HOME to home directory', () => {
-      const home = homedir();
-      // Use path.join for cross-platform compatibility
-      expect(expandPath('$HOME/.zshrc')).toBe(join(home, '.zshrc'));
+      const result = expandPath('$HOME/.zshrc');
+      expect(result.replace(/\\/g, '/')).toBe(`${TEST_HOME}/.zshrc`);
     });
 
     it('should return absolute paths unchanged', () => {
@@ -33,9 +34,9 @@ describe('paths', () => {
 
   describe('collapsePath', () => {
     it('should collapse home directory to ~', () => {
-      const home = homedir();
-      // Use path.join for cross-platform compatibility
-      const result = collapsePath(join(home, '.zshrc'));
+      // Use TEST_HOME since homedir() is mocked to return it
+      // collapsePath internally calls homedir() which returns TEST_HOME
+      const result = collapsePath(join(TEST_HOME, '.zshrc'));
       // On Windows the separator will be backslash, so normalize for comparison
       expect(result.replace(/\\/g, '/')).toBe('~/.zshrc');
     });

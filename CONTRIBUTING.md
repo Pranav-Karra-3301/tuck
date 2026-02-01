@@ -212,9 +212,12 @@ const processFile = async (path) => {
 
 ### Error Handling
 
+> **Reference Guide**: See [docs/ERROR_CODES.md](docs/ERROR_CODES.md) for a complete list of error codes and their meanings.
+
 - Use custom error classes from `src/errors.ts`
 - Always provide helpful error messages
 - Never silently swallow errors
+- Use `errorToMessage()` from `src/lib/validation.ts` for safe error string extraction
 
 ```typescript
 // Good
@@ -269,6 +272,8 @@ prompts.outro('Done!');
 
 ## Testing
 
+> **Comprehensive Guide**: See [docs/TESTING.md](docs/TESTING.md) for the full testing guide including test utilities, factories, and security testing patterns.
+
 ### Running Tests
 
 ```bash
@@ -280,6 +285,26 @@ pnpm test:watch
 
 # With coverage report
 pnpm test:coverage
+
+# Run specific test categories
+pnpm test:security      # Security tests only
+pnpm test:integration   # Integration tests only
+pnpm test:unit          # Unit tests only
+```
+
+### Performance Benchmarks
+
+> **Detailed Guide**: See [docs/BENCHMARKING.md](docs/BENCHMARKING.md) for performance targets, bottleneck analysis, and optimization opportunities.
+
+```bash
+# Run all benchmarks
+pnpm bench
+
+# Before submitting PRs, check for performance regressions
+pnpm bench > before.txt
+# Make changes...
+pnpm bench > after.txt
+diff before.txt after.txt
 ```
 
 ### Writing Tests
@@ -316,6 +341,8 @@ describe('functionUnderTest', () => {
 - Use temporary directories for file operations
 - Mock external services when needed
 - Aim for high coverage but prioritize meaningful tests
+- Add security tests for any user-input handling
+- Add benchmarks for performance-critical code paths
 
 ---
 

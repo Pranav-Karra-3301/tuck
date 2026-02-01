@@ -95,7 +95,8 @@ export function validateRepoName(repoName: string, provider: string): void {
   }
 
   // For owner/repo or repo format, validate strictly
-  const validPattern = /^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?(?:\/[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?)*$/;
+  const validPattern =
+    /^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?(?:\/[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?)*$/;
   if (!validPattern.test(repoName)) {
     throw new Error(
       'Repository names must start and end with alphanumeric characters and can only contain alphanumeric characters, hyphens, underscores, and dots. Format: "owner/repo" or "repo"'
@@ -134,7 +135,9 @@ function validateHttpUrl(url: string, provider: string): void {
   if (provider === 'github' && parsedUrl.hostname === 'github.com') {
     const pathPattern = /^\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+(?:\.git)?$/;
     if (!pathPattern.test(parsedUrl.pathname)) {
-      throw new Error('Invalid GitHub repository URL format. Expected: /owner/repo or /owner/repo.git');
+      throw new Error(
+        'Invalid GitHub repository URL format. Expected: /owner/repo or /owner/repo.git'
+      );
     }
   }
 }
@@ -313,7 +316,12 @@ function validateFileUrl(url: string): boolean {
   }
 
   // Block path traversal (both Unix and Windows style)
-  if (path.includes('../') || path.includes('/..') || path.includes('..\\') || path.includes('\\..')) {
+  if (
+    path.includes('../') ||
+    path.includes('/..') ||
+    path.includes('..\\') ||
+    path.includes('\\..')
+  ) {
     return false;
   }
 
@@ -349,8 +357,209 @@ function validateFileUrl(url: string): boolean {
 }
 
 // ============================================================================
-// Error Message Sanitization
+// Path and Input Validation
 // ============================================================================
+
+/**
+ * Validate a file path for safety
+ * @param path Path to validate
+ * @throws Error if path is invalid
+ */
+export function validatePath(path: string): void {
+  if (path === null || path === undefined) {
+    throw new Error('Path is required');
+  }
+
+  if (typeof path !== 'string') {
+    throw new Error('Path must be a string');
+  }
+
+  if (path.length === 0) {
+    throw new Error('Path cannot be empty');
+  }
+
+  // Check for null bytes (security vulnerability)
+  if (path.includes('\x00')) {
+    throw new Error('Path contains null byte');
+  }
+
+  // Check for control characters
+  // eslint-disable-next-line no-control-regex
+  if (/[\x01-\x1F\x7F]/.test(path)) {
+    throw new Error('Path contains control characters');
+  }
+
+  // Check for RTL override characters (security vulnerability)
+  if (/[\u202E\u202D\u202C\u202B\u202A]/.test(path)) {
+    throw new Error('Path contains bidirectional override characters');
+  }
+}
+
+/**
+ * Validate a filename (not a path)
+ * @param filename Filename to validate
+ * @throws Error if filename is invalid
+ */
+export function validateFilename(filename: string): void {
+  if (!filename || typeof filename !== 'string') {
+    throw new Error('Filename is required');
+  }
+
+  if (filename.length === 0) {
+    throw new Error('Filename cannot be empty');
+  }
+
+  if (filename.length > 255) {
+    throw new Error('Filename too long (max 255 characters)');
+  }
+
+  // Check for path separators
+  if (filename.includes('/') || filename.includes('\\')) {
+    throw new Error('Filename cannot contain path separators');
+  }
+
+  // Check for special directory names
+  if (filename === '.' || filename === '..') {
+    throw new Error('Invalid filename');
+  }
+
+  // Check for null bytes
+  if (filename.includes('\x00')) {
+    throw new Error('Filename contains null byte');
+  }
+
+  // Check for control characters
+  // eslint-disable-next-line no-control-regex
+  if (/[\x01-\x1F\x7F]/.test(filename)) {
+    throw new Error('Filename contains control characters');
+  }
+}
+
+/**
+ * Validate a configuration value
+ * @param key Config key name
+ * @param value Config value to validate
+ * @throws Error if value is invalid
+ */
+export function validateConfigValue(key: string, value: string): void {
+  if (typeof value !== 'string') {
+    throw new Error(`Config value for ${key} must be a string`);
+  }
+
+  if (value.length > 10000) {
+    throw new Error(`Config value for ${key} too long (max 10000 characters)`);
+  }
+
+  // Check for shell metacharacters that could be used for injection
+  const dangerousPatterns = [/;\s*rm\s/i, /&&\s*\w/, /\|\s*cat/i, /\$\(/, /`[^`]*`/];
+
+  for (const pattern of dangerousPatterns) {
+    if (pattern.test(value)) {
+      throw new Error(`Config value for ${key} contains potentially dangerous characters`);
+    }
+  }
+}
+
+/**
+ * Sanitize user input
+ * @param input Input string to sanitize
+ * @returns Sanitized string
+ */
+export function sanitizeInput(input: string): string {
+  if (input === null || input === undefined) {
+    return '';
+  }
+
+  if (typeof input !== 'string') {
+    return '';
+  }
+
+  // Remove null bytes and zero-width characters
+  // NOTE: We use split().join() instead of regex.replace() to satisfy ESLint rules:
+  // - no-control-regex: Disallows control characters in regex (like \x00)
+  // - no-misleading-character-class: Warns about confusing character classes
+  // This approach is slightly less performant but avoids lint warnings and is
+  // more explicit about what characters are being removed.
+  const nullChar = String.fromCharCode(0);
+  let sanitized = input.split(nullChar).join('');
+
+  // Zero-width characters: ZWSP, ZWNJ, ZWJ, BOM
+  sanitized = sanitized
+    .split('\u200B')
+    .join('')
+    .split('\u200C')
+    .join('')
+    .split('\u200D')
+    .join('')
+    .split('\uFEFF')
+    .join('');
+
+  // Trim whitespace
+  sanitized = sanitized.trim();
+
+  // Normalize unicode
+  sanitized = sanitized.normalize('NFC');
+
+  return sanitized;
+}
+
+// ============================================================================
+// Error Message Utilities
+// ============================================================================
+
+/**
+ * Safely extract an error message from an unknown error.
+ * Prevents exposing sensitive information while providing useful debug info.
+ *
+ * @param error - The error to extract a message from (can be any type)
+ * @param context - Optional context to prefix the message (e.g., "Failed to read file")
+ * @returns A safe error message string
+ *
+ * @example
+ * ```typescript
+ * try {
+ *   await riskyOperation();
+ * } catch (error) {
+ *   logger.debug(errorToMessage(error, 'Operation failed'));
+ * }
+ * ```
+ */
+export function errorToMessage(error: unknown, context?: string): string {
+  let message: string;
+
+  if (error instanceof Error) {
+    // For known Error types, use the message
+    message = error.message;
+
+    // Truncate very long messages (e.g., stack traces accidentally included)
+    if (message.length > 500) {
+      message = message.slice(0, 500) + '...';
+    }
+  } else if (typeof error === 'string') {
+    message = error.length > 500 ? error.slice(0, 500) + '...' : error;
+  } else if (error === null) {
+    message = 'null error';
+  } else if (error === undefined) {
+    message = 'undefined error';
+  } else {
+    // For objects or other types, be cautious
+    try {
+      const str = String(error);
+      message = str.length > 500 ? str.slice(0, 500) + '...' : str;
+    } catch {
+      message = 'Unknown error (could not convert to string)';
+    }
+  }
+
+  // Remove potential secrets from common patterns
+  message = message
+    .replace(/password[=:]\s*\S+/gi, 'password=[REDACTED]')
+    .replace(/token[=:]\s*\S+/gi, 'token=[REDACTED]')
+    .replace(/key[=:]\s*\S+/gi, 'key=[REDACTED]')
+    .replace(/secret[=:]\s*\S+/gi, 'secret=[REDACTED]');
+
+  return context ? `${context}: ${message}` : message;
+}
 
 /**
  * Sanitize error messages to prevent information disclosure

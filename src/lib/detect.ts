@@ -737,18 +737,21 @@ export const shouldExcludeFile = (path: string): boolean => {
   }
 
   // Check cache directories (directory-aware prefix match)
-  // Must match exactly or be a subdirectory (with /)
+  // Must match exactly or be a subdirectory (with / or \ on Windows)
+  // Normalize both paths to forward slashes for consistent comparison
+  const normalizedForCompare = normalizedPath.replace(/\\/g, '/');
   for (const cacheDir of DEFAULT_EXCLUSION_PATTERNS.cacheDirectories) {
+    const normalizedCacheDir = cacheDir.replace(/\\/g, '/');
     if (
-      normalizedPath === cacheDir ||
-      normalizedPath.startsWith(cacheDir + '/')
+      normalizedForCompare === normalizedCacheDir ||
+      normalizedForCompare.startsWith(normalizedCacheDir + '/')
     ) {
       return true;
     }
   }
 
-  // Check history files (exact match)
-  if (DEFAULT_EXCLUSION_PATTERNS.historyFiles.includes(normalizedPath)) {
+  // Check history files (exact match) - use normalized path with forward slashes
+  if (DEFAULT_EXCLUSION_PATTERNS.historyFiles.includes(normalizedForCompare)) {
     return true;
   }
 

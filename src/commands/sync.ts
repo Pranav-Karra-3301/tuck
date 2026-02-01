@@ -26,6 +26,7 @@ import { detectDotfiles, DETECTION_CATEGORIES, type DetectedFile } from '../lib/
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
 import { scanForSecrets, isSecretScanningEnabled, shouldBlockOnSecrets, processSecretsForRedaction, redactFile } from '../lib/secrets/index.js';
 import { displayScanResults } from './secrets.js';
+import { logForceSecretBypass } from '../lib/audit.js';
 
 interface SyncResult {
   modified: string[];
@@ -277,8 +278,20 @@ const scanAndHandleSecrets = async (
   changes: FileChange[],
   options: SyncOptions
 ): Promise<boolean> => {
-  // Skip if force flag is set or scanning is disabled
+  // Skip if force flag is set (but require confirmation first)
   if (options.force) {
+    const confirmed = await prompts.confirmDangerous(
+      'Using --force bypasses secret scanning.\n' +
+        'Any secrets in modified files may be committed to git and potentially exposed.',
+      'force'
+    );
+    if (!confirmed) {
+      logger.info('Sync cancelled');
+      return false;
+    }
+    logger.warning('Secret scanning bypassed with --force');
+    // Audit log for security tracking
+    await logForceSecretBypass('tuck sync --force', changes.length);
     return true;
   }
 

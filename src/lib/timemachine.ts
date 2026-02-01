@@ -62,9 +62,10 @@ const getSnapshotPath = (snapshotId: string): string => {
  */
 const toBackupPath = (originalPath: string): string => {
   const collapsed = collapsePath(originalPath);
-  // Remove ~/ prefix to get a path relative to home directory
+  // Remove ~/ or ~\ prefix to get a path relative to home directory
   // This preserves the full directory structure, preventing collisions
-  return collapsed.replace(/^~\//, '');
+  // Note: collapsePath now normalizes to forward slashes, but handle both for safety
+  return collapsed.replace(/^~[/\\]/, '');
 };
 
 /**

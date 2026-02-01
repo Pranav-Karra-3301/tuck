@@ -93,20 +93,54 @@ export class GitHubCliError extends TuckError {
     super(
       `GitHub CLI error: ${message}`,
       'GITHUB_CLI_ERROR',
-      suggestions || ['Install GitHub CLI: https://cli.github.com/', 'Run `gh auth login` to authenticate']
+      suggestions || [
+        'Install GitHub CLI: https://cli.github.com/',
+        'Run `gh auth login` to authenticate',
+      ]
     );
   }
 }
 
 export class BackupError extends TuckError {
   constructor(message: string, suggestions?: string[]) {
-    super(`Backup error: ${message}`, 'BACKUP_ERROR', suggestions || ['Check available disk space']);
+    super(
+      `Backup error: ${message}`,
+      'BACKUP_ERROR',
+      suggestions || ['Check available disk space']
+    );
+  }
+}
+
+export class EncryptionError extends TuckError {
+  constructor(message: string, suggestions?: string[]) {
+    super(
+      `Encryption error: ${message}`,
+      'ENCRYPTION_ERROR',
+      suggestions || [
+        'Check your encryption password',
+        'Run `tuck encryption setup` to configure encryption',
+      ]
+    );
+  }
+}
+
+export class DecryptionError extends TuckError {
+  constructor(message: string, suggestions?: string[]) {
+    super(
+      `Decryption error: ${message}`,
+      'DECRYPTION_ERROR',
+      suggestions || [
+        'Verify you are using the correct password',
+        'The encrypted data may be corrupted',
+      ]
+    );
   }
 }
 
 export class SecretsDetectedError extends TuckError {
   constructor(count: number, files: string[]) {
-    const fileList = files.slice(0, 3).join(', ') + (files.length > 3 ? ` and ${files.length - 3} more` : '');
+    const fileList =
+      files.slice(0, 3).join(', ') + (files.length > 3 ? ` and ${files.length - 3} more` : '');
 
     // Tailor suggestions based on interactive vs CI/CD context
     const isInteractive = !!process.stdout.isTTY && process.env.CI !== 'true';
@@ -178,15 +212,19 @@ export class BackendAuthenticationError extends TuckError {
       pass: ['Ensure GPG key is available', 'Run `gpg --list-keys` to verify'],
     };
 
-    super(`Not authenticated with ${backend}`, 'BACKEND_AUTH_ERROR', authHints[backend] || [
-      `Run the ${backend} authentication command`,
-    ]);
+    super(
+      `Not authenticated with ${backend}`,
+      'BACKEND_AUTH_ERROR',
+      authHints[backend] || [`Run the ${backend} authentication command`]
+    );
   }
 }
 
 export class UnresolvedSecretsError extends TuckError {
   constructor(secrets: string[], backend: string) {
-    const secretList = secrets.slice(0, 5).join(', ') + (secrets.length > 5 ? ` and ${secrets.length - 5} more` : '');
+    const secretList =
+      secrets.slice(0, 5).join(', ') +
+      (secrets.length > 5 ? ` and ${secrets.length - 5} more` : '');
 
     super(`Could not resolve ${secrets.length} secret(s): ${secretList}`, 'UNRESOLVED_SECRETS', [
       `Ensure the secrets are configured in ${backend}`,
@@ -195,6 +233,112 @@ export class UnresolvedSecretsError extends TuckError {
     ]);
   }
 }
+
+// ============================================================================
+// User Action and Input Errors
+// ============================================================================
+
+export class OperationCancelledError extends TuckError {
+  constructor(operation?: string) {
+    super(
+      operation ? `Operation cancelled: ${operation}` : 'Operation cancelled',
+      'OPERATION_CANCELLED',
+      ['Run the command again when ready']
+    );
+  }
+}
+
+export class PrivateKeyError extends TuckError {
+  constructor(path: string) {
+    super(`Cannot track private key: ${path}`, 'PRIVATE_KEY_ERROR', [
+      'Private keys should NEVER be committed to a repository',
+      'Use a secure password manager to backup SSH keys',
+      'Track the .pub file instead if you need the public key',
+    ]);
+  }
+}
+
+export class RepositoryNotFoundError extends TuckError {
+  constructor(source: string) {
+    super(`Could not find a dotfiles repository for "${source}"`, 'REPOSITORY_NOT_FOUND', [
+      'Try specifying the full repository name (e.g., username/dotfiles)',
+      'Verify the repository exists and is accessible',
+      'Check your authentication with `gh auth status`',
+    ]);
+  }
+}
+
+export class InvalidManifestError extends TuckError {
+  constructor(reason?: string) {
+    super(
+      reason ? `Invalid manifest: ${reason}` : 'No tuck manifest found in repository',
+      'INVALID_MANIFEST',
+      [
+        'This repository may not be managed by tuck',
+        'Look for a .tuckmanifest.json file',
+        'Initialize with `tuck init` to create a new manifest',
+      ]
+    );
+  }
+}
+
+export class PathTraversalError extends TuckError {
+  constructor(path: string, reason?: string) {
+    super(
+      `Unsafe path detected: ${path}${reason ? ` - ${reason}` : ''}`,
+      'PATH_TRAVERSAL_ERROR',
+      [
+        'Paths must be within your home directory',
+        'Path traversal (..) is not allowed',
+        'Use absolute paths starting with ~/ or $HOME/',
+      ]
+    );
+  }
+}
+
+export class SecretsStoreError extends TuckError {
+  constructor(message: string, suggestions?: string[]) {
+    super(
+      `Secrets store error: ${message}`,
+      'SECRETS_STORE_ERROR',
+      suggestions || [
+        'Check file permissions on ~/.tuck/secrets.local.json',
+        'Run `tuck secrets list` to verify the secrets store',
+      ]
+    );
+  }
+}
+
+export class ScanLimitError extends TuckError {
+  constructor(fileCount: number, maxFiles: number) {
+    super(`Too many files to scan (${fileCount} > ${maxFiles})`, 'SCAN_LIMIT_ERROR', [
+      'Scan in smaller batches',
+      'Use --exclude patterns to reduce scan scope',
+      'Add large directories to .tuckignore',
+    ]);
+  }
+}
+
+export class ValidationError extends TuckError {
+  constructor(field: string, message: string) {
+    super(`Invalid ${field}: ${message}`, 'VALIDATION_ERROR', [
+      'Check your input and try again',
+    ]);
+  }
+}
+
+export class KeystoreError extends TuckError {
+  constructor(keystore: string, message: string, suggestions?: string[]) {
+    super(`${keystore} error: ${message}`, 'KEYSTORE_ERROR', suggestions || [
+      'Check your system keychain/credential manager is accessible',
+      'Try running without encryption or use the fallback keystore',
+    ]);
+  }
+}
+
+// ============================================================================
+// Error Handler
+// ============================================================================
 
 export const handleError = (error: unknown): never => {
   if (error instanceof TuckError) {
