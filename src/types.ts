@@ -135,6 +135,7 @@ export interface RestoreOptions {
   dryRun?: boolean;
   noHooks?: boolean;
   trustHooks?: boolean;
+  noSecrets?: boolean;
 }
 
 export interface StatusOptions {

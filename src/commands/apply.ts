@@ -1,27 +1,46 @@
 import { Command } from 'commander';
-import { join } from 'path';
-import { readFile, rm, chmod, stat } from 'fs/promises';
+import { join, dirname } from 'path';
+import { readFile, writeFile, rm, chmod, stat } from 'fs/promises';
 import { ensureDir, pathExists as fsPathExists } from 'fs-extra';
 import { tmpdir } from 'os';
 import { banner, prompts, logger, colors as c } from '../ui/index.js';
-import { expandPath, pathExists, collapsePath, validateSafeSourcePath } from '../lib/paths.js';
+import { expandPath, pathExists, collapsePath, validateSafeSourcePath, getTuckDir } from '../lib/paths.js';
 import { cloneRepo } from '../lib/git.js';
 import { isGhInstalled, findDotfilesRepo, ghCloneRepo, repoExists } from '../lib/github.js';
 import { createPreApplySnapshot } from '../lib/timemachine.js';
 import { smartMerge, isShellFile, generateMergePreview } from '../lib/merge.js';
-import { copyFileOrDir } from '../lib/files.js';
 import { CATEGORIES } from '../constants.js';
 import type { TuckManifest } from '../types.js';
-import { findPlaceholders } from '../lib/secrets/index.js';
+import { findPlaceholders, restoreContent, restoreFiles as restoreSecrets, getAllSecrets, getSecretCount } from '../lib/secrets/index.js';
+import { createResolver } from '../lib/secretBackends/index.js';
+import { loadConfig } from '../lib/config.js';
+import { IS_WINDOWS } from '../lib/platform.js';
+import { RepositoryNotFoundError } from '../errors.js';
+
+// Track if Windows permission warning has been shown this session
+let windowsPermissionWarningShown = false;
 
 /**
  * Fix permissions for SSH/GPG files after apply
+ * On Windows, Unix-style permissions don't apply, so we log a warning instead
  */
 const fixSecurePermissions = async (path: string): Promise<void> => {
   const collapsedPath = collapsePath(path);
 
   // Only fix permissions for SSH and GPG files
   if (!collapsedPath.includes('.ssh/') && !collapsedPath.includes('.gnupg/')) {
+    return;
+  }
+
+  // On Windows, chmod is limited and Unix-style permissions don't apply
+  if (IS_WINDOWS) {
+    if (!windowsPermissionWarningShown) {
+      logger.warning(
+        'Note: On Windows, file permissions cannot be restricted like on Unix systems. ' +
+        'Ensure your SSH/GPG files are stored in a secure location.'
+      );
+      windowsPermissionWarningShown = true;
+    }
     return;
   }
 
@@ -34,7 +53,7 @@ const fixSecurePermissions = async (path: string): Promise<void> => {
       await chmod(path, 0o600);
     }
   } catch {
-    // Ignore permission errors (might be on Windows)
+    // Ignore permission errors
   }
 };
 
@@ -96,10 +115,7 @@ const resolveSource = async (source: string): Promise<{ repoId: string; isUrl: b
     }
   }
 
-  throw new Error(
-    `Could not find a dotfiles repository for "${source}". ` +
-      'Try specifying the full repository name (e.g., username/dotfiles)'
-  );
+  throw new RepositoryNotFoundError(source);
 };
 
 /**
@@ -177,6 +193,47 @@ const prepareFilesToApply = async (
 };
 
 /**
+ * Resolve placeholders in file content using the configured backend
+ * @returns Object with resolved content and any unresolved placeholder names
+ */
+const resolveFileSecrets = async (
+  content: string,
+  tuckDir: string
+): Promise<{ content: string; unresolved: string[] }> => {
+  const placeholders = findPlaceholders(content);
+
+  if (placeholders.length === 0) {
+    return { content, unresolved: [] };
+  }
+
+  try {
+    const config = await loadConfig(tuckDir);
+    const resolver = createResolver(tuckDir, config.security);
+
+    // Resolve all placeholders
+    // Use failOnAuthRequired to prevent interactive prompts during apply
+    const secrets = await resolver.resolveToMap(placeholders, { failOnAuthRequired: true });
+
+    // Replace placeholders with resolved values
+    const result = restoreContent(content, secrets);
+
+    return {
+      content: result.restoredContent,
+      unresolved: result.unresolved,
+    };
+  } catch (error) {
+    // If resolver fails, log the error and return original content with all placeholders as unresolved
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.debug?.(`Secret resolution failed: ${errorMsg}`);
+    logger.warning?.(
+      `Failed to resolve secrets for file content. ${placeholders.length} placeholder(s) will remain unresolved. ` +
+        `Reason: ${errorMsg}`
+    );
+    return { content, unresolved: placeholders };
+  }
+};
+
+/**
  * Apply files with merge strategy
  */
 const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<ApplyResult> => {
@@ -185,15 +242,21 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
     filesWithPlaceholders: [],
   };
 
-  for (const file of files) {
-    const fileContent = await readFile(file.repoPath, 'utf-8');
+  // Get tuck directory for secret resolution
+  const tuckDir = getTuckDir();
 
-    // Check for placeholders that need secret values
-    const placeholders = findPlaceholders(fileContent);
-    if (placeholders.length > 0) {
+  for (const file of files) {
+    let fileContent = await readFile(file.repoPath, 'utf-8');
+
+    // Resolve placeholders using configured backend (1Password, Bitwarden, pass, or local)
+    const secretsResult = await resolveFileSecrets(fileContent, tuckDir);
+    fileContent = secretsResult.content;
+
+    // Track only unresolved placeholders
+    if (secretsResult.unresolved.length > 0) {
       result.filesWithPlaceholders.push({
         path: collapsePath(file.destination),
-        placeholders,
+        placeholders: secretsResult.unresolved,
       });
     }
 
@@ -207,10 +270,6 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
           `${collapsePath(file.destination)} (${mergeResult.preservedBlocks} blocks preserved)`
         );
       } else {
-        const { writeFile } = await import('fs/promises');
-        const { ensureDir } = await import('fs-extra');
-        const { dirname } = await import('path');
-
         await ensureDir(dirname(file.destination));
         await writeFile(file.destination, mergeResult.content, 'utf-8');
         logger.file('merge', collapsePath(file.destination));
@@ -225,7 +284,9 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
         }
       } else {
         const fileExists = await pathExists(file.destination);
-        await copyFileOrDir(file.repoPath, file.destination, { overwrite: true });
+        // Write file content directly instead of copying (to preserve resolved secrets)
+        await ensureDir(dirname(file.destination));
+        await writeFile(file.destination, fileContent, 'utf-8');
         await fixSecurePermissions(file.destination);
         logger.file(fileExists ? 'modify' : 'add', collapsePath(file.destination));
       }
@@ -246,14 +307,21 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
     filesWithPlaceholders: [],
   };
 
+  // Get tuck directory for secret resolution
+  const tuckDir = getTuckDir();
+
   for (const file of files) {
-    // Check for placeholders that need secret values
-    const fileContent = await readFile(file.repoPath, 'utf-8');
-    const placeholders = findPlaceholders(fileContent);
-    if (placeholders.length > 0) {
+    let fileContent = await readFile(file.repoPath, 'utf-8');
+
+    // Resolve placeholders using configured backend (1Password, Bitwarden, pass, or local)
+    const secretsResult = await resolveFileSecrets(fileContent, tuckDir);
+    fileContent = secretsResult.content;
+
+    // Track only unresolved placeholders
+    if (secretsResult.unresolved.length > 0) {
       result.filesWithPlaceholders.push({
         path: collapsePath(file.destination),
-        placeholders,
+        placeholders: secretsResult.unresolved,
       });
     }
 
@@ -265,7 +333,9 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
       }
     } else {
       const fileExists = await pathExists(file.destination);
-      await copyFileOrDir(file.repoPath, file.destination, { overwrite: true });
+      // Write file content directly instead of copying (to preserve resolved secrets)
+      await ensureDir(dirname(file.destination));
+      await writeFile(file.destination, fileContent, 'utf-8');
       await fixSecurePermissions(file.destination);
       logger.file(fileExists ? 'modify' : 'add', collapsePath(file.destination));
     }
@@ -327,6 +397,86 @@ const displayPlaceholderWarnings = (
   console.log(c.dim('  These placeholders need to be replaced with actual values.'));
   console.log(c.dim('  Use `tuck secrets set <NAME> <value>` to configure secrets,'));
   console.log(c.dim('  then re-apply to populate them.'));
+};
+
+/**
+ * Attempt to restore secrets from local store for files with placeholders
+ * Returns info about what was restored
+ */
+const tryRestoreSecretsFromLocalStore = async (
+  filesWithPlaceholders: ApplyResult['filesWithPlaceholders'],
+  interactive: boolean
+): Promise<{ restored: number; unresolved: string[] }> => {
+  if (filesWithPlaceholders.length === 0) {
+    return { restored: 0, unresolved: [] };
+  }
+
+  const allPlaceholders = filesWithPlaceholders.flatMap(f => f.placeholders);
+
+  // Check if local tuck is initialized and has secrets
+  let tuckDir: string;
+  try {
+    tuckDir = getTuckDir();
+  } catch {
+    // Tuck not initialized locally - can't restore secrets
+    return { restored: 0, unresolved: allPlaceholders };
+  }
+
+  try {
+    // Check if we have any secrets stored locally
+    const secretCount = await getSecretCount(tuckDir);
+    if (secretCount === 0) {
+      return { restored: 0, unresolved: allPlaceholders };
+    }
+
+    // Get all stored secrets
+    const secrets = await getAllSecrets(tuckDir);
+    const secretNames = new Set(Object.keys(secrets));
+
+    // Check which placeholders can be resolved
+    const uniquePlaceholders = new Set(allPlaceholders);
+    const resolvable = [...uniquePlaceholders].filter(p => secretNames.has(p));
+
+    if (resolvable.length === 0) {
+      return { restored: 0, unresolved: [...uniquePlaceholders] };
+    }
+
+    // In interactive mode, ask if user wants to restore
+    if (interactive) {
+      console.log();
+      prompts.log.info(`Found ${resolvable.length} placeholder${resolvable.length !== 1 ? 's' : ''} that can be restored from local secrets store.`);
+
+      const shouldRestore = await prompts.confirm(
+        'Would you like to restore secrets from your local store?',
+        true
+      );
+
+      if (!shouldRestore) {
+        return { restored: 0, unresolved: [...uniquePlaceholders] };
+      }
+    }
+
+    // Restore secrets in the applied files
+    const pathsToRestore = filesWithPlaceholders.map(f => expandPath(f.path));
+    const result = await restoreSecrets(pathsToRestore, tuckDir);
+
+    if (interactive && result.totalRestored > 0) {
+      prompts.log.success(`Restored ${result.totalRestored} secret${result.totalRestored !== 1 ? 's' : ''} from local store`);
+    }
+
+    return {
+      restored: result.totalRestored,
+      unresolved: result.allUnresolved,
+    };
+  } catch (error) {
+    // Secret restoration failed - log warning but don't fail the apply
+    if (interactive) {
+      prompts.log.warning('Failed to restore secrets from local store');
+    } else {
+      logger.warning('Failed to restore secrets from local store');
+    }
+    return { restored: 0, unresolved: allPlaceholders };
+  }
 };
 
 /**
@@ -503,6 +653,11 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
     // Show placeholder warnings
     displayPlaceholderWarnings(applyResult.filesWithPlaceholders);
 
+    // Try to restore secrets from local store (only in non-dry-run mode)
+    if (!options.dryRun && applyResult.filesWithPlaceholders.length > 0) {
+      await tryRestoreSecretsFromLocalStore(applyResult.filesWithPlaceholders, true);
+    }
+
     if (!options.dryRun) {
       console.log();
       prompts.note(
@@ -592,6 +747,17 @@ const runApply = async (source: string, options: ApplyOptions): Promise<void> =>
 
     // Show placeholder warnings
     displayPlaceholderWarnings(applyResult.filesWithPlaceholders);
+
+    // Try to restore secrets from local store (automatically in non-interactive mode)
+    if (!options.dryRun && applyResult.filesWithPlaceholders.length > 0) {
+      const secretResult = await tryRestoreSecretsFromLocalStore(applyResult.filesWithPlaceholders, false);
+      if (secretResult.restored > 0) {
+        logger.success(`Restored ${secretResult.restored} secret${secretResult.restored !== 1 ? 's' : ''} from local store`);
+      }
+      if (secretResult.unresolved.length > 0) {
+        logger.warning(`${secretResult.unresolved.length} placeholder${secretResult.unresolved.length !== 1 ? 's remain' : ' remains'} unresolved`);
+      }
+    }
 
     if (!options.dryRun) {
       logger.info('To undo: tuck restore --latest');

@@ -1,11 +1,38 @@
-import { exec } from 'child_process';
+import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
 import chalk from 'chalk';
 import { loadConfig } from './config.js';
 import { logger } from '../ui/logger.js';
 import { prompts } from '../ui/prompts.js';
+import { IS_WINDOWS } from './platform.js';
 
 const execAsync = promisify(exec);
+
+/**
+ * Get the best available shell for Windows
+ * Prefers PowerShell Core (pwsh) over Windows PowerShell (powershell.exe)
+ * Falls back to cmd.exe if neither is available
+ */
+const getWindowsShell = (): string => {
+  // Try PowerShell Core first (cross-platform, more modern)
+  try {
+    execSync('pwsh -Version', { stdio: 'ignore' });
+    return 'pwsh';
+  } catch {
+    // pwsh not available
+  }
+
+  // Fall back to Windows PowerShell
+  try {
+    execSync('powershell.exe -Version', { stdio: 'ignore' });
+    return 'powershell.exe';
+  } catch {
+    // powershell.exe not available
+  }
+
+  // Last resort: cmd.exe
+  return 'cmd.exe';
+};
 
 export type HookType = 'preSync' | 'postSync' | 'preRestore' | 'postRestore';
 
@@ -82,6 +109,12 @@ export const runHook = async (
   }
 
   try {
+    // On Windows, use the best available shell (pwsh > powershell.exe > cmd.exe)
+    // On Unix-like systems, use the default shell
+    const shellOptions = IS_WINDOWS
+      ? { shell: getWindowsShell() }
+      : {};
+
     const { stdout, stderr } = await execAsync(command, {
       cwd: tuckDir,
       timeout: 30000, // 30 second timeout
@@ -90,6 +123,7 @@ export const runHook = async (
         TUCK_DIR: tuckDir,
         TUCK_HOOK: hookType,
       },
+      ...shellOptions,
     });
 
     if (stdout && !options?.silent) {

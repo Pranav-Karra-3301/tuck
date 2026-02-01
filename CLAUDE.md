@@ -33,10 +33,12 @@ Language:    TypeScript 5.x (strict mode)
 Package Mgr: pnpm 9+
 CLI:         Commander.js
 Prompts:     @clack/prompts
-Styling:     chalk, boxen, ora
+Styling:     chalk, boxen, ora, figures, log-symbols
 Git:         simple-git
-Files:       fs-extra
+Files:       fs-extra, glob
+Config:      cosmiconfig
 Validation:  zod
+Updates:     update-notifier
 Testing:     Vitest
 Build:       tsup
 ```
@@ -59,28 +61,51 @@ src/
 │   ├── config.ts     # tuck config - Manage configuration
 │   ├── apply.ts      # tuck apply - Apply dotfiles from repo
 │   ├── undo.ts       # tuck undo - Undo/restore from snapshots
-│   └── scan.ts       # tuck scan - Detect dotfiles on system
+│   ├── scan.ts       # tuck scan - Detect dotfiles on system
+│   └── secrets.ts    # tuck secrets - Manage detected secrets
 ├── lib/          # Core library modules
 │   ├── paths.ts      # Path utilities and resolution
 │   ├── config.ts     # Configuration management
 │   ├── manifest.ts   # File tracking manifest
 │   ├── git.ts        # Git operations wrapper
 │   ├── files.ts      # File system operations
+│   ├── fileTracking.ts # File tracking utilities
 │   ├── backup.ts     # Backup functionality
 │   ├── hooks.ts      # Pre/post hook execution
 │   ├── github.ts     # GitHub CLI integration
 │   ├── timemachine.ts # Snapshot/time-machine backups
 │   ├── merge.ts      # Smart merging for shell files
-│   └── detect.ts     # Dotfile detection and categorization
+│   ├── detect.ts     # Dotfile detection and categorization
+│   ├── binary.ts     # Binary file detection
+│   ├── tuckignore.ts # .tuckignore file handling
+│   ├── updater.ts    # Update notifications
+│   ├── validation.ts # Input validation utilities
+│   ├── remoteChecks.ts # Remote repository checks
+│   ├── providerSetup.ts # Git provider setup wizard
+│   ├── providers/    # Git provider implementations
+│   │   ├── types.ts      # Provider interface definitions
+│   │   ├── github.ts     # GitHub provider
+│   │   ├── gitlab.ts     # GitLab provider
+│   │   ├── custom.ts     # Custom/generic git provider
+│   │   └── local.ts      # Local-only (no remote) provider
+│   └── secrets/      # Secret detection and management
+│       ├── scanner.ts    # Secret scanning logic
+│       ├── patterns.ts   # Secret detection patterns
+│       ├── redactor.ts   # Secret redaction utilities
+│       ├── store.ts      # Secure secret storage
+│       └── external.ts   # External secret manager integration
 ├── ui/           # Terminal UI components
 │   ├── banner.ts     # ASCII art and boxes
 │   ├── logger.ts     # Styled logging
 │   ├── prompts.ts    # Interactive prompts
 │   ├── spinner.ts    # Loading spinners
-│   └── table.ts      # Table formatting
+│   ├── progress.ts   # Progress indicators
+│   ├── table.ts      # Table formatting
+│   └── theme.ts      # UI theme definitions
 ├── schemas/      # Zod validation schemas
 │   ├── config.schema.ts   # Configuration schema
-│   └── manifest.schema.ts # Manifest schema
+│   ├── manifest.schema.ts # Manifest schema
+│   └── secrets.schema.ts  # Secrets schema
 ├── constants.ts  # App constants
 ├── types.ts      # TypeScript types
 ├── errors.ts     # Custom error classes
@@ -280,6 +305,7 @@ ManifestError           // Manifest corruption
 PermissionError         // Can't read/write
 GitHubCliError          // GitHub CLI not installed or auth issue
 BackupError             // Backup/snapshot operation failed
+SecretsDetectedError    // Potential secrets found in tracked files
 ```
 
 All errors include:

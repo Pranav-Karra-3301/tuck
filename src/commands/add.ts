@@ -18,6 +18,8 @@ import {
   FileNotFoundError,
   FileAlreadyTrackedError,
   SecretsDetectedError,
+  PrivateKeyError,
+  OperationCancelledError,
 } from '../errors.js';
 import { CATEGORIES } from '../constants.js';
 import type { AddOptions } from '../types.js';
@@ -25,8 +27,10 @@ import { getDirectoryFileCount, checkFileSizeThreshold, formatFileSize } from '.
 import { shouldExcludeFromBin } from '../lib/binary.js';
 import { addToTuckignore, isIgnored } from '../lib/tuckignore.js';
 import { loadConfig } from '../lib/config.js';
+import { logForceSecretBypass } from '../lib/audit.js';
 import {
   scanForSecrets,
+  shouldBlockOnSecrets,
   processSecretsForRedaction,
   redactFile,
   getSecretsPath,
@@ -124,11 +128,7 @@ const validateAndPrepareFiles = async (
 
     // SECURITY: Block private keys
     if (isPrivateKey(collapsedPath)) {
-      throw new Error(
-        `Cannot track private key: ${path}\n` +
-          `Private keys should NEVER be committed to a repository.\n` +
-          `If you need to backup SSH keys, use a secure password manager.`
-      );
+      throw new PrivateKeyError(path);
     }
 
     // Check if file exists
@@ -176,7 +176,7 @@ const validateAndPrepareFiles = async (
         logger.success(`Added ${path} to .tuckignore`);
         continue; // Skip this file
       } else {
-        throw new Error('Operation cancelled');
+        throw new OperationCancelledError('file size exceeds GitHub limit');
       }
     }
 
@@ -198,7 +198,7 @@ const validateAndPrepareFiles = async (
         logger.success(`Added ${path} to .tuckignore`);
         continue;
       } else if (action === 'cancel') {
-        throw new Error('Operation cancelled');
+        throw new OperationCancelledError('file size warning');
       }
       // 'continue' falls through to track the file
     }
@@ -410,8 +410,25 @@ const scanAndHandleSecrets = async (
   const config = await loadConfig(tuckDir);
   const security = config.security || {};
 
-  // Skip scanning if disabled or --force is used
-  if (security.scanSecrets === false || options.force) {
+  // Skip scanning if disabled in config
+  if (security.scanSecrets === false) {
+    return { continue: true, filesToAdd };
+  }
+
+  // If --force is used, require explicit confirmation
+  if (options.force) {
+    const confirmed = await prompts.confirmDangerous(
+      'Using --force bypasses secret scanning.\n' +
+        'Any secrets in these files may be committed to git and potentially exposed.',
+      'force'
+    );
+    if (!confirmed) {
+      logger.info('Operation cancelled');
+      return { continue: false, filesToAdd: [] };
+    }
+    logger.warning('Secret scanning bypassed with --force');
+    // Audit log for security tracking
+    await logForceSecretBypass('tuck add --force', filesToAdd.length);
     return { continue: true, filesToAdd };
   }
 
@@ -533,11 +550,19 @@ export const addFilesFromPaths = async (
       const summary = await scanForSecrets(filePaths, tuckDir);
 
       if (summary.filesWithSecrets > 0) {
-        // Throw error to prevent silently adding files with secrets
-        const filesWithSecrets = summary.results
-          .filter((r) => r.hasSecrets)
-          .map((r) => collapsePath(r.path));
-        throw new SecretsDetectedError(summary.totalSecrets, filesWithSecrets);
+        // Check if we should block or just warn
+        const shouldBlock = await shouldBlockOnSecrets(tuckDir);
+        if (shouldBlock) {
+          // Throw error to prevent silently adding files with secrets
+          const filesWithSecrets = summary.results
+            .filter((r) => r.hasSecrets)
+            .map((r) => collapsePath(r.path));
+          throw new SecretsDetectedError(summary.totalSecrets, filesWithSecrets);
+        } else {
+          // Warn but continue
+          logger.warning('Secrets detected but blockOnSecrets is disabled - proceeding with add');
+          logger.warning('Make sure your repository is private!');
+        }
       }
     }
   }

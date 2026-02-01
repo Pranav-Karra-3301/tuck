@@ -2,9 +2,21 @@ import { homedir } from 'os';
 import { join, basename, dirname, relative, isAbsolute, resolve, sep } from 'path';
 import { stat, access } from 'fs/promises';
 import { constants } from 'fs';
-import { DEFAULT_TUCK_DIR, FILES_DIR, MANIFEST_FILE, CONFIG_FILE, CATEGORIES } from '../constants.js';
+import {
+  DEFAULT_TUCK_DIR,
+  FILES_DIR,
+  MANIFEST_FILE,
+  CONFIG_FILE,
+  CATEGORIES,
+} from '../constants.js';
+import { IS_WINDOWS, expandWindowsEnvVars, toPosixPath } from './platform.js';
 
 export const expandPath = (path: string): string => {
+  // Handle Windows environment variables first
+  if (IS_WINDOWS) {
+    path = expandWindowsEnvVars(path);
+  }
+
   if (path.startsWith('~/')) {
     return join(homedir(), path.slice(2));
   }
@@ -16,8 +28,15 @@ export const expandPath = (path: string): string => {
 
 export const collapsePath = (path: string): string => {
   const home = homedir();
-  if (path.startsWith(home)) {
-    return '~' + path.slice(home.length);
+  // Normalize both to forward slashes for comparison (cross-platform)
+  // This handles cases where homedir() and path use different separators
+  const normalizedPath = path.replace(/\\/g, '/');
+  const normalizedHome = home.replace(/\\/g, '/');
+
+  if (normalizedPath.startsWith(normalizedHome)) {
+    // After slicing, the remainder is already normalized to forward slashes
+    const remainder = normalizedPath.slice(normalizedHome.length);
+    return '~' + remainder;
   }
   return path;
 };
@@ -53,7 +72,9 @@ export const getRelativeDestination = (category: string, filename: string): stri
 export const sanitizeFilename = (filepath: string): string => {
   const base = basename(filepath);
   // Remove leading dot for storage, but keep track that it was a dotfile
-  return base.startsWith('.') ? base.slice(1) : base;
+  const result = base.startsWith('.') ? base.slice(1) : base;
+  // If result is empty (e.g., input was just '.'), return 'file' as fallback
+  return result || 'file';
 };
 
 export const detectCategory = (filepath: string): string => {
@@ -142,6 +163,28 @@ export const getRelativePath = (from: string, to: string): string => {
  */
 export const isPathWithinHome = (path: string): boolean => {
   const home = homedir();
+
+  // Detect Windows-style absolute paths on all platforms
+  // This catches cross-platform attacks in manifests
+  if (/^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\\\')) {
+    return false;
+  }
+
+  // Detect traversal patterns with either separator on all platforms
+  // This catches Windows-style attacks on Unix systems
+  if (path.includes('..\\') || path.includes('../')) {
+    // Normalize the path by replacing \ with / for consistent checking
+    const normalizedForCheck = path.replace(/\\/g, '/');
+    const expandedCheck = expandPath(normalizedForCheck);
+    const resolvedCheck = resolve(expandedCheck);
+    const normalizedHome = resolve(home);
+
+    // Check if resolved path is still within home
+    if (!resolvedCheck.startsWith(normalizedHome + sep) && resolvedCheck !== normalizedHome) {
+      return false;
+    }
+  }
+
   const expandedPath = expandPath(path);
   const normalizedPath = resolve(expandedPath);
   const normalizedHome = resolve(home);
@@ -158,7 +201,9 @@ export const isPathWithinHome = (path: string): boolean => {
 export const validateSafeSourcePath = (source: string): void => {
   // Reject absolute paths that don't start with home-relative prefixes
   if (isAbsolute(source) && !source.startsWith(homedir())) {
-    throw new Error(`Unsafe path detected: ${source} - absolute paths outside home directory are not allowed`);
+    throw new Error(
+      `Unsafe path detected: ${source} - absolute paths outside home directory are not allowed`
+    );
   }
 
   // Reject obvious path traversal attempts
@@ -175,10 +220,18 @@ export const validateSafeSourcePath = (source: string): void => {
 export const generateFileId = (source: string): string => {
   // Create a unique ID from the source path
   const collapsed = collapsePath(source);
+  // Normalize to POSIX-style (forward slashes) before processing for cross-platform consistency
+  const normalized = toPosixPath(collapsed);
   // Remove special characters and create a readable ID
-  return collapsed
+  // 1. Remove ~/ prefix
+  // 2. Replace / with _
+  // 3. Replace . with -
+  // 4. Strip all remaining unsafe characters (keep only a-z, A-Z, 0-9, _, -)
+  // 5. Remove leading - if present
+  return normalized
     .replace(/^~\//, '')
     .replace(/\//g, '_')
     .replace(/\./g, '-')
+    .replace(/[^a-zA-Z0-9_-]/g, '')
     .replace(/^-/, '');
 };

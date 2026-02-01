@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { join } from 'path';
+import { join, basename } from 'path';
 import { prompts, logger, withSpinner, colors as c } from '../ui/index.js';
 import { getTuckDir, expandPath, pathExists, collapsePath } from '../lib/paths.js';
 import {
@@ -24,8 +24,9 @@ import { NotInitializedError, SecretsDetectedError } from '../errors.js';
 import type { SyncOptions, FileChange } from '../types.js';
 import { detectDotfiles, DETECTION_CATEGORIES, type DetectedFile } from '../lib/detect.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
-import { scanForSecrets, isSecretScanningEnabled } from '../lib/secrets/index.js';
+import { scanForSecrets, isSecretScanningEnabled, shouldBlockOnSecrets, processSecretsForRedaction, redactFile } from '../lib/secrets/index.js';
 import { displayScanResults } from './secrets.js';
+import { logForceSecretBypass } from '../lib/audit.js';
 
 interface SyncResult {
   modified: string[];
@@ -231,7 +232,7 @@ const syncFiles = async (
           });
         }
       });
-      result.modified.push(change.path.split('/').pop() || change.path);
+      result.modified.push(basename(change.path) || change.path);
     } else if (change.status === 'deleted') {
       await withSpinner(`Removing ${change.path}...`, async () => {
         // Delete the file from the tuck repository
@@ -245,7 +246,7 @@ const syncFiles = async (
           await removeFileFromManifest(tuckDir, fileId);
         }
       });
-      result.deleted.push(change.path.split('/').pop() || change.path);
+      result.deleted.push(basename(change.path) || change.path);
     }
   }
 
@@ -277,8 +278,20 @@ const scanAndHandleSecrets = async (
   changes: FileChange[],
   options: SyncOptions
 ): Promise<boolean> => {
-  // Skip if force flag is set or scanning is disabled
+  // Skip if force flag is set (but require confirmation first)
   if (options.force) {
+    const confirmed = await prompts.confirmDangerous(
+      'Using --force bypasses secret scanning.\n' +
+        'Any secrets in modified files may be committed to git and potentially exposed.',
+      'force'
+    );
+    if (!confirmed) {
+      logger.info('Sync cancelled');
+      return false;
+    }
+    logger.warning('Secret scanning bypassed with --force');
+    // Audit log for security tracking
+    await logForceSecretBypass('tuck sync --force', changes.length);
     return true;
   }
 
@@ -313,6 +326,7 @@ const scanAndHandleSecrets = async (
   // Prompt user for action
   const action = await prompts.select('What would you like to do?', [
     { value: 'abort', label: 'Abort sync' },
+    { value: 'redact', label: 'Redact secrets (replace with placeholders)' },
     { value: 'ignore', label: 'Add files to .tuckignore and skip them' },
     { value: 'proceed', label: 'Proceed anyway (secrets will be committed)' },
   ]);
@@ -320,6 +334,37 @@ const scanAndHandleSecrets = async (
   if (action === 'abort') {
     prompts.cancel('Sync aborted - secrets detected');
     return false;
+  }
+
+  if (action === 'redact') {
+    // Store secrets and replace them with placeholders in the source files
+    const spinner = prompts.spinner();
+    spinner.start('Redacting secrets...');
+
+    try {
+      // Process secrets: store them and get placeholder mappings
+      const fileRedactionMaps = await processSecretsForRedaction(summary.results, tuckDir);
+
+      // Redact each file
+      let redactedCount = 0;
+      for (const result of summary.results) {
+        const placeholderMap = fileRedactionMaps.get(result.path);
+        if (placeholderMap && placeholderMap.size > 0) {
+          await redactFile(result.path, result.matches, placeholderMap);
+          redactedCount++;
+        }
+      }
+
+      spinner.stop(`Redacted secrets in ${redactedCount} file${redactedCount !== 1 ? 's' : ''}`);
+      prompts.log.success('Secrets stored locally and replaced with placeholders');
+      prompts.note("Use 'tuck secrets list' to see stored secrets", 'Tip');
+    } catch (error) {
+      spinner.stop('Redaction failed');
+      prompts.log.error(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+
+    return true;
   }
 
   if (action === 'ignore') {
@@ -703,7 +748,7 @@ const runSyncCommand = async (
     return;
   }
 
-  // Scan for secrets (non-interactive mode - throw error if found)
+  // Scan for secrets (non-interactive mode)
   if (!options.force) {
     const scanningEnabled = await isSecretScanningEnabled(tuckDir);
     if (scanningEnabled) {
@@ -715,10 +760,19 @@ const runSyncCommand = async (
         const summary = await scanForSecrets(modifiedPaths, tuckDir);
         if (summary.totalSecrets > 0) {
           displayScanResults(summary);
-          throw new SecretsDetectedError(
-            summary.totalSecrets,
-            summary.results.map((r) => collapsePath(r.path))
-          );
+
+          // Check if we should block or just warn
+          const shouldBlock = await shouldBlockOnSecrets(tuckDir);
+          if (shouldBlock) {
+            throw new SecretsDetectedError(
+              summary.totalSecrets,
+              summary.results.map((r) => collapsePath(r.path))
+            );
+          } else {
+            // Warn but continue
+            logger.warning('Secrets detected but blockOnSecrets is disabled - proceeding with sync');
+            logger.warning('Make sure your repository is private!');
+          }
         }
       }
     }

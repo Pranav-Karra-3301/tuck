@@ -1,10 +1,7 @@
 import { join, basename, isAbsolute } from 'path';
 import { readdir, stat } from 'fs/promises';
-import { platform } from 'os';
 import { pathExists, expandPath, collapsePath } from './paths.js';
-
-const IS_MACOS = platform() === 'darwin';
-const IS_LINUX = platform() === 'linux';
+import { IS_WINDOWS, IS_MACOS, IS_LINUX } from './platform.js';
 
 export interface DetectedFile {
   path: string;
@@ -100,7 +97,7 @@ const DOTFILE_PATTERNS: Array<{
   description: string;
   sensitive?: boolean;
   exclude?: string[];
-  platform?: 'darwin' | 'linux' | 'all';
+  platform?: 'darwin' | 'linux' | 'win32' | 'all';
 }> = [
   // ==================== SHELL CONFIGURATION ====================
   // Bash
@@ -410,6 +407,203 @@ const DOTFILE_PATTERNS: Array<{
   { path: '~/.Xmodmap', category: 'misc', description: 'X11 keymap', platform: 'linux' },
   { path: '~/.xinitrc', category: 'misc', description: 'X11 init script', platform: 'linux' },
   { path: '~/.xprofile', category: 'misc', description: 'X11 profile', platform: 'linux' },
+
+  // ==================== WINDOWS SPECIFIC ====================
+  // PowerShell
+  {
+    path: '%USERPROFILE%/Documents/PowerShell/Microsoft.PowerShell_profile.ps1',
+    category: 'shell',
+    description: 'PowerShell 7+ profile',
+    platform: 'win32'
+  },
+  {
+    path: '%USERPROFILE%/Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1',
+    category: 'shell',
+    description: 'Windows PowerShell profile',
+    platform: 'win32'
+  },
+  {
+    path: '%APPDATA%/PowerShell',
+    category: 'shell',
+    description: 'PowerShell configuration directory',
+    platform: 'win32'
+  },
+
+  // Windows Terminal
+  {
+    path: '%LOCALAPPDATA%/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json',
+    category: 'terminal',
+    description: 'Windows Terminal settings (Store)',
+    platform: 'win32'
+  },
+  {
+    path: '%LOCALAPPDATA%/Microsoft/Windows Terminal/settings.json',
+    category: 'terminal',
+    description: 'Windows Terminal settings (non-Store)',
+    platform: 'win32'
+  },
+
+  // VS Code on Windows
+  {
+    path: '%APPDATA%/Code/User/settings.json',
+    category: 'editors',
+    description: 'VS Code settings',
+    platform: 'win32'
+  },
+  {
+    path: '%APPDATA%/Code/User/keybindings.json',
+    category: 'editors',
+    description: 'VS Code keybindings',
+    platform: 'win32'
+  },
+  {
+    path: '%APPDATA%/Code/User/snippets',
+    category: 'editors',
+    description: 'VS Code snippets',
+    platform: 'win32'
+  },
+
+  // Cursor on Windows
+  {
+    path: '%APPDATA%/Cursor/User/settings.json',
+    category: 'editors',
+    description: 'Cursor settings',
+    platform: 'win32'
+  },
+  {
+    path: '%APPDATA%/Cursor/User/keybindings.json',
+    category: 'editors',
+    description: 'Cursor keybindings',
+    platform: 'win32'
+  },
+
+  // Git for Windows
+  {
+    path: '%USERPROFILE%/.gitconfig',
+    category: 'git',
+    description: 'Git global configuration',
+    platform: 'win32'
+  },
+  {
+    path: '%USERPROFILE%/.gitignore_global',
+    category: 'git',
+    description: 'Global gitignore patterns',
+    platform: 'win32'
+  },
+
+  // SSH on Windows
+  {
+    path: '%USERPROFILE%/.ssh/config',
+    category: 'ssh',
+    description: 'SSH client configuration',
+    sensitive: true,
+    platform: 'win32'
+  },
+  {
+    path: '%USERPROFILE%/.ssh/known_hosts',
+    category: 'ssh',
+    description: 'SSH known hosts',
+    platform: 'win32'
+  },
+
+  // Starship on Windows
+  {
+    path: '%USERPROFILE%/.config/starship.toml',
+    category: 'prompt',
+    description: 'Starship prompt config',
+    platform: 'win32'
+  },
+
+  // WSL configuration
+  {
+    path: '%USERPROFILE%/.wslconfig',
+    category: 'misc',
+    description: 'WSL global configuration',
+    platform: 'win32'
+  },
+
+  // NPM on Windows
+  {
+    path: '%USERPROFILE%/.npmrc',
+    category: 'languages',
+    description: 'npm configuration',
+    platform: 'win32'
+  },
+  {
+    path: '%APPDATA%/npm/npmrc',
+    category: 'languages',
+    description: 'npm global configuration',
+    platform: 'win32'
+  },
+
+  // ConEmu / Cmder
+  {
+    path: '%APPDATA%/ConEmu.xml',
+    category: 'terminal',
+    description: 'ConEmu settings',
+    platform: 'win32'
+  },
+
+  // Windows specific CLI tools
+  {
+    path: '%APPDATA%/lazygit/config.yml',
+    category: 'cli',
+    description: 'Lazygit config',
+    platform: 'win32'
+  },
+  {
+    path: '%APPDATA%/bat/config',
+    category: 'cli',
+    description: 'bat (better cat) config',
+    platform: 'win32'
+  },
+
+  // Neovim on Windows
+  {
+    path: '%LOCALAPPDATA%/nvim',
+    category: 'editors',
+    description: 'Neovim configuration',
+    platform: 'win32'
+  },
+
+  // Alacritty on Windows
+  {
+    path: '%APPDATA%/alacritty/alacritty.toml',
+    category: 'terminal',
+    description: 'Alacritty terminal config',
+    platform: 'win32'
+  },
+  {
+    path: '%APPDATA%/alacritty/alacritty.yml',
+    category: 'terminal',
+    description: 'Alacritty terminal config (legacy)',
+    platform: 'win32'
+  },
+
+  // WezTerm on Windows
+  {
+    path: '%USERPROFILE%/.wezterm.lua',
+    category: 'terminal',
+    description: 'WezTerm config',
+    platform: 'win32'
+  },
+
+  // Docker on Windows
+  {
+    path: '%USERPROFILE%/.docker/config.json',
+    category: 'languages',
+    description: 'Docker config',
+    platform: 'win32'
+  },
+
+  // Kubernetes on Windows
+  {
+    path: '%USERPROFILE%/.kube/config',
+    category: 'languages',
+    description: 'kubectl config',
+    sensitive: true,
+    platform: 'win32'
+  },
 ];
 
 /**
@@ -456,6 +650,13 @@ export const DEFAULT_EXCLUSION_PATTERNS = {
     '~/Library/Caches',
     '~/.node_modules',
     '~/.electron',
+    // Windows-specific caches
+    '%LOCALAPPDATA%/Temp',
+    '%APPDATA%/npm-cache',
+    '%LOCALAPPDATA%/pip/Cache',
+    '%USERPROFILE%/.nuget/packages',
+    '%LOCALAPPDATA%/Microsoft/Windows/INetCache',
+    '%LOCALAPPDATA%/Microsoft/Windows/Temporary Internet Files',
   ],
 
   // History and log files - contain ephemeral session data
@@ -483,6 +684,8 @@ export const DEFAULT_EXCLUSION_PATTERNS = {
     '~/.viminfo',
     '~/.vim_mru_files',
     '~/.netrwhist',
+    // Windows-specific history files
+    '%APPDATA%/Microsoft/Windows/PowerShell/PSReadLine/ConsoleHost_history.txt',
   ],
 
   // Binary file extensions - images, fonts, compiled output
@@ -534,18 +737,21 @@ export const shouldExcludeFile = (path: string): boolean => {
   }
 
   // Check cache directories (directory-aware prefix match)
-  // Must match exactly or be a subdirectory (with /)
+  // Must match exactly or be a subdirectory (with / or \ on Windows)
+  // Normalize both paths to forward slashes for consistent comparison
+  const normalizedForCompare = normalizedPath.replace(/\\/g, '/');
   for (const cacheDir of DEFAULT_EXCLUSION_PATTERNS.cacheDirectories) {
+    const normalizedCacheDir = cacheDir.replace(/\\/g, '/');
     if (
-      normalizedPath === cacheDir ||
-      normalizedPath.startsWith(cacheDir + '/')
+      normalizedForCompare === normalizedCacheDir ||
+      normalizedForCompare.startsWith(normalizedCacheDir + '/')
     ) {
       return true;
     }
   }
 
-  // Check history files (exact match)
-  if (DEFAULT_EXCLUSION_PATTERNS.historyFiles.includes(normalizedPath)) {
+  // Check history files (exact match) - use normalized path with forward slashes
+  if (DEFAULT_EXCLUSION_PATTERNS.historyFiles.includes(normalizedForCompare)) {
     return true;
   }
 
@@ -574,6 +780,7 @@ const shouldIncludeForPlatform = (item: { platform?: string }): boolean => {
   if (!item.platform || item.platform === 'all') return true;
   if (item.platform === 'darwin' && IS_MACOS) return true;
   if (item.platform === 'linux' && IS_LINUX) return true;
+  if (item.platform === 'win32' && IS_WINDOWS) return true;
   return false;
 };
 

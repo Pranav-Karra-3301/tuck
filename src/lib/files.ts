@@ -5,6 +5,7 @@ import { join, dirname, basename } from 'path';
 import { constants } from 'fs';
 import { FileNotFoundError, PermissionError } from '../errors.js';
 import { expandPath, pathExists, isDirectory } from './paths.js';
+import { IS_WINDOWS } from './platform.js';
 
 export interface FileInfo {
   path: string;
@@ -28,6 +29,12 @@ export const getFileChecksum = async (filepath: string): Promise<string> => {
   if (await isDirectory(expandedPath)) {
     // For directories, create a hash of all file checksums
     const files = await getDirectoryFiles(expandedPath);
+
+    // Handle empty directories - return hash of empty string for consistency
+    if (files.length === 0) {
+      return createHash('sha256').update('').digest('hex');
+    }
+
     const hashes: string[] = [];
 
     for (const file of files) {
@@ -51,7 +58,11 @@ export const getFileInfo = async (filepath: string): Promise<FileInfo> => {
 
   try {
     const stats = await stat(expandedPath);
-    const permissions = (stats.mode & 0o777).toString(8).padStart(3, '0');
+    // On Windows, Unix-style permissions are not meaningful
+    // Return a sensible default (644 for files, 755 for dirs)
+    const permissions = IS_WINDOWS
+      ? (stats.isDirectory() ? '755' : '644')
+      : (stats.mode & 0o777).toString(8).padStart(3, '0');
 
     return {
       path: expandedPath,
@@ -93,6 +104,9 @@ export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
     entries = await readdir(expandedPath, { withFileTypes: true });
   } catch (error) {
     // Handle permission errors and other read failures gracefully
+    if (process.env.DEBUG) {
+      console.warn(`[tuck] Warning: Could not read directory ${expandedPath}:`, error);
+    }
     return files;
   }
 
@@ -128,8 +142,11 @@ export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
       } else if (entry.isFile()) {
         files.push(entryPath);
       }
-    } catch {
+    } catch (error) {
       // Skip entries we can't access (permission errors, etc.)
+      if (process.env.DEBUG) {
+        console.warn(`[tuck] Warning: Could not access ${entryPath}:`, error);
+      }
       continue;
     }
   }
@@ -194,11 +211,36 @@ export const copyFileOrDir = async (
   }
 };
 
+/**
+ * Result of a symlink creation attempt
+ */
+export interface SymlinkResult {
+  /** The type of link created: 'symlink' (Unix or Windows file), 'junction' (Windows directory), or 'copy' (Windows fallback) */
+  type: 'symlink' | 'junction' | 'copy';
+  /** Whether the operation succeeded */
+  success: boolean;
+}
+
+/**
+ * Create a symbolic link from target to linkPath.
+ *
+ * On Windows, this function handles the complexity of symlink creation:
+ * - For directories: Uses junctions (don't require admin privileges)
+ * - For files: Attempts symlink first, falls back to copy if that fails
+ *
+ * @param target - The path the symlink should point to
+ * @param linkPath - The path where the symlink will be created
+ * @param options - Optional settings
+ * @param options.overwrite - If true, removes existing file/symlink at linkPath
+ * @returns Result indicating the type of link created (symlink, junction, or copy)
+ * @throws {FileNotFoundError} If target doesn't exist
+ * @throws {PermissionError} If symlink creation fails (and fallback also fails on Windows)
+ */
 export const createSymlink = async (
   target: string,
   linkPath: string,
   options?: { overwrite?: boolean }
-): Promise<void> => {
+): Promise<SymlinkResult> => {
   const expandedTarget = expandPath(target);
   const expandedLink = expandPath(linkPath);
 
@@ -211,13 +253,56 @@ export const createSymlink = async (
 
   // Remove existing file/symlink if overwrite is true
   if (options?.overwrite && (await pathExists(expandedLink))) {
-    await unlink(expandedLink);
+    try {
+      const linkStats = await lstat(expandedLink);
+      if (linkStats.isDirectory()) {
+        await rm(expandedLink, { recursive: true });
+      } else {
+        await unlink(expandedLink);
+      }
+    } catch {
+      // Ignore errors during cleanup
+    }
   }
 
+  const targetIsDir = await isDirectory(expandedTarget);
+
   try {
+    // On Windows, use 'junction' for directories (doesn't require admin privileges)
+    // For files, try symlink first
+    if (IS_WINDOWS && targetIsDir) {
+      await symlink(expandedTarget, expandedLink, 'junction');
+      return { type: 'junction', success: true };
+    }
     await symlink(expandedTarget, expandedLink);
+    return { type: 'symlink', success: true };
   } catch (error) {
-    throw new PermissionError(linkPath, 'create symlink');
+    // On non-Windows, propagate the error
+    if (!IS_WINDOWS) {
+      throw new PermissionError(linkPath, 'create symlink');
+    }
+
+    // Windows fallback: try junction for directories if symlink failed
+    if (targetIsDir) {
+      try {
+        await symlink(expandedTarget, expandedLink, 'junction');
+        return { type: 'junction', success: true };
+      } catch {
+        // Fall through to copy fallback
+      }
+    }
+
+    // Final fallback for Windows: copy the file/directory
+    try {
+      if (targetIsDir) {
+        await copy(expandedTarget, expandedLink, { overwrite: true });
+      } else {
+        await copyFile(expandedTarget, expandedLink);
+      }
+      return { type: 'copy', success: true };
+    } catch (copyError) {
+      throw new PermissionError(linkPath, 'create symlink (or fallback copy)');
+    }
   }
 };
 
@@ -272,23 +357,37 @@ export const hasFileChanged = async (
 };
 
 export const getFilePermissions = async (filepath: string): Promise<string> => {
+  // On Windows, return a sensible default since Unix permissions don't apply
+  if (IS_WINDOWS) {
+    const expandedPath = expandPath(filepath);
+    const stats = await stat(expandedPath);
+    return stats.isDirectory() ? '755' : '644';
+  }
   const expandedPath = expandPath(filepath);
   const stats = await stat(expandedPath);
   return (stats.mode & 0o777).toString(8).padStart(3, '0');
 };
 
 export const setFilePermissions = async (filepath: string, mode: string): Promise<void> => {
+  // On Windows, chmod is limited and Unix-style permissions don't apply
+  // Skip permission setting gracefully
+  if (IS_WINDOWS) {
+    return;
+  }
   const expandedPath = expandPath(filepath);
   const { chmod } = await import('fs/promises');
   await chmod(expandedPath, parseInt(mode, 8));
 };
 
 export const formatBytes = (bytes: number): string => {
-  if (bytes === 0) return '0 B';
+  // Handle invalid, negative, or zero values
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+  // Ensure index is within bounds to prevent undefined access
+  const safeIndex = Math.max(0, Math.min(i, sizes.length - 1));
+  return `${parseFloat((bytes / Math.pow(k, safeIndex)).toFixed(1))} ${sizes[safeIndex]}`;
 };
 
 // ============================================================================

@@ -140,13 +140,23 @@ const generatePlaceholderFromRule = (ruleId: string): string => {
 };
 
 /**
- * Scan files using gitleaks
+ * Sentinel value to indicate gitleaks failed for a specific file.
+ * We use a Symbol (rather than null or a special error) to distinguish between:
+ * - null: gitleaks succeeded but found no secrets
+ * - GITLEAKS_FAILED: gitleaks failed (parse error, execution error, etc.)
+ * Files marked with this sentinel will be re-scanned using the built-in scanner as a fallback.
+ */
+const GITLEAKS_FAILED = Symbol('gitleaks-failed');
+
+/**
+ * Scan files using gitleaks with fallback to built-in scanner for failed files
  */
 export const scanWithGitleaks = async (filepaths: string[]): Promise<ScanSummary> => {
   const results: FileScanResult[] = [];
   let totalSecrets = 0;
   let filesWithSecrets = 0;
   const bySeverity = { critical: 0, high: 0, medium: 0, low: 0 };
+  const failedFiles: string[] = []; // Track files where gitleaks failed
 
   // Run gitleaks on files in parallel batches (with concurrency limit)
   const CONCURRENCY = 5; // Lower concurrency for external process spawning
@@ -154,7 +164,7 @@ export const scanWithGitleaks = async (filepaths: string[]): Promise<ScanSummary
   for (let i = 0; i < filepaths.length; i += CONCURRENCY) {
     const batch = filepaths.slice(i, i + CONCURRENCY);
     const batchResults = await Promise.all(
-      batch.map(async (filepath): Promise<FileScanResult | null> => {
+      batch.map(async (filepath): Promise<FileScanResult | null | typeof GITLEAKS_FAILED> => {
       try {
         // Security: Use execFileAsync with array arguments to prevent command injection
         // This prevents malicious filenames from executing arbitrary shell commands
@@ -182,15 +192,16 @@ export const scanWithGitleaks = async (filepaths: string[]): Promise<ScanSummary
           const validated = gitleaksOutputSchema.safeParse(rawData);
 
           if (!validated.success) {
-            console.warn(`[tuck] Warning: Invalid gitleaks output format for ${filepath}: ${validated.error.message}`);
-            return null;
+            // Validation failed - fall back to built-in scanner for this file
+            console.warn(`[tuck] Warning: Invalid gitleaks output format for ${filepath}, falling back to built-in scanner`);
+            return GITLEAKS_FAILED;
           }
 
           gitleaksResults = validated.data;
         } catch (parseError) {
-          // Log parse error for debugging instead of silent failure
-          console.warn(`[tuck] Warning: Failed to parse gitleaks JSON for ${filepath}`);
-          return null;
+          // Parse error - fall back to built-in scanner for this file
+          console.warn(`[tuck] Warning: Failed to parse gitleaks JSON for ${filepath}, falling back to built-in scanner`);
+          return GITLEAKS_FAILED;
         }
 
         if (gitleaksResults.length === 0) return null;
@@ -232,18 +243,40 @@ export const scanWithGitleaks = async (filepaths: string[]): Promise<ScanSummary
           skipped: false,
         };
       } catch (execError) {
-        // Log error for debugging instead of silent failure
+        // Execution error - fall back to built-in scanner for this file
         const errorMsg = execError instanceof Error ? execError.message : String(execError);
-        console.warn(`[tuck] Warning: Gitleaks scan failed for ${filepath}: ${errorMsg}`);
-        return null;
+        console.warn(`[tuck] Warning: Gitleaks scan failed for ${filepath}, falling back to built-in scanner: ${errorMsg}`);
+        return GITLEAKS_FAILED;
       }
     })
     );
 
     // Process batch results
-    for (const result of batchResults) {
-      if (result) {
+    for (let j = 0; j < batchResults.length; j++) {
+      const result = batchResults[j];
+      if (result === GITLEAKS_FAILED) {
+        // Track this file for fallback scanning
+        failedFiles.push(batch[j]);
+      } else if (result) {
         results.push(result);
+        filesWithSecrets++;
+        totalSecrets += result.matches.length;
+        for (const match of result.matches) {
+          bySeverity[match.severity]++;
+        }
+      }
+    }
+  }
+
+  // Fall back to built-in scanner for files where gitleaks failed
+  if (failedFiles.length > 0) {
+    console.warn(`[tuck] Running built-in scanner as fallback for ${failedFiles.length} file(s)`);
+    const fallbackResults = await builtinScanFiles(failedFiles);
+
+    // Merge fallback results
+    for (const result of fallbackResults.results) {
+      results.push(result);
+      if (result.hasSecrets) {
         filesWithSecrets++;
         totalSecrets += result.matches.length;
         for (const match of result.matches) {

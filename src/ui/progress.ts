@@ -243,6 +243,16 @@ export const processFilesWithProgress = async <T>(
 ): Promise<T[]> => {
   const { actionVerb } = options;
   const total = items.length;
+
+  // Handle empty items array - return early with appropriate message
+  if (total === 0) {
+    const displayAction = actionVerb || 'Processing';
+    console.log();
+    console.log(c.brandBold(`${displayAction} 0 files...`));
+    console.log(logSymbols.info, c.muted('No files to process'));
+    return [];
+  }
+
   const mode = getProgressMode(total);
 
   // Header
@@ -277,19 +287,6 @@ export const processFilesWithProgress = async <T>(
 
   return results;
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Legacy Exports (backward compatibility)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** @deprecated Use processFilesWithProgress instead */
-export const trackFilesWithProgress = processFilesWithProgress;
-
-/** @deprecated Use FileOperationItem instead */
-export type FileTrackingItem = FileOperationItem;
-
-/** @deprecated Use FileOperationOptions instead */
-export type FileTrackingOptions = FileOperationOptions;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Step Progress (for multi-step operations)

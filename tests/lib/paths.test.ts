@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { homedir } from 'os';
+import { join } from 'path';
 import {
   expandPath,
   collapsePath,
@@ -7,32 +8,44 @@ import {
   sanitizeFilename,
   generateFileId,
 } from '../../src/lib/paths.js';
+import { TEST_HOME } from '../setup.js';
 
 describe('paths', () => {
   describe('expandPath', () => {
     it('should expand ~ to home directory', () => {
-      const home = homedir();
-      expect(expandPath('~/.zshrc')).toBe(`${home}/.zshrc`);
+      // The mock returns TEST_HOME for homedir()
+      const result = expandPath('~/.zshrc');
+      // Result should be TEST_HOME/.zshrc (with platform-appropriate separators)
+      expect(result.replace(/\\/g, '/')).toBe(`${TEST_HOME}/.zshrc`);
     });
 
     it('should expand $HOME to home directory', () => {
-      const home = homedir();
-      expect(expandPath('$HOME/.zshrc')).toBe(`${home}/.zshrc`);
+      const result = expandPath('$HOME/.zshrc');
+      expect(result.replace(/\\/g, '/')).toBe(`${TEST_HOME}/.zshrc`);
     });
 
     it('should return absolute paths unchanged', () => {
-      expect(expandPath('/usr/local/bin')).toBe('/usr/local/bin');
+      // This test is Unix-specific, skip on Windows
+      if (process.platform !== 'win32') {
+        expect(expandPath('/usr/local/bin')).toBe('/usr/local/bin');
+      }
     });
   });
 
   describe('collapsePath', () => {
     it('should collapse home directory to ~', () => {
-      const home = homedir();
-      expect(collapsePath(`${home}/.zshrc`)).toBe('~/.zshrc');
+      // Use TEST_HOME since homedir() is mocked to return it
+      // collapsePath internally calls homedir() which returns TEST_HOME
+      const result = collapsePath(join(TEST_HOME, '.zshrc'));
+      // On Windows the separator will be backslash, so normalize for comparison
+      expect(result.replace(/\\/g, '/')).toBe('~/.zshrc');
     });
 
     it('should return non-home paths unchanged', () => {
-      expect(collapsePath('/usr/local/bin')).toBe('/usr/local/bin');
+      // This test is Unix-specific, skip on Windows
+      if (process.platform !== 'win32') {
+        expect(collapsePath('/usr/local/bin')).toBe('/usr/local/bin');
+      }
     });
   });
 
@@ -77,7 +90,8 @@ describe('paths', () => {
     });
 
     it('should extract basename from path', () => {
-      expect(sanitizeFilename('/home/user/.zshrc')).toBe('zshrc');
+      // Use path.join for cross-platform path
+      expect(sanitizeFilename(join('home', 'user', '.zshrc'))).toBe('zshrc');
     });
   });
 

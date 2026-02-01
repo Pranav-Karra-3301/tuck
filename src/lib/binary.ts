@@ -1,6 +1,7 @@
 import { open, stat } from 'fs/promises';
 import { expandPath } from './paths.js';
 import { basename, dirname } from 'path';
+import { IS_WINDOWS } from './platform.js';
 
 /**
  * Magic numbers for binary executable detection
@@ -22,10 +23,12 @@ const MAGIC_NUMBERS = {
  * Script file extensions
  */
 const SCRIPT_EXTENSIONS = [
+  // Unix shells
   '.sh',
   '.bash',
   '.zsh',
   '.fish',
+  // Cross-platform scripting languages
   '.py',
   '.rb',
   '.pl',
@@ -36,7 +39,20 @@ const SCRIPT_EXTENSIONS = [
   '.tcl',
   '.awk',
   '.sed',
+  // Windows scripts
+  '.ps1',    // PowerShell
+  '.psm1',   // PowerShell module
+  '.psd1',   // PowerShell data
+  '.bat',    // Batch file
+  '.cmd',    // Command script
+  '.vbs',    // VBScript
+  '.wsf',    // Windows Script File
 ];
+
+/**
+ * Windows executable extensions
+ */
+const WINDOWS_EXECUTABLE_EXTENSIONS = ['.exe', '.com', '.dll'];
 
 /**
  * Check if a buffer starts with a magic number
@@ -68,9 +84,18 @@ export const isBinaryExecutable = async (path: string): Promise<boolean> => {
       return false;
     }
 
+    // On Windows, check file extension first since Unix permission bits don't apply
+    if (IS_WINDOWS) {
+      const lowerPath = expandedPath.toLowerCase();
+      if (WINDOWS_EXECUTABLE_EXTENSIONS.some((ext) => lowerPath.endsWith(ext))) {
+        return true;
+      }
+    }
+
     // Check execute permissions (Unix-like systems)
     // 0o111 = execute bit for owner, group, and others
-    const hasExecutePermission = (stats.mode & 0o111) !== 0;
+    // On Windows, this will always be 0, so we rely on file extension above
+    const hasExecutePermission = !IS_WINDOWS && (stats.mode & 0o111) !== 0;
 
     // Read first 512 bytes to check magic numbers
     let fileHandle;

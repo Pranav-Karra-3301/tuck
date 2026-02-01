@@ -365,3 +365,159 @@ export const previewRestoration = async (
     placeholders,
   };
 };
+
+// ============================================================================
+// Resolver-Based Operations (Password Manager Integration)
+// ============================================================================
+
+import { createResolver } from '../secretBackends/resolver.js';
+import { loadConfig } from '../config.js';
+
+/**
+ * Restore a file using the SecretResolver (supports password managers)
+ *
+ * This function uses the configured secret backend (local, 1Password, Bitwarden, pass)
+ * to resolve placeholders in the file.
+ */
+export const restoreFileWithResolver = async (
+  filepath: string,
+  tuckDir: string
+): Promise<{ restored: number; unresolved: string[]; backend: string }> => {
+  const expandedPath = expandPath(filepath);
+
+  if (!(await pathExists(expandedPath))) {
+    return { restored: 0, unresolved: [], backend: 'none' };
+  }
+
+  const content = await readFile(expandedPath, 'utf-8');
+  const placeholders = findPlaceholders(content);
+
+  if (placeholders.length === 0) {
+    return { restored: 0, unresolved: [], backend: 'none' };
+  }
+
+  // Create resolver with config
+  const config = await loadConfig(tuckDir);
+  const resolver = createResolver(tuckDir, config.security);
+
+  // Resolve all placeholders
+  const secrets = await resolver.resolveToMap(placeholders);
+  const result = restoreContent(content, secrets);
+
+  // Only write if changes were made
+  if (result.restored > 0) {
+    await atomicWriteFile(expandedPath, result.restoredContent);
+  }
+
+  return {
+    restored: result.restored,
+    unresolved: result.unresolved,
+    backend: resolver.getPrimaryBackendName(),
+  };
+};
+
+/**
+ * Restore multiple files using the SecretResolver (supports password managers)
+ */
+export const restoreFilesWithResolver = async (
+  filepaths: string[],
+  tuckDir: string
+): Promise<{
+  totalRestored: number;
+  filesModified: number;
+  allUnresolved: string[];
+  backend: string;
+}> => {
+  // Create resolver with config
+  const config = await loadConfig(tuckDir);
+  const resolver = createResolver(tuckDir, config.security);
+
+  // Collect all placeholders from all files first
+  const allPlaceholders = new Set<string>();
+  const fileContents = new Map<string, string>();
+
+  for (const filepath of filepaths) {
+    const expandedPath = expandPath(filepath);
+
+    if (!(await pathExists(expandedPath))) {
+      continue;
+    }
+
+    const content = await readFile(expandedPath, 'utf-8');
+    const placeholders = findPlaceholders(content);
+
+    fileContents.set(expandedPath, content);
+    for (const p of placeholders) {
+      allPlaceholders.add(p);
+    }
+  }
+
+  // Resolve all placeholders at once (more efficient for password managers)
+  const secrets = await resolver.resolveToMap([...allPlaceholders]);
+
+  // Now restore each file
+  let totalRestored = 0;
+  let filesModified = 0;
+  const allUnresolved = new Set<string>();
+
+  for (const [expandedPath, content] of fileContents.entries()) {
+    const result = restoreContent(content, secrets);
+
+    if (result.restored > 0) {
+      await atomicWriteFile(expandedPath, result.restoredContent);
+      totalRestored += result.restored;
+      filesModified++;
+    }
+
+    for (const unresolved of result.unresolved) {
+      allUnresolved.add(unresolved);
+    }
+  }
+
+  return {
+    totalRestored,
+    filesModified,
+    allUnresolved: [...allUnresolved],
+    backend: resolver.getPrimaryBackendName(),
+  };
+};
+
+/**
+ * Preview restoration using the SecretResolver (supports password managers)
+ */
+export const previewRestorationWithResolver = async (
+  filepath: string,
+  tuckDir: string
+): Promise<{
+  wouldRestore: number;
+  unresolved: string[];
+  placeholders: string[];
+  backend: string;
+}> => {
+  const expandedPath = expandPath(filepath);
+
+  if (!(await pathExists(expandedPath))) {
+    return { wouldRestore: 0, unresolved: [], placeholders: [], backend: 'none' };
+  }
+
+  const content = await readFile(expandedPath, 'utf-8');
+  const placeholders = findPlaceholders(content);
+
+  if (placeholders.length === 0) {
+    return { wouldRestore: 0, unresolved: [], placeholders: [], backend: 'none' };
+  }
+
+  // Create resolver with config
+  const config = await loadConfig(tuckDir);
+  const resolver = createResolver(tuckDir, config.security);
+
+  // Resolve all placeholders (just to check availability)
+  const result = await resolver.resolveAll(placeholders);
+
+  return {
+    wouldRestore: result.resolved.size,
+    unresolved: result.unresolved,
+    placeholders,
+    backend: resolver.getPrimaryBackendName(),
+  };
+};

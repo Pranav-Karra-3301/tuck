@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { basename, sep } from 'path';
 import { prompts, logger, formatCount, colors as c } from '../ui/index.js';
 import { getTuckDir } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
@@ -32,7 +33,8 @@ const groupByCategory = async (tuckDir: string): Promise<CategoryGroup[]> => {
       id,
       source: file.source,
       destination: file.destination,
-      isDir: file.destination.endsWith('/') || file.destination.includes('nvim'),
+      // Handle both Unix (/) and Windows (\) path separators for directory detection
+      isDir: file.destination.endsWith('/') || file.destination.endsWith(sep) || basename(file.destination) === 'nvim',
     });
   }
 
@@ -68,7 +70,7 @@ const printList = (groups: CategoryGroup[]): void => {
     group.files.forEach((file, index) => {
       const isLast = index === group.files.length - 1;
       const prefix = isLast ? '└── ' : '├── ';
-      const name = file.source.split('/').pop() || file.source;
+      const name = basename(file.source) || file.source;
       const arrow = c.dim(' → ');
       const dest = c.dim(file.source);
 
