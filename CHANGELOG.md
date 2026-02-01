@@ -1,3 +1,5 @@
+<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
+
 # [1.8.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.7.0...v1.8.0) (2026-02-01)
 
 
@@ -23,8 +25,6 @@
 * add security hardening, audit logging, and comprehensive testing ([a2939f2](https://github.com/Pranav-Karra-3301/tuck/commit/a2939f2316faffbd12c3abdd01881e1f92145de4))
 * add Windows compatibility support ([42e8fb0](https://github.com/Pranav-Karra-3301/tuck/commit/42e8fb00b7628a77e98c6e2e06da8335d5b5ec53))
 * enhance secret management with auto-restore and configurable blocking ([01c1816](https://github.com/Pranav-Karra-3301/tuck/commit/01c181699d24c6ab94ce6c99fc8b6d1f75dbc34f))
-
-<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
 # [1.7.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.6.0...v1.7.0) (2026-01-18)
 
