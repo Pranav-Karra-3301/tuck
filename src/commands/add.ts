@@ -18,6 +18,8 @@ import {
   FileNotFoundError,
   FileAlreadyTrackedError,
   SecretsDetectedError,
+  PrivateKeyError,
+  OperationCancelledError,
 } from '../errors.js';
 import { CATEGORIES } from '../constants.js';
 import type { AddOptions } from '../types.js';
@@ -126,11 +128,7 @@ const validateAndPrepareFiles = async (
 
     // SECURITY: Block private keys
     if (isPrivateKey(collapsedPath)) {
-      throw new Error(
-        `Cannot track private key: ${path}\n` +
-          `Private keys should NEVER be committed to a repository.\n` +
-          `If you need to backup SSH keys, use a secure password manager.`
-      );
+      throw new PrivateKeyError(path);
     }
 
     // Check if file exists
@@ -178,7 +176,7 @@ const validateAndPrepareFiles = async (
         logger.success(`Added ${path} to .tuckignore`);
         continue; // Skip this file
       } else {
-        throw new Error('Operation cancelled');
+        throw new OperationCancelledError('large file handling');
       }
     }
 
@@ -200,7 +198,7 @@ const validateAndPrepareFiles = async (
         logger.success(`Added ${path} to .tuckignore`);
         continue;
       } else if (action === 'cancel') {
-        throw new Error('Operation cancelled');
+        throw new OperationCancelledError('file size warning');
       }
       // 'continue' falls through to track the file
     }

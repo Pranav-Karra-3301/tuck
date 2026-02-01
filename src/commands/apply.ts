@@ -15,6 +15,7 @@ import { findPlaceholders, restoreContent, restoreFiles as restoreSecrets, getAl
 import { createResolver } from '../lib/secretBackends/index.js';
 import { loadConfig } from '../lib/config.js';
 import { IS_WINDOWS } from '../lib/platform.js';
+import { RepositoryNotFoundError } from '../errors.js';
 
 // Track if Windows permission warning has been shown this session
 let windowsPermissionWarningShown = false;
@@ -114,10 +115,7 @@ const resolveSource = async (source: string): Promise<{ repoId: string; isUrl: b
     }
   }
 
-  throw new Error(
-    `Could not find a dotfiles repository for "${source}". ` +
-      'Try specifying the full repository name (e.g., username/dotfiles)'
-  );
+  throw new RepositoryNotFoundError(source);
 };
 
 /**
