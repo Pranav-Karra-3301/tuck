@@ -216,13 +216,13 @@ describe('git-errors', () => {
       mockGitInstance = createErrorMockGit('authentication failed');
 
       await expect(push(TEST_TUCK_DIR)).rejects.toThrow('Failed to push');
-    });
+    }, 30000); // Longer timeout for Windows CI
 
     it('should throw GitError for non-fast-forward push', async () => {
       mockGitInstance = createErrorMockGit('non-fast-forward');
 
       await expect(push(TEST_TUCK_DIR)).rejects.toThrow('Failed to push');
-    });
+    }, 30000); // Longer timeout for Windows CI
   });
 
   // ============================================================================

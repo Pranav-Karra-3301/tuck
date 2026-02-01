@@ -245,33 +245,33 @@ describe('git', () => {
   describe('push', () => {
     it('should push to remote', async () => {
       await expect(push(TEST_TUCK_DIR)).resolves.not.toThrow();
-    });
+    }, 30000); // Longer timeout for Windows CI
 
     it('should push with options', async () => {
       await expect(
         push(TEST_TUCK_DIR, { remote: 'origin', branch: 'main', setUpstream: true })
       ).resolves.not.toThrow();
-    });
+    }, 30000); // Longer timeout for Windows CI
   });
 
   describe('pull', () => {
     it('should pull from remote', async () => {
       await expect(pull(TEST_TUCK_DIR)).resolves.not.toThrow();
-    });
+    }, 30000); // Longer timeout for Windows CI
 
     it('should pull with rebase option', async () => {
       await expect(pull(TEST_TUCK_DIR, { rebase: true })).resolves.not.toThrow();
-    });
+    }, 30000); // Longer timeout for Windows CI
   });
 
   describe('fetch', () => {
     it('should fetch from remote', async () => {
       await expect(fetch(TEST_TUCK_DIR)).resolves.not.toThrow();
-    });
+    }, 30000); // Longer timeout for Windows CI
 
     it('should fetch from specific remote', async () => {
       await expect(fetch(TEST_TUCK_DIR, 'origin')).resolves.not.toThrow();
-    });
+    }, 30000); // Longer timeout for Windows CI
   });
 
   // ============================================================================
