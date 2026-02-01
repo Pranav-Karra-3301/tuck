@@ -162,9 +162,11 @@ describe('tuckignore', () => {
 
     it('should normalize paths with ~/', async () => {
       // Create the file to ensure path expansion works
-      vol.writeFileSync(join(TEST_HOME, '.secret'), 'content');
+      // Use forward slashes consistently for memfs and cross-platform compatibility
+      const secretPath = `${TEST_HOME}/.secret`;
+      vol.writeFileSync(secretPath, 'content');
 
-      await addToTuckignore(TEST_TUCK_DIR, join(TEST_HOME, '.secret'));
+      await addToTuckignore(TEST_TUCK_DIR, secretPath);
 
       const ignored = await loadTuckignore(TEST_TUCK_DIR);
       expect(ignored.has('~/.secret')).toBe(true);

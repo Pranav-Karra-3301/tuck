@@ -28,10 +28,14 @@ export const expandPath = (path: string): string => {
 
 export const collapsePath = (path: string): string => {
   const home = homedir();
-  if (path.startsWith(home)) {
-    // After slicing, normalize to forward slashes for consistent cross-platform storage
-    // On Windows: C:\Users\John\.zshrc -> ~\.zshrc -> ~/.zshrc
-    const remainder = path.slice(home.length).replace(/\\/g, '/');
+  // Normalize both to forward slashes for comparison (cross-platform)
+  // This handles cases where homedir() and path use different separators
+  const normalizedPath = path.replace(/\\/g, '/');
+  const normalizedHome = home.replace(/\\/g, '/');
+
+  if (normalizedPath.startsWith(normalizedHome)) {
+    // After slicing, the remainder is already normalized to forward slashes
+    const remainder = normalizedPath.slice(normalizedHome.length);
     return '~' + remainder;
   }
   return path;
