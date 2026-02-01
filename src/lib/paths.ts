@@ -29,7 +29,10 @@ export const expandPath = (path: string): string => {
 export const collapsePath = (path: string): string => {
   const home = homedir();
   if (path.startsWith(home)) {
-    return '~' + path.slice(home.length);
+    // After slicing, normalize to forward slashes for consistent cross-platform storage
+    // On Windows: C:\Users\John\.zshrc -> ~\.zshrc -> ~/.zshrc
+    const remainder = path.slice(home.length).replace(/\\/g, '/');
+    return '~' + remainder;
   }
   return path;
 };

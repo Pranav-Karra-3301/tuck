@@ -234,6 +234,112 @@ export class UnresolvedSecretsError extends TuckError {
   }
 }
 
+// ============================================================================
+// User Action and Input Errors
+// ============================================================================
+
+export class OperationCancelledError extends TuckError {
+  constructor(operation?: string) {
+    super(
+      operation ? `Operation cancelled: ${operation}` : 'Operation cancelled',
+      'OPERATION_CANCELLED',
+      ['Run the command again when ready']
+    );
+  }
+}
+
+export class PrivateKeyError extends TuckError {
+  constructor(path: string) {
+    super(`Cannot track private key: ${path}`, 'PRIVATE_KEY_ERROR', [
+      'Private keys should NEVER be committed to a repository',
+      'Use a secure password manager to backup SSH keys',
+      'Track the .pub file instead if you need the public key',
+    ]);
+  }
+}
+
+export class RepositoryNotFoundError extends TuckError {
+  constructor(source: string) {
+    super(`Could not find a dotfiles repository for "${source}"`, 'REPOSITORY_NOT_FOUND', [
+      'Try specifying the full repository name (e.g., username/dotfiles)',
+      'Verify the repository exists and is accessible',
+      'Check your authentication with `gh auth status`',
+    ]);
+  }
+}
+
+export class InvalidManifestError extends TuckError {
+  constructor(reason?: string) {
+    super(
+      reason ? `Invalid manifest: ${reason}` : 'No tuck manifest found in repository',
+      'INVALID_MANIFEST',
+      [
+        'This repository may not be managed by tuck',
+        'Look for a .tuckmanifest.json file',
+        'Initialize with `tuck init` to create a new manifest',
+      ]
+    );
+  }
+}
+
+export class PathTraversalError extends TuckError {
+  constructor(path: string, reason?: string) {
+    super(
+      `Unsafe path detected: ${path}${reason ? ` - ${reason}` : ''}`,
+      'PATH_TRAVERSAL_ERROR',
+      [
+        'Paths must be within your home directory',
+        'Path traversal (..) is not allowed',
+        'Use absolute paths starting with ~/ or $HOME/',
+      ]
+    );
+  }
+}
+
+export class SecretsStoreError extends TuckError {
+  constructor(message: string, suggestions?: string[]) {
+    super(
+      `Secrets store error: ${message}`,
+      'SECRETS_STORE_ERROR',
+      suggestions || [
+        'Check file permissions on ~/.tuck/secrets.local.json',
+        'Run `tuck secrets list` to verify the secrets store',
+      ]
+    );
+  }
+}
+
+export class ScanLimitError extends TuckError {
+  constructor(fileCount: number, maxFiles: number) {
+    super(`Too many files to scan (${fileCount} > ${maxFiles})`, 'SCAN_LIMIT_ERROR', [
+      'Scan in smaller batches',
+      'Use --exclude patterns to reduce scan scope',
+      'Add large directories to .tuckignore',
+    ]);
+  }
+}
+
+export class ValidationError extends TuckError {
+  constructor(field: string, message: string) {
+    super(`Invalid ${field}: ${message}`, 'VALIDATION_ERROR', [
+      'Check your input and try again',
+    ]);
+  }
+}
+
+export class KeystoreError extends TuckError {
+  constructor(keystore: string, message: string, suggestions?: string[]) {
+    super(`${keystore} error: ${message}`, 'KEYSTORE_ERROR', suggestions || [
+      'Check your system keychain/credential manager is accessible',
+      'Try running without encryption or use the fallback keystore',
+    ]);
+  }
+}
+
+// ============================================================================
+// Error Handler
+// ============================================================================
+
 export const handleError = (error: unknown): never => {
   if (error instanceof TuckError) {
     console.error(chalk.red('x'), error.message);

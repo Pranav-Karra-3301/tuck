@@ -87,9 +87,15 @@ export interface ScanSummary {
  * Only show length indicators and type hints.
  */
 export const redactSecret = (value: string): string => {
+  // Handle empty or undefined values
+  if (!value || value.length === 0) {
+    return '[EMPTY]';
+  }
+
   // For multiline values (like private keys), show type hint only
   if (value.includes('\n')) {
-    const firstLine = value.split('\n')[0];
+    const lines = value.split('\n');
+    const firstLine = lines.length > 0 ? lines[0] : '';
     if (firstLine.startsWith('-----BEGIN')) {
       // Show only the header type, no actual content
       return firstLine + '\n[REDACTED - Private Key]';
@@ -112,8 +118,21 @@ export const redactSecret = (value: string): string => {
  * Get line and column number from string index
  */
 const getPosition = (content: string, index: number): { line: number; column: number } => {
-  const beforeMatch = content.slice(0, index);
+  // Handle edge cases: empty content or invalid index
+  if (!content || content.length === 0 || index < 0) {
+    return { line: 1, column: 1 };
+  }
+
+  // Clamp index to valid range
+  const safeIndex = Math.min(index, content.length);
+  const beforeMatch = content.slice(0, safeIndex);
   const lines = beforeMatch.split('\n');
+
+  // Handle edge case of empty lines array (shouldn't happen, but defensive)
+  if (lines.length === 0) {
+    return { line: 1, column: 1 };
+  }
+
   return {
     line: lines.length,
     column: lines[lines.length - 1].length + 1,
@@ -126,7 +145,18 @@ const getPosition = (content: string, index: number): { line: number; column: nu
  * with fallback to fully redacting the line if replacement fails.
  */
 const getContext = (content: string, lineNum: number, secretValue: string): string => {
+  // Handle empty content or invalid line number
+  if (!content || content.length === 0 || lineNum < 1) {
+    return '[Context redacted for security]';
+  }
+
   const lines = content.split('\n');
+
+  // Handle edge case of empty lines array or invalid line number
+  if (lines.length === 0 || lineNum > lines.length) {
+    return '[Context redacted for security]';
+  }
+
   const line = lines[lineNum - 1] || '';
 
   try {

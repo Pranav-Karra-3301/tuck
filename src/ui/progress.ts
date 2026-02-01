@@ -243,6 +243,16 @@ export const processFilesWithProgress = async <T>(
 ): Promise<T[]> => {
   const { actionVerb } = options;
   const total = items.length;
+
+  // Handle empty items array - return early with appropriate message
+  if (total === 0) {
+    const displayAction = actionVerb || 'Processing';
+    console.log();
+    console.log(c.brandBold(`${displayAction} 0 files...`));
+    console.log(logSymbols.info, c.muted('No files to process'));
+    return [];
+  }
+
   const mode = getProgressMode(total);
 
   // Header

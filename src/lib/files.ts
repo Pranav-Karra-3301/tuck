@@ -29,6 +29,12 @@ export const getFileChecksum = async (filepath: string): Promise<string> => {
   if (await isDirectory(expandedPath)) {
     // For directories, create a hash of all file checksums
     const files = await getDirectoryFiles(expandedPath);
+
+    // Handle empty directories - return hash of empty string for consistency
+    if (files.length === 0) {
+      return createHash('sha256').update('').digest('hex');
+    }
+
     const hashes: string[] = [];
 
     for (const file of files) {
@@ -368,11 +374,14 @@ export const setFilePermissions = async (filepath: string, mode: string): Promis
 };
 
 export const formatBytes = (bytes: number): string => {
-  if (bytes === 0) return '0 B';
+  // Handle invalid, negative, or zero values
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+  // Ensure index is within bounds to prevent undefined access
+  const safeIndex = Math.max(0, Math.min(i, sizes.length - 1));
+  return `${parseFloat((bytes / Math.pow(k, safeIndex)).toFixed(1))} ${sizes[safeIndex]}`;
 };
 
 // ============================================================================

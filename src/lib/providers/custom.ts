@@ -86,8 +86,17 @@ export class CustomProvider implements GitProvider {
       const userEmail = email.trim();
 
       if (userName || userEmail) {
+        // Safely extract login from email - handle case where email has no @ symbol
+        let login = 'user';
+        if (userName) {
+          login = userName;
+        } else if (userEmail) {
+          const atIndex = userEmail.indexOf('@');
+          login = atIndex > 0 ? userEmail.slice(0, atIndex) : userEmail;
+        }
+
         return {
-          login: userName || userEmail.split('@')[0] || 'user',
+          login,
           name: userName || null,
           email: userEmail || null,
         };

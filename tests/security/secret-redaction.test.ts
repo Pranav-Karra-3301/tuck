@@ -307,7 +307,7 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyf8bqMxLwOdGrF4Z...
   describe('Redaction Edge Cases', () => {
     it('should handle empty strings', () => {
       const redacted = redactSecret('');
-      expect(redacted).toMatch(/REDACTED/);
+      expect(redacted).toBe('[EMPTY]');
     });
 
     it('should handle very long secrets', () => {

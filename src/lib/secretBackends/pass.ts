@@ -122,7 +122,9 @@ export class PassBackend implements SecretBackend {
       if (stdout === '') {
         return null;
       }
-      const firstLine = stdout.split('\n')[0];
+      const lines = stdout.split('\n');
+      // Handle edge case where split returns empty array (shouldn't happen, but defensive)
+      const firstLine = lines.length > 0 ? lines[0] : '';
       return firstLine;
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);

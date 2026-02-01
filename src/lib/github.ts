@@ -139,12 +139,25 @@ export const getAuthenticatedUser = async (): Promise<GitHubUser> => {
   try {
     const { stdout } = await execFileAsync('gh', ['api', 'user', '--jq', '.login, .name, .email']);
     const lines = stdout.trim().split('\n');
+
+    // Handle empty response from GitHub API
+    if (lines.length === 0 || !lines[0]) {
+      throw new GitHubCliError('Empty response from GitHub API', [
+        'Check your GitHub CLI authentication: gh auth status',
+        'Try re-authenticating: gh auth login',
+      ]);
+    }
+
     return {
       login: lines[0] || '',
       name: lines[1] !== 'null' ? lines[1] : null,
       email: lines[2] !== 'null' ? lines[2] : null,
     };
   } catch (error) {
+    // Re-throw GitHubCliError as-is (from empty response check above)
+    if (error instanceof GitHubCliError) {
+      throw error;
+    }
     throw new GitHubCliError('Failed to get user information', [
       String(error),
       'Check your GitHub CLI authentication',
@@ -507,16 +520,22 @@ const getStrictHostKeyCheckingOption = async (): Promise<string> => {
     // Note: We don't check hashed entries (|1|...) because we can't verify the hostname without
     // attempting the SSH connection. For security purposes, we only trust explicit github.com entries.
     // Format: "github.com[,port] key-type key-data [comment]" or "@marker github.com[,port] key-type..."
-    const hasGitHubEntry = knownHostsContent.split('\n').some(line => {
+    const hasGitHubEntry = knownHostsContent.split('\n').some((line) => {
       const trimmed = line.trim();
       // Skip comments and empty lines
       if (!trimmed || trimmed.startsWith('#')) return false;
-      
+
       // Handle @marker entries (e.g., @cert-authority or @revoked)
-      const hostnamePart = trimmed.startsWith('@') 
-        ? trimmed.split(/\s+/)[1] // Get second field after marker
-        : trimmed.split(/\s+/)[0]; // Get first field for regular entries
-      
+      const fields = trimmed.split(/\s+/);
+      // Handle empty fields array edge case
+      if (fields.length === 0) return false;
+
+      const hostnamePart = trimmed.startsWith('@')
+        ? fields.length > 1
+          ? fields[1]
+          : undefined // Get second field after marker, if exists
+        : fields[0]; // Get first field for regular entries
+
       // Check for exact hostname match (github.com or github.com,port)
       if (!hostnamePart) return false;
       return hostnamePart === 'github.com' || hostnamePart.startsWith('github.com,');
