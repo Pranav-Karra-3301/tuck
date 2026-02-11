@@ -4,7 +4,7 @@ import { copy, ensureDir } from 'fs-extra';
 import { join, dirname, basename } from 'path';
 import { constants } from 'fs';
 import { FileNotFoundError, PermissionError } from '../errors.js';
-import { expandPath, pathExists, isDirectory } from './paths.js';
+import { expandPath, pathExists, isDirectory, validateSafeDestinationPath } from './paths.js';
 import { IS_WINDOWS } from './platform.js';
 
 export interface FileInfo {
@@ -171,6 +171,8 @@ export const copyFileOrDir = async (
     throw new FileNotFoundError(source);
   }
 
+  validateSafeDestinationPath(expandedDest);
+
   // Ensure destination directory exists
   await ensureDir(dirname(expandedDest));
 
@@ -247,6 +249,8 @@ export const createSymlink = async (
   if (!(await pathExists(expandedTarget))) {
     throw new FileNotFoundError(target);
   }
+
+  validateSafeDestinationPath(expandedLink);
 
   // Ensure link parent directory exists
   await ensureDir(dirname(expandedLink));

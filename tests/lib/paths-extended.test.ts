@@ -28,6 +28,7 @@ import {
   getRelativePath,
   isPathWithinHome,
   validateSafeSourcePath,
+  validateSafeDestinationPath,
   generateFileId,
 } from '../../src/lib/paths.js';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
@@ -174,6 +175,12 @@ describe('paths-extended', () => {
       const tuckDir = getTuckDir(customDir);
       expect(tuckDir).toBe(customDir);
     });
+
+    it('should reject custom directory paths outside home', () => {
+      if (process.platform !== 'win32') {
+        expect(() => getTuckDir('/etc/tuck')).toThrow('custom tuck directory must be within home');
+      }
+    });
   });
 
   describe('getManifestPath', () => {
@@ -293,6 +300,21 @@ describe('paths-extended', () => {
       if (process.platform !== 'win32') {
         expect(() => validateSafeSourcePath('/etc/passwd')).toThrow(
           'absolute paths outside home directory'
+        );
+      }
+    });
+  });
+
+  describe('validateSafeDestinationPath', () => {
+    it('should accept destination paths in home directory', () => {
+      expect(() => validateSafeDestinationPath('~/.tuck/files/zshrc')).not.toThrow();
+      expect(() => validateSafeDestinationPath(join(TEST_HOME, '.tuck', 'files', 'gitconfig'))).not.toThrow();
+    });
+
+    it('should throw for destination paths outside allowed roots', () => {
+      if (process.platform !== 'win32') {
+        expect(() => validateSafeDestinationPath('/etc/malicious')).toThrow(
+          'destination must be within allowed roots'
         );
       }
     });

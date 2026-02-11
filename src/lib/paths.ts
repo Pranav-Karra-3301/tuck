@@ -42,7 +42,16 @@ export const collapsePath = (path: string): string => {
 };
 
 export const getTuckDir = (customDir?: string): string => {
-  return expandPath(customDir || DEFAULT_TUCK_DIR);
+  const tuckDir = expandPath(customDir || DEFAULT_TUCK_DIR);
+
+  // For custom directories, enforce home-scoped paths for safety.
+  if (customDir && !isPathWithinHome(tuckDir)) {
+    throw new Error(
+      `Unsafe path detected: ${customDir} - custom tuck directory must be within home directory`
+    );
+  }
+
+  return tuckDir;
 };
 
 export const getManifestPath = (tuckDir: string): string => {
@@ -214,6 +223,30 @@ export const validateSafeSourcePath = (source: string): void => {
   // Validate the expanded path is within home
   if (!isPathWithinHome(source)) {
     throw new Error(`Unsafe path detected: ${source} - paths must be within home directory`);
+  }
+};
+
+/**
+ * Validate that a destination path is safely within an allowed root.
+ * Defaults to the user's home directory if no explicit roots are provided.
+ */
+export const validateSafeDestinationPath = (
+  destination: string,
+  allowedRoots?: string[]
+): void => {
+  const resolvedDestination = resolve(expandPath(destination));
+  const roots = (allowedRoots && allowedRoots.length > 0 ? allowedRoots : [homedir()]).map((r) =>
+    resolve(expandPath(r))
+  );
+
+  const isWithinAllowedRoot = roots.some(
+    (root) => resolvedDestination === root || resolvedDestination.startsWith(root + sep)
+  );
+
+  if (!isWithinAllowedRoot) {
+    throw new Error(
+      `Unsafe destination path detected: ${destination} - destination must be within allowed roots`
+    );
   }
 };
 
