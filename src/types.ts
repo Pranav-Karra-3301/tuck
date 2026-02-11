@@ -157,6 +157,12 @@ export interface DiffOptions {
   exitCode?: boolean;
 }
 
+export interface DoctorOptions {
+  json?: boolean;
+  strict?: boolean;
+  category?: 'env' | 'repo' | 'manifest' | 'security' | 'hooks';
+}
+
 export interface FileChange {
   path: string;
   status: 'modified' | 'added' | 'deleted' | 'untracked';

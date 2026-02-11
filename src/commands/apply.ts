@@ -696,7 +696,7 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
 /**
  * Run non-interactive apply
  */
-const runApply = async (source: string, options: ApplyOptions): Promise<void> => {
+export const runApply = async (source: string, options: ApplyOptions): Promise<void> => {
   // Resolve the source
   const { repoId, isUrl } = await resolveSource(source);
 

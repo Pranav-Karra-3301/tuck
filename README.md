@@ -128,6 +128,17 @@ tuck restore --all
 | `tuck config remote` | Configure git provider (GitHub/GitLab/local) |
 | `tuck config wizard` | Interactive configuration setup              |
 
+### Diagnostics
+
+| Command         | Description                                          |
+| --------------- | ---------------------------------------------------- |
+| `tuck doctor`   | Run repository health and safety diagnostics         |
+
+`tuck doctor` flags:
+- `--json`: Machine-readable output for CI
+- `--strict`: Treat warnings as non-zero exit
+- `--category <env|repo|manifest|security|hooks>`: Run one check group
+
 ## How It Works
 
 tuck stores your dotfiles in `~/.tuck`, organized by category:
