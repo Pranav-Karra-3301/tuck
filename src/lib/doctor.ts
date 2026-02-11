@@ -1,3 +1,4 @@
+import { homedir } from 'os';
 import { join } from 'path';
 import type { TuckConfigOutput } from '../schemas/config.schema.js';
 import type { TuckManifestOutput } from '../schemas/manifest.schema.js';
@@ -10,6 +11,7 @@ import {
   getConfigPath,
   getManifestPath,
   getTuckDir,
+  isDirectory,
   pathExists,
   validatePathWithinRoot,
   validateSafeManifestDestination,
@@ -52,6 +54,7 @@ interface DoctorContext {
   manifestPath: string;
   configPath: string;
   hasTuckDir: boolean;
+  isTuckDirDirectory: boolean;
   hasGitDir: boolean;
   hasManifestFile: boolean;
   hasConfigFile: boolean;
@@ -95,14 +98,14 @@ const checkHomeDirectory: DoctorCheck = {
   id: 'env.home-directory',
   category: 'env',
   run: async () => {
-    const home = process.env.HOME || process.env.USERPROFILE;
-    if (!home) {
+    const home = homedir();
+    if (!home || home.trim().length === 0) {
       return {
         id: 'env.home-directory',
         category: 'env',
         status: 'fail',
-        message: 'Home directory is not set',
-        fix: 'Set HOME (macOS/Linux) or USERPROFILE (Windows) before running tuck',
+        message: 'Home directory could not be resolved',
+        fix: 'Ensure the current OS user account has a valid home directory',
       };
     }
 
@@ -119,12 +122,22 @@ const checkTuckDirectory: DoctorCheck = {
   id: 'repo.tuck-directory',
   category: 'repo',
   run: async (context) => {
-    if (context.hasTuckDir) {
+    if (context.hasTuckDir && context.isTuckDirDirectory) {
       return {
         id: 'repo.tuck-directory',
         category: 'repo',
         status: 'pass',
         message: `Tuck directory exists: ${collapsePath(context.tuckDir)}`,
+      };
+    }
+
+    if (context.hasTuckDir && !context.isTuckDirDirectory) {
+      return {
+        id: 'repo.tuck-directory',
+        category: 'repo',
+        status: 'fail',
+        message: `Tuck path is not a directory: ${collapsePath(context.tuckDir)}`,
+        fix: 'Remove or rename the conflicting file, then run `tuck init`',
       };
     }
 
@@ -595,6 +608,7 @@ const buildDoctorContext = async (): Promise<DoctorContext> => {
   const manifestPath = getManifestPath(tuckDir);
   const configPath = getConfigPath(tuckDir);
   const hasTuckDir = await pathExists(tuckDir);
+  const isTuckDirDirectory = hasTuckDir ? await isDirectory(tuckDir) : false;
   const hasGitDir = await pathExists(join(tuckDir, '.git'));
   const hasManifestFile = await pathExists(manifestPath);
   const hasConfigFile = await pathExists(configPath);
@@ -604,6 +618,7 @@ const buildDoctorContext = async (): Promise<DoctorContext> => {
     manifestPath,
     configPath,
     hasTuckDir,
+    isTuckDirDirectory,
     hasGitDir,
     hasManifestFile,
     hasConfigFile,

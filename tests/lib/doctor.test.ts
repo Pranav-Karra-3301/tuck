@@ -22,10 +22,15 @@ vi.mock('../../src/lib/git.js', () => ({
 }));
 
 describe('doctor checks', () => {
+  const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
+
   beforeEach(() => {
     vol.reset();
     clearManifestCache();
     clearConfigCache();
+    process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalUserProfile;
   });
 
   afterEach(() => {
@@ -105,5 +110,27 @@ describe('doctor checks', () => {
     expect(report.summary.failed).toBe(0);
     expect(report.summary.warnings).toBeGreaterThan(0);
     expect(getDoctorExitCode(report, true)).toBe(2);
+  });
+
+  it('uses OS-level home resolution when HOME and USERPROFILE are unset', async () => {
+    await initTestTuck();
+    delete process.env.HOME;
+    delete process.env.USERPROFILE;
+
+    const report = await runDoctorChecks({ category: 'env' });
+    const homeCheck = report.checks.find((check) => check.id === 'env.home-directory');
+
+    expect(homeCheck?.status).toBe('pass');
+  });
+
+  it('fails when tuck path exists but is not a directory', async () => {
+    vol.mkdirSync(TEST_HOME, { recursive: true });
+    vol.writeFileSync(TEST_TUCK_DIR, 'conflicting file');
+
+    const report = await runDoctorChecks();
+    const tuckDirCheck = report.checks.find((check) => check.id === 'repo.tuck-directory');
+
+    expect(tuckDirCheck?.status).toBe('fail');
+    expect(tuckDirCheck?.message).toContain('not a directory');
   });
 });
