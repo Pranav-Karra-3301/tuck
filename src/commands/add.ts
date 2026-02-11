@@ -10,6 +10,7 @@ import {
   detectCategory,
   sanitizeFilename,
   getDestinationPath,
+  validateSafeSourcePath,
 } from '../lib/paths.js';
 import { isFileTracked, loadManifest } from '../lib/manifest.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
@@ -125,6 +126,7 @@ const validateAndPrepareFiles = async (
   for (const path of paths) {
     const expandedPath = expandPath(path);
     const collapsedPath = collapsePath(expandedPath);
+    validateSafeSourcePath(collapsedPath);
 
     // SECURITY: Block private keys
     if (isPrivateKey(collapsedPath)) {

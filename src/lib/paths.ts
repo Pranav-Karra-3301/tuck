@@ -227,6 +227,65 @@ export const validateSafeSourcePath = (source: string): void => {
 };
 
 /**
+ * Validate that a path resolves inside a specific root directory.
+ * Throws if the path escapes that root.
+ */
+export const validatePathWithinRoot = (
+  pathToValidate: string,
+  root: string,
+  label = 'path'
+): void => {
+  const resolvedPath = resolve(expandPath(pathToValidate));
+  const resolvedRoot = resolve(expandPath(root));
+
+  const isWithinRoot =
+    resolvedPath === resolvedRoot || resolvedPath.startsWith(resolvedRoot + sep);
+
+  if (!isWithinRoot) {
+    throw new Error(
+      `Unsafe ${label} path detected: ${pathToValidate} - path must be within ${root}`
+    );
+  }
+};
+
+/**
+ * Validate that a manifest destination is a safe, relative repository path.
+ * Destinations must stay under the `files/` directory.
+ */
+export const validateSafeManifestDestination = (destination: string): void => {
+  const trimmedDestination = destination.trim();
+
+  if (!trimmedDestination) {
+    throw new Error('Unsafe manifest destination detected: destination cannot be empty');
+  }
+
+  // Detect absolute paths on all platforms (including Windows-style on Unix)
+  if (
+    isAbsolute(trimmedDestination) ||
+    /^[A-Za-z]:[\\/]/.test(trimmedDestination) ||
+    trimmedDestination.startsWith('\\\\')
+  ) {
+    throw new Error(
+      `Unsafe manifest destination detected: ${destination} - destination must be a relative path`
+    );
+  }
+
+  // Normalize separators for cross-platform traversal checks
+  const normalized = trimmedDestination.replace(/\\/g, '/');
+  if (normalized.includes('../') || normalized.split('/').includes('..')) {
+    throw new Error(
+      `Unsafe manifest destination detected: ${destination} - path traversal is not allowed`
+    );
+  }
+
+  if (!(normalized === FILES_DIR || normalized.startsWith(`${FILES_DIR}/`))) {
+    throw new Error(
+      `Unsafe manifest destination detected: ${destination} - destination must be inside ${FILES_DIR}/`
+    );
+  }
+};
+
+/**
  * Validate that a destination path is safely within an allowed root.
  * Defaults to the user's home directory if no explicit roots are provided.
  */
@@ -239,9 +298,14 @@ export const validateSafeDestinationPath = (
     resolve(expandPath(r))
   );
 
-  const isWithinAllowedRoot = roots.some(
-    (root) => resolvedDestination === root || resolvedDestination.startsWith(root + sep)
-  );
+  const isWithinAllowedRoot = roots.some((root) => {
+    try {
+      validatePathWithinRoot(resolvedDestination, root, 'destination');
+      return true;
+    } catch {
+      return false;
+    }
+  });
 
   if (!isWithinAllowedRoot) {
     throw new Error(

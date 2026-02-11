@@ -3,7 +3,15 @@ import { join } from 'path';
 import { colors as c } from '../ui/theme.js';
 import { chmod, stat } from 'fs/promises';
 import { prompts, logger, withSpinner } from '../ui/index.js';
-import { getTuckDir, expandPath, pathExists, collapsePath } from '../lib/paths.js';
+import {
+  getTuckDir,
+  expandPath,
+  pathExists,
+  collapsePath,
+  validateSafeSourcePath,
+  validateSafeManifestDestination,
+  validatePathWithinRoot,
+} from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles, getTrackedFileBySource } from '../lib/manifest.js';
 import { loadConfig } from '../lib/config.js';
 import { copyFileOrDir, createSymlink } from '../lib/files.js';
@@ -99,10 +107,15 @@ const prepareFilesToRestore = async (
         throw new FileNotFoundError(`Not tracked: ${path}`);
       }
 
+      validateSafeSourcePath(tracked.file.source);
+      validateSafeManifestDestination(tracked.file.destination);
+      const repositoryPath = join(tuckDir, tracked.file.destination);
+      validatePathWithinRoot(repositoryPath, tuckDir, 'restore source');
+
       filesToRestore.push({
         id: tracked.id,
         source: tracked.file.source,
-        destination: join(tuckDir, tracked.file.destination),
+        destination: repositoryPath,
         category: tracked.file.category,
         existsAtTarget: await pathExists(expandedPath),
       });
@@ -110,11 +123,15 @@ const prepareFilesToRestore = async (
   } else {
     // Restore all files
     for (const [id, file] of Object.entries(allFiles)) {
+      validateSafeSourcePath(file.source);
+      validateSafeManifestDestination(file.destination);
+      const repositoryPath = join(tuckDir, file.destination);
+      validatePathWithinRoot(repositoryPath, tuckDir, 'restore source');
       const targetPath = expandPath(file.source);
       filesToRestore.push({
         id,
         source: file.source,
-        destination: join(tuckDir, file.destination),
+        destination: repositoryPath,
         category: file.category,
         existsAtTarget: await pathExists(targetPath),
       });
@@ -146,6 +163,8 @@ const restoreFilesInternal = async (
   const restoredPaths: string[] = [];
 
   for (const file of files) {
+    validateSafeSourcePath(file.source);
+    validatePathWithinRoot(file.destination, tuckDir, 'restore source');
     const targetPath = expandPath(file.source);
 
     // Check if source exists in repository

@@ -12,6 +12,9 @@ const getFileChecksumMock = vi.fn();
 const deleteFileOrDirMock = vi.fn();
 const loadTuckignoreMock = vi.fn();
 const isIgnoredMock = vi.fn();
+const validateSafeSourcePathMock = vi.fn();
+const validateSafeManifestDestinationMock = vi.fn();
+const validatePathWithinRootMock = vi.fn();
 const runPreSyncHookMock = vi.fn();
 const runPostSyncHookMock = vi.fn();
 const stageAllMock = vi.fn();
@@ -61,6 +64,9 @@ vi.mock('../../src/lib/paths.js', () => ({
   expandPath: vi.fn((p: string) => p.replace(/^~\//, '/test-home/')),
   pathExists: pathExistsMock,
   collapsePath: vi.fn((p: string) => p),
+  validateSafeSourcePath: validateSafeSourcePathMock,
+  validateSafeManifestDestination: validateSafeManifestDestinationMock,
+  validatePathWithinRoot: validatePathWithinRootMock,
 }));
 
 vi.mock('../../src/lib/manifest.js', () => ({
@@ -143,6 +149,9 @@ describe('sync command behavior', () => {
     getFileChecksumMock.mockResolvedValue('new-checksum');
     hasRemoteMock.mockResolvedValue(false);
     commitMock.mockResolvedValue('abc123def456');
+    validateSafeSourcePathMock.mockImplementation(() => {});
+    validateSafeManifestDestinationMock.mockImplementation(() => {});
+    validatePathWithinRootMock.mockImplementation(() => {});
   });
 
   it('throws NotInitializedError when manifest is missing', async () => {
@@ -184,7 +193,31 @@ describe('sync command behavior', () => {
 
     expect(copyFileOrDirMock).toHaveBeenCalledTimes(1);
     expect(updateFileInManifestMock).toHaveBeenCalledTimes(1);
+    expect(validatePathWithinRootMock).toHaveBeenCalledWith(
+      '/test-home/.tuck/files/shell/zshrc',
+      '/test-home/.tuck',
+      'sync destination'
+    );
     expect(stageAllMock).not.toHaveBeenCalled();
     expect(commitMock).not.toHaveBeenCalled();
+  });
+
+  it('fails fast when manifest destination is unsafe', async () => {
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: {
+        source: '~/.zshrc',
+        destination: '../../outside',
+        checksum: 'old',
+      },
+    });
+    validateSafeManifestDestinationMock.mockImplementationOnce(() => {
+      throw new Error('Unsafe manifest destination detected');
+    });
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+
+    await expect(
+      runSyncCommand('sync: unsafe manifest', { noCommit: true, noHooks: true, scan: false, pull: false })
+    ).rejects.toThrow('Unsafe manifest destination detected');
+    expect(copyFileOrDirMock).not.toHaveBeenCalled();
   });
 });

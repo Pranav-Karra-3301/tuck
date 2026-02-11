@@ -1,7 +1,15 @@
 import { Command } from 'commander';
 import { join, basename } from 'path';
 import { prompts, logger, withSpinner, colors as c } from '../ui/index.js';
-import { getTuckDir, expandPath, pathExists, collapsePath } from '../lib/paths.js';
+import {
+  getTuckDir,
+  expandPath,
+  pathExists,
+  collapsePath,
+  validateSafeSourcePath,
+  validateSafeManifestDestination,
+  validatePathWithinRoot,
+} from '../lib/paths.js';
 import {
   loadManifest,
   getAllTrackedFiles,
@@ -42,6 +50,9 @@ const detectChanges = async (tuckDir: string): Promise<FileChange[]> => {
   const changes: FileChange[] = [];
 
   for (const [, file] of Object.entries(files)) {
+    validateSafeSourcePath(file.source);
+    validateSafeManifestDestination(file.destination);
+
     // Skip if in .tuckignore
     if (ignoredPaths.has(file.source)) {
       continue;
@@ -213,8 +224,15 @@ const syncFiles = async (
 
   // Process each change
   for (const change of changes) {
+    validateSafeSourcePath(change.source);
+    if (!change.destination) {
+      throw new Error(`Unsafe manifest entry detected: missing destination for ${change.source}`);
+    }
+    validateSafeManifestDestination(change.destination);
+
     const sourcePath = expandPath(change.source);
-    const destPath = join(tuckDir, change.destination!);
+    const destPath = join(tuckDir, change.destination);
+    validatePathWithinRoot(destPath, tuckDir, 'sync destination');
 
     if (change.status === 'modified') {
       await withSpinner(`Syncing ${change.path}...`, async () => {

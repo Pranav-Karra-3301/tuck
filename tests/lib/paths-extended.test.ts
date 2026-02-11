@@ -29,6 +29,8 @@ import {
   isPathWithinHome,
   validateSafeSourcePath,
   validateSafeDestinationPath,
+  validatePathWithinRoot,
+  validateSafeManifestDestination,
   generateFileId,
 } from '../../src/lib/paths.js';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
@@ -317,6 +319,58 @@ describe('paths-extended', () => {
           'destination must be within allowed roots'
         );
       }
+    });
+  });
+
+  describe('validatePathWithinRoot', () => {
+    it('should accept paths that resolve inside the given root', () => {
+      expect(() =>
+        validatePathWithinRoot(
+          join(TEST_TUCK_DIR, 'files', 'shell', 'zshrc'),
+          TEST_TUCK_DIR,
+          'sync destination'
+        )
+      ).not.toThrow();
+    });
+
+    it('should reject paths that escape the root directory', () => {
+      expect(() =>
+        validatePathWithinRoot(
+          join(TEST_TUCK_DIR, '..', 'outside-file'),
+          TEST_TUCK_DIR,
+          'sync destination'
+        )
+      ).toThrow('path must be within');
+    });
+  });
+
+  describe('validateSafeManifestDestination', () => {
+    it('should accept safe relative destinations under files/', () => {
+      expect(() => validateSafeManifestDestination('files/shell/zshrc')).not.toThrow();
+      expect(() => validateSafeManifestDestination('files\\git\\gitconfig')).not.toThrow();
+    });
+
+    it('should reject manifest destinations with path traversal', () => {
+      expect(() => validateSafeManifestDestination('files/../secrets.txt')).toThrow(
+        'path traversal is not allowed'
+      );
+    });
+
+    it('should reject manifest destinations outside files/', () => {
+      expect(() => validateSafeManifestDestination('tmp/evil-file')).toThrow(
+        'destination must be inside'
+      );
+    });
+
+    it('should reject absolute manifest destinations', () => {
+      if (process.platform !== 'win32') {
+        expect(() => validateSafeManifestDestination('/etc/passwd')).toThrow(
+          'destination must be a relative path'
+        );
+      }
+      expect(() => validateSafeManifestDestination('C:\\Windows\\System32\\drivers\\etc')).toThrow(
+        'destination must be a relative path'
+      );
     });
   });
 

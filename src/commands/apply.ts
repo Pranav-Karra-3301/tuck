@@ -4,13 +4,22 @@ import { readFile, writeFile, rm, chmod, stat } from 'fs/promises';
 import { ensureDir, pathExists as fsPathExists } from 'fs-extra';
 import { tmpdir } from 'os';
 import { banner, prompts, logger, colors as c } from '../ui/index.js';
-import { expandPath, pathExists, collapsePath, validateSafeSourcePath, getTuckDir } from '../lib/paths.js';
+import {
+  expandPath,
+  pathExists,
+  collapsePath,
+  validateSafeSourcePath,
+  validateSafeManifestDestination,
+  validatePathWithinRoot,
+  getTuckDir,
+} from '../lib/paths.js';
 import { cloneRepo } from '../lib/git.js';
 import { isGhInstalled, findDotfilesRepo, ghCloneRepo, repoExists } from '../lib/github.js';
 import { createPreApplySnapshot } from '../lib/timemachine.js';
 import { smartMerge, isShellFile, generateMergePreview } from '../lib/merge.js';
 import { CATEGORIES } from '../constants.js';
 import type { TuckManifest } from '../types.js';
+import { tuckManifestSchema } from '../schemas/manifest.schema.js';
 import { findPlaceholders, restoreContent, restoreFiles as restoreSecrets, getAllSecrets, getSecretCount } from '../lib/secrets/index.js';
 import { createResolver } from '../lib/secretBackends/index.js';
 import { loadConfig } from '../lib/config.js';
@@ -152,7 +161,8 @@ const readClonedManifest = async (repoDir: string): Promise<TuckManifest | null>
 
   try {
     const content = await readFile(manifestPath, 'utf-8');
-    return JSON.parse(content) as TuckManifest;
+    const parsed = JSON.parse(content) as unknown;
+    return tuckManifestSchema.parse(parsed);
   } catch {
     return null;
   }
@@ -168,18 +178,24 @@ const prepareFilesToApply = async (
   const files: ApplyFile[] = [];
 
   for (const [_id, file] of Object.entries(manifest.files)) {
+    try {
+      validateSafeSourcePath(file.source);
+      validateSafeManifestDestination(file.destination);
+    } catch {
+      logger.warning(`Skipping unsafe manifest entry: ${file.source}`);
+      continue;
+    }
+
     const repoFilePath = join(repoDir, file.destination);
 
-    if (await fsPathExists(repoFilePath)) {
-      // Validate that the source path is safe (within home directory)
-      // This prevents malicious manifests from writing to arbitrary locations
-      try {
-        validateSafeSourcePath(file.source);
-      } catch (error) {
-        logger.warning(`Skipping unsafe path from manifest: ${file.source}`);
-        continue;
-      }
+    try {
+      validatePathWithinRoot(repoFilePath, repoDir, 'repository file');
+    } catch {
+      logger.warning(`Skipping unsafe repository path from manifest: ${file.destination}`);
+      continue;
+    }
 
+    if (await fsPathExists(repoFilePath)) {
       files.push({
         source: file.source,
         destination: expandPath(file.source),

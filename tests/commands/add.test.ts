@@ -14,6 +14,7 @@ const isDirectoryMock = vi.fn();
 const detectCategoryMock = vi.fn();
 const sanitizeFilenameMock = vi.fn();
 const getDestinationPathMock = vi.fn();
+const validateSafeSourcePathMock = vi.fn();
 const loadConfigMock = vi.fn();
 const scanForSecretsMock = vi.fn();
 const shouldBlockOnSecretsMock = vi.fn();
@@ -77,6 +78,7 @@ vi.mock('../../src/lib/paths.js', () => ({
   detectCategory: detectCategoryMock,
   sanitizeFilename: sanitizeFilenameMock,
   getDestinationPath: getDestinationPathMock,
+  validateSafeSourcePath: validateSafeSourcePathMock,
 }));
 
 vi.mock('../../src/lib/config.js', () => ({
@@ -127,6 +129,7 @@ describe('add command behavior', () => {
     detectCategoryMock.mockReturnValue('shell');
     sanitizeFilenameMock.mockReturnValue('zshrc');
     getDestinationPathMock.mockReturnValue('/test-home/.tuck/files/shell/zshrc');
+    validateSafeSourcePathMock.mockImplementation(() => {});
     loadConfigMock.mockResolvedValue({
       security: { scanSecrets: true },
     });
