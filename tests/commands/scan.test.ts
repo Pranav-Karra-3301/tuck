@@ -1,303 +1,153 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { vol } from 'memfs';
-import { TEST_HOME } from '../setup.js';
-import { initTestTuck, createTestDotfile, getTestManifest } from '../utils/testHelpers.js';
-import { createMockTrackedFile } from '../utils/factories.js';
-import { shouldExcludeFile, DEFAULT_EXCLUSION_PATTERNS } from '../../src/lib/detect.js';
-import path from 'path';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { NotInitializedError } from '../../src/errors.js';
 
-// Mock UI
+const loadManifestMock = vi.fn();
+const getTrackedFileBySourceMock = vi.fn();
+const detectDotfilesMock = vi.fn();
+const isIgnoredMock = vi.fn();
+const shouldExcludeFromBinMock = vi.fn();
+const trackFilesWithProgressMock = vi.fn();
+
+const loggerInfoMock = vi.fn();
+const loggerWarnMock = vi.fn();
+const loggerSuccessMock = vi.fn();
+const loggerDimMock = vi.fn();
+
+const promptsSelectMock = vi.fn();
+const promptsConfirmMock = vi.fn();
+
 vi.mock('../../src/ui/index.js', () => ({
+  banner: vi.fn(),
+  colors: {
+    bold: Object.assign((x: string) => x, { cyan: (x: string) => x }),
+    dim: (x: string) => x,
+    green: (x: string) => x,
+    yellow: (x: string) => x,
+    cyan: (x: string) => x,
+    white: (x: string) => x,
+  },
+  logger: {
+    info: loggerInfoMock,
+    warning: loggerWarnMock,
+    warn: loggerWarnMock,
+    success: loggerSuccessMock,
+    dim: loggerDimMock,
+  },
   prompts: {
     intro: vi.fn(),
     outro: vi.fn(),
-    confirm: vi.fn().mockResolvedValue(true),
-    select: vi.fn(),
-    multiselect: vi.fn().mockResolvedValue([]),
+    confirm: promptsConfirmMock,
+    select: promptsSelectMock,
+    multiselect: vi.fn(),
     text: vi.fn(),
+    note: vi.fn(),
+    cancel: vi.fn(),
+    spinner: vi.fn(() => ({ start: vi.fn(), stop: vi.fn(), message: '' })),
     log: {
       info: vi.fn(),
       success: vi.fn(),
-      warn: vi.fn(),
+      warning: vi.fn(),
       error: vi.fn(),
       step: vi.fn(),
+      message: vi.fn(),
     },
-    note: vi.fn(),
-    cancel: vi.fn(),
-    spinner: vi.fn(() => ({
-      start: vi.fn(),
-      stop: vi.fn(),
-      message: '',
-    })),
   },
-  logger: {
-    info: vi.fn(),
-    success: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  },
-  banner: vi.fn(),
 }));
 
-describe('scan command', () => {
+vi.mock('../../src/lib/paths.js', () => ({
+  getTuckDir: vi.fn(() => '/test-home/.tuck'),
+  collapsePath: vi.fn((p: string) => p),
+  expandPath: vi.fn((p: string) => p.replace(/^~\//, '/test-home/')),
+}));
+
+vi.mock('../../src/lib/manifest.js', () => ({
+  loadManifest: loadManifestMock,
+  getTrackedFileBySource: getTrackedFileBySourceMock,
+}));
+
+vi.mock('../../src/lib/detect.js', () => ({
+  detectDotfiles: detectDotfilesMock,
+  DETECTION_CATEGORIES: {
+    shell: { icon: '$', name: 'Shell', description: 'Shell configuration' },
+    git: { icon: '*', name: 'Git', description: 'Git configuration' },
+  },
+}));
+
+vi.mock('../../src/lib/tuckignore.js', () => ({
+  isIgnored: isIgnoredMock,
+}));
+
+vi.mock('../../src/lib/binary.js', () => ({
+  shouldExcludeFromBin: shouldExcludeFromBinMock,
+}));
+
+vi.mock('../../src/lib/fileTracking.js', () => ({
+  trackFilesWithProgress: trackFilesWithProgressMock,
+}));
+
+describe('scan command behavior', () => {
   beforeEach(() => {
-    vol.reset();
     vi.clearAllMocks();
+
+    loadManifestMock.mockResolvedValue({ files: {} });
+    getTrackedFileBySourceMock.mockResolvedValue(null);
+    detectDotfilesMock.mockResolvedValue([
+      {
+        path: '~/.zshrc',
+        category: 'shell',
+        description: 'Shell config',
+        sensitive: false,
+        isDirectory: false,
+      },
+    ]);
+    isIgnoredMock.mockResolvedValue(false);
+    shouldExcludeFromBinMock.mockResolvedValue(false);
+    trackFilesWithProgressMock.mockResolvedValue({
+      succeeded: 1,
+      failed: 0,
+      errors: [],
+      sensitiveFiles: [],
+    });
+    promptsSelectMock.mockResolvedValue('preview');
+    promptsConfirmMock.mockResolvedValue(false);
   });
 
-  afterEach(() => {
-    vol.reset();
+  it('throws NotInitializedError when tuck is not initialized', async () => {
+    loadManifestMock.mockRejectedValueOnce(new Error('missing manifest'));
+    const { runScan } = await import('../../src/commands/scan.js');
+
+    await expect(runScan({ quick: true })).rejects.toBeInstanceOf(NotInitializedError);
   });
 
-  describe('dotfile detection', () => {
-    it('should detect dotfiles in home directory', async () => {
-      await initTestTuck();
+  it('outputs JSON when json mode is enabled', async () => {
+    const { runScan } = await import('../../src/commands/scan.js');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-      // Create various dotfiles
-      await createTestDotfile('.zshrc', 'zsh config');
-      await createTestDotfile('.gitconfig', 'git config');
-      await createTestDotfile('.vimrc', 'vim config');
+    await runScan({ json: true });
 
-      // Check they exist
-      const dotfiles = ['.zshrc', '.gitconfig', '.vimrc'];
-      for (const file of dotfiles) {
-        expect(vol.existsSync(path.join(TEST_HOME, file))).toBe(true);
-      }
-    });
+    expect(logSpy).toHaveBeenCalled();
+    const payload = logSpy.mock.calls.flat().map(String).join('\n');
+    expect(payload).toContain('~/.zshrc');
 
-    it('should detect dotfiles in .config directory', async () => {
-      await initTestTuck();
-
-      const configDir = path.join(TEST_HOME, '.config', 'nvim');
-      vol.mkdirSync(configDir, { recursive: true });
-      vol.writeFileSync(
-        path.join(configDir, 'init.vim'),
-        'vim config'
-      );
-
-      expect(vol.existsSync(path.join(configDir, 'init.vim'))).toBe(true);
-    });
+    logSpy.mockRestore();
   });
 
-  describe('filtering', () => {
-    it('should exclude already tracked files', async () => {
-      await initTestTuck();
+  it('runs quick mode without tracking files', async () => {
+    const { runScan } = await import('../../src/commands/scan.js');
 
-      const manifest = await getTestManifest();
-      manifest.files['zshrc'] = createMockTrackedFile({
-        source: '~/.zshrc',
-        destination: 'files/zshrc',
-      });
+    await runScan({ quick: true });
 
-      await createTestDotfile('.zshrc', 'zsh config');
-      await createTestDotfile('.gitconfig', 'git config');
-
-      // Only .gitconfig should appear as "new"
-      const trackedSources = Object.values(manifest.files).map((f) => f.source);
-      const isTracked = trackedSources.includes('~/.zshrc');
-
-      expect(isTracked).toBe(true);
-    });
-
-    it('should exclude cache directories', () => {
-      for (const cacheDir of DEFAULT_EXCLUSION_PATTERNS.cacheDirectories) {
-        expect(shouldExcludeFile(cacheDir)).toBe(true);
-      }
-    });
-
-    it('should exclude history files', () => {
-      for (const historyFile of DEFAULT_EXCLUSION_PATTERNS.historyFiles) {
-        expect(shouldExcludeFile(historyFile)).toBe(true);
-      }
-    });
-
-    it('should exclude binary files', () => {
-      const binaryFiles = [
-        '~/.config/app.png',
-        '~/.local/font.woff2',
-        '~/.cache/binary.dylib',
-      ];
-
-      for (const file of binaryFiles) {
-        expect(shouldExcludeFile(file)).toBe(true);
-      }
-    });
-
-    it('should exclude temp files', () => {
-      const tempFiles = [
-        '~/.config/something.lock',
-        '~/.vim/swap.swp',
-        '~/.config/temp.tmp',
-      ];
-
-      for (const file of tempFiles) {
-        expect(shouldExcludeFile(file)).toBe(true);
-      }
-    });
-
-    it('should NOT exclude valid config files', () => {
-      const validConfigs = [
-        '~/.zshrc',
-        '~/.bashrc',
-        '~/.gitconfig',
-        '~/.vimrc',
-        '~/.npmrc',
-        '~/.config/nvim/init.vim',
-      ];
-
-      for (const file of validConfigs) {
-        expect(shouldExcludeFile(file)).toBe(false);
-      }
-    });
+    expect(trackFilesWithProgressMock).not.toHaveBeenCalled();
+    expect(loggerInfoMock).toHaveBeenCalled();
   });
 
-  describe('categorization', () => {
-    it('should categorize shell configs correctly', () => {
-      const shellPatterns = ['zshrc', 'bashrc', 'profile', 'zprofile'];
+  it('tracks files in interactive all mode when user confirms', async () => {
+    const { runScan } = await import('../../src/commands/scan.js');
+    promptsSelectMock.mockResolvedValueOnce('all');
+    promptsConfirmMock.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
 
-      for (const pattern of shellPatterns) {
-        const file = `.${pattern}`;
-        const isShell = file.includes('sh') ||
-                       file.includes('profile') ||
-                       file.includes('zsh') ||
-                       file.includes('bash');
-        expect(isShell).toBe(true);
-      }
-    });
+    await runScan({});
 
-    it('should categorize git configs correctly', () => {
-      const gitFiles = ['.gitconfig', '.gitignore_global'];
-
-      for (const file of gitFiles) {
-        const isGit = file.includes('git');
-        expect(isGit).toBe(true);
-      }
-    });
-
-    it('should categorize editor configs correctly', () => {
-      const editorFiles = ['.vimrc', '.emacs', 'init.vim', '.nanorc'];
-
-      for (const file of editorFiles) {
-        const isEditor =
-          file.includes('vim') ||
-          file.includes('emacs') ||
-          file.includes('nano');
-        expect(isEditor).toBe(true);
-      }
-    });
-  });
-
-  describe('interactive selection', () => {
-    it('should support multiselect for files', async () => {
-      await initTestTuck();
-
-      // Create multiple dotfiles
-      await createTestDotfile('.zshrc', 'zsh');
-      await createTestDotfile('.gitconfig', 'git');
-      await createTestDotfile('.vimrc', 'vim');
-
-      // Mock multiselect returns selected files
-      const selectedFiles = ['~/.zshrc', '~/.vimrc'];
-
-      expect(selectedFiles.length).toBe(2);
-      expect(selectedFiles).toContain('~/.zshrc');
-      expect(selectedFiles).toContain('~/.vimrc');
-      expect(selectedFiles).not.toContain('~/.gitconfig');
-    });
-
-    it('should allow selecting all files', async () => {
-      await initTestTuck();
-
-      const allFiles = ['~/.zshrc', '~/.gitconfig', '~/.vimrc'];
-
-      expect(allFiles.length).toBe(3);
-    });
-
-    it('should allow selecting no files', async () => {
-      await initTestTuck();
-
-      const selectedFiles: string[] = [];
-
-      expect(selectedFiles.length).toBe(0);
-    });
-  });
-
-  describe('.tuckignore support', () => {
-    it('should read .tuckignore patterns', async () => {
-      await initTestTuck();
-
-      // Create .tuckignore
-      vol.writeFileSync(
-        path.join(TEST_HOME, '.tuckignore'),
-        '*.log\n.DS_Store\ntmp/*'
-      );
-
-      const ignoreContent = vol.readFileSync(
-        path.join(TEST_HOME, '.tuckignore'),
-        'utf-8'
-      );
-
-      const patterns = (ignoreContent as string).split('\n').filter(Boolean);
-      expect(patterns).toContain('*.log');
-      expect(patterns).toContain('.DS_Store');
-      expect(patterns).toContain('tmp/*');
-    });
-
-    it('should exclude files matching .tuckignore patterns', () => {
-      const ignorePatterns = ['*.log', '.DS_Store', 'tmp/*'];
-
-      const testFiles = [
-        { path: 'app.log', shouldIgnore: true },
-        { path: '.DS_Store', shouldIgnore: true },
-        { path: 'tmp/cache', shouldIgnore: true },
-        { path: '.zshrc', shouldIgnore: false },
-      ];
-
-      for (const { path: filePath, shouldIgnore } of testFiles) {
-        const isIgnored = ignorePatterns.some((pattern) => {
-          if (pattern.startsWith('*')) {
-            return filePath.endsWith(pattern.slice(1));
-          }
-          if (pattern.endsWith('/*')) {
-            return filePath.startsWith(pattern.slice(0, -2));
-          }
-          return filePath === pattern;
-        });
-
-        expect(isIgnored).toBe(shouldIgnore);
-      }
-    });
-  });
-
-  describe('summary output', () => {
-    it('should count files by category', async () => {
-      await initTestTuck();
-
-      const files = [
-        { source: '~/.zshrc', category: 'shell' },
-        { source: '~/.bashrc', category: 'shell' },
-        { source: '~/.gitconfig', category: 'git' },
-        { source: '~/.vimrc', category: 'editor' },
-      ];
-
-      const categoryCounts = new Map<string, number>();
-      for (const file of files) {
-        const count = categoryCounts.get(file.category) || 0;
-        categoryCounts.set(file.category, count + 1);
-      }
-
-      expect(categoryCounts.get('shell')).toBe(2);
-      expect(categoryCounts.get('git')).toBe(1);
-      expect(categoryCounts.get('editor')).toBe(1);
-    });
-
-    it('should show total file count', async () => {
-      await initTestTuck();
-
-      const files = ['~/.zshrc', '~/.gitconfig', '~/.vimrc'];
-
-      expect(files.length).toBe(3);
-    });
+    expect(trackFilesWithProgressMock).toHaveBeenCalledTimes(1);
   });
 });

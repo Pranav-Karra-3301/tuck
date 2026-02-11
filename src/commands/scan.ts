@@ -227,7 +227,7 @@ const addFilesWithProgress = async (
 /**
  * Main scan function
  */
-const runScan = async (options: ScanOptions): Promise<void> => {
+export const runScan = async (options: ScanOptions): Promise<void> => {
   const tuckDir = getTuckDir();
 
   // Check if tuck is initialized

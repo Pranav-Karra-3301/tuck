@@ -1,289 +1,165 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { vol } from 'memfs';
-import { TEST_HOME, TEST_TUCK_DIR, TEST_TUCK_DIR_NATIVE } from '../setup.js';
-import { createMockManifest, createMockConfig } from '../utils/factories.js';
-import path from 'path';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mock simple-git
-const mockGit = {
-  init: vi.fn().mockResolvedValue(undefined),
-  addRemote: vi.fn().mockResolvedValue(undefined),
-  clone: vi.fn().mockResolvedValue(undefined),
-  fetch: vi.fn().mockResolvedValue(undefined),
-  pull: vi.fn().mockResolvedValue(undefined),
-  status: vi.fn().mockResolvedValue({ isClean: () => true }),
-  log: vi.fn().mockResolvedValue({ latest: null }),
-  checkIsRepo: vi.fn().mockResolvedValue(false),
-  raw: vi.fn().mockResolvedValue(''),
-};
+const cloneRepoMock = vi.fn();
+const createManifestMock = vi.fn();
+const saveConfigMock = vi.fn();
+const pathExistsMock = vi.fn();
+const loggerSuccessMock = vi.fn();
+const loggerInfoMock = vi.fn();
 
-vi.mock('simple-git', () => ({
-  simpleGit: vi.fn(() => mockGit),
-  default: vi.fn(() => mockGit),
-}));
-
-// Mock UI
 vi.mock('../../src/ui/index.js', () => ({
+  banner: vi.fn(),
+  nextSteps: vi.fn(),
+  withSpinner: vi.fn(async (_label: string, fn: () => Promise<unknown>) => fn()),
   prompts: {
     intro: vi.fn(),
     outro: vi.fn(),
-    confirm: vi.fn().mockResolvedValue(true),
-    select: vi.fn(),
     text: vi.fn(),
-    multiselect: vi.fn().mockResolvedValue([]),
+    confirm: vi.fn(),
+    select: vi.fn(),
+    multiselect: vi.fn(),
+    note: vi.fn(),
+    cancel: vi.fn(),
+    spinner: vi.fn(() => ({ start: vi.fn(), stop: vi.fn(), message: '' })),
     log: {
       info: vi.fn(),
       success: vi.fn(),
-      warn: vi.fn(),
+      warning: vi.fn(),
       error: vi.fn(),
       step: vi.fn(),
       message: vi.fn(),
     },
-    note: vi.fn(),
-    cancel: vi.fn(),
-    spinner: vi.fn(() => ({
-      start: vi.fn(),
-      stop: vi.fn(),
-      message: '',
-    })),
-    group: vi.fn(),
   },
   logger: {
-    info: vi.fn(),
-    success: vi.fn(),
-    warn: vi.fn(),
+    success: loggerSuccessMock,
+    info: loggerInfoMock,
+    warning: vi.fn(),
     error: vi.fn(),
     debug: vi.fn(),
   },
-  banner: vi.fn(),
+  colors: {
+    brand: (x: string) => x,
+    dim: (x: string) => x,
+    bold: (x: string) => x,
+  },
 }));
 
-describe('init command', () => {
+vi.mock('../../src/lib/paths.js', () => ({
+  getTuckDir: vi.fn((dir?: string) => (dir === '~/.custom' ? '/test-home/.custom' : '/test-home/.tuck')),
+  getManifestPath: vi.fn((tuckDir: string) => `${tuckDir}/.tuckmanifest.json`),
+  getConfigPath: vi.fn((tuckDir: string) => `${tuckDir}/.tuckrc.json`),
+  getFilesDir: vi.fn((tuckDir: string) => `${tuckDir}/files`),
+  getCategoryDir: vi.fn((tuckDir: string, category: string) => `${tuckDir}/files/${category}`),
+  pathExists: pathExistsMock,
+  collapsePath: vi.fn((path: string) => path.replace('/test-home', '~')),
+}));
+
+vi.mock('../../src/lib/config.js', () => ({
+  saveConfig: saveConfigMock,
+}));
+
+vi.mock('../../src/lib/manifest.js', () => ({
+  createManifest: createManifestMock,
+}));
+
+vi.mock('../../src/lib/git.js', () => ({
+  initRepo: vi.fn(),
+  addRemote: vi.fn(),
+  cloneRepo: cloneRepoMock,
+  setDefaultBranch: vi.fn(),
+  stageAll: vi.fn(),
+  commit: vi.fn(),
+  push: vi.fn(),
+}));
+
+vi.mock('../../src/lib/providerSetup.js', () => ({
+  setupProvider: vi.fn(),
+  detectProviderFromUrl: vi.fn(() => 'local'),
+}));
+
+vi.mock('../../src/lib/providers/index.js', () => ({
+  getProvider: vi.fn(),
+  describeProviderConfig: vi.fn(() => 'local'),
+  buildRemoteConfig: vi.fn(() => ({ mode: 'local' })),
+}));
+
+vi.mock('../../src/lib/github.js', () => ({
+  isGhInstalled: vi.fn(),
+  isGhAuthenticated: vi.fn(),
+  getAuthenticatedUser: vi.fn(),
+  createRepo: vi.fn(),
+  getPreferredRepoUrl: vi.fn(),
+  getPreferredRemoteProtocol: vi.fn(),
+  findDotfilesRepo: vi.fn(),
+  ghCloneRepo: vi.fn(),
+  checkSSHKeys: vi.fn(),
+  testSSHConnection: vi.fn(),
+  getSSHKeyInstructions: vi.fn(),
+  getFineGrainedTokenInstructions: vi.fn(),
+  getClassicTokenInstructions: vi.fn(),
+  getGitHubCLIInstallInstructions: vi.fn(),
+  storeGitHubCredentials: vi.fn(),
+  detectTokenType: vi.fn(),
+  configureGitCredentialHelper: vi.fn(),
+  testStoredCredentials: vi.fn(),
+  diagnoseAuthIssue: vi.fn(),
+  MIN_GITHUB_TOKEN_LENGTH: 40,
+  GITHUB_TOKEN_PREFIXES: ['ghp_'],
+}));
+
+vi.mock('../../src/lib/detect.js', () => ({
+  detectDotfiles: vi.fn().mockResolvedValue([]),
+  DETECTION_CATEGORIES: {},
+}));
+
+vi.mock('../../src/lib/fileTracking.js', () => ({
+  trackFilesWithProgress: vi.fn().mockResolvedValue({
+    succeeded: 0,
+    failed: 0,
+    errors: [],
+    sensitiveFiles: [],
+  }),
+}));
+
+vi.mock('../../src/lib/validation.js', () => ({
+  errorToMessage: vi.fn((error: unknown) => String(error)),
+}));
+
+describe('init command behavior', () => {
   beforeEach(() => {
-    vol.reset();
     vi.clearAllMocks();
-
-    // Set up basic directory structure
-    vol.mkdirSync(TEST_HOME, { recursive: true });
-    process.env.HOME = TEST_HOME;
+    cloneRepoMock.mockResolvedValue(undefined);
+    createManifestMock.mockResolvedValue(undefined);
+    saveConfigMock.mockResolvedValue(undefined);
   });
 
-  afterEach(() => {
-    vol.reset();
+  it('clones from remote and backfills missing manifest/config', async () => {
+    pathExistsMock.mockResolvedValue(false);
+    const { runInit } = await import('../../src/commands/init.js');
+
+    await runInit({ from: 'https://github.com/acme/dotfiles.git' });
+
+    expect(cloneRepoMock).toHaveBeenCalledWith(
+      'https://github.com/acme/dotfiles.git',
+      '/test-home/.tuck'
+    );
+    expect(createManifestMock).toHaveBeenCalledTimes(1);
+    expect(saveConfigMock).toHaveBeenCalledTimes(1);
+    expect(loggerSuccessMock).toHaveBeenCalled();
+    expect(loggerInfoMock).toHaveBeenCalledWith('Run `tuck restore --all` to restore dotfiles');
   });
 
-  describe('scenario detection', () => {
-    it('should detect fresh start when no tuck directory exists', () => {
-      const tuckExists = vol.existsSync(TEST_TUCK_DIR);
-      expect(tuckExists).toBe(false);
-    });
+  it('does not recreate manifest/config when cloned repo already contains both', async () => {
+    pathExistsMock.mockResolvedValue(true);
+    const { runInit } = await import('../../src/commands/init.js');
 
-    it('should detect existing tuck when .tuck directory exists with manifest', () => {
-      // Create tuck directory structure
-      vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });
-      vol.mkdirSync(path.join(TEST_TUCK_DIR, '.git'), { recursive: true });
+    await runInit({ from: 'https://github.com/acme/dotfiles.git', dir: '~/.custom' });
 
-      const manifest = createMockManifest();
-      vol.writeFileSync(
-        path.join(TEST_TUCK_DIR, 'manifest.json'),
-        JSON.stringify(manifest, null, 2)
-      );
-
-      const tuckExists = vol.existsSync(TEST_TUCK_DIR);
-      const manifestExists = vol.existsSync(path.join(TEST_TUCK_DIR, 'manifest.json'));
-
-      expect(tuckExists).toBe(true);
-      expect(manifestExists).toBe(true);
-    });
-  });
-
-  describe('fresh initialization', () => {
-    it('should create tuck directory structure', async () => {
-      // Simulate creating the tuck directory
-      vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });
-      vol.mkdirSync(path.join(TEST_TUCK_DIR, '.git'), { recursive: true });
-
-      const manifest = createMockManifest();
-      vol.writeFileSync(
-        path.join(TEST_TUCK_DIR, 'manifest.json'),
-        JSON.stringify(manifest, null, 2)
-      );
-
-      const config = createMockConfig();
-      vol.writeFileSync(
-        path.join(TEST_TUCK_DIR, 'config.json'),
-        JSON.stringify(config, null, 2)
-      );
-
-      // Verify structure
-      expect(vol.existsSync(TEST_TUCK_DIR)).toBe(true);
-      expect(vol.existsSync(path.join(TEST_TUCK_DIR, 'manifest.json'))).toBe(true);
-      expect(vol.existsSync(path.join(TEST_TUCK_DIR, 'config.json'))).toBe(true);
-      expect(vol.existsSync(path.join(TEST_TUCK_DIR, '.git'))).toBe(true);
-    });
-
-    it('should create valid manifest on initialization', () => {
-      vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });
-
-      const manifest = createMockManifest();
-      vol.writeFileSync(
-        path.join(TEST_TUCK_DIR, 'manifest.json'),
-        JSON.stringify(manifest, null, 2)
-      );
-
-      const savedManifest = JSON.parse(
-        vol.readFileSync(path.join(TEST_TUCK_DIR, 'manifest.json'), 'utf-8') as string
-      );
-
-      expect(savedManifest.version).toBeDefined();
-      expect(savedManifest.created).toBeDefined();
-      expect(savedManifest.updated).toBeDefined();
-      expect(savedManifest.files).toBeDefined();
-    });
-
-    it('should create valid config on initialization', () => {
-      vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });
-
-      const config = createMockConfig();
-      vol.writeFileSync(
-        path.join(TEST_TUCK_DIR, 'config.json'),
-        JSON.stringify(config, null, 2)
-      );
-
-      const savedConfig = JSON.parse(
-        vol.readFileSync(path.join(TEST_TUCK_DIR, 'config.json'), 'utf-8') as string
-      );
-
-      expect(savedConfig.repository).toBeDefined();
-      expect(savedConfig.files).toBeDefined();
-      expect(savedConfig.ui).toBeDefined();
-    });
-  });
-
-  describe('clone behavior', () => {
-    it('should NOT auto-apply files when cloning a valid tuck repo', () => {
-      // This tests the new behavior where cloning doesn't auto-apply
-      // After cloning, files should only be in ~/.tuck, not applied to system
-
-      vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });
-      vol.mkdirSync(path.join(TEST_TUCK_DIR, 'files'), { recursive: true });
-
-      // Create a manifest with tracked files
-      const manifest = createMockManifest({
-        files: {
-          'zshrc': {
-            source: '~/.zshrc',
-            destination: 'files/zshrc',
-            category: 'shell',
-            strategy: 'copy',
-            encrypted: false,
-            template: false,
-            added: new Date().toISOString(),
-            modified: new Date().toISOString(),
-            checksum: 'abc123',
-          },
-        },
-      });
-      vol.writeFileSync(
-        path.join(TEST_TUCK_DIR, 'manifest.json'),
-        JSON.stringify(manifest, null, 2)
-      );
-
-      // Create the file in the tuck repo
-      vol.writeFileSync(
-        path.join(TEST_TUCK_DIR, 'files/zshrc'),
-        'export PATH=$PATH:/usr/local/bin'
-      );
-
-      // The source file should NOT exist (not auto-applied)
-      const sourceFile = path.join(TEST_HOME, '.zshrc');
-      expect(vol.existsSync(sourceFile)).toBe(false);
-
-      // But the file should exist in tuck
-      expect(vol.existsSync(path.join(TEST_TUCK_DIR, 'files/zshrc'))).toBe(true);
-    });
-
-    it('should show file summary instead of applying', () => {
-      vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });
-
-      const manifest = createMockManifest({
-        files: {
-          'zshrc': {
-            source: '~/.zshrc',
-            destination: 'files/zshrc',
-            category: 'shell',
-            strategy: 'copy',
-            encrypted: false,
-            template: false,
-            added: new Date().toISOString(),
-            modified: new Date().toISOString(),
-            checksum: 'abc123',
-          },
-          'gitconfig': {
-            source: '~/.gitconfig',
-            destination: 'files/gitconfig',
-            category: 'git',
-            strategy: 'copy',
-            encrypted: false,
-            template: false,
-            added: new Date().toISOString(),
-            modified: new Date().toISOString(),
-            checksum: 'def456',
-          },
-        },
-      });
-
-      const fileCount = Object.keys(manifest.files).length;
-      expect(fileCount).toBe(2);
-
-      // Count by category
-      const categories = new Map<string, number>();
-      Object.values(manifest.files).forEach((file) => {
-        const count = categories.get(file.category) || 0;
-        categories.set(file.category, count + 1);
-      });
-
-      expect(categories.get('shell')).toBe(1);
-      expect(categories.get('git')).toBe(1);
-    });
-  });
-
-  describe('directory paths', () => {
-    it('should use home directory for tuck storage', () => {
-      const expectedPath = path.join(TEST_HOME, '.tuck');
-      // Use platform-native path constant for comparison with path.join() result
-      expect(expectedPath).toBe(TEST_TUCK_DIR_NATIVE);
-    });
-
-    it('should expand tilde in paths', () => {
-      const tildePath = '~/.tuck';
-      const expandedPath = tildePath.replace('~', TEST_HOME);
-      // String replacement preserves forward slashes from TEST_HOME
-      expect(expandedPath).toBe(TEST_TUCK_DIR);
-    });
-  });
-
-  describe('remote configuration', () => {
-    it('should store remote URL in config when provided', () => {
-      vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });
-
-      const config = createMockConfig({
-        repository: {
-          defaultBranch: 'main',
-          autoCommit: true,
-          autoPush: false,
-        },
-      });
-      vol.writeFileSync(
-        path.join(TEST_TUCK_DIR, 'config.json'),
-        JSON.stringify(config, null, 2)
-      );
-
-      const savedConfig = JSON.parse(
-        vol.readFileSync(path.join(TEST_TUCK_DIR, 'config.json'), 'utf-8') as string
-      );
-
-      expect(savedConfig.repository.defaultBranch).toBe('main');
-    });
+    expect(cloneRepoMock).toHaveBeenCalledWith(
+      'https://github.com/acme/dotfiles.git',
+      '/test-home/.custom'
+    );
+    expect(createManifestMock).not.toHaveBeenCalled();
+    expect(saveConfigMock).not.toHaveBeenCalled();
   });
 });

@@ -1,16 +1,13 @@
-/**
- * Full Workflow Integration Tests
- *
- * Tests complete user workflows from init to sync.
- */
-
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { vol } from 'memfs';
 import { join } from 'path';
-import { TEST_HOME, TEST_TUCK_DIR, TEST_FILES_DIR } from '../utils/testHelpers.js';
-import { initTestTuck, createTestDotfile, getTestManifest } from '../utils/testHelpers.js';
+import { TEST_HOME, TEST_TUCK_DIR } from '../utils/testHelpers.js';
+import { initTestTuck, createTestDotfile } from '../utils/testHelpers.js';
+import { loadManifest, getTrackedFileBySource, clearManifestCache } from '../../src/lib/manifest.js';
+import { getFileChecksum } from '../../src/lib/files.js';
+import { addFilesFromPaths } from '../../src/commands/add.js';
+import { runSyncCommand } from '../../src/commands/sync.js';
 
-// Mock git for integration tests
 vi.mock('simple-git', () => {
   const mockGit = {
     init: vi.fn().mockResolvedValue(undefined),
@@ -38,6 +35,7 @@ vi.mock('simple-git', () => {
 
   return {
     default: vi.fn(() => mockGit),
+    simpleGit: vi.fn(() => mockGit),
   };
 });
 
@@ -45,176 +43,72 @@ describe('Full Workflow Integration', () => {
   beforeEach(() => {
     vol.reset();
     vi.clearAllMocks();
+    clearManifestCache();
   });
 
   afterEach(() => {
     vol.reset();
+    clearManifestCache();
   });
 
-  // ============================================================================
-  // Init → Add → Sync Workflow
-  // ============================================================================
+  it('tracks a file with add and persists it in manifest', async () => {
+    await initTestTuck();
+    createTestDotfile('.zshrc', 'export PATH=$PATH:/usr/local/bin');
 
-  describe('Init → Add → Sync Workflow', () => {
-    it('should complete basic workflow', async () => {
-      // Step 1: Initialize tuck environment
-      await initTestTuck();
+    const added = await addFilesFromPaths(['~/.zshrc'], { force: true });
+    const manifest = await loadManifest(TEST_TUCK_DIR);
+    const tracked = await getTrackedFileBySource(TEST_TUCK_DIR, '~/.zshrc');
 
-      // Create a dotfile to track
-      createTestDotfile('.zshrc', 'export PATH=$PATH:/usr/local/bin');
-
-      // Verify manifest exists
-      const manifest = getTestManifest();
-      expect(manifest.version).toBe('1.0.0');
-    });
-
-    it('should track dotfile state', async () => {
-      await initTestTuck({
-        tracked: {
-          '.zshrc': 'original content',
-        },
-      });
-
-      // Verify the tracked file is in manifest
-      // This simulates what happens after tuck add
-    });
-
-    it('should preserve file permissions', async () => {
-      await initTestTuck();
-
-      const scriptPath = createTestDotfile('.local/bin/script.sh', '#!/bin/bash\necho "hello"');
-
-      // In real scenario, permissions would be preserved
-      expect(vol.existsSync(scriptPath)).toBe(true);
-    });
+    expect(added).toBe(1);
+    expect(Object.keys(manifest.files)).toHaveLength(1);
+    expect(tracked).not.toBeNull();
+    expect(tracked?.file.destination).toContain('files/shell');
   });
 
-  // ============================================================================
-  // Multi-File Tracking
-  // ============================================================================
+  it('detects source changes and syncs updated content into repository copy', async () => {
+    await initTestTuck();
+    const sourcePath = createTestDotfile('.zshrc', 'export ORIGINAL=1');
 
-  describe('Multi-File Tracking', () => {
-    it('should track multiple dotfiles', async () => {
-      await initTestTuck({
-        files: {
-          '.zshrc': 'zsh content',
-          '.bashrc': 'bash content',
-          '.gitconfig': '[user]\n  name = Test',
-          '.vimrc': 'set number',
-        },
-      });
+    await addFilesFromPaths(['~/.zshrc'], { force: true });
 
-      // All files should exist
-      expect(vol.existsSync(join(TEST_HOME, '.zshrc'))).toBe(true);
-      expect(vol.existsSync(join(TEST_HOME, '.bashrc'))).toBe(true);
-      expect(vol.existsSync(join(TEST_HOME, '.gitconfig'))).toBe(true);
-      expect(vol.existsSync(join(TEST_HOME, '.vimrc'))).toBe(true);
+    const tracked = await getTrackedFileBySource(TEST_TUCK_DIR, '~/.zshrc');
+    expect(tracked).not.toBeNull();
+
+    const repoPath = join(TEST_TUCK_DIR, tracked!.file.destination);
+    const beforeChecksum = await getFileChecksum(repoPath);
+
+    vol.writeFileSync(sourcePath, 'export ORIGINAL=2');
+
+    await runSyncCommand('sync: update zshrc', {
+      noCommit: true,
+      noHooks: true,
+      pull: false,
+      push: false,
+      force: true,
     });
 
-    it('should organize files by category', async () => {
-      await initTestTuck();
-
-      // Shell files should go to shell category
-      // Git files to git category, etc.
-      const shellDir = join(TEST_FILES_DIR, 'shell');
-      const gitDir = join(TEST_FILES_DIR, 'git');
-
-      expect(vol.existsSync(shellDir)).toBe(true);
-      expect(vol.existsSync(gitDir)).toBe(true);
-    });
+    const afterChecksum = await getFileChecksum(repoPath);
+    expect(afterChecksum).not.toBe(beforeChecksum);
+    expect(vol.readFileSync(repoPath, 'utf-8')).toContain('ORIGINAL=2');
   });
 
-  // ============================================================================
-  // Change Detection
-  // ============================================================================
+  it('removes deleted tracked files from manifest on sync', async () => {
+    await initTestTuck();
+    const sourcePath = createTestDotfile('.gitconfig', '[user]\n  name = Test User');
 
-  describe('Change Detection', () => {
-    it('should detect modified files', async () => {
-      await initTestTuck({
-        files: {
-          '.zshrc': 'original content',
-        },
-      });
+    await addFilesFromPaths(['~/.gitconfig'], { force: true });
+    expect(await getTrackedFileBySource(TEST_TUCK_DIR, '~/.gitconfig')).not.toBeNull();
 
-      // Modify the file
-      vol.writeFileSync(join(TEST_HOME, '.zshrc'), 'modified content');
+    vol.unlinkSync(sourcePath);
 
-      // In real scenario, sync would detect this change
-      const content = vol.readFileSync(join(TEST_HOME, '.zshrc'), 'utf-8');
-      expect(content).toBe('modified content');
+    await runSyncCommand('sync: remove deleted gitconfig', {
+      noCommit: true,
+      noHooks: true,
+      pull: false,
+      push: false,
+      force: true,
     });
 
-    it('should detect new files', async () => {
-      await initTestTuck();
-
-      // Create a new dotfile
-      createTestDotfile('.newrc', 'new file content');
-
-      expect(vol.existsSync(join(TEST_HOME, '.newrc'))).toBe(true);
-    });
-
-    it('should detect deleted files', async () => {
-      await initTestTuck({
-        files: {
-          '.temporary': 'will be deleted',
-        },
-      });
-
-      // Delete the file
-      vol.unlinkSync(join(TEST_HOME, '.temporary'));
-
-      expect(vol.existsSync(join(TEST_HOME, '.temporary'))).toBe(false);
-    });
-  });
-
-  // ============================================================================
-  // Error Recovery
-  // ============================================================================
-
-  describe('Error Recovery', () => {
-    it('should handle missing manifest gracefully', async () => {
-      vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });
-      // No manifest file
-
-      // Operations should fail gracefully
-      expect(() => vol.readFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'))).toThrow();
-    });
-
-    it('should handle corrupted manifest', async () => {
-      vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });
-      vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), 'not valid json');
-
-      // Parsing should fail
-      expect(() => {
-        const content = vol.readFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), 'utf-8');
-        JSON.parse(content as string);
-      }).toThrow();
-    });
-  });
-
-  // ============================================================================
-  // Concurrent Operations
-  // ============================================================================
-
-  describe('Concurrent Operations', () => {
-    it('should handle rapid file changes', async () => {
-      await initTestTuck();
-
-      // Simulate rapid file changes
-      const promises = Array.from({ length: 10 }, (_, i) => {
-        return new Promise<void>((resolve) => {
-          const path = join(TEST_HOME, `.config${i}`);
-          vol.writeFileSync(path, `content ${i}`);
-          resolve();
-        });
-      });
-
-      await Promise.all(promises);
-
-      // All files should exist
-      for (let i = 0; i < 10; i++) {
-        expect(vol.existsSync(join(TEST_HOME, `.config${i}`))).toBe(true);
-      }
-    });
+    expect(await getTrackedFileBySource(TEST_TUCK_DIR, '~/.gitconfig')).toBeNull();
   });
 });

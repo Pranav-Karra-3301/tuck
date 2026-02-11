@@ -1666,7 +1666,7 @@ const runInteractiveInit = async (): Promise<void> => {
   ]);
 };
 
-const runInit = async (options: InitOptions): Promise<void> => {
+export const runInit = async (options: InitOptions): Promise<void> => {
   const tuckDir = getTuckDir(options.dir);
 
   // If --from is provided, clone from remote

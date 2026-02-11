@@ -721,7 +721,7 @@ export const runSync = async (options: SyncOptions = {}): Promise<void> => {
   await runInteractiveSync(tuckDir, options);
 };
 
-const runSyncCommand = async (
+export const runSyncCommand = async (
   messageArg: string | undefined,
   options: SyncOptions
 ): Promise<void> => {
