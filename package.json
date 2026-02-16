@@ -51,7 +51,8 @@
     "bench": "vitest bench --config vitest.bench.config.ts",
     "bench:watch": "vitest bench --config vitest.bench.config.ts --watch",
     "prepare": "husky install",
-    "prepublishOnly": "pnpm build"
+    "prepublishOnly": "pnpm build",
+    "build:man": "ts-node scripts/generate-man.ts"
   },
   "dependencies": {
     "@clack/prompts": "^0.7.0",
@@ -84,6 +85,7 @@
     "memfs": "^4.6.0",
     "prettier": "^3.2.4",
     "semantic-release": "^23.0.0",
+    "ts-node": "^10.9.2",
     "tsup": "^8.0.1",
     "typescript": "^5.3.3",
     "vitest": "^1.2.0"
