@@ -1,3 +1,20 @@
+# [1.9.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.8.0...v1.9.0) (2026-02-20)
+
+
+### Bug Fixes
+
+* close remaining naming and credential safety gaps ([670e5d5](https://github.com/Pranav-Karra-3301/tuck/commit/670e5d5c0f2ffade52de09ede97bb514322ef3e6))
+* enforce safe destination paths and harden test isolation ([11c167f](https://github.com/Pranav-Karra-3301/tuck/commit/11c167fdd28462d80ee7fc49aab4bff9757fd14d))
+* harden manifest path validation and add doctor plan ([75d822a](https://github.com/Pranav-Karra-3301/tuck/commit/75d822a0d2a648c7454b35bdb262aae15123be4c))
+* harden tracking pipeline and security safeguards ([289990b](https://github.com/Pranav-Karra-3301/tuck/commit/289990bf0c2c408ee51a438c95e66f1f22dc3f7f))
+* improve doctor home and tuck directory checks ([62b9ba0](https://github.com/Pranav-Karra-3301/tuck/commit/62b9ba052fc689a20c47c5364a32cbca81b799c6))
+* validate backup directory path safety in getBackupDir() ([34bcb7f](https://github.com/Pranav-Karra-3301/tuck/commit/34bcb7faa09a143c394a216984fb4b17b5fe1504))
+
+
+### Features
+
+* add tuck doctor command and expand command smoke coverage ([518462b](https://github.com/Pranav-Karra-3301/tuck/commit/518462b903cda96b6a4880e27a2bcf8d2ac458c6))
+
 <img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
 # [1.8.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.7.0...v1.8.0) (2026-02-01)
