@@ -223,7 +223,7 @@ Configure tuck via `~/.tuck/.tuckrc.json` or `tuck config wizard`:
 ### File Strategies
 
 - **copy** (default) — Files are copied. Run `tuck sync` to update the repo.
-- **symlink** — Files are symlinked. Changes are instant but require more care.
+- **symlink** — tuck copies the file into the repo, then replaces the original path with a symlink to the repo file. Changes are instant, but this modifies your home dotfile paths.
 
 ## Windows Support
 
