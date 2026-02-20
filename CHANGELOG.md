@@ -1,3 +1,5 @@
+<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
+
 # [1.9.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.8.0...v1.9.0) (2026-02-20)
 
 
@@ -14,8 +16,6 @@
 ### Features
 
 * add tuck doctor command and expand command smoke coverage ([518462b](https://github.com/Pranav-Karra-3301/tuck/commit/518462b903cda96b6a4880e27a2bcf8d2ac458c6))
-
-<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
 # [1.8.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.7.0...v1.8.0) (2026-02-01)
 
