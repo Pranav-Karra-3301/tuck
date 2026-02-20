@@ -37,7 +37,7 @@ describe('backup', () => {
     const result = await createBackup(sourcePath);
 
     expect(result.originalPath).toBe(sourcePath);
-    expect(result.backupPath).toContain('/.tuck-backups/2026-02-11/');
+    expect(result.backupPath.replace(/\\/g, '/')).toContain('/.tuck-backups/2026-02-11/');
     expect(vol.existsSync(result.backupPath)).toBe(true);
     expect(vol.readFileSync(result.backupPath, 'utf-8')).toBe('export PATH=/usr/local/bin');
   });
@@ -63,7 +63,7 @@ describe('backup', () => {
 
     const result = await createBackup(sourcePath);
 
-    expect(result.backupPath).toContain('/.custom-backups/2026-02-11/');
+    expect(result.backupPath.replace(/\\/g, '/')).toContain('/.custom-backups/2026-02-11/');
     expect(vol.existsSync(result.backupPath)).toBe(true);
   });
 

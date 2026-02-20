@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { join } from 'path';
 import { NotInitializedError } from '../../src/errors.js';
 
 const loadManifestMock = vi.fn();
@@ -201,7 +202,7 @@ describe('sync command behavior', () => {
     expect(copyFileOrDirMock).toHaveBeenCalledTimes(1);
     expect(updateFileInManifestMock).toHaveBeenCalledTimes(1);
     expect(validatePathWithinRootMock).toHaveBeenCalledWith(
-      '/test-home/.tuck/files/shell/zshrc',
+      join('/test-home/.tuck', 'files', 'shell', 'zshrc'),
       '/test-home/.tuck',
       'sync destination'
     );

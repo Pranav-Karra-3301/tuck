@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { join } from 'path';
 import { NotInitializedError } from '../../src/errors.js';
 
 const loadManifestMock = vi.fn();
@@ -139,7 +140,7 @@ describe('restore command behavior', () => {
 
     expect(copyFileOrDirMock.mock.calls.length + createSymlinkMock.mock.calls.length).toBe(1);
     expect(validatePathWithinRootMock).toHaveBeenCalledWith(
-      '/test-home/.tuck/files/shell/zshrc',
+      join('/test-home/.tuck', 'files', 'shell', 'zshrc'),
       '/test-home/.tuck',
       'restore source'
     );
