@@ -88,4 +88,30 @@ describe('fileTracking symlink strategy', () => {
 
     logSpy.mockRestore();
   });
+
+  it('supports custom destination names while preserving source subdirectories', async () => {
+    await initTestTuck();
+    createTestDotfile('.aws/config', 'region = us-east-1');
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const result = await trackFilesWithProgress(
+      [{ path: '~/.aws/config', category: 'misc', name: 'work-config' }],
+      TEST_TUCK_DIR,
+      {
+        strategy: 'copy',
+        showCategory: false,
+        delayBetween: 0,
+      }
+    );
+
+    expect(result.succeeded).toBe(1);
+    expect(result.failed).toBe(0);
+
+    const aws = await getTrackedFileBySource(TEST_TUCK_DIR, '~/.aws/config');
+    expect(aws).not.toBeNull();
+    expect(aws!.file.destination).toBe('files/misc/.aws/work-config');
+
+    logSpy.mockRestore();
+  });
 });

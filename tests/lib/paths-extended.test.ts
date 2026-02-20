@@ -131,6 +131,28 @@ describe('paths-extended', () => {
     });
   });
 
+  describe('isSymlink', () => {
+    it('should return true for symlinks', async () => {
+      const targetPath = join(TEST_HOME, 'target.txt');
+      const linkPath = join(TEST_HOME, 'link.txt');
+      vol.writeFileSync(targetPath, 'content');
+      vol.symlinkSync(targetPath, linkPath);
+
+      const result = await isSymlink(linkPath);
+
+      expect(result).toBe(true);
+    });
+
+    it('should return false for regular files', async () => {
+      const filePath = join(TEST_HOME, 'file.txt');
+      vol.writeFileSync(filePath, 'content');
+
+      const result = await isSymlink(filePath);
+
+      expect(result).toBe(false);
+    });
+  });
+
   describe('isReadable', () => {
     it('should return true for readable file', async () => {
       const filePath = join(TEST_HOME, 'readable.txt');
@@ -259,12 +281,27 @@ describe('paths-extended', () => {
       expect(kubePath).toBe('files/misc/.kube/config');
       expect(awsPath).not.toBe(kubePath);
     });
+
+    it('should allow custom destination filename while keeping source directories', () => {
+      const customPath = getRelativeDestinationFromSource('misc', '~/.aws/config', 'work-config');
+      expect(customPath).toBe('files/misc/.aws/work-config');
+    });
   });
 
   describe('getDestinationPathFromSource', () => {
     it('should return full destination path with nested source segments', () => {
       const destination = getDestinationPathFromSource(TEST_TUCK_DIR, 'shell', '~/.zshrc');
       expect(destination.replace(/\\/g, '/')).toBe(`${TEST_TUCK_DIR}/files/shell/.zshrc`);
+    });
+
+    it('should return full destination path with custom filename', () => {
+      const destination = getDestinationPathFromSource(
+        TEST_TUCK_DIR,
+        'shell',
+        '~/.zshrc',
+        'zprofile'
+      );
+      expect(destination.replace(/\\/g, '/')).toBe(`${TEST_TUCK_DIR}/files/shell/zprofile`);
     });
   });
 
@@ -462,6 +499,10 @@ describe('paths-extended', () => {
 
     it('should handle edge case of just a dot', () => {
       expect(sanitizeFilename('.')).toBe('file');
+    });
+
+    it('should handle dot-dot safely', () => {
+      expect(sanitizeFilename('..')).toBe('file');
     });
   });
 

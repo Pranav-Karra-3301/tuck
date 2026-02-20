@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { prompts, logger } from '../ui/index.js';
-import { getTuckDir, getDestinationPathFromSource } from '../lib/paths.js';
+import { getTuckDir } from '../lib/paths.js';
 import { loadManifest } from '../lib/manifest.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
 import { NotInitializedError } from '../errors.js';
@@ -19,10 +19,18 @@ const addFiles = async (
   tuckDir: string,
   options: AddOptions
 ): Promise<void> => {
-  const filesToTrack: FileToTrack[] = filesToAdd.map((f) => ({
-    path: f.source,
-    category: f.category,
-  }));
+  const filesToTrack: FileToTrack[] = filesToAdd.map((f) => {
+    const trackedFile: FileToTrack = {
+      path: f.source,
+      category: f.category,
+    };
+
+    if (f.nameOverride) {
+      trackedFile.name = f.nameOverride;
+    }
+
+    return trackedFile;
+  });
 
   await trackFilesWithProgress(filesToTrack, tuckDir, {
     showCategory: true,
@@ -81,7 +89,6 @@ const runInteractiveAdd = async (tuckDir: string): Promise<void> => {
 
     const selectedCategory = await prompts.select('Category:', categoryOptions);
     file.category = selectedCategory as string;
-    file.destination = getDestinationPathFromSource(tuckDir, file.category, file.source);
   }
 
   const confirm = await prompts.confirm(

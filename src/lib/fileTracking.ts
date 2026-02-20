@@ -20,6 +20,7 @@ import { toPosixPath } from './platform.js';
 export interface FileToTrack {
   path: string;
   category?: string;
+  name?: string;
 }
 
 export interface FileTrackingOptions {
@@ -156,7 +157,7 @@ export const trackFilesWithProgress = async (
     const categoryInfo = CATEGORIES[category];
     const icon = categoryInfo?.icon || '○';
     const sourcePath = collapsePath(file.path);
-    const relativeDestination = getRelativeDestinationFromSource(category, expandedPath);
+    const relativeDestination = getRelativeDestinationFromSource(category, expandedPath, file.name);
     const normalizedDestination = toPosixPath(relativeDestination);
     const existingSource = trackedDestinations.get(normalizedDestination);
 
@@ -176,7 +177,7 @@ export const trackFilesWithProgress = async (
       }
 
       // Get destination path
-      const destination = getDestinationPathFromSource(tuckDir, category, expandedPath);
+      const destination = getDestinationPathFromSource(tuckDir, category, expandedPath, file.name);
 
       // Ensure category directory exists
       await ensureDir(dirname(destination));

@@ -662,11 +662,13 @@ To create a Fine-grained Personal Access Token (recommended):
    - Username: your-github-username
    - Password: github_pat_xxxxxxxxxxxx (your token)
 
-   Or configure credential storage:
-   git config --global credential.helper store
+   Configure a secure credential helper instead:
+   - macOS: git config --global credential.helper osxkeychain
+   - Linux: git config --global credential.helper libsecret
+   - Windows: git config --global credential.helper manager-core
+   - Or with GitHub CLI: gh auth setup-git
 
-   Then on first push, enter your token as the password
-   and it will be saved for future use.
+   Then on first push, enter your token as the password.
 `.trim();
 };
 
@@ -709,8 +711,11 @@ but classic tokens work if you need broader access.
    - Username: your-github-username
    - Password: ghp_xxxxxxxxxxxx (your token)
 
-   Or configure credential storage:
-   git config --global credential.helper store
+   Configure a secure credential helper instead:
+   - macOS: git config --global credential.helper osxkeychain
+   - Linux: git config --global credential.helper libsecret
+   - Windows: git config --global credential.helper manager-core
+   - Or with GitHub CLI: gh auth setup-git
 
    Then on first push, enter your token as the password.
 `.trim();

@@ -220,4 +220,19 @@ describe('add command behavior', () => {
       })
     );
   });
+
+  it('passes custom --name through to tracking destination generation', async () => {
+    const { addFilesFromPaths } = await import('../../src/commands/add.js');
+    sanitizeFilenameMock.mockReturnValueOnce('custom-zshrc');
+
+    await addFilesFromPaths(['~/.zshrc'], { force: true, name: 'custom-zshrc' });
+
+    expect(trackFilesWithProgressMock).toHaveBeenCalledWith(
+      [{ path: '~/.zshrc', category: 'shell', name: 'custom-zshrc' }],
+      '/test-home/.tuck',
+      expect.objectContaining({
+        strategy: undefined,
+      })
+    );
+  });
 });

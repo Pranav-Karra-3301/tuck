@@ -70,6 +70,7 @@ export interface PreparedTrackFile {
   destination: string;
   category: string;
   filename: string;
+  nameOverride?: string;
   isDir: boolean;
   fileCount: number;
   sensitive: boolean;
@@ -358,14 +359,16 @@ export const preparePathsForTracking = async (
     const isDir = await isDirectory(expandedPath);
     const fileCount = isDir ? await getDirectoryFileCount(expandedPath) : 1;
     const category = candidate.category || options.category || detectCategory(expandedPath);
-    const customName = candidate.name || options.name;
-    const filename = customName || sanitizeFilename(expandedPath);
+    const customName = candidate.name ?? options.name;
+    const nameOverride = customName ? sanitizeFilename(customName) : undefined;
+    const filename = nameOverride || sanitizeFilename(expandedPath);
 
     prepared.push({
       source: collapsedPath,
-      destination: getDestinationPathFromSource(tuckDir, category, expandedPath),
+      destination: getDestinationPathFromSource(tuckDir, category, expandedPath, nameOverride),
       category,
       filename,
+      nameOverride,
       isDir,
       fileCount,
       sensitive: isSensitiveFile(collapsedPath),

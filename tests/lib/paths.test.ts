@@ -125,9 +125,25 @@ describe('paths', () => {
       );
     });
 
+    it('should support custom destination names without dropping home-relative directories', () => {
+      expect(getRelativeDestinationFromSource('misc', '~/.aws/config', 'aws-config')).toBe(
+        'files/misc/.aws/aws-config'
+      );
+    });
+
     it('should build absolute destination paths from source paths', () => {
       const destination = getDestinationPathFromSource(`${TEST_HOME}/.tuck`, 'shell', '~/.zshrc');
       expect(destination.replace(/\\/g, '/')).toBe(`${TEST_HOME}/.tuck/files/shell/.zshrc`);
+    });
+
+    it('should build absolute destination paths from source paths with custom names', () => {
+      const destination = getDestinationPathFromSource(
+        `${TEST_HOME}/.tuck`,
+        'shell',
+        '~/.zshrc',
+        'zprofile'
+      );
+      expect(destination.replace(/\\/g, '/')).toBe(`${TEST_HOME}/.tuck/files/shell/zprofile`);
     });
   });
 });

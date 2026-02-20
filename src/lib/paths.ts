@@ -1,6 +1,6 @@
 import { homedir } from 'os';
 import { join, basename, dirname, relative, isAbsolute, resolve, sep, posix } from 'path';
-import { stat, access } from 'fs/promises';
+import { stat, lstat, access } from 'fs/promises';
 import { constants } from 'fs';
 import {
   DEFAULT_TUCK_DIR,
@@ -111,10 +111,17 @@ export const getHomeRelativeSourcePath = (sourcePath: string): string => {
  */
 export const getRelativeDestinationFromSource = (
   category: string,
-  sourcePath: string
+  sourcePath: string,
+  customFilename?: string
 ): string => {
-  const relativeSource = getHomeRelativeSourcePath(sourcePath);
-  return posix.join(FILES_DIR, toPosixPath(category), relativeSource);
+  const relativeSource = getHomeRelativeSourcePath(sourcePath).split('/');
+
+  if (customFilename) {
+    const sanitizedCustomName = sanitizeFilename(customFilename);
+    relativeSource[relativeSource.length - 1] = toPosixPath(sanitizedCustomName);
+  }
+
+  return posix.join(FILES_DIR, toPosixPath(category), ...relativeSource);
 };
 
 /**
@@ -123,15 +130,20 @@ export const getRelativeDestinationFromSource = (
 export const getDestinationPathFromSource = (
   tuckDir: string,
   category: string,
-  sourcePath: string
+  sourcePath: string,
+  customFilename?: string
 ): string => {
-  return join(tuckDir, getRelativeDestinationFromSource(category, sourcePath));
+  return join(tuckDir, getRelativeDestinationFromSource(category, sourcePath, customFilename));
 };
 
 export const sanitizeFilename = (filepath: string): string => {
   const base = basename(filepath);
   // Remove leading dot for storage, but keep track that it was a dotfile
   const result = base.startsWith('.') ? base.slice(1) : base;
+  // Guard against '.' and '..' collapsing to non-file segments.
+  if (result === '.' || result === '..') {
+    return 'file';
+  }
   // If result is empty (e.g., input was just '.'), return 'file' as fallback
   return result || 'file';
 };
@@ -186,7 +198,7 @@ export const isFile = async (path: string): Promise<boolean> => {
 
 export const isSymlink = async (path: string): Promise<boolean> => {
   try {
-    const stats = await stat(path);
+    const stats = await lstat(path);
     return stats.isSymbolicLink();
   } catch {
     return false;
