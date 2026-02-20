@@ -2,9 +2,10 @@ import { join } from 'path';
 import { readdir, rm } from 'fs/promises';
 import { copy, ensureDir, pathExists } from 'fs-extra';
 import { BACKUP_DIR } from '../constants.js';
-import { expandPath, collapsePath, pathExists as checkPathExists } from './paths.js';
+import { expandPath, collapsePath, pathExists as checkPathExists, isPathWithinHome } from './paths.js';
 import { toPosixPath } from './platform.js';
 import { loadConfig } from './config.js';
+import { BackupError } from '../errors.js';
 
 export interface BackupInfo {
   path: string;
@@ -20,13 +21,29 @@ export interface BackupResult {
 
 const getBackupDir = async (customBackupDir?: string, tuckDir?: string): Promise<string> => {
   if (customBackupDir) {
-    return expandPath(customBackupDir);
+    const resolved = expandPath(customBackupDir);
+    if (!isPathWithinHome(resolved)) {
+      throw new BackupError(
+        `Unsafe backup directory: ${customBackupDir} - backup directory must be within home directory`
+      );
+    }
+    return resolved;
   }
 
   try {
     const config = await loadConfig(tuckDir);
-    return expandPath(config.files.backupDir || BACKUP_DIR);
-  } catch {
+    const backupDir = config.files.backupDir || BACKUP_DIR;
+    const resolved = expandPath(backupDir);
+    if (!isPathWithinHome(resolved)) {
+      throw new BackupError(
+        `Unsafe backup directory: ${backupDir} - backup directory must be within home directory`
+      );
+    }
+    return resolved;
+  } catch (error) {
+    if (error instanceof BackupError) {
+      throw error;
+    }
     return expandPath(BACKUP_DIR);
   }
 };
