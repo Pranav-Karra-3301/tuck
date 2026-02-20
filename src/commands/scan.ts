@@ -5,6 +5,7 @@ import { loadManifest, getTrackedFileBySource } from '../lib/manifest.js';
 import { detectDotfiles, DETECTION_CATEGORIES, DetectedFile } from '../lib/detect.js';
 import { NotInitializedError } from '../errors.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
+import { preparePathsForTracking } from '../lib/trackPipeline.js';
 import { shouldExcludeFromBin } from '../lib/binary.js';
 import { isIgnored } from '../lib/tuckignore.js';
 
@@ -209,10 +210,24 @@ const addFilesWithProgress = async (
   selected: SelectableFile[],
   tuckDir: string
 ): Promise<number> => {
-  // Convert SelectableFile to FileToTrack
-  const filesToTrack: FileToTrack[] = selected.map((f) => ({
-    path: f.path,
-    category: f.category,
+  const prepared = await preparePathsForTracking(
+    selected.map((file) => ({
+      path: file.path,
+      category: file.category,
+    })),
+    tuckDir,
+    {
+      secretHandling: 'interactive',
+    }
+  );
+
+  if (prepared.length === 0) {
+    return 0;
+  }
+
+  const filesToTrack: FileToTrack[] = prepared.map((file) => ({
+    path: file.source,
+    category: file.category,
   }));
 
   // Use the shared tracking utility

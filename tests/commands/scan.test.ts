@@ -7,6 +7,7 @@ const detectDotfilesMock = vi.fn();
 const isIgnoredMock = vi.fn();
 const shouldExcludeFromBinMock = vi.fn();
 const trackFilesWithProgressMock = vi.fn();
+const preparePathsForTrackingMock = vi.fn();
 
 const loggerInfoMock = vi.fn();
 const loggerWarnMock = vi.fn();
@@ -85,6 +86,10 @@ vi.mock('../../src/lib/fileTracking.js', () => ({
   trackFilesWithProgress: trackFilesWithProgressMock,
 }));
 
+vi.mock('../../src/lib/trackPipeline.js', () => ({
+  preparePathsForTracking: preparePathsForTrackingMock,
+}));
+
 describe('scan command behavior', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -108,6 +113,17 @@ describe('scan command behavior', () => {
       errors: [],
       sensitiveFiles: [],
     });
+    preparePathsForTrackingMock.mockResolvedValue([
+      {
+        source: '~/.zshrc',
+        destination: 'files/shell/zshrc',
+        category: 'shell',
+        filename: 'zshrc',
+        isDir: false,
+        fileCount: 1,
+        sensitive: false,
+      },
+    ]);
     promptsSelectMock.mockResolvedValue('preview');
     promptsConfirmMock.mockResolvedValue(false);
   });
@@ -148,6 +164,7 @@ describe('scan command behavior', () => {
 
     await runScan({});
 
+    expect(preparePathsForTrackingMock).toHaveBeenCalledTimes(1);
     expect(trackFilesWithProgressMock).toHaveBeenCalledTimes(1);
   });
 });

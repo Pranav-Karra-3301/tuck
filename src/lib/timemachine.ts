@@ -1,8 +1,8 @@
-import { join, dirname } from 'path';
+import { join, dirname, relative, resolve, sep } from 'path';
 import { readdir, readFile, writeFile, rm, stat } from 'fs/promises';
 import { copy, ensureDir, pathExists } from 'fs-extra';
 import { homedir } from 'os';
-import { expandPath, collapsePath, pathExists as checkPathExists } from './paths.js';
+import { expandPath, pathExists as checkPathExists } from './paths.js';
 import { BackupError } from '../errors.js';
 
 const TIMEMACHINE_DIR = join(homedir(), '.tuck', 'backups');
@@ -61,11 +61,32 @@ const getSnapshotPath = (snapshotId: string): string => {
  * e.g., ~/.foo.bar -> .foo.bar (distinct from ~/.foo-bar -> .foo-bar)
  */
 const toBackupPath = (originalPath: string): string => {
-  const collapsed = collapsePath(originalPath);
-  // Remove ~/ or ~\ prefix to get a path relative to home directory
-  // This preserves the full directory structure, preventing collisions
-  // Note: collapsePath now normalizes to forward slashes, but handle both for safety
-  return collapsed.replace(/^~[/\\]/, '');
+  const expandedOriginal = expandPath(originalPath);
+  const homePath = resolve(homedir());
+  const resolvedOriginal = resolve(expandedOriginal);
+
+  const isWithinHome =
+    resolvedOriginal === homePath || resolvedOriginal.startsWith(homePath + sep);
+  if (!isWithinHome) {
+    throw new BackupError(`Cannot snapshot path outside home directory: ${originalPath}`);
+  }
+
+  const relativePath = relative(homePath, resolvedOriginal);
+  const normalizedRelative = relativePath.replace(/\\/g, '/');
+
+  if (!normalizedRelative || normalizedRelative === '.') {
+    throw new BackupError(`Cannot snapshot home directory root directly: ${originalPath}`);
+  }
+
+  if (
+    normalizedRelative.startsWith('/') ||
+    /^[A-Za-z]:[\\/]/.test(normalizedRelative) ||
+    normalizedRelative.split('/').includes('..')
+  ) {
+    throw new BackupError(`Unsafe backup path generated from: ${originalPath}`);
+  }
+
+  return normalizedRelative;
 };
 
 /**

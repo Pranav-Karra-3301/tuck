@@ -128,6 +128,29 @@ describe('timemachine', () => {
 
       expect(snapshot.files.length).toBe(2);
     });
+
+    it('should always keep backup paths inside snapshot files directory', async () => {
+      const nestedPath = join(TEST_HOME, '.config', 'nvim', 'init.lua');
+      vol.mkdirSync(join(TEST_HOME, '.config', 'nvim'), { recursive: true });
+      vol.writeFileSync(nestedPath, 'set number');
+
+      const snapshot = await createSnapshot([nestedPath], 'Path safety');
+
+      const backupPath = snapshot.files[0].backupPath.replace(/\\/g, '/');
+      const expectedPrefix = join(snapshot.path, 'files').replace(/\\/g, '/');
+
+      expect(backupPath.startsWith(expectedPrefix + '/')).toBe(true);
+      expect(backupPath).toContain('/.config/nvim/init.lua');
+    });
+
+    it('should reject snapshot paths outside home directory', async () => {
+      const outsidePath = process.platform === 'win32' ? 'C:\\outside-secret' : '/outside-secret';
+      vol.writeFileSync(outsidePath, 'do-not-backup');
+
+      await expect(createSnapshot([outsidePath], 'Unsafe path')).rejects.toThrow(
+        'outside home directory'
+      );
+    });
   });
 
   // ============================================================================

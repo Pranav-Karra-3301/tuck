@@ -248,11 +248,11 @@ For SSH URLs (git@...):
 
 For HTTPS URLs:
 1. Create a personal access token on your hosting service
-2. Configure git credential helper:
-   git config --global credential.helper store
-3. On first push, enter your token as password
-
-Or use git credential manager for more secure storage.`;
+2. Configure a secure git credential helper:
+   - macOS: git config --global credential.helper osxkeychain
+   - Linux: git config --global credential.helper libsecret
+   - Windows: git config --global credential.helper manager-core
+3. On first push, enter your token as password`;
   }
 
   // -------------------------------------------------------------------------

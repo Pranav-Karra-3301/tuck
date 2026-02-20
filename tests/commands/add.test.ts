@@ -13,11 +13,12 @@ const pathExistsMock = vi.fn();
 const isDirectoryMock = vi.fn();
 const detectCategoryMock = vi.fn();
 const sanitizeFilenameMock = vi.fn();
-const getDestinationPathMock = vi.fn();
+const getDestinationPathFromSourceMock = vi.fn();
 const validateSafeSourcePathMock = vi.fn();
 const loadConfigMock = vi.fn();
 const scanForSecretsMock = vi.fn();
 const shouldBlockOnSecretsMock = vi.fn();
+const isSecretScanningEnabledMock = vi.fn();
 const isIgnoredMock = vi.fn();
 const shouldExcludeFromBinMock = vi.fn();
 const getDirectoryFileCountMock = vi.fn();
@@ -77,7 +78,7 @@ vi.mock('../../src/lib/paths.js', () => ({
   isDirectory: isDirectoryMock,
   detectCategory: detectCategoryMock,
   sanitizeFilename: sanitizeFilenameMock,
-  getDestinationPath: getDestinationPathMock,
+  getDestinationPathFromSource: getDestinationPathFromSourceMock,
   validateSafeSourcePath: validateSafeSourcePathMock,
 }));
 
@@ -88,6 +89,7 @@ vi.mock('../../src/lib/config.js', () => ({
 vi.mock('../../src/lib/secrets/index.js', () => ({
   scanForSecrets: scanForSecretsMock,
   shouldBlockOnSecrets: shouldBlockOnSecretsMock,
+  isSecretScanningEnabled: isSecretScanningEnabledMock,
   processSecretsForRedaction: vi.fn(),
   redactFile: vi.fn(),
   getSecretsPath: vi.fn(),
@@ -128,7 +130,7 @@ describe('add command behavior', () => {
     isDirectoryMock.mockResolvedValue(false);
     detectCategoryMock.mockReturnValue('shell');
     sanitizeFilenameMock.mockReturnValue('zshrc');
-    getDestinationPathMock.mockReturnValue('/test-home/.tuck/files/shell/zshrc');
+    getDestinationPathFromSourceMock.mockReturnValue('/test-home/.tuck/files/shell/.zshrc');
     validateSafeSourcePathMock.mockImplementation(() => {});
     loadConfigMock.mockResolvedValue({
       security: { scanSecrets: true },
@@ -139,6 +141,7 @@ describe('add command behavior', () => {
       results: [],
     });
     shouldBlockOnSecretsMock.mockResolvedValue(true);
+    isSecretScanningEnabledMock.mockResolvedValue(true);
     isIgnoredMock.mockResolvedValue(false);
     shouldExcludeFromBinMock.mockResolvedValue(false);
     getDirectoryFileCountMock.mockResolvedValue(1);
@@ -202,5 +205,19 @@ describe('add command behavior', () => {
     expect(count).toBe(1);
     expect(scanForSecretsMock).not.toHaveBeenCalled();
     expect(trackFilesWithProgressMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses symlink strategy when requested', async () => {
+    const { addFilesFromPaths } = await import('../../src/commands/add.js');
+
+    await addFilesFromPaths(['~/.zshrc'], { force: true, symlink: true });
+
+    expect(trackFilesWithProgressMock).toHaveBeenCalledWith(
+      [{ path: '~/.zshrc', category: 'shell' }],
+      '/test-home/.tuck',
+      expect.objectContaining({
+        strategy: 'symlink',
+      })
+    );
   });
 });

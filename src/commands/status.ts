@@ -9,7 +9,14 @@ import logSymbols from 'log-symbols';
 import figures from 'figures';
 import { colors as c, boxStyles, indent, formatStatus, categoryStyles } from '../ui/index.js';
 import { prompts } from '../ui/prompts.js';
-import { getTuckDir, collapsePath, expandPath, pathExists } from '../lib/paths.js';
+import {
+  getTuckDir,
+  collapsePath,
+  expandPath,
+  pathExists,
+  validateSafeSourcePath,
+  getSafeRepoPathFromDestination,
+} from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import { getStatus, hasRemote, getRemoteUrl, getCurrentBranch } from '../lib/git.js';
 import { getFileChecksum } from '../lib/files.js';
@@ -43,12 +50,15 @@ interface TuckStatus {
 // Status Detection
 // ─────────────────────────────────────────────────────────────────────────────
 
-const detectFileChanges = async (tuckDir: string): Promise<FileChange[]> => {
+export const detectFileChanges = async (tuckDir: string): Promise<FileChange[]> => {
   const files = await getAllTrackedFiles(tuckDir);
   const ignoredPaths = await loadTuckignore(tuckDir);
   const changes: FileChange[] = [];
 
   for (const [, file] of Object.entries(files)) {
+    validateSafeSourcePath(file.source);
+    getSafeRepoPathFromDestination(tuckDir, file.destination);
+
     if (ignoredPaths.has(file.source)) {
       continue;
     }
@@ -307,7 +317,7 @@ const printJsonStatus = (status: TuckStatus): void => {
 // Command Implementation
 // ─────────────────────────────────────────────────────────────────────────────
 
-const runStatus = async (options: StatusOptions): Promise<void> => {
+export const runStatus = async (options: StatusOptions): Promise<void> => {
   const tuckDir = getTuckDir();
 
   try {

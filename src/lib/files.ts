@@ -58,6 +58,7 @@ export const getFileInfo = async (filepath: string): Promise<FileInfo> => {
 
   try {
     const stats = await stat(expandedPath);
+    const linkStats = await lstat(expandedPath);
     // On Windows, Unix-style permissions are not meaningful
     // Return a sensible default (644 for files, 755 for dirs)
     const permissions = IS_WINDOWS
@@ -67,7 +68,7 @@ export const getFileInfo = async (filepath: string): Promise<FileInfo> => {
     return {
       path: expandedPath,
       isDirectory: stats.isDirectory(),
-      isSymlink: stats.isSymbolicLink(),
+      isSymlink: linkStats.isSymbolicLink(),
       size: stats.size,
       permissions,
       modified: stats.mtime,

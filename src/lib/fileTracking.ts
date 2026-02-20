@@ -1,13 +1,21 @@
 import chalk from 'chalk';
 import ora from 'ora';
-import { expandPath, collapsePath, getDestinationPath, getRelativeDestination, generateFileId, sanitizeFilename, detectCategory } from './paths.js';
-import { addFileToManifest } from './manifest.js';
-import { copyFileOrDir, createSymlink, getFileChecksum, getFileInfo } from './files.js';
+import {
+  expandPath,
+  collapsePath,
+  getDestinationPathFromSource,
+  getRelativeDestinationFromSource,
+  generateFileId,
+  detectCategory,
+} from './paths.js';
+import { addFileToManifest, loadManifest } from './manifest.js';
+import { copyFileOrDir, createSymlink, deleteFileOrDir, getFileChecksum, getFileInfo } from './files.js';
 import { loadConfig } from './config.js';
 import { CATEGORIES } from '../constants.js';
 import { ensureDir } from 'fs-extra';
 import { dirname } from 'path';
 import type { FileStrategy } from '../types.js';
+import { toPosixPath } from './platform.js';
 
 export interface FileToTrack {
   path: string;
@@ -127,7 +135,13 @@ export const trackFilesWithProgress = async (
   const total = files.length;
   const errors: Array<{ path: string; error: Error }> = [];
   const sensitiveFiles: string[] = [];
+  const trackedDestinations = new Map<string, string>();
   let succeeded = 0;
+
+  const manifest = await loadManifest(tuckDir);
+  for (const existingFile of Object.values(manifest.files)) {
+    trackedDestinations.set(toPosixPath(existingFile.destination), existingFile.source);
+  }
 
   console.log();
   console.log(chalk.bold.cyan(`${actionVerb} ${total} ${total === 1 ? 'file' : 'files'}...`));
@@ -139,29 +153,48 @@ export const trackFilesWithProgress = async (
     const expandedPath = expandPath(file.path);
     const indexStr = chalk.dim(`[${i + 1}/${total}]`);
     const category = file.category || detectCategory(expandedPath);
-    const filename = sanitizeFilename(expandedPath);
     const categoryInfo = CATEGORIES[category];
     const icon = categoryInfo?.icon || '○';
+    const sourcePath = collapsePath(file.path);
+    const relativeDestination = getRelativeDestinationFromSource(category, expandedPath);
+    const normalizedDestination = toPosixPath(relativeDestination);
+    const existingSource = trackedDestinations.get(normalizedDestination);
 
     // Show spinner while processing
     const spinner = ora({
-      text: `${indexStr} ${actionVerb} ${chalk.cyan(collapsePath(file.path))}`,
+      text: `${indexStr} ${actionVerb} ${chalk.cyan(sourcePath)}`,
       color: 'cyan',
       spinner: 'dots',
       indent: 2,
     }).start();
 
     try {
+      if (existingSource && existingSource !== sourcePath) {
+        throw new Error(
+          `Destination collision detected: ${relativeDestination} is already used by ${existingSource}`
+        );
+      }
+
       // Get destination path
-      const destination = getDestinationPath(tuckDir, category, filename);
+      const destination = getDestinationPathFromSource(tuckDir, category, expandedPath);
 
       // Ensure category directory exists
       await ensureDir(dirname(destination));
 
       // Copy or symlink based on strategy
       if (strategy === 'symlink') {
-        // Create symlink from destination to source (repo points to original)
-        await createSymlink(expandedPath, destination, { overwrite: true });
+        // Symlink strategy keeps the repository as source of truth:
+        // 1) copy source into repo, 2) replace source with symlink to repo.
+        await copyFileOrDir(expandedPath, destination, { overwrite: true });
+
+        try {
+          await createSymlink(destination, expandedPath, { overwrite: true });
+        } catch (error) {
+          // Best effort rollback so users keep a working source file if symlinking fails.
+          await deleteFileOrDir(expandedPath).catch(() => undefined);
+          await copyFileOrDir(destination, expandedPath, { overwrite: true }).catch(() => undefined);
+          throw error;
+        }
       } else {
         // Default: copy file into the repository
         await copyFileOrDir(expandedPath, destination, { overwrite: true });
@@ -177,8 +210,8 @@ export const trackFilesWithProgress = async (
 
       // Add to manifest
       await addFileToManifest(tuckDir, id, {
-        source: collapsePath(file.path),
-        destination: getRelativeDestination(category, filename),
+        source: sourcePath,
+        destination: relativeDestination,
         category,
         strategy,
         // TODO: Encryption and templating are planned for a future version
@@ -192,12 +225,14 @@ export const trackFilesWithProgress = async (
 
       spinner.stop();
       const categoryStr = showCategory ? chalk.dim(` ${icon} ${category}`) : '';
-      console.log(`  ${chalk.green('✓')} ${indexStr} ${collapsePath(file.path)}${categoryStr}`);
+      console.log(`  ${chalk.green('✓')} ${indexStr} ${sourcePath}${categoryStr}`);
 
       // Track sensitive files for warning at the end
-      if (isSensitiveFile(collapsePath(file.path))) {
+      if (isSensitiveFile(sourcePath)) {
         sensitiveFiles.push(file.path);
       }
+
+      trackedDestinations.set(normalizedDestination, sourcePath);
 
       succeeded++;
 

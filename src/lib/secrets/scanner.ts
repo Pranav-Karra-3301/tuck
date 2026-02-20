@@ -8,6 +8,7 @@ import { readFile, stat } from 'fs/promises';
 import { expandPath, collapsePath, pathExists } from '../paths.js';
 import {
   ALL_SECRET_PATTERNS,
+  assertSafeCustomRegex,
   getPatternsAboveSeverity,
   shouldSkipFile,
   type SecretPattern,
@@ -195,7 +196,8 @@ const getContext = (content: string, lineNum: number, secretValue: string): stri
  * Clone a regex pattern to reset its lastIndex
  */
 const clonePattern = (pattern: RegExp): RegExp => {
-  return new RegExp(pattern.source, pattern.flags);
+  const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+  return new RegExp(pattern.source, flags);
 };
 
 // ============================================================================
@@ -225,6 +227,9 @@ export const scanContent = (content: string, options: ScanOptions = {}): SecretM
 
   // Add custom patterns
   if (options.customPatterns) {
+    for (const customPattern of options.customPatterns) {
+      assertSafeCustomRegex(customPattern.pattern.source);
+    }
     patterns = [...patterns, ...options.customPatterns];
   }
 

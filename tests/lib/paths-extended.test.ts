@@ -16,7 +16,10 @@ import {
   getFilesDir,
   getCategoryDir,
   getDestinationPath,
+  getDestinationPathFromSource,
+  getHomeRelativeSourcePath,
   getRelativeDestination,
+  getRelativeDestinationFromSource,
   sanitizeFilename,
   detectCategory,
   pathExists,
@@ -224,6 +227,44 @@ describe('paths-extended', () => {
     it('should return relative path within files directory', () => {
       const relPath = getRelativeDestination('git', 'gitconfig');
       expect(relPath.replace(/\\/g, '/')).toBe('files/git/gitconfig');
+    });
+
+    it('should always use POSIX separators for manifest paths', () => {
+      const relPath = getRelativeDestination('shell', 'nested\\zshrc');
+      expect(relPath).toBe('files/shell/nested/zshrc');
+      expect(relPath.includes('\\')).toBe(false);
+    });
+  });
+
+  describe('getHomeRelativeSourcePath', () => {
+    it('should return source path relative to home', () => {
+      expect(getHomeRelativeSourcePath('~/.config/nvim/init.vim')).toBe('.config/nvim/init.vim');
+    });
+
+    it('should reject source paths outside home', () => {
+      if (process.platform !== 'win32') {
+        expect(() => getHomeRelativeSourcePath('/etc/passwd')).toThrow(
+          'source path must be within home directory'
+        );
+      }
+    });
+  });
+
+  describe('getRelativeDestinationFromSource', () => {
+    it('should preserve source directory structure to avoid collisions', () => {
+      const awsPath = getRelativeDestinationFromSource('misc', '~/.aws/config');
+      const kubePath = getRelativeDestinationFromSource('misc', '~/.kube/config');
+
+      expect(awsPath).toBe('files/misc/.aws/config');
+      expect(kubePath).toBe('files/misc/.kube/config');
+      expect(awsPath).not.toBe(kubePath);
+    });
+  });
+
+  describe('getDestinationPathFromSource', () => {
+    it('should return full destination path with nested source segments', () => {
+      const destination = getDestinationPathFromSource(TEST_TUCK_DIR, 'shell', '~/.zshrc');
+      expect(destination.replace(/\\/g, '/')).toBe(`${TEST_TUCK_DIR}/files/shell/.zshrc`);
     });
   });
 

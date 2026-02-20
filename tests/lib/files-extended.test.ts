@@ -126,6 +126,17 @@ describe('files-extended', () => {
     it('should throw for non-existent files', async () => {
       await expect(getFileInfo(join(TEST_HOME, 'nonexistent'))).rejects.toThrow();
     });
+
+    it('should correctly identify symbolic links', async () => {
+      const targetPath = join(TEST_HOME, 'target.txt');
+      const symlinkPath = join(TEST_HOME, 'link.txt');
+      vol.writeFileSync(targetPath, 'target content');
+      vol.symlinkSync(targetPath, symlinkPath);
+
+      const info = await getFileInfo(symlinkPath);
+
+      expect(info.isSymlink).toBe(true);
+    });
   });
 
   // ============================================================================

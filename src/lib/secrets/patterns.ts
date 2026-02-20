@@ -5,6 +5,8 @@
  * including API keys, tokens, private keys, and credentials.
  */
 
+import { assertSafeCustomRegex, normalizeCustomRegexFlags } from './regexSafety.js';
+
 export type SecretSeverity = 'critical' | 'high' | 'medium' | 'low';
 
 export interface SecretPattern {
@@ -701,6 +703,8 @@ export const getPatternsAboveSeverity = (minSeverity: SecretSeverity): SecretPat
   return ALL_SECRET_PATTERNS.filter((p) => severityOrder[p.severity] <= minLevel);
 };
 
+export { assertSafeCustomRegex, normalizeCustomRegexFlags };
+
 /**
  * Create a custom pattern
  */
@@ -715,10 +719,21 @@ export const createCustomPattern = (
     flags?: string;
   }
 ): SecretPattern => {
+  const normalizedFlags = normalizeCustomRegexFlags(options?.flags);
+  assertSafeCustomRegex(pattern);
+
+  let compiledPattern: RegExp;
+  try {
+    compiledPattern = new RegExp(pattern, normalizedFlags);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid custom regex pattern: ${message}`);
+  }
+
   return {
     id: `custom-${id}`,
     name,
-    pattern: new RegExp(pattern, options?.flags || 'g'),
+    pattern: compiledPattern,
     severity: options?.severity || 'high',
     description: options?.description || `Custom pattern: ${name}`,
     placeholder: options?.placeholder || id.toUpperCase().replace(/-/g, '_'),

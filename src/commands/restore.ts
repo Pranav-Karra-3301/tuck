@@ -186,7 +186,7 @@ const restoreFilesInternal = async (
     // Create backup if needed
     if (shouldBackup && file.existsAtTarget) {
       await withSpinner(`Backing up ${file.source}...`, async () => {
-        await createBackup(targetPath);
+        await createBackup(targetPath, config.files.backupDir, tuckDir);
       });
     }
 
@@ -421,7 +421,7 @@ export const restoreCommand = new Command('restore')
   .description('Restore dotfiles to the system')
   .argument('[paths...]', 'Paths to restore (or use --all)')
   .option('-a, --all', 'Restore all tracked files')
-  .option('--symlink', 'Create symlinks instead of copies')
+  .option('--symlink', 'Create symlinks from source paths to tuck repo files')
   .option('--backup', 'Backup existing files before restore')
   .option('--no-backup', 'Skip backup of existing files')
   .option('--dry-run', 'Show what would be done')

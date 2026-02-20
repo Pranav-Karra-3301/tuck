@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { join, basename } from 'path';
+import { realpath } from 'fs/promises';
 import { prompts, logger, withSpinner, colors as c } from '../ui/index.js';
 import {
   getTuckDir,
@@ -32,6 +33,7 @@ import { NotInitializedError, SecretsDetectedError } from '../errors.js';
 import type { SyncOptions, FileChange } from '../types.js';
 import { detectDotfiles, DETECTION_CATEGORIES, type DetectedFile } from '../lib/detect.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
+import { preparePathsForTracking } from '../lib/trackPipeline.js';
 import { scanForSecrets, isSecretScanningEnabled, shouldBlockOnSecrets, processSecretsForRedaction, redactFile } from '../lib/secrets/index.js';
 import { displayScanResults } from './secrets.js';
 import { logForceSecretBypass } from '../lib/audit.js';
@@ -43,6 +45,18 @@ interface SyncResult {
   // Note: There is no 'added' array because adding new files is done via 'tuck add', not 'tuck sync'.
   // The sync command only handles changes to already-tracked files.
 }
+
+const pathsResolveToSameLocation = async (sourcePath: string, destinationPath: string): Promise<boolean> => {
+  try {
+    const [resolvedSource, resolvedDestination] = await Promise.all([
+      realpath(sourcePath),
+      realpath(destinationPath),
+    ]);
+    return resolvedSource === resolvedDestination;
+  } catch {
+    return false;
+  }
+};
 
 const detectChanges = async (tuckDir: string): Promise<FileChange[]> => {
   const files = await getAllTrackedFiles(tuckDir);
@@ -236,7 +250,11 @@ const syncFiles = async (
 
     if (change.status === 'modified') {
       await withSpinner(`Syncing ${change.path}...`, async () => {
-        await copyFileOrDir(sourcePath, destPath, { overwrite: true });
+        // Symlink tracking can make source and destination the same underlying file.
+        // Skip copying in that case to avoid same-file copy errors.
+        if (!(await pathsResolveToSameLocation(sourcePath, destPath))) {
+          await copyFileOrDir(sourcePath, destPath, { overwrite: true });
+        }
 
         // Update checksum in manifest
         const newChecksum = await getFileChecksum(destPath);
@@ -500,6 +518,7 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
   }
 
   // ========== STEP 6: Interactive selection for new files ==========
+  let filesToTrackCandidates: Array<{ path: string; category?: string }> = [];
   let filesToTrack: FileToTrack[] = [];
 
   if (newFiles.length > 0) {
@@ -543,7 +562,13 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
         initialValues,
       });
 
-      filesToTrack = selected.map((path) => ({ path: path as string }));
+      filesToTrackCandidates = (selected as string[]).map((path) => {
+        const matched = newFiles.find((file) => file.path === path);
+        return {
+          path,
+          category: matched?.category,
+        };
+      });
     }
   }
 
@@ -595,7 +620,7 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
         }
         prompts.log.success('Added large files to .tuckignore');
 
-        if (changes.length === 0 && filesToTrack.length === 0) {
+        if (changes.length === 0 && filesToTrackCandidates.length === 0) {
           prompts.log.info('No changes remaining to sync');
           return;
         }
@@ -621,7 +646,7 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
         }
         prompts.log.success('Added large files to .tuckignore');
 
-        if (changes.length === 0 && filesToTrack.length === 0) {
+        if (changes.length === 0 && filesToTrackCandidates.length === 0) {
           prompts.log.info('No changes remaining to sync');
           return;
         }
@@ -633,6 +658,21 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
   }
 
   // ========== STEP 8: Track new files ==========
+  if (filesToTrackCandidates.length > 0) {
+    const prepared = await preparePathsForTracking(filesToTrackCandidates, tuckDir, {
+      secretHandling: 'interactive',
+    });
+    filesToTrack = prepared.map((file) => ({
+      path: file.source,
+      category: file.category,
+    }));
+  }
+
+  if (changes.length === 0 && filesToTrack.length === 0 && filesToTrackCandidates.length > 0) {
+    prompts.log.info('No changes remaining to sync');
+    return;
+  }
+
   if (filesToTrack.length > 0) {
     console.log();
     await trackFilesWithProgress(filesToTrack, tuckDir, {

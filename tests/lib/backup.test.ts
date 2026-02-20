@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { vol } from 'memfs';
 import { join } from 'path';
-import { TEST_HOME, TEST_BACKUPS_DIR } from '../utils/testHelpers.js';
+import { TEST_HOME, TEST_BACKUPS_DIR, TEST_TUCK_DIR } from '../utils/testHelpers.js';
 import {
   createBackup,
   createMultipleBackups,
@@ -12,10 +12,12 @@ import {
   cleanOldBackups,
   getBackupSize,
 } from '../../src/lib/backup.js';
+import { clearConfigCache } from '../../src/lib/config.js';
 
 describe('backup', () => {
   beforeEach(() => {
     vol.reset();
+    clearConfigCache();
     vol.mkdirSync(TEST_HOME, { recursive: true });
     vol.mkdirSync(TEST_BACKUPS_DIR, { recursive: true });
     vi.useFakeTimers();
@@ -24,6 +26,7 @@ describe('backup', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    clearConfigCache();
     vol.reset();
   });
 
@@ -43,6 +46,25 @@ describe('backup', () => {
     await expect(createBackup(join(TEST_HOME, '.missing'))).rejects.toThrow(
       'Source path does not exist'
     );
+  });
+
+  it('uses configured files.backupDir when present', async () => {
+    const sourcePath = join(TEST_HOME, '.zshrc');
+    vol.writeFileSync(sourcePath, 'backup me');
+    vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });
+    vol.writeFileSync(
+      join(TEST_TUCK_DIR, '.tuckrc.json'),
+      JSON.stringify({
+        files: {
+          backupDir: '~/.custom-backups',
+        },
+      })
+    );
+
+    const result = await createBackup(sourcePath);
+
+    expect(result.backupPath).toContain('/.custom-backups/2026-02-11/');
+    expect(vol.existsSync(result.backupPath)).toBe(true);
   });
 
   it('creates multiple backups in one call', async () => {

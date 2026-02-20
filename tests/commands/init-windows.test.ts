@@ -3,7 +3,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const cloneRepoMock = vi.fn();
 const createManifestMock = vi.fn();
 const saveConfigMock = vi.fn();
-const pathExistsMock = vi.fn();
 const loggerSuccessMock = vi.fn();
 const loggerInfoMock = vi.fn();
 
@@ -42,25 +41,6 @@ vi.mock('../../src/ui/index.js', () => ({
     dim: (x: string) => x,
     bold: (x: string) => x,
   },
-}));
-
-vi.mock('../../src/lib/paths.js', () => ({
-  getTuckDir: vi.fn((dir?: string) => (dir === '~/.custom' ? '/test-home/.custom' : '/test-home/.tuck')),
-  getManifestPath: vi.fn((tuckDir: string) => `${tuckDir}/.tuckmanifest.json`),
-  getConfigPath: vi.fn((tuckDir: string) => `${tuckDir}/.tuckrc.json`),
-  getFilesDir: vi.fn((tuckDir: string) => `${tuckDir}/files`),
-  getCategoryDir: vi.fn((tuckDir: string, category: string) => `${tuckDir}/files/${category}`),
-  getDestinationPathFromSource: vi.fn(
-    (tuckDir: string, category: string, sourcePath: string) =>
-      `${tuckDir}/files/${category}/${String(sourcePath).replace(/^~\//, '')}`
-  ),
-  expandPath: vi.fn((p: string) => p.replace(/^~\//, '/test-home/')),
-  detectCategory: vi.fn(() => 'misc'),
-  sanitizeFilename: vi.fn((path: string) => path.split('/').pop() || 'file'),
-  isDirectory: vi.fn().mockResolvedValue(false),
-  validateSafeSourcePath: vi.fn(),
-  pathExists: pathExistsMock,
-  collapsePath: vi.fn((path: string) => path.replace('/test-home', '~')),
 }));
 
 vi.mock('../../src/lib/config.js', () => ({
@@ -135,7 +115,7 @@ vi.mock('../../src/lib/validation.js', () => ({
   errorToMessage: vi.fn((error: unknown) => String(error)),
 }));
 
-describe('init command behavior', () => {
+describe('init command Windows path handling', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     cloneRepoMock.mockResolvedValue(undefined);
@@ -143,33 +123,25 @@ describe('init command behavior', () => {
     saveConfigMock.mockResolvedValue(undefined);
   });
 
-  it('clones from remote and backfills missing manifest/config', async () => {
-    pathExistsMock.mockResolvedValue(false);
-    const { runInit } = await import('../../src/commands/init.js');
+  it('supports default init dir when HOME resolves to a Windows drive path', async () => {
+    const osModule = await import('os');
+    const homedirSpy = vi
+      .spyOn(osModule, 'homedir')
+      .mockReturnValue('C:\\Users\\windows-user');
 
-    await runInit({ from: 'https://github.com/acme/dotfiles.git' });
+    try {
+      const { runInit } = await import('../../src/commands/init.js');
+      await runInit({ from: 'https://github.com/acme/dotfiles.git', dir: '~/.tuck' });
 
-    expect(cloneRepoMock).toHaveBeenCalledWith(
-      'https://github.com/acme/dotfiles.git',
-      '/test-home/.tuck'
-    );
-    expect(createManifestMock).toHaveBeenCalledTimes(1);
-    expect(saveConfigMock).toHaveBeenCalledTimes(1);
-    expect(loggerSuccessMock).toHaveBeenCalled();
-    expect(loggerInfoMock).toHaveBeenCalledWith('Run `tuck restore --all` to restore dotfiles');
-  });
-
-  it('does not recreate manifest/config when cloned repo already contains both', async () => {
-    pathExistsMock.mockResolvedValue(true);
-    const { runInit } = await import('../../src/commands/init.js');
-
-    await runInit({ from: 'https://github.com/acme/dotfiles.git', dir: '~/.custom' });
-
-    expect(cloneRepoMock).toHaveBeenCalledWith(
-      'https://github.com/acme/dotfiles.git',
-      '/test-home/.custom'
-    );
-    expect(createManifestMock).not.toHaveBeenCalled();
-    expect(saveConfigMock).not.toHaveBeenCalled();
+      expect(cloneRepoMock).toHaveBeenCalledTimes(1);
+      const cloneDest = cloneRepoMock.mock.calls[0][1] as string;
+      expect(cloneDest.replace(/\\/g, '/')).toBe('C:/Users/windows-user/.tuck');
+      expect(createManifestMock).toHaveBeenCalledTimes(1);
+      expect(saveConfigMock).toHaveBeenCalledTimes(1);
+      expect(loggerSuccessMock).toHaveBeenCalled();
+      expect(loggerInfoMock).toHaveBeenCalledWith('Run `tuck restore --all` to restore dotfiles');
+    } finally {
+      homedirSpy.mockRestore();
+    }
   });
 });

@@ -64,6 +64,13 @@ vi.mock('../../src/lib/paths.js', () => ({
   expandPath: vi.fn((p: string) => p.replace(/^~\//, '/test-home/')),
   pathExists: pathExistsMock,
   collapsePath: vi.fn((p: string) => p),
+  getDestinationPathFromSource: vi.fn(
+    (tuckDir: string, category: string, sourcePath: string) =>
+      `${tuckDir}/files/${category}/${String(sourcePath).replace(/^~\//, '')}`
+  ),
+  detectCategory: vi.fn(() => 'misc'),
+  sanitizeFilename: vi.fn((path: string) => path.split('/').pop() || 'file'),
+  isDirectory: vi.fn().mockResolvedValue(false),
   validateSafeSourcePath: validateSafeSourcePathMock,
   validateSafeManifestDestination: validateSafeManifestDestinationMock,
   validatePathWithinRoot: validatePathWithinRootMock,

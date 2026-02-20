@@ -8,6 +8,7 @@ import {
   validateSafeDestinationPath,
   validatePathWithinRoot,
   validateSafeManifestDestination,
+  getSafeRepoPathFromDestination,
   getTuckDir,
 } from '../../src/lib/paths.js';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
@@ -110,6 +111,19 @@ describe('Path Traversal Security', () => {
       expect(() => validateSafeManifestDestination('backup/zshrc')).toThrow(
         'destination must be inside'
       );
+    });
+  });
+
+  describe('getSafeRepoPathFromDestination', () => {
+    it('resolves valid destinations inside tuck root', () => {
+      const repoPath = getSafeRepoPathFromDestination(TEST_TUCK_DIR, 'files/shell/zshrc');
+      expect(repoPath.replace(/\\/g, '/')).toBe('/test-home/.tuck/files/shell/zshrc');
+    });
+
+    it('rejects destinations that attempt root escape', () => {
+      expect(() =>
+        getSafeRepoPathFromDestination(TEST_TUCK_DIR, 'files/../../outside')
+      ).toThrow('path traversal');
     });
   });
 

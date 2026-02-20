@@ -5,12 +5,13 @@ import {
   expandPath,
   collapsePath,
   pathExists,
+  validateSafeSourcePath,
+  getSafeRepoPathFromDestination,
 } from '../lib/paths.js';
 import { loadManifest, removeFileFromManifest, getTrackedFileBySource, getAllTrackedFiles } from '../lib/manifest.js';
 import { deleteFileOrDir } from '../lib/files.js';
 import { NotInitializedError, FileNotTrackedError } from '../errors.js';
 import type { RemoveOptions } from '../types.js';
-import { join } from 'path';
 
 interface FileToRemove {
   id: string;
@@ -34,10 +35,12 @@ const validateAndPrepareFiles = async (
       throw new FileNotTrackedError(path);
     }
 
+    validateSafeSourcePath(tracked.file.source);
+
     filesToRemove.push({
       id: tracked.id,
       source: tracked.file.source,
-      destination: join(tuckDir, tracked.file.destination),
+      destination: getSafeRepoPathFromDestination(tuckDir, tracked.file.destination),
     });
   }
 
@@ -115,10 +118,11 @@ const runInteractiveRemove = async (tuckDir: string): Promise<void> => {
   // Prepare files to remove
   const filesToRemove: FileToRemove[] = selectedFiles.map((id) => {
     const file = trackedFiles[id as string];
+    validateSafeSourcePath(file.source);
     return {
       id: id as string,
       source: file.source,
-      destination: join(tuckDir, file.destination),
+      destination: getSafeRepoPathFromDestination(tuckDir, file.destination),
     };
   });
 
@@ -129,7 +133,7 @@ const runInteractiveRemove = async (tuckDir: string): Promise<void> => {
   logger.info("Run 'tuck sync' to commit changes");
 };
 
-const runRemove = async (paths: string[], options: RemoveOptions): Promise<void> => {
+export const runRemove = async (paths: string[], options: RemoveOptions): Promise<void> => {
   const tuckDir = getTuckDir();
 
   // Verify tuck is initialized

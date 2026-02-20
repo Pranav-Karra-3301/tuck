@@ -1,5 +1,5 @@
 import { homedir } from 'os';
-import { join, basename, dirname, relative, isAbsolute, resolve, sep } from 'path';
+import { join, basename, dirname, relative, isAbsolute, resolve, sep, posix } from 'path';
 import { stat, access } from 'fs/promises';
 import { constants } from 'fs';
 import {
@@ -45,7 +45,7 @@ export const getTuckDir = (customDir?: string): string => {
   const tuckDir = expandPath(customDir || DEFAULT_TUCK_DIR);
 
   // For custom directories, enforce home-scoped paths for safety.
-  if (customDir && !isPathWithinHome(tuckDir)) {
+  if (customDir && !isPathWithinHome(customDir)) {
     throw new Error(
       `Unsafe path detected: ${customDir} - custom tuck directory must be within home directory`
     );
@@ -75,7 +75,57 @@ export const getDestinationPath = (tuckDir: string, category: string, filename: 
 };
 
 export const getRelativeDestination = (category: string, filename: string): string => {
-  return join(FILES_DIR, category, filename);
+  return posix.join(FILES_DIR, toPosixPath(category), toPosixPath(filename));
+};
+
+/**
+ * Convert a source path to a normalized path relative to the user's home directory.
+ * Returns POSIX separators for cross-platform manifest stability.
+ */
+export const getHomeRelativeSourcePath = (sourcePath: string): string => {
+  const expandedSource = resolve(expandPath(sourcePath));
+  const resolvedHome = resolve(homedir());
+
+  if (!(expandedSource === resolvedHome || expandedSource.startsWith(resolvedHome + sep))) {
+    throw new Error(
+      `Unsafe path detected: ${sourcePath} - source path must be within home directory`
+    );
+  }
+
+  const relativePath = toPosixPath(relative(resolvedHome, expandedSource));
+  const segments = relativePath
+    .split('/')
+    .filter(Boolean)
+    .filter((segment) => segment !== '.');
+
+  if (segments.some((segment) => segment === '..')) {
+    throw new Error(`Unsafe path detected: ${sourcePath} - path traversal is not allowed`);
+  }
+
+  return segments.length > 0 ? segments.join('/') : 'home';
+};
+
+/**
+ * Get repository destination for a source path.
+ * Uses the full home-relative path to avoid filename collisions.
+ */
+export const getRelativeDestinationFromSource = (
+  category: string,
+  sourcePath: string
+): string => {
+  const relativeSource = getHomeRelativeSourcePath(sourcePath);
+  return posix.join(FILES_DIR, toPosixPath(category), relativeSource);
+};
+
+/**
+ * Get absolute repository destination for a source path.
+ */
+export const getDestinationPathFromSource = (
+  tuckDir: string,
+  category: string,
+  sourcePath: string
+): string => {
+  return join(tuckDir, getRelativeDestinationFromSource(category, sourcePath));
 };
 
 export const sanitizeFilename = (filepath: string): string => {
@@ -283,6 +333,17 @@ export const validateSafeManifestDestination = (destination: string): void => {
       `Unsafe manifest destination detected: ${destination} - destination must be inside ${FILES_DIR}/`
     );
   }
+};
+
+/**
+ * Resolve a manifest destination to an absolute repository path safely.
+ * Ensures the destination is a valid manifest path and cannot escape the tuck root.
+ */
+export const getSafeRepoPathFromDestination = (tuckDir: string, destination: string): string => {
+  validateSafeManifestDestination(destination);
+  const repoPath = join(tuckDir, destination);
+  validatePathWithinRoot(repoPath, tuckDir, 'manifest destination');
+  return repoPath;
 };
 
 /**

@@ -92,6 +92,36 @@ describe('Full Workflow Integration', () => {
     expect(vol.readFileSync(repoPath, 'utf-8')).toContain('ORIGINAL=2');
   });
 
+  it('tracks with symlink strategy and syncs without same-file copy errors', async () => {
+    await initTestTuck();
+    const sourcePath = createTestDotfile('.zshrc', 'export SYMLINK_MODE=1');
+
+    await addFilesFromPaths(['~/.zshrc'], { force: true, symlink: true });
+
+    const tracked = await getTrackedFileBySource(TEST_TUCK_DIR, '~/.zshrc');
+    expect(tracked).not.toBeNull();
+
+    const repoPath = join(TEST_TUCK_DIR, tracked!.file.destination);
+    expect(vol.lstatSync(sourcePath).isSymbolicLink()).toBe(true);
+
+    vol.writeFileSync(sourcePath, 'export SYMLINK_MODE=2');
+
+    await expect(
+      runSyncCommand('sync: symlink update', {
+        noCommit: true,
+        noHooks: true,
+        pull: false,
+        push: false,
+        force: true,
+      })
+    ).resolves.toBeUndefined();
+
+    const updatedTracked = await getTrackedFileBySource(TEST_TUCK_DIR, '~/.zshrc');
+    expect(updatedTracked).not.toBeNull();
+    expect(updatedTracked!.file.checksum).toBe(await getFileChecksum(repoPath));
+    expect(vol.readFileSync(repoPath, 'utf-8')).toContain('SYMLINK_MODE=2');
+  });
+
   it('removes deleted tracked files from manifest on sync', async () => {
     await initTestTuck();
     const sourcePath = createTestDotfile('.gitconfig', '[user]\n  name = Test User');
