@@ -47,7 +47,7 @@ import {
   getGitHubCLIInstallInstructions,
   storeGitHubCredentials,
   detectTokenType,
-  configureGitCredentialHelper,
+  configureGitCredentialHelperWithOptions,
   testStoredCredentials,
   diagnoseAuthIssue,
   MIN_GITHUB_TOKEN_LENGTH,
@@ -62,6 +62,7 @@ import { CATEGORIES } from '../constants.js';
 import { defaultConfig } from '../schemas/config.schema.js';
 import type { InitOptions } from '../types.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
+import { preparePathsForTracking } from '../lib/trackPipeline.js';
 import { errorToMessage } from '../lib/validation.js';
 
 const GITIGNORE_TEMPLATE = `# OS generated files
@@ -90,9 +91,21 @@ const trackFilesWithProgressInit = async (
   selectedPaths: string[],
   tuckDir: string
 ): Promise<number> => {
-  // Convert paths to FileToTrack
-  const filesToTrack: FileToTrack[] = selectedPaths.map((path) => ({
-    path,
+  const prepared = await preparePathsForTracking(
+    selectedPaths.map((path) => ({ path })),
+    tuckDir,
+    {
+      secretHandling: 'interactive',
+    }
+  );
+
+  if (prepared.length === 0) {
+    return 0;
+  }
+
+  const filesToTrack: FileToTrack[] = prepared.map((file) => ({
+    path: file.source,
+    category: file.category,
   }));
 
   // Use the shared tracking utility
@@ -542,11 +555,27 @@ const setupTokenAuth = async (
     prompts.log.info('You may be prompted for credentials when pushing');
   }
 
-  // Configure git credential helper (best-effort; Git can still prompt for credentials if this fails)
-  await configureGitCredentialHelper().catch((error) => {
-    const errorMsg = error instanceof Error ? error.message : String(error);
-    logger?.debug?.(`Failed to configure git credential helper (non-fatal): ${errorMsg}`);
-  });
+  const configureHelper = await prompts.confirm(
+    'Configure a global Git credential helper now? This updates `git config --global credential.helper`.',
+    true
+  );
+
+  if (configureHelper) {
+    await configureGitCredentialHelperWithOptions({ allowGlobalConfigChange: true }).catch(
+      (error) => {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        logger?.debug?.(`Failed to configure git credential helper (non-fatal): ${errorMsg}`);
+        prompts.log.warning(
+          'Could not configure a credential helper automatically. ' +
+            'Set one manually for secure token storage (osxkeychain/libsecret/manager-core).'
+        );
+      }
+    );
+  } else {
+    prompts.log.info(
+      'Skipping credential helper setup. Git may prompt for credentials unless a helper is configured.'
+    );
+  }
 
   return await promptForManualRepoUrl(tuckDir, username, 'https');
 };
@@ -1666,7 +1695,7 @@ const runInteractiveInit = async (): Promise<void> => {
   ]);
 };
 
-const runInit = async (options: InitOptions): Promise<void> => {
+export const runInit = async (options: InitOptions): Promise<void> => {
   const tuckDir = getTuckDir(options.dir);
 
   // If --from is provided, clone from remote

@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { vol } from 'memfs';
+import { join } from 'path';
+import { clearManifestCache } from '../../src/lib/manifest.js';
+import { TEST_TUCK_DIR } from '../setup.js';
+import { createMockManifest, createMockTrackedFile } from '../utils/factories.js';
 
 interface TestFileDiff {
   source: string;
@@ -50,10 +54,13 @@ describe('diff command', () => {
   beforeEach(() => {
     vol.reset();
     vi.clearAllMocks();
+    clearManifestCache();
+    vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });
   });
 
   afterEach(() => {
     vol.reset();
+    clearManifestCache();
   });
 
   describe('diff formatting', () => {
@@ -179,6 +186,20 @@ describe('diff command', () => {
       expect(diff.isBinary).toBeUndefined();
       expect(diff.isDirectory).toBeUndefined();
       expect(diff.fileCount).toBeUndefined();
+    });
+  });
+
+  describe('manifest path safety', () => {
+    it('rejects unsafe repository destination paths from manifest entries', async () => {
+      const { runDiff } = await import('../../src/commands/diff.js');
+      const manifest = createMockManifest();
+      manifest.files['zshrc'] = createMockTrackedFile({
+        source: '~/.zshrc',
+        destination: 'files/../../outside',
+      });
+      vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest));
+
+      await expect(runDiff([], {})).rejects.toThrow('Unsafe manifest destination');
     });
   });
 });

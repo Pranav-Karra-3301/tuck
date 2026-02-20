@@ -15,11 +15,17 @@ export default defineConfig({
         '**/*.test.ts',
       ],
       include: ['src/**/*.ts'],
+      thresholds: {
+        statements: 40,
+        branches: 75,
+        functions: 34,
+        lines: 40,
+      },
     },
     testTimeout: 10000,
     mockReset: true,
     restoreMocks: true,
-    // Rely on mock and setup resets to prevent state leakage; avoid per-file worker isolation for performance
-    isolate: false,
+    // Isolate test files to prevent mock leakage between suites.
+    isolate: true,
   },
 });

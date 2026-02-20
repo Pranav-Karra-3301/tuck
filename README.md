@@ -128,6 +128,17 @@ tuck restore --all
 | `tuck config remote` | Configure git provider (GitHub/GitLab/local) |
 | `tuck config wizard` | Interactive configuration setup              |
 
+### Diagnostics
+
+| Command         | Description                                          |
+| --------------- | ---------------------------------------------------- |
+| `tuck doctor`   | Run repository health and safety diagnostics         |
+
+`tuck doctor` flags:
+- `--json`: Machine-readable output for CI
+- `--strict`: Treat warnings as non-zero exit
+- `--category <env|repo|manifest|security|hooks>`: Run one check group
+
 ## How It Works
 
 tuck stores your dotfiles in `~/.tuck`, organized by category:
@@ -212,7 +223,7 @@ Configure tuck via `~/.tuck/.tuckrc.json` or `tuck config wizard`:
 ### File Strategies
 
 - **copy** (default) — Files are copied. Run `tuck sync` to update the repo.
-- **symlink** — Files are symlinked. Changes are instant but require more care.
+- **symlink** — tuck copies the file into the repo, then replaces the original path with a symlink to the repo file. Changes are instant, but this modifies your home dotfile paths.
 
 ## Windows Support
 

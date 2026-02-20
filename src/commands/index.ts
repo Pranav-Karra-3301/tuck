@@ -14,3 +14,4 @@ export { undoCommand } from './undo.js';
 export { scanCommand } from './scan.js';
 export { secretsCommand } from './secrets.js';
 export { encryptionCommand } from './encryption.js';
+export { doctorCommand } from './doctor.js';

@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { vol } from 'memfs';
 import { scanContent } from '../../src/lib/secrets/scanner.js';
-import { ALL_SECRET_PATTERNS } from '../../src/lib/secrets/patterns.js';
+import { ALL_SECRET_PATTERNS, createCustomPattern } from '../../src/lib/secrets/patterns.js';
 import { TEST_HOME } from '../setup.js';
 
 // Helper to measure execution time
@@ -220,6 +220,12 @@ describe('ReDoS Security', () => {
           }
         }
       }
+    });
+
+    it('rejects unsafe user-supplied custom patterns before scanning', () => {
+      expect(() => createCustomPattern('evil', 'evil', '(a+)+$')).toThrow(
+        'Unsafe custom regex pattern rejected'
+      );
     });
   });
 

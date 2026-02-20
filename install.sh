@@ -60,16 +60,50 @@ get_latest_version() {
     curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/'
 }
 
+sha256_file() {
+    local file="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$file" | awk '{print $1}'
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 "$file" | awk '{print $NF}'
+    else
+        error "No SHA256 tool found (need sha256sum, shasum, or openssl)"
+    fi
+}
+
+verify_checksum() {
+    local checksum_file="$1"
+    local asset_name="$2"
+    local downloaded_file="$3"
+
+    local expected
+    expected=$(awk -v asset="$asset_name" '$2 == asset || $2 == ("*" asset) { print $1; exit }' "$checksum_file")
+
+    if [[ -z "$expected" ]]; then
+        error "Could not find checksum for ${asset_name} in SHA256SUMS"
+    fi
+
+    local actual
+    actual=$(sha256_file "$downloaded_file")
+
+    if [[ "$expected" != "$actual" ]]; then
+        error "Checksum verification failed for ${asset_name}"
+    fi
+}
+
 # Download and install binary
 install_binary() {
     local platform="$1"
     local version="$2"
-    local binary_name="${BINARY_NAME}-${platform}"
-    local download_url="https://github.com/${REPO}/releases/download/${version}/${binary_name}"
+    local asset_name="${BINARY_NAME}-${platform}"
+    local output_name="${BINARY_NAME}"
+    local base_url="https://github.com/${REPO}/releases/download/${version}"
 
-    if [[ "$platform" == "win32-x64" ]]; then
-        binary_name="${binary_name}.exe"
-        download_url="https://github.com/${REPO}/releases/download/${version}/${binary_name}"
+    if [[ "$platform" == win32-* ]]; then
+        asset_name="${asset_name}.exe"
+        output_name="${BINARY_NAME}.exe"
     fi
 
     info "Downloading tuck ${version} for ${platform}..."
@@ -77,13 +111,26 @@ install_binary() {
     # Create install directory if it doesn't exist
     mkdir -p "$INSTALL_DIR"
 
-    # Download binary
-    if curl -fsSL "$download_url" -o "${INSTALL_DIR}/${BINARY_NAME}"; then
-        chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
-        success "Installed tuck to ${INSTALL_DIR}/${BINARY_NAME}"
-    else
+    local tmp_binary tmp_checksums
+    tmp_binary="$(mktemp)"
+    tmp_checksums="$(mktemp)"
+
+    # Download binary and checksum manifest
+    if ! curl -fsSL "${base_url}/${asset_name}" -o "$tmp_binary"; then
+        rm -f "$tmp_binary" "$tmp_checksums"
         return 1
     fi
+    if ! curl -fsSL "${base_url}/SHA256SUMS" -o "$tmp_checksums"; then
+        rm -f "$tmp_binary" "$tmp_checksums"
+        return 1
+    fi
+
+    verify_checksum "$tmp_checksums" "$asset_name" "$tmp_binary"
+
+    mv "$tmp_binary" "${INSTALL_DIR}/${output_name}"
+    chmod +x "${INSTALL_DIR}/${output_name}"
+    rm -f "$tmp_checksums"
+    success "Installed tuck to ${INSTALL_DIR}/${output_name}"
 }
 
 # Install via npm as fallback

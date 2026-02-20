@@ -662,11 +662,13 @@ To create a Fine-grained Personal Access Token (recommended):
    - Username: your-github-username
    - Password: github_pat_xxxxxxxxxxxx (your token)
 
-   Or configure credential storage:
-   git config --global credential.helper store
+   Configure a secure credential helper instead:
+   - macOS: git config --global credential.helper osxkeychain
+   - Linux: git config --global credential.helper libsecret
+   - Windows: git config --global credential.helper manager-core
+   - Or with GitHub CLI: gh auth setup-git
 
-   Then on first push, enter your token as the password
-   and it will be saved for future use.
+   Then on first push, enter your token as the password.
 `.trim();
 };
 
@@ -709,8 +711,11 @@ but classic tokens work if you need broader access.
    - Username: your-github-username
    - Password: ghp_xxxxxxxxxxxx (your token)
 
-   Or configure credential storage:
-   git config --global credential.helper store
+   Configure a secure credential helper instead:
+   - macOS: git config --global credential.helper osxkeychain
+   - Linux: git config --global credential.helper libsecret
+   - Windows: git config --global credential.helper manager-core
+   - Or with GitHub CLI: gh auth setup-git
 
    Then on first push, enter your token as the password.
 `.trim();
@@ -814,10 +819,27 @@ export const getAuthMethods = (repoName?: string, email?: string): AuthMethodInf
 };
 
 /**
- * Configure git credential helper for HTTPS authentication
+ * Check credential helper state without mutating global config.
+ * Use configureGitCredentialHelperWithOptions({ allowGlobalConfigChange: true })
+ * to explicitly opt into global helper configuration.
  */
 export const configureGitCredentialHelper = async (): Promise<void> => {
+  await configureGitCredentialHelperWithOptions();
+};
+
+interface ConfigureGitCredentialHelperOptions {
+  allowGlobalConfigChange?: boolean;
+}
+
+/**
+ * Configure git credential helper for HTTPS authentication.
+ * Does not modify global git config unless explicitly allowed.
+ */
+export const configureGitCredentialHelperWithOptions = async (
+  options: ConfigureGitCredentialHelperOptions = {}
+): Promise<void> => {
   const { platform } = process;
+  const allowGlobalConfigChange = options.allowGlobalConfigChange ?? false;
 
   // Check if a credential helper is already configured
   try {
@@ -828,6 +850,10 @@ export const configureGitCredentialHelper = async (): Promise<void> => {
     }
   } catch {
     // No credential helper configured, proceed with setup
+  }
+
+  if (!allowGlobalConfigChange) {
+    return;
   }
 
   try {
@@ -846,12 +872,24 @@ export const configureGitCredentialHelper = async (): Promise<void> => {
         await execFileAsync('git', ['config', '--global', 'credential.helper', `cache --timeout=${GIT_CREDENTIAL_CACHE_FALLBACK_TIMEOUT_SECONDS}`]);
       }
     } else if (platform === 'win32') {
-      // Windows - use credential manager
-      await execFileAsync('git', ['config', '--global', 'credential.helper', 'manager']);
+      // Windows - prefer manager-core, fallback to manager
+      try {
+        await execFileAsync('git', ['config', '--global', 'credential.helper', 'manager-core']);
+      } catch {
+        await execFileAsync('git', ['config', '--global', 'credential.helper', 'manager']);
+      }
     }
-  } catch {
-    // Fallback to store (less secure but works everywhere)
-    await execFileAsync('git', ['config', '--global', 'credential.helper', 'store']);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new GitHubCliError(
+      `Failed to configure git credential helper securely: ${message}`,
+      [
+        'Configure a helper manually (recommended):',
+        '  macOS: git config --global credential.helper osxkeychain',
+        '  Linux: git config --global credential.helper libsecret',
+        '  Windows: git config --global credential.helper manager-core',
+      ]
+    );
   }
 };
 
@@ -887,9 +925,6 @@ export const storeGitHubCredentials = async (
 ): Promise<void> => {
   const { writeFile, mkdir } = await import('fs/promises');
   const { dirname } = await import('path');
-
-  // First, configure the credential helper
-  await configureGitCredentialHelper();
 
   // Validate that username and token do not contain newline characters,
   // which would break the git credential helper protocol format.
