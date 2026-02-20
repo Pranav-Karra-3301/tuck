@@ -67,6 +67,31 @@ describe('backup', () => {
     expect(vol.existsSync(result.backupPath)).toBe(true);
   });
 
+  it('rejects a customBackupDir outside the home directory', async () => {
+    const sourcePath = join(TEST_HOME, '.zshrc');
+    vol.writeFileSync(sourcePath, 'content');
+
+    await expect(createBackup(sourcePath, '/etc/evil-backups')).rejects.toThrow(
+      'Unsafe backup directory'
+    );
+  });
+
+  it('rejects a configured backupDir outside the home directory', async () => {
+    const sourcePath = join(TEST_HOME, '.zshrc');
+    vol.writeFileSync(sourcePath, 'content');
+    vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });
+    vol.writeFileSync(
+      join(TEST_TUCK_DIR, '.tuckrc.json'),
+      JSON.stringify({
+        files: {
+          backupDir: '/tmp/evil-backups',
+        },
+      })
+    );
+
+    await expect(createBackup(sourcePath)).rejects.toThrow('Unsafe backup directory');
+  });
+
   it('creates multiple backups in one call', async () => {
     const sourceA = join(TEST_HOME, '.zshrc');
     const sourceB = join(TEST_HOME, '.gitconfig');
