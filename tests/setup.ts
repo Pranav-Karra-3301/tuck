@@ -71,6 +71,10 @@ vi.mock('fs-extra', async () => {
       const { vol } = await import('memfs');
       vol.mkdirSync(dir, { recursive: true });
     },
+    pathExists: async (targetPath: string) => {
+      const { vol } = await import('memfs');
+      return vol.existsSync(targetPath);
+    },
   };
 });
 

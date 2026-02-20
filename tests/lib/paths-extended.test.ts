@@ -16,7 +16,10 @@ import {
   getFilesDir,
   getCategoryDir,
   getDestinationPath,
+  getDestinationPathFromSource,
+  getHomeRelativeSourcePath,
   getRelativeDestination,
+  getRelativeDestinationFromSource,
   sanitizeFilename,
   detectCategory,
   pathExists,
@@ -28,6 +31,9 @@ import {
   getRelativePath,
   isPathWithinHome,
   validateSafeSourcePath,
+  validateSafeDestinationPath,
+  validatePathWithinRoot,
+  validateSafeManifestDestination,
   generateFileId,
 } from '../../src/lib/paths.js';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
@@ -125,6 +131,28 @@ describe('paths-extended', () => {
     });
   });
 
+  describe('isSymlink', () => {
+    it('should return true for symlinks', async () => {
+      const targetPath = join(TEST_HOME, 'target.txt');
+      const linkPath = join(TEST_HOME, 'link.txt');
+      vol.writeFileSync(targetPath, 'content');
+      vol.symlinkSync(targetPath, linkPath);
+
+      const result = await isSymlink(linkPath);
+
+      expect(result).toBe(true);
+    });
+
+    it('should return false for regular files', async () => {
+      const filePath = join(TEST_HOME, 'file.txt');
+      vol.writeFileSync(filePath, 'content');
+
+      const result = await isSymlink(filePath);
+
+      expect(result).toBe(false);
+    });
+  });
+
   describe('isReadable', () => {
     it('should return true for readable file', async () => {
       const filePath = join(TEST_HOME, 'readable.txt');
@@ -174,6 +202,12 @@ describe('paths-extended', () => {
       const tuckDir = getTuckDir(customDir);
       expect(tuckDir).toBe(customDir);
     });
+
+    it('should reject custom directory paths outside home', () => {
+      if (process.platform !== 'win32') {
+        expect(() => getTuckDir('/etc/tuck')).toThrow('custom tuck directory must be within home');
+      }
+    });
   });
 
   describe('getManifestPath', () => {
@@ -215,6 +249,59 @@ describe('paths-extended', () => {
     it('should return relative path within files directory', () => {
       const relPath = getRelativeDestination('git', 'gitconfig');
       expect(relPath.replace(/\\/g, '/')).toBe('files/git/gitconfig');
+    });
+
+    it('should always use POSIX separators for manifest paths', () => {
+      const relPath = getRelativeDestination('shell', 'nested\\zshrc');
+      expect(relPath).toBe('files/shell/nested/zshrc');
+      expect(relPath.includes('\\')).toBe(false);
+    });
+  });
+
+  describe('getHomeRelativeSourcePath', () => {
+    it('should return source path relative to home', () => {
+      expect(getHomeRelativeSourcePath('~/.config/nvim/init.vim')).toBe('.config/nvim/init.vim');
+    });
+
+    it('should reject source paths outside home', () => {
+      if (process.platform !== 'win32') {
+        expect(() => getHomeRelativeSourcePath('/etc/passwd')).toThrow(
+          'source path must be within home directory'
+        );
+      }
+    });
+  });
+
+  describe('getRelativeDestinationFromSource', () => {
+    it('should preserve source directory structure to avoid collisions', () => {
+      const awsPath = getRelativeDestinationFromSource('misc', '~/.aws/config');
+      const kubePath = getRelativeDestinationFromSource('misc', '~/.kube/config');
+
+      expect(awsPath).toBe('files/misc/.aws/config');
+      expect(kubePath).toBe('files/misc/.kube/config');
+      expect(awsPath).not.toBe(kubePath);
+    });
+
+    it('should allow custom destination filename while keeping source directories', () => {
+      const customPath = getRelativeDestinationFromSource('misc', '~/.aws/config', 'work-config');
+      expect(customPath).toBe('files/misc/.aws/work-config');
+    });
+  });
+
+  describe('getDestinationPathFromSource', () => {
+    it('should return full destination path with nested source segments', () => {
+      const destination = getDestinationPathFromSource(TEST_TUCK_DIR, 'shell', '~/.zshrc');
+      expect(destination.replace(/\\/g, '/')).toBe(`${TEST_TUCK_DIR}/files/shell/.zshrc`);
+    });
+
+    it('should return full destination path with custom filename', () => {
+      const destination = getDestinationPathFromSource(
+        TEST_TUCK_DIR,
+        'shell',
+        '~/.zshrc',
+        'zprofile'
+      );
+      expect(destination.replace(/\\/g, '/')).toBe(`${TEST_TUCK_DIR}/files/shell/zprofile`);
     });
   });
 
@@ -298,6 +385,73 @@ describe('paths-extended', () => {
     });
   });
 
+  describe('validateSafeDestinationPath', () => {
+    it('should accept destination paths in home directory', () => {
+      expect(() => validateSafeDestinationPath('~/.tuck/files/zshrc')).not.toThrow();
+      expect(() => validateSafeDestinationPath(join(TEST_HOME, '.tuck', 'files', 'gitconfig'))).not.toThrow();
+    });
+
+    it('should throw for destination paths outside allowed roots', () => {
+      if (process.platform !== 'win32') {
+        expect(() => validateSafeDestinationPath('/etc/malicious')).toThrow(
+          'destination must be within allowed roots'
+        );
+      }
+    });
+  });
+
+  describe('validatePathWithinRoot', () => {
+    it('should accept paths that resolve inside the given root', () => {
+      expect(() =>
+        validatePathWithinRoot(
+          join(TEST_TUCK_DIR, 'files', 'shell', 'zshrc'),
+          TEST_TUCK_DIR,
+          'sync destination'
+        )
+      ).not.toThrow();
+    });
+
+    it('should reject paths that escape the root directory', () => {
+      expect(() =>
+        validatePathWithinRoot(
+          join(TEST_TUCK_DIR, '..', 'outside-file'),
+          TEST_TUCK_DIR,
+          'sync destination'
+        )
+      ).toThrow('path must be within');
+    });
+  });
+
+  describe('validateSafeManifestDestination', () => {
+    it('should accept safe relative destinations under files/', () => {
+      expect(() => validateSafeManifestDestination('files/shell/zshrc')).not.toThrow();
+      expect(() => validateSafeManifestDestination('files\\git\\gitconfig')).not.toThrow();
+    });
+
+    it('should reject manifest destinations with path traversal', () => {
+      expect(() => validateSafeManifestDestination('files/../secrets.txt')).toThrow(
+        'path traversal is not allowed'
+      );
+    });
+
+    it('should reject manifest destinations outside files/', () => {
+      expect(() => validateSafeManifestDestination('tmp/evil-file')).toThrow(
+        'destination must be inside'
+      );
+    });
+
+    it('should reject absolute manifest destinations', () => {
+      if (process.platform !== 'win32') {
+        expect(() => validateSafeManifestDestination('/etc/passwd')).toThrow(
+          'destination must be a relative path'
+        );
+      }
+      expect(() => validateSafeManifestDestination('C:\\Windows\\System32\\drivers\\etc')).toThrow(
+        'destination must be a relative path'
+      );
+    });
+  });
+
   // ============================================================================
   // File ID Generation Tests
   // ============================================================================
@@ -345,6 +499,10 @@ describe('paths-extended', () => {
 
     it('should handle edge case of just a dot', () => {
       expect(sanitizeFilename('.')).toBe('file');
+    });
+
+    it('should handle dot-dot safely', () => {
+      expect(sanitizeFilename('..')).toBe('file');
     });
   });
 

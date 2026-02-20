@@ -130,6 +130,41 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn
       expect(matches.some((m) => m.patternId === 'custom-test')).toBe(true);
     });
 
+    it('should enforce global matching for custom patterns without g flag', () => {
+      const content = 'CUSTOM_SECRET=abc123xyz';
+      const customPatterns = [
+        {
+          id: 'custom-no-global',
+          name: 'Custom without global flag',
+          pattern: /CUSTOM_SECRET=([a-z0-9]+)/,
+          severity: 'high' as const,
+          description: 'Custom pattern',
+          placeholder: 'CUSTOM_SECRET',
+        },
+      ];
+
+      const matches = scanContent(content, { customPatterns });
+      expect(matches.some((m) => m.patternId === 'custom-no-global')).toBe(true);
+    });
+
+    it('should reject unsafe custom patterns during scanning', () => {
+      const content = 'aaaaa!';
+      const customPatterns = [
+        {
+          id: 'custom-unsafe',
+          name: 'Unsafe custom pattern',
+          pattern: /(a+)+$/,
+          severity: 'high' as const,
+          description: 'Unsafe pattern',
+          placeholder: 'UNSAFE',
+        },
+      ];
+
+      expect(() => scanContent(content, { customPatterns })).toThrow(
+        'Unsafe custom regex pattern rejected'
+      );
+    });
+
     it('should support excluding patterns', () => {
       const content = 'AKIAIOSFODNN7EXAMPLE';
       const matches = scanContent(content, {

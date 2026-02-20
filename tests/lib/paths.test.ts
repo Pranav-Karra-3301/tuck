@@ -5,6 +5,9 @@ import {
   expandPath,
   collapsePath,
   detectCategory,
+  getDestinationPathFromSource,
+  getHomeRelativeSourcePath,
+  getRelativeDestinationFromSource,
   sanitizeFilename,
   generateFileId,
 } from '../../src/lib/paths.js';
@@ -104,6 +107,43 @@ describe('paths', () => {
     it('should handle nested paths', () => {
       const id = generateFileId('~/.config/nvim');
       expect(id).toBe('config_nvim');
+    });
+  });
+
+  describe('home-relative destinations', () => {
+    it('should derive home-relative source paths', () => {
+      expect(getHomeRelativeSourcePath('~/.aws/config')).toBe('.aws/config');
+      expect(getHomeRelativeSourcePath('~/.kube/config')).toBe('.kube/config');
+    });
+
+    it('should build unique destinations from source paths', () => {
+      expect(getRelativeDestinationFromSource('misc', '~/.aws/config')).toBe(
+        'files/misc/.aws/config'
+      );
+      expect(getRelativeDestinationFromSource('misc', '~/.kube/config')).toBe(
+        'files/misc/.kube/config'
+      );
+    });
+
+    it('should support custom destination names without dropping home-relative directories', () => {
+      expect(getRelativeDestinationFromSource('misc', '~/.aws/config', 'aws-config')).toBe(
+        'files/misc/.aws/aws-config'
+      );
+    });
+
+    it('should build absolute destination paths from source paths', () => {
+      const destination = getDestinationPathFromSource(`${TEST_HOME}/.tuck`, 'shell', '~/.zshrc');
+      expect(destination.replace(/\\/g, '/')).toBe(`${TEST_HOME}/.tuck/files/shell/.zshrc`);
+    });
+
+    it('should build absolute destination paths from source paths with custom names', () => {
+      const destination = getDestinationPathFromSource(
+        `${TEST_HOME}/.tuck`,
+        'shell',
+        '~/.zshrc',
+        'zprofile'
+      );
+      expect(destination.replace(/\\/g, '/')).toBe(`${TEST_HOME}/.tuck/files/shell/zprofile`);
     });
   });
 });

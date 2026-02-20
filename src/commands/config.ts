@@ -90,26 +90,20 @@ const CONFIG_KEYS: ConfigKeyInfo[] = [
     description: 'Command to run after restore',
     section: 'hooks',
   },
-  // Template settings
-  {
-    path: 'templates.enabled',
-    type: 'boolean',
-    description: 'Enable template processing',
-    section: 'templates',
-  },
   // Encryption settings
   {
-    path: 'encryption.enabled',
+    path: 'encryption.backupsEnabled',
     type: 'boolean',
-    description: 'Enable file encryption',
+    description: 'Enable backup encryption',
     section: 'encryption',
   },
-  {
-    path: 'encryption.gpgKey',
-    type: 'string',
-    description: 'GPG key for encryption',
-    section: 'encryption',
-  },
+];
+
+const UNSUPPORTED_CONFIG_KEY_PREFIXES = [
+  'templates',
+  'encryption.enabled',
+  'encryption.gpgKey',
+  'encryption.files',
 ];
 
 const getKeyInfo = (path: string): ConfigKeyInfo | undefined => {
@@ -189,6 +183,16 @@ const runConfigGet = async (key: string): Promise<void> => {
 };
 
 const runConfigSet = async (key: string, value: string): Promise<void> => {
+  const unsupportedPrefix = UNSUPPORTED_CONFIG_KEY_PREFIXES.find(
+    (prefix) => key === prefix || key.startsWith(`${prefix}.`)
+  );
+
+  if (unsupportedPrefix) {
+    throw new ConfigError(
+      `Unsupported config key: ${key}. This setting is reserved but not wired yet.`
+    );
+  }
+
   const tuckDir = getTuckDir();
   const config = await loadConfig(tuckDir);
 
@@ -277,7 +281,6 @@ const showConfigView = async (config: TuckConfigOutput): Promise<void> => {
     { key: 'files', title: 'File Management', icon: '>' },
     { key: 'ui', title: 'User Interface', icon: '#' },
     { key: 'hooks', title: 'Hooks', icon: '!' },
-    { key: 'templates', title: 'Templates', icon: '%' },
     { key: 'encryption', title: 'Encryption', icon: '@' },
   ];
 
@@ -288,7 +291,16 @@ const showConfigView = async (config: TuckConfigOutput): Promise<void> => {
     console.log(c.bold.cyan(`${section.icon} ${section.title}`));
     console.log(c.dim('-'.repeat(40)));
 
-    for (const [key, value] of Object.entries(sectionConfig as Record<string, unknown>)) {
+    const sectionEntries = Object.entries(sectionConfig as Record<string, unknown>).filter(
+      ([key]) => {
+        if (section.key === 'encryption') {
+          return getKeyInfo(`${section.key}.${key}`) !== undefined;
+        }
+        return true;
+      }
+    );
+
+    for (const [key, value] of sectionEntries) {
       const keyInfo = getKeyInfo(`${section.key}.${key}`);
       const displayValue = formatConfigValue(value);
       const description = keyInfo?.description || '';
@@ -298,6 +310,11 @@ const showConfigView = async (config: TuckConfigOutput): Promise<void> => {
         console.log(c.dim(`    ${description}`));
       }
     }
+    console.log();
+  }
+
+  if (config.templates?.enabled || Object.keys(config.templates?.variables || {}).length > 0) {
+    console.log(c.yellow('! Templates config is currently reserved and not applied during restore/sync.'));
     console.log();
   }
 };

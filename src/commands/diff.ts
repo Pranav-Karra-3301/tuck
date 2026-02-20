@@ -1,8 +1,15 @@
 import { Command } from 'commander';
-import { join } from 'path';
 import { prompts, logger } from '../ui/index.js';
 import { colors as c } from '../ui/theme.js';
-import { getTuckDir, expandPath, pathExists, collapsePath, isDirectory } from '../lib/paths.js';
+import {
+  getTuckDir,
+  expandPath,
+  pathExists,
+  collapsePath,
+  isDirectory,
+  validateSafeSourcePath,
+  getSafeRepoPathFromDestination,
+} from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles, getTrackedFileBySource } from '../lib/manifest.js';
 import { getDiff } from '../lib/git.js';
 import {
@@ -43,8 +50,9 @@ const getFileDiff = async (tuckDir: string, source: string): Promise<FileDiff | 
     throw new FileNotFoundError(`Not tracked: ${source}`);
   }
 
+  validateSafeSourcePath(tracked.file.source);
   const systemPath = expandPath(source);
-  const repoPath = join(tuckDir, tracked.file.destination);
+  const repoPath = getSafeRepoPathFromDestination(tuckDir, tracked.file.destination);
 
   const diff: FileDiff = {
     source,

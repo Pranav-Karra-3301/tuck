@@ -288,6 +288,47 @@ b3BlbnNzaC1rZXktdjEAAAAA
       expect(custom.description).toBe('Custom description');
       expect(custom.placeholder).toBe('MY_SECRET');
     });
+
+    it('should enforce global flag for custom patterns', () => {
+      const custom = createCustomPattern('case-insensitive', 'Case', 'secret_[a-z]+', {
+        flags: 'i',
+      });
+
+      expect(custom.pattern.flags.includes('g')).toBe(true);
+      expect(custom.pattern.flags.includes('i')).toBe(true);
+    });
+
+    it('should reject nested quantified groups', () => {
+      expect(() => createCustomPattern('redos-1', 'Unsafe', '(a+)+$')).toThrow(
+        'Unsafe custom regex pattern rejected'
+      );
+    });
+
+    it('should reject unbounded quantifier on alternation group', () => {
+      expect(() => createCustomPattern('redos-2', 'Unsafe', '(a|aa)+$')).toThrow(
+        'Unsafe custom regex pattern rejected'
+      );
+    });
+
+    it('should reject backreferences', () => {
+      expect(() => createCustomPattern('redos-3', 'Unsafe', '([a-z]+)\\1')).toThrow(
+        'Unsafe custom regex pattern rejected'
+      );
+    });
+
+    it('should reject lookbehind assertions', () => {
+      expect(() => createCustomPattern('redos-4', 'Unsafe', '(?<=token=)[A-Za-z0-9]+')).toThrow(
+        'Unsafe custom regex pattern rejected'
+      );
+    });
+
+    it('should reject unsupported regex flags', () => {
+      expect(() =>
+        createCustomPattern('bad-flags', 'Bad Flags', 'SECRET_\\w+', {
+          flags: 'gv',
+        })
+      ).toThrow('Unsupported regex flag');
+    });
   });
 
   // ============================================================================
