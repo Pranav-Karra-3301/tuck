@@ -279,7 +279,11 @@ const runUndo = async (snapshotId: string | undefined, options: UndoOptions): Pr
       logger.warning('No backup snapshots available');
       return;
     }
-    await restoreFromSnapshot(latest.id, options);
+    if (options.file) {
+      await restoreSingleFile(latest.id, options.file, options);
+    } else {
+      await restoreFromSnapshot(latest.id, options);
+    }
     return;
   }
 
@@ -291,6 +295,11 @@ const runUndo = async (snapshotId: string | undefined, options: UndoOptions): Pr
     } else {
       await restoreFromSnapshot(snapshotId, options);
     }
+    return;
+  }
+
+  if (options.file) {
+    logger.error('The --file option requires a snapshot ID or --latest');
     return;
   }
 
