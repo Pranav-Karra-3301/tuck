@@ -4,6 +4,7 @@ import { getTuckDir } from '../lib/paths.js';
 import { loadManifest } from '../lib/manifest.js';
 import { checkLocalMode, showLocalModeWarningForPull } from '../lib/remoteChecks.js';
 import { pull, fetch, hasRemote, getRemoteUrl, getStatus, getCurrentBranch } from '../lib/git.js';
+import { runRestore } from './restore.js';
 import { NotInitializedError, GitError } from '../errors.js';
 import type { PullOptions } from '../types.js';
 
@@ -82,7 +83,7 @@ const runInteractivePull = async (tuckDir: string): Promise<void> => {
   // Ask about restore
   const shouldRestore = await prompts.confirm('Restore updated dotfiles to system?', true);
   if (shouldRestore) {
-    prompts.note("Run 'tuck restore --all' to restore all dotfiles", 'Next step');
+    await runRestore({ all: true });
   }
 
   prompts.outro('');
@@ -131,7 +132,7 @@ const runPull = async (options: PullOptions): Promise<void> => {
   logger.success('Pulled successfully!');
 
   if (options.restore) {
-    logger.info("Run 'tuck restore --all' to restore dotfiles");
+    await runRestore({ all: true });
   }
 };
 

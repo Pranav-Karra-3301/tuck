@@ -9,16 +9,18 @@ const hasRemoteMock = vi.fn();
 const getRemoteUrlMock = vi.fn();
 const getStatusMock = vi.fn();
 const getCurrentBranchMock = vi.fn();
+const runRestoreMock = vi.fn();
 const loggerSuccessMock = vi.fn();
 const loggerInfoMock = vi.fn();
 const promptsIntroMock = vi.fn();
 const promptsOutroMock = vi.fn();
+const promptsConfirmMock = vi.fn();
 
 vi.mock('../../src/ui/index.js', () => ({
   prompts: {
     intro: promptsIntroMock,
     outro: promptsOutroMock,
-    confirm: vi.fn().mockResolvedValue(true),
+    confirm: promptsConfirmMock,
     note: vi.fn(),
     cancel: vi.fn(),
     log: {
@@ -60,6 +62,10 @@ vi.mock('../../src/lib/git.js', () => ({
   getCurrentBranch: getCurrentBranchMock,
 }));
 
+vi.mock('../../src/commands/restore.js', () => ({
+  runRestore: runRestoreMock,
+}));
+
 describe('pull command', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -73,6 +79,8 @@ describe('pull command', () => {
     hasRemoteMock.mockResolvedValue(true);
     getRemoteUrlMock.mockResolvedValue('https://github.com/example/dotfiles.git');
     getCurrentBranchMock.mockResolvedValue('main');
+    runRestoreMock.mockResolvedValue(undefined);
+    promptsConfirmMock.mockResolvedValue(true);
     getStatusMock.mockResolvedValue({
       behind: 0,
       ahead: 0,
@@ -100,6 +108,16 @@ describe('pull command', () => {
     expect(loggerSuccessMock).toHaveBeenCalledWith('Pulled successfully!');
   });
 
+  it('restores tracked files after non-interactive pull when --restore is passed', async () => {
+    const { pullCommand } = await import('../../src/commands/pull.js');
+
+    await pullCommand.parseAsync(['node', 'pull', '--restore'], { from: 'user' });
+
+    expect(fetchMock).toHaveBeenCalledWith('/test-home/.tuck');
+    expect(pullMock).toHaveBeenCalledWith('/test-home/.tuck', { rebase: undefined });
+    expect(runRestoreMock).toHaveBeenCalledWith({ all: true });
+  });
+
   it('runs interactive flow when no flags are provided', async () => {
     const { pullCommand } = await import('../../src/commands/pull.js');
 
@@ -107,6 +125,38 @@ describe('pull command', () => {
 
     expect(promptsIntroMock).toHaveBeenCalledWith('tuck pull');
     expect(fetchMock).toHaveBeenCalledWith('/test-home/.tuck');
+  });
+
+  it('restores tracked files when interactive pull confirmation is accepted', async () => {
+    getStatusMock.mockResolvedValueOnce({
+      behind: 1,
+      ahead: 0,
+      modified: [],
+      staged: [],
+    });
+    promptsConfirmMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const { pullCommand } = await import('../../src/commands/pull.js');
+
+    await pullCommand.parseAsync(['node', 'pull'], { from: 'user' });
+
+    expect(pullMock).toHaveBeenCalledWith('/test-home/.tuck', { rebase: false });
+    expect(runRestoreMock).toHaveBeenCalledWith({ all: true });
+  });
+
+  it('skips restore when interactive pull confirmation is declined', async () => {
+    getStatusMock.mockResolvedValueOnce({
+      behind: 1,
+      ahead: 0,
+      modified: [],
+      staged: [],
+    });
+    promptsConfirmMock.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+    const { pullCommand } = await import('../../src/commands/pull.js');
+
+    await pullCommand.parseAsync(['node', 'pull'], { from: 'user' });
+
+    expect(pullMock).toHaveBeenCalledWith('/test-home/.tuck', { rebase: false });
+    expect(runRestoreMock).not.toHaveBeenCalled();
   });
 
   it('throws when in local-only mode', async () => {
