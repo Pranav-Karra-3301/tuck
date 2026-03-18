@@ -273,7 +273,7 @@ tuck is designed with security in mind:
 tuck secrets scan
 
 # Set a secret value locally
-tuck secrets set API_KEY "your-actual-key"
+tuck secrets set API_KEY
 ```
 
 ## Hooks

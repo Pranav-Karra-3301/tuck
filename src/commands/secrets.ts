@@ -3,7 +3,7 @@
  *
  * Commands:
  *   tuck secrets list          - List all stored secrets (values hidden)
- *   tuck secrets set <n> <v>   - Set a secret value
+ *   tuck secrets set <n>       - Set a secret value
  *   tuck secrets unset <name>  - Remove a secret
  *   tuck secrets path          - Show path to secrets file
  *   tuck secrets scan-history  - Scan git history for leaked secrets
@@ -16,7 +16,7 @@
 import { Command } from 'commander';
 import { prompts, logger, colors as c } from '../ui/index.js';
 import { getTuckDir, expandPath, pathExists } from '../lib/paths.js';
-import { loadManifest } from '../lib/manifest.js';
+import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import { loadConfig, saveConfig } from '../lib/config.js';
 import {
   listSecrets,
@@ -77,7 +77,7 @@ const runSecretsList = async (): Promise<void> => {
     logger.dim(`Secrets file: ${getSecretsPath(tuckDir)}`);
     console.log();
     logger.dim('Secrets are stored when you choose to replace detected secrets with placeholders.');
-    logger.dim('You can also manually add secrets with: tuck secrets set <NAME> <value>');
+    logger.dim('You can also manually add secrets with: tuck secrets set <NAME>');
     return;
   }
 
@@ -347,14 +347,20 @@ const runScanFiles = async (paths: string[]): Promise<void> => {
     throw new NotInitializedError();
   }
 
-  if (paths.length === 0) {
-    logger.error('No files specified');
-    logger.dim('Usage: tuck secrets scan <file> [files...]');
+  const expandedPaths =
+    paths.length > 0
+      ? paths.map((path) => expandPath(path))
+      : Array.from(
+          new Set(
+            Object.values(await getAllTrackedFiles(tuckDir)).map((file) => expandPath(file.source))
+          )
+        );
+
+  if (expandedPaths.length === 0) {
+    logger.warning('No tracked files to scan');
+    logger.dim("Run 'tuck add <path>' to start tracking files first");
     return;
   }
-
-  // Expand paths
-  const expandedPaths = paths.map((p) => expandPath(p));
 
   // Check files exist
   for (const path of expandedPaths) {
