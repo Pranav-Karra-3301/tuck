@@ -192,4 +192,18 @@ describe('secrets command', () => {
     expect(scanForSecretsMock).toHaveBeenCalledWith(['/test-home/.env'], '/test-home/.tuck');
     expect(loggerSuccessMock).toHaveBeenCalledWith('No secrets detected');
   });
+
+  it('forwards since and limit options to history scanning', async () => {
+    const { secretsCommand } = await import('../../src/commands/secrets.js');
+
+    await secretsCommand.parseAsync(
+      ['scan-history', '--since', '2024-01-01', '--limit', '25'],
+      { from: 'user' }
+    );
+
+    expect(getLogMock).toHaveBeenCalledWith('/test-home/.tuck', {
+      maxCount: 25,
+      since: '2024-01-01',
+    });
+  });
 });

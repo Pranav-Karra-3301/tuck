@@ -228,12 +228,12 @@ export const getLog = async (
 ): Promise<GitCommit[]> => {
   try {
     const git = createGit(dir);
-    const logOptions: { maxCount?: number; from?: string } = {
+    const logOptions: { maxCount?: number; '--since'?: string } = {
       maxCount: options?.maxCount || 10,
     };
 
     if (options?.since) {
-      logOptions.from = options.since;
+      logOptions['--since'] = options.since;
     }
 
     const log = await git.log(logOptions);

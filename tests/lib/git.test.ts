@@ -291,6 +291,15 @@ describe('git', () => {
       const log = await getLog(TEST_TUCK_DIR, { maxCount: 5 });
       expect(log).toBeDefined();
     });
+
+    it('should pass --since to git log when requested', async () => {
+      await getLog(TEST_TUCK_DIR, { since: '2024-01-01' });
+
+      expect(mockGitInstance.log).toHaveBeenCalledWith({
+        maxCount: 10,
+        '--since': '2024-01-01',
+      });
+    });
   });
 
   describe('getDiff', () => {
