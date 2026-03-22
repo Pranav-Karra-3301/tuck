@@ -229,4 +229,26 @@ describe('apply command behavior', () => {
       expect(vol.existsSync(clonedDir)).toBe(false);
     }
   });
+
+  it('supports explicit GitLab-prefixed apply sources', async () => {
+    cloneSetup = (dir: string) => {
+      const manifest = createMockManifest({
+        files: {
+          safe: createMockTrackedFile({
+            source: '~/.zshrc',
+            destination: 'files/shell/zshrc',
+          }),
+        },
+      });
+
+      vol.mkdirSync(join(dir, 'files', 'shell'), { recursive: true });
+      vol.writeFileSync(join(dir, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
+      vol.writeFileSync(join(dir, 'files', 'shell', 'zshrc'), 'export NEW=1');
+    };
+
+    const { runApply } = await import('../../src/commands/apply.js');
+    await runApply('gitlab:team/dotfiles', { dryRun: true });
+
+    expect(cloneRepoMock).toHaveBeenCalledWith('https://gitlab.com/team/dotfiles.git', expect.any(String));
+  });
 });

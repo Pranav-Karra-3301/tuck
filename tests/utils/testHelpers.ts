@@ -50,7 +50,10 @@ export const initTestTuck = async (options?: {
   vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
 
   // Create .gitignore
-  vol.writeFileSync(join(TEST_TUCK_DIR, '.gitignore'), '.DS_Store\n*.bak\n');
+  vol.writeFileSync(
+    join(TEST_TUCK_DIR, '.gitignore'),
+    '.DS_Store\n*.bak\nsecrets.local.json\nbackups/\naudit.log\n.tuck-keystore.enc\n'
+  );
 
   // Create tracked files if specified
   if (options?.tracked) {

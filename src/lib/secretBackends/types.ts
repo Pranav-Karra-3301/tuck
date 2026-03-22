@@ -11,9 +11,14 @@
 
 /** Supported secret backend names */
 export type BackendName = 'local' | '1password' | 'bitwarden' | 'pass';
+export type ConfiguredBackendName = BackendName | 'auto';
 
 /** Backend names as array for iteration */
 export const BACKEND_NAMES: readonly BackendName[] = ['local', '1password', 'bitwarden', 'pass'] as const;
+export const CONFIGURABLE_BACKEND_NAMES: readonly ConfiguredBackendName[] = [
+  'auto',
+  ...BACKEND_NAMES,
+] as const;
 
 // ============================================================================
 // Secret References

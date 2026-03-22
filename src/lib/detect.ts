@@ -51,6 +51,11 @@ export const DETECTION_CATEGORIES: Record<string, DetectionCategory> = {
     icon: '%',
     description: 'Command-line tool configurations',
   },
+  agents: {
+    name: 'AI & Agents',
+    icon: '&',
+    description: 'Agentic coding tools, prompts, hooks, and MCP manifests',
+  },
   languages: {
     name: 'Languages',
     icon: '@',
@@ -244,6 +249,49 @@ const DOTFILE_PATTERNS: Array<{
   { path: '~/.ackrc', category: 'cli', description: 'ack search config' },
   { path: '~/.agignore', category: 'cli', description: 'silver searcher ignore' },
   { path: '~/.editorconfig', category: 'cli', description: 'EditorConfig' },
+
+  // ==================== AI & AGENTIC CODING TOOLS ====================
+  { path: '~/.codex/config.toml', category: 'agents', description: 'Codex CLI configuration' },
+  {
+    path: '~/.codex/skills',
+    category: 'agents',
+    description: 'Codex skills',
+    exclude: ['runs', 'sessions', 'logs'],
+  },
+  {
+    path: '~/.codex/automations',
+    category: 'agents',
+    description: 'Codex automations',
+    exclude: ['**/*.db', 'runs', 'sessions'],
+  },
+  { path: '~/.claude/settings.json', category: 'agents', description: 'Claude Code settings' },
+  {
+    path: '~/.claude/commands',
+    category: 'agents',
+    description: 'Claude Code slash commands',
+  },
+  {
+    path: '~/.claude/hooks',
+    category: 'agents',
+    description: 'Claude Code hooks',
+  },
+  { path: '~/.aider.conf.yml', category: 'agents', description: 'Aider configuration' },
+  {
+    path: '~/.config/aider',
+    category: 'agents',
+    description: 'Aider configuration directory',
+  },
+  {
+    path: '~/.config/openclaw',
+    category: 'agents',
+    description: 'OpenClaw configuration',
+  },
+  { path: '~/.mcp.json', category: 'agents', description: 'Global MCP server manifest' },
+  {
+    path: '~/.config/mcp',
+    category: 'agents',
+    description: 'MCP server manifests',
+  },
 
   // ==================== LANGUAGES & PACKAGE MANAGERS ====================
   // Node.js

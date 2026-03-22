@@ -4,8 +4,7 @@ import { copy, ensureDir, pathExists } from 'fs-extra';
 import { homedir } from 'os';
 import { expandPath, pathExists as checkPathExists } from './paths.js';
 import { BackupError } from '../errors.js';
-
-const TIMEMACHINE_DIR = join(homedir(), '.tuck', 'backups');
+import { getLegacySnapshotsDir, getSnapshotsDir } from './state.js';
 
 export interface SnapshotMetadata {
   id: string;
@@ -49,8 +48,13 @@ const generateSnapshotId = (): string => {
 /**
  * Get the path to a snapshot directory
  */
-const getSnapshotPath = (snapshotId: string): string => {
-  return join(TIMEMACHINE_DIR, snapshotId);
+const getSnapshotPath = (snapshotId: string, snapshotsDir = getSnapshotsDir()): string => {
+  return join(snapshotsDir, snapshotId);
+};
+
+const getSnapshotRoots = (): string[] => {
+  const roots = [getSnapshotsDir(), getLegacySnapshotsDir()];
+  return [...new Set(roots)];
 };
 
 /**
@@ -170,38 +174,43 @@ export const createPreApplySnapshot = async (
  * List all available snapshots
  */
 export const listSnapshots = async (): Promise<Snapshot[]> => {
-  if (!(await pathExists(TIMEMACHINE_DIR))) {
-    return [];
-  }
-
-  const entries = await readdir(TIMEMACHINE_DIR, { withFileTypes: true });
   const snapshots: Snapshot[] = [];
+  const seenSnapshotIds = new Set<string>();
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+  for (const snapshotsDir of getSnapshotRoots()) {
+    if (!(await pathExists(snapshotsDir))) {
+      continue;
+    }
 
-    const snapshotPath = join(TIMEMACHINE_DIR, entry.name);
-    const metadataPath = join(snapshotPath, 'metadata.json');
+    const entries = await readdir(snapshotsDir, { withFileTypes: true });
 
-    if (!(await pathExists(metadataPath))) continue;
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (seenSnapshotIds.has(entry.name)) continue;
 
-    try {
-      const content = await readFile(metadataPath, 'utf-8');
-      const metadata: SnapshotMetadata = JSON.parse(content);
+      const snapshotPath = join(snapshotsDir, entry.name);
+      const metadataPath = join(snapshotPath, 'metadata.json');
 
-      snapshots.push({
-        id: metadata.id,
-        path: snapshotPath,
-        timestamp: new Date(metadata.timestamp),
-        reason: metadata.reason,
-        files: metadata.files,
-        machine: metadata.machine,
-        profile: metadata.profile,
-      });
-    } catch (error) {
-      // Skip invalid snapshots
-      if (process.env.DEBUG) {
-        console.warn(`[tuck] Warning: Skipping invalid snapshot:`, error);
+      if (!(await pathExists(metadataPath))) continue;
+
+      try {
+        const content = await readFile(metadataPath, 'utf-8');
+        const metadata: SnapshotMetadata = JSON.parse(content);
+
+        snapshots.push({
+          id: metadata.id,
+          path: snapshotPath,
+          timestamp: new Date(metadata.timestamp),
+          reason: metadata.reason,
+          files: metadata.files,
+          machine: metadata.machine,
+          profile: metadata.profile,
+        });
+        seenSnapshotIds.add(metadata.id);
+      } catch (error) {
+        if (process.env.DEBUG) {
+          console.warn('[tuck] Warning: Skipping invalid snapshot:', error);
+        }
       }
     }
   }
@@ -214,34 +223,38 @@ export const listSnapshots = async (): Promise<Snapshot[]> => {
  * Get a specific snapshot by ID
  */
 export const getSnapshot = async (snapshotId: string): Promise<Snapshot | null> => {
-  const snapshotPath = getSnapshotPath(snapshotId);
+  for (const snapshotsDir of getSnapshotRoots()) {
+    const snapshotPath = getSnapshotPath(snapshotId, snapshotsDir);
 
-  if (!(await pathExists(snapshotPath))) {
-    return null;
+    if (!(await pathExists(snapshotPath))) {
+      continue;
+    }
+
+    const metadataPath = join(snapshotPath, 'metadata.json');
+
+    if (!(await pathExists(metadataPath))) {
+      continue;
+    }
+
+    try {
+      const content = await readFile(metadataPath, 'utf-8');
+      const metadata: SnapshotMetadata = JSON.parse(content);
+
+      return {
+        id: metadata.id,
+        path: snapshotPath,
+        timestamp: new Date(metadata.timestamp),
+        reason: metadata.reason,
+        files: metadata.files,
+        machine: metadata.machine,
+        profile: metadata.profile,
+      };
+    } catch {
+      continue;
+    }
   }
 
-  const metadataPath = join(snapshotPath, 'metadata.json');
-
-  if (!(await pathExists(metadataPath))) {
-    return null;
-  }
-
-  try {
-    const content = await readFile(metadataPath, 'utf-8');
-    const metadata: SnapshotMetadata = JSON.parse(content);
-
-    return {
-      id: metadata.id,
-      path: snapshotPath,
-      timestamp: new Date(metadata.timestamp),
-      reason: metadata.reason,
-      files: metadata.files,
-      machine: metadata.machine,
-      profile: metadata.profile,
-    };
-  } catch {
-    return null;
-  }
+  return null;
 };
 
 /**
@@ -329,10 +342,11 @@ export const restoreFileFromSnapshot = async (
  * Delete a snapshot
  */
 export const deleteSnapshot = async (snapshotId: string): Promise<void> => {
-  const snapshotPath = getSnapshotPath(snapshotId);
-
-  if (await pathExists(snapshotPath)) {
-    await rm(snapshotPath, { recursive: true });
+  for (const snapshotsDir of getSnapshotRoots()) {
+    const snapshotPath = getSnapshotPath(snapshotId, snapshotsDir);
+    if (await pathExists(snapshotPath)) {
+      await rm(snapshotPath, { recursive: true });
+    }
   }
 };
 
@@ -361,10 +375,6 @@ export const cleanOldSnapshots = async (keepCount: number): Promise<number> => {
  * Get the total size of all snapshots in bytes
  */
 export const getSnapshotsSize = async (): Promise<number> => {
-  if (!(await pathExists(TIMEMACHINE_DIR))) {
-    return 0;
-  }
-
   let totalSize = 0;
 
   const calculateDirSize = async (dirPath: string): Promise<number> => {
@@ -384,7 +394,12 @@ export const getSnapshotsSize = async (): Promise<number> => {
     return size;
   };
 
-  totalSize = await calculateDirSize(TIMEMACHINE_DIR);
+  for (const snapshotsDir of getSnapshotRoots()) {
+    if (await pathExists(snapshotsDir)) {
+      totalSize += await calculateDirSize(snapshotsDir);
+    }
+  }
+
   return totalSize;
 };
 

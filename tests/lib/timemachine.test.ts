@@ -65,8 +65,9 @@ import {
   formatSnapshotSize,
   formatSnapshotDate,
 } from '../../src/lib/timemachine.js';
+import { getSnapshotsDir } from '../../src/lib/state.js';
 
-const TIMEMACHINE_DIR = join(TEST_HOME, '.tuck', 'backups');
+const TIMEMACHINE_DIR = getSnapshotsDir();
 
 describe('timemachine', () => {
   beforeEach(() => {

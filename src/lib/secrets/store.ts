@@ -11,6 +11,7 @@ import { join } from 'path';
 import { ensureDir } from 'fs-extra';
 import { pathExists } from '../paths.js';
 import { secretsStoreSchema, type SecretsStore } from '../../schemas/secrets.schema.js';
+import { ensureRuntimeArtifactsGitignored } from '../state.js';
 
 // File permission constants
 const SECRETS_FILE_MODE = 0o600; // Owner read/write only (rw-------)
@@ -297,24 +298,7 @@ export const touchSecrets = async (tuckDir: string, names: string[]): Promise<vo
  * Ensure the secrets file is in .gitignore
  */
 export const ensureSecretsGitignored = async (tuckDir: string): Promise<void> => {
-  const gitignorePath = join(tuckDir, '.gitignore');
-
-  let gitignoreContent = '';
-  if (await pathExists(gitignorePath)) {
-    gitignoreContent = await readFile(gitignorePath, 'utf-8');
-  }
-
-  // Check if already ignored
-  if (gitignoreContent.includes(SECRETS_FILENAME)) {
-    return;
-  }
-
-  // Add to .gitignore
-  const newContent = gitignoreContent.trim()
-    ? `${gitignoreContent.trim()}\n\n# Local secrets (NEVER commit)\n${SECRETS_FILENAME}\n`
-    : `# Local secrets (NEVER commit)\n${SECRETS_FILENAME}\n`;
-
-  await writeFile(gitignorePath, newContent, 'utf-8');
+  await ensureRuntimeArtifactsGitignored(tuckDir);
 };
 
 // ============================================================================

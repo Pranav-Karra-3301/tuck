@@ -266,7 +266,9 @@ tuck is designed with security in mind:
 - **Never tracks private keys** — SSH keys, `.env` files, and credentials are blocked by default
 - **Secret scanning** — Warns if files contain API keys or tokens
 - **Placeholder support** — Replace secrets with `{{PLACEHOLDER}}` syntax
-- **Local secrets** — Store actual values in `secrets.local.json` (never committed)
+- **External-first secrets** — `security.secretBackend` defaults to `auto`, preferring external password managers before local fallback
+- **Local fallback secrets** — Store actual values in `secrets.local.json` when needed; it is gitignored by default
+- **Runtime state isolation** — Audit logs, snapshots, and fallback keystore data live outside the tracked tuck repo
 
 ```bash
 # Scan tracked files for secrets

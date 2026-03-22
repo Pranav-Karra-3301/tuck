@@ -3,14 +3,14 @@
  * Used when system keychain is not available
  */
 
-import { readFile, writeFile, chmod } from 'fs/promises';
-import { join } from 'path';
+import { readFile, writeFile, chmod, rm } from 'fs/promises';
+import { dirname } from 'path';
 import { homedir, hostname, userInfo } from 'os';
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'crypto';
 import { ensureDir, pathExists } from 'fs-extra';
 import type { Keystore } from './types.js';
+import { getFallbackKeystorePath, getLegacyFallbackKeystorePath } from '../../state.js';
 
-const KEYSTORE_FILE = '.tuck-keystore.enc';
 const ALGORITHM = 'aes-256-gcm';
 
 interface KeystoreData {
@@ -20,9 +20,11 @@ interface KeystoreData {
 
 export class FallbackKeystore implements Keystore {
   private keystorePath: string;
+  private legacyKeystorePath: string | null;
 
   constructor(customPath?: string) {
-    this.keystorePath = customPath || join(homedir(), '.tuck', KEYSTORE_FILE);
+    this.keystorePath = customPath || getFallbackKeystorePath();
+    this.legacyKeystorePath = customPath ? null : getLegacyFallbackKeystorePath();
   }
 
   getName(): string {
@@ -85,12 +87,13 @@ export class FallbackKeystore implements Keystore {
   }
 
   private async loadData(): Promise<KeystoreData> {
-    if (!(await pathExists(this.keystorePath))) {
+    const loadPath = await this.getReadablePath();
+    if (!loadPath) {
       return { entries: {}, version: 1 };
     }
 
     try {
-      const encrypted = await readFile(this.keystorePath);
+      const encrypted = await readFile(loadPath);
       const decrypted = this.decrypt(encrypted);
       return JSON.parse(decrypted.toString('utf-8'));
     } catch {
@@ -103,10 +106,26 @@ export class FallbackKeystore implements Keystore {
     const json = JSON.stringify(data, null, 2);
     const encrypted = this.encrypt(Buffer.from(json, 'utf-8'));
 
-    await ensureDir(join(homedir(), '.tuck'));
+    await ensureDir(dirname(this.keystorePath));
     await writeFile(this.keystorePath, encrypted);
     // Restrict permissions to owner only
     await chmod(this.keystorePath, 0o600);
+
+    if (this.legacyKeystorePath && this.legacyKeystorePath !== this.keystorePath) {
+      await rm(this.legacyKeystorePath, { force: true }).catch(() => undefined);
+    }
+  }
+
+  private async getReadablePath(): Promise<string | null> {
+    if (await pathExists(this.keystorePath)) {
+      return this.keystorePath;
+    }
+
+    if (this.legacyKeystorePath && (await pathExists(this.legacyKeystorePath))) {
+      return this.legacyKeystorePath;
+    }
+
+    return null;
   }
 
   private encrypt(data: Buffer): Buffer {

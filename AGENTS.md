@@ -417,6 +417,33 @@ chore: update dependencies
 9. Pull from main before starting work
 10. Run full test suite before committing
 
+### Feature Delivery Rules
+
+1. Do not document, expose in config, or surface in manifests any feature that does not have an end-to-end test proving it works.
+2. Any change touching secrets, hooks, restore/apply flows, encryption, or remote execution must include a short threat model in the PR/patch notes.
+3. Any destructive or stateful feature must ship with preview mode, rollback or undo coverage, audit logging, and `tuck doctor` coverage.
+4. Every command or config change must update help text, README/docs, and tests in the same patch.
+5. Logs, prompts, snapshots, and diagnostics must never print secret values.
+
+### Tracked State Policy
+
+Every file created under `~/.tuck` or tuck-managed state must be classified before implementation:
+
+| Path / Kind | Policy |
+|-------------|--------|
+| `files/`, `.tuckmanifest.json`, `.tuckrc.json`, `README.md`, `secrets.mappings.json` | Tracked |
+| `secrets.local.json` | Repo-local but gitignored fallback only |
+| Legacy `backups/`, `audit.log`, `.tuck-keystore.enc` under `~/.tuck` | Deprecated and must stay gitignored if present |
+| Active snapshots, audit logs, fallback keystore | External-only runtime state outside the tracked repo |
+
+### Agent Checklist
+
+1. Verify cross-platform behavior for macOS, Linux, and Windows when touching paths, permissions, shells, or provider integrations.
+2. Keep the repo clean: do not stage caches, local secrets, audit logs, snapshots, or fallback keystore files.
+3. Prefer external secret backends; local secrets are an explicit fallback, not the default happy path.
+4. Add or update `doctor` checks when introducing new security-sensitive or stateful behavior.
+5. If a feature is intentionally reserved for future work, keep it hidden or blocked rather than partially wiring it.
+
 ---
 
 ## File Categories

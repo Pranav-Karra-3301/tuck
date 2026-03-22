@@ -1,3 +1,4 @@
+import { readFile } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
 import type { TuckConfigOutput } from '../schemas/config.schema.js';
@@ -5,6 +6,14 @@ import type { TuckManifestOutput } from '../schemas/manifest.schema.js';
 import { loadConfig } from './config.js';
 import { getStatus } from './git.js';
 import { loadManifest } from './manifest.js';
+import {
+  getFallbackKeystorePath,
+  getLegacyAuditLogPath,
+  getLegacyFallbackKeystorePath,
+  getLegacySnapshotsDir,
+  LOCAL_SECRETS_FILENAME,
+  REPO_RUNTIME_GITIGNORE_PATTERNS,
+} from './state.js';
 import {
   collapsePath,
   expandPath,
@@ -515,6 +524,242 @@ const checkBackupOnRestore: DoctorCheck = {
   },
 };
 
+const checkRuntimeStateIsolation: DoctorCheck = {
+  id: 'security.repo-runtime-state',
+  category: 'security',
+  run: async (context) => {
+    if (!context.hasTuckDir) {
+      return {
+        id: 'security.repo-runtime-state',
+        category: 'security',
+        status: 'warn',
+        message: 'Skipped runtime-state isolation checks because tuck is not initialized',
+      };
+    }
+
+    const legacyArtifacts = [
+      getLegacySnapshotsDir(context.tuckDir),
+      getLegacyAuditLogPath(context.tuckDir),
+      getLegacyFallbackKeystorePath(context.tuckDir),
+    ];
+
+    const presentArtifacts: string[] = [];
+    for (const artifactPath of legacyArtifacts) {
+      if (await pathExists(artifactPath)) {
+        presentArtifacts.push(collapsePath(artifactPath));
+      }
+    }
+
+    if (presentArtifacts.length === 0) {
+      return {
+        id: 'security.repo-runtime-state',
+        category: 'security',
+        status: 'pass',
+        message: 'Sensitive runtime state is stored outside the tracked repository',
+      };
+    }
+
+    return {
+      id: 'security.repo-runtime-state',
+      category: 'security',
+      status: 'fail',
+      message: `Detected ${presentArtifacts.length} legacy runtime artifact${presentArtifacts.length === 1 ? '' : 's'} under the tuck repo`,
+      details: presentArtifacts.join(', '),
+      fix: 'Move or delete legacy audit logs, snapshots, and fallback keystore files from `~/.tuck`',
+    };
+  },
+};
+
+const checkRuntimeGitignoreCoverage: DoctorCheck = {
+  id: 'security.runtime-gitignore',
+  category: 'security',
+  run: async (context) => {
+    if (!context.hasTuckDir) {
+      return {
+        id: 'security.runtime-gitignore',
+        category: 'security',
+        status: 'warn',
+        message: 'Skipped runtime gitignore checks because tuck is not initialized',
+      };
+    }
+
+    const gitignorePath = join(context.tuckDir, '.gitignore');
+    if (!(await pathExists(gitignorePath))) {
+      return {
+        id: 'security.runtime-gitignore',
+        category: 'security',
+        status: 'fail',
+        message: 'Missing .gitignore in tuck repository',
+        fix: 'Recreate `.gitignore` with `tuck init` or add runtime-state exclusions manually',
+      };
+    }
+
+    const gitignoreContent = await readFile(gitignorePath, 'utf-8');
+    const existingPatterns = new Set(
+      gitignoreContent
+        .split(/\r?\n/u)
+        .map((line: string) => line.trim())
+        .filter(Boolean)
+    );
+    const missingPatterns = REPO_RUNTIME_GITIGNORE_PATTERNS.filter(
+      (pattern) => !existingPatterns.has(pattern)
+    );
+
+    if (missingPatterns.length === 0) {
+      return {
+        id: 'security.runtime-gitignore',
+        category: 'security',
+        status: 'pass',
+        message: 'Runtime-state artifacts are gitignored',
+      };
+    }
+
+    return {
+      id: 'security.runtime-gitignore',
+      category: 'security',
+      status: 'fail',
+      message: `Missing ${missingPatterns.length} runtime-state gitignore pattern${missingPatterns.length === 1 ? '' : 's'}`,
+      details: missingPatterns.join(', '),
+      fix: 'Add the missing runtime-state patterns to `.gitignore`',
+    };
+  },
+};
+
+const checkLocalSecretsPolicy: DoctorCheck = {
+  id: 'security.local-secrets',
+  category: 'security',
+  run: async (context) => {
+    if (!context.hasTuckDir || !context.config) {
+      return {
+        id: 'security.local-secrets',
+        category: 'security',
+        status: 'warn',
+        message: 'Skipped local secrets checks because configuration is unavailable',
+      };
+    }
+
+    const configuredBackend = context.config.security.secretBackend || 'auto';
+    const secretsPath = join(context.tuckDir, LOCAL_SECRETS_FILENAME);
+    const hasLocalSecretsFile = await pathExists(secretsPath);
+
+    if (configuredBackend === 'local') {
+      return {
+        id: 'security.local-secrets',
+        category: 'security',
+        status: 'warn',
+        message: 'Local secrets backend is configured explicitly',
+        details: collapsePath(secretsPath),
+        fix: 'Prefer `security.secretBackend = "auto"` or an external password manager backend',
+      };
+    }
+
+    if (hasLocalSecretsFile) {
+      return {
+        id: 'security.local-secrets',
+        category: 'security',
+        status: 'warn',
+        message: 'Local secrets store is present',
+        details: collapsePath(secretsPath),
+        fix: 'Keep local secrets only as a fallback and prefer external password managers for active use',
+      };
+    }
+
+    return {
+      id: 'security.local-secrets',
+      category: 'security',
+      status: 'pass',
+      message: 'No local secrets fallback is active',
+    };
+  },
+};
+
+const checkFallbackKeystoreUsage: DoctorCheck = {
+  id: 'security.fallback-keystore',
+  category: 'security',
+  run: async (context) => {
+    const fallbackPaths = [getFallbackKeystorePath(), getLegacyFallbackKeystorePath(context.tuckDir)];
+    const existingPaths: string[] = [];
+
+    for (const keystorePath of fallbackPaths) {
+      if (await pathExists(keystorePath)) {
+        existingPaths.push(collapsePath(keystorePath));
+      }
+    }
+
+    if (existingPaths.length === 0) {
+      return {
+        id: 'security.fallback-keystore',
+        category: 'security',
+        status: 'pass',
+        message: 'No fallback keystore file detected',
+      };
+    }
+
+    return {
+      id: 'security.fallback-keystore',
+      category: 'security',
+      status: 'warn',
+      message: 'Fallback encrypted keystore file is in use',
+      details: existingPaths.join(', '),
+      fix: 'Prefer OS-native credential stores when available and remove legacy keystore files from the repository',
+    };
+  },
+};
+
+const checkUnsupportedReservedConfig: DoctorCheck = {
+  id: 'security.unsupported-config',
+  category: 'security',
+  run: async (context) => {
+    if (!context.config) {
+      return {
+        id: 'security.unsupported-config',
+        category: 'security',
+        status: 'warn',
+        message: 'Skipped unsupported config checks because configuration is unavailable',
+      };
+    }
+
+    const unsupportedKeys: string[] = [];
+
+    if (context.config.templates?.enabled) {
+      unsupportedKeys.push('templates.enabled');
+    }
+    if (Object.keys(context.config.templates?.variables || {}).length > 0) {
+      unsupportedKeys.push('templates.variables');
+    }
+    if (context.config.encryption?.enabled) {
+      unsupportedKeys.push('encryption.enabled');
+    }
+    if (
+      typeof context.config.encryption?.gpgKey === 'string' &&
+      context.config.encryption.gpgKey.trim().length > 0
+    ) {
+      unsupportedKeys.push('encryption.gpgKey');
+    }
+    if ((context.config.encryption?.files || []).length > 0) {
+      unsupportedKeys.push('encryption.files');
+    }
+
+    if (unsupportedKeys.length === 0) {
+      return {
+        id: 'security.unsupported-config',
+        category: 'security',
+        status: 'pass',
+        message: 'No unsupported reserved config keys are in use',
+      };
+    }
+
+    return {
+      id: 'security.unsupported-config',
+      category: 'security',
+      status: 'fail',
+      message: `Detected ${unsupportedKeys.length} reserved config key${unsupportedKeys.length === 1 ? '' : 's'} that are not wired yet`,
+      details: unsupportedKeys.join(', '),
+      fix: 'Remove unsupported templating and tracked-file encryption settings until those features ship end-to-end',
+    };
+  },
+};
+
 const checkHooksSafety: DoctorCheck = {
   id: 'hooks.commands',
   category: 'hooks',
@@ -580,6 +825,11 @@ const doctorChecks: DoctorCheck[] = [
   checkManifestDuplicateDestinations,
   checkSecretScanning,
   checkBackupOnRestore,
+  checkRuntimeStateIsolation,
+  checkRuntimeGitignoreCoverage,
+  checkLocalSecretsPolicy,
+  checkFallbackKeystoreUsage,
+  checkUnsupportedReservedConfig,
   checkHooksSafety,
 ];
 

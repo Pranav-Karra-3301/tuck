@@ -32,17 +32,14 @@ import {
   createResolver,
   setMapping,
   listMappings,
-  BACKEND_NAMES,
-  type BackendName,
+  CONFIGURABLE_BACKEND_NAMES,
+  type ConfiguredBackendName,
 } from '../lib/secretBackends/index.js';
 import { NotInitializedError } from '../errors.js';
 import { getLog } from '../lib/git.js';
 
-/**
- * Type guard to check if a string is a valid BackendName
- */
-const isBackendName = (value: string): value is BackendName => {
-  return (BACKEND_NAMES as readonly string[]).includes(value);
+const isConfiguredBackendName = (value: string): value is ConfiguredBackendName => {
+  return (CONFIGURABLE_BACKEND_NAMES as readonly string[]).includes(value);
 };
 
 /**
@@ -469,9 +466,9 @@ const runBackendSet = async (backend: string, options: BackendSetOptions): Promi
   }
 
   // Validate backend name using type guard
-  if (!isBackendName(backend)) {
+  if (!isConfiguredBackendName(backend)) {
     logger.error(`Invalid backend: ${backend}`);
-    logger.dim(`Valid backends: ${BACKEND_NAMES.join(', ')}`);
+    logger.dim(`Valid backends: ${CONFIGURABLE_BACKEND_NAMES.join(', ')}`);
     return;
   }
 
@@ -539,7 +536,7 @@ const runBackendSet = async (backend: string, options: BackendSetOptions): Promi
   logger.success(`Secret backend set to: ${backend}`);
 
   // Show setup instructions if not local
-  if (backend !== 'local') {
+  if (backend !== 'local' && backend !== 'auto') {
     const resolver = createResolver(tuckDir, { ...config.security, secretBackend: backend });
     const backendImpl = resolver.getBackend(backend);
     if (backendImpl) {
@@ -561,6 +558,8 @@ const runBackendStatus = async (): Promise<void> => {
   const config = await loadConfig(tuckDir);
   const resolver = createResolver(tuckDir, config.security);
   const statuses = await resolver.getBackendStatuses();
+  const configuredBackend = resolver.getConfiguredBackendName();
+  const effectiveBackend = await resolver.getEffectiveBackendName();
 
   console.log();
   console.log(c.bold.cyan('Secret Backend Status'));
@@ -580,7 +579,11 @@ const runBackendStatus = async (): Promise<void> => {
     console.log();
   }
 
-  console.log(c.dim(`Current backend: ${config.security.secretBackend || 'local'}`));
+  if (configuredBackend === 'auto') {
+    console.log(c.dim(`Current backend: auto (resolved to ${effectiveBackend})`));
+  } else {
+    console.log(c.dim(`Current backend: ${configuredBackend}`));
+  }
 };
 
 const runBackendList = async (): Promise<void> => {
@@ -590,7 +593,11 @@ const runBackendList = async (): Promise<void> => {
   console.log();
 
   const backends = [
-    { name: 'local', desc: 'Local secrets file (default)' },
+    {
+      name: 'auto',
+      desc: 'Auto-detect the best available external backend, then fall back to local',
+    },
+    { name: 'local', desc: 'Local secrets file (explicit fallback)' },
     { name: '1password', desc: '1Password password manager' },
     { name: 'bitwarden', desc: 'Bitwarden password manager' },
     { name: 'pass', desc: 'Standard Unix password store' },
@@ -727,15 +734,20 @@ const runTest = async (options: TestOptions): Promise<void> => {
   const resolver = createResolver(tuckDir, config.security);
 
   // Validate and narrow backend name
-  const rawBackendName = options.backend || config.security.secretBackend || 'local';
-  if (!isBackendName(rawBackendName)) {
+  const rawBackendName = options.backend || config.security.secretBackend || 'auto';
+  if (!isConfiguredBackendName(rawBackendName)) {
     logger.error(`Invalid backend: ${rawBackendName}`);
-    logger.dim(`Valid backends: ${BACKEND_NAMES.join(', ')}`);
+    logger.dim(`Valid backends: ${CONFIGURABLE_BACKEND_NAMES.join(', ')}`);
     return;
   }
-  const backendName = rawBackendName;
+  const backendName =
+    rawBackendName === 'auto' ? await resolver.getEffectiveBackendName() : rawBackendName;
 
-  prompts.intro(`tuck secrets test (${backendName})`);
+  prompts.intro(
+    rawBackendName === 'auto'
+      ? `tuck secrets test (auto -> ${backendName})`
+      : `tuck secrets test (${backendName})`
+  );
 
   const spinner = prompts.spinner();
   spinner.start('Checking backend availability...');
@@ -835,7 +847,7 @@ export const secretsCommand = new Command('secrets')
       .addCommand(
         new Command('set')
           .description('Set the secret backend')
-          .argument('<backend>', 'Backend name: local, 1password, bitwarden, pass')
+          .argument('<backend>', 'Backend name: auto, local, 1password, bitwarden, pass')
           .option('--vault <vault>', 'Default vault (1Password)')
           .option('--server-url <url>', 'Server URL (Bitwarden)')
           .option('--store-path <path>', 'Password store path (pass)')

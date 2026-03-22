@@ -147,7 +147,7 @@ export const defaultConfig: TuckConfigOutput = {
     excludePatterns: [],
     excludeFiles: [],
     maxFileSize: 10 * 1024 * 1024,
-    secretBackend: 'local',
+    secretBackend: 'auto',
     cacheSecrets: true,
     secretMappings: 'secrets.mappings.json',
   },

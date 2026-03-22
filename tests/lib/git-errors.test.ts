@@ -6,6 +6,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { vol } from 'memfs';
+import { join } from 'path';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
 
 // Create mock git object that throws errors
@@ -184,6 +185,7 @@ describe('git-errors', () => {
   describe('stageAll errors', () => {
     it('should throw GitError when staging all fails', async () => {
       mockGitInstance = createErrorMockGit('not a git repository');
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'README.md'), '# test');
 
       await expect(stageAll(TEST_TUCK_DIR)).rejects.toThrow('Failed to stage all files');
     });

@@ -14,7 +14,7 @@ import {
   getTuckDir,
 } from '../lib/paths.js';
 import { cloneRepo } from '../lib/git.js';
-import { isGhInstalled, findDotfilesRepo, ghCloneRepo, repoExists } from '../lib/github.js';
+import { isGhInstalled, ghCloneRepo, repoExists } from '../lib/github.js';
 import { createPreApplySnapshot } from '../lib/timemachine.js';
 import { smartMerge, isShellFile, generateMergePreview } from '../lib/merge.js';
 import { CATEGORIES } from '../constants.js';
@@ -25,6 +25,7 @@ import { createResolver } from '../lib/secretBackends/index.js';
 import { loadConfig } from '../lib/config.js';
 import { IS_WINDOWS } from '../lib/platform.js';
 import { RepositoryNotFoundError } from '../errors.js';
+import { getProvider, type ProviderMode, type RemoteConfig as ProviderRemoteConfig } from '../lib/providers/index.js';
 
 // Track if Windows permission warning has been shown this session
 let windowsPermissionWarningShown = false;
@@ -89,38 +90,109 @@ interface ApplyResult {
   }>;
 }
 
+const buildProviderCloneUrl = (
+  providerMode: Extract<ProviderMode, 'github' | 'gitlab'>,
+  repoId: string,
+  remoteConfig?: ProviderRemoteConfig
+): string => {
+  const slashIndex = repoId.indexOf('/');
+  if (slashIndex <= 0 || slashIndex === repoId.length - 1) {
+    throw new RepositoryNotFoundError(repoId);
+  }
+
+  const owner = repoId.slice(0, slashIndex);
+  const repoName = repoId.slice(slashIndex + 1);
+  const provider = getProvider(providerMode, remoteConfig?.mode === providerMode ? remoteConfig : undefined);
+  return provider.buildRepoUrl(owner, repoName, 'https');
+};
+
 /**
  * Resolve a source (username or repo URL) to a full repository identifier
  */
 const resolveSource = async (source: string): Promise<{ repoId: string; isUrl: boolean }> => {
+  const configuredRemote = (await loadConfig(getTuckDir()))?.remote ?? { mode: 'local' as const };
+  const providerPrefixMatch = source.match(/^(github|gitlab|custom):(.*)$/u);
+
+  if (providerPrefixMatch) {
+    const providerMode = providerPrefixMatch[1] as Extract<ProviderMode, 'github' | 'gitlab' | 'custom'>;
+    const repoId = providerPrefixMatch[2];
+
+    return {
+      repoId:
+        providerMode === 'custom'
+          ? repoId
+          : buildProviderCloneUrl(providerMode, repoId, configuredRemote),
+      isUrl: true,
+    };
+  }
+
   // Check if it's a full URL
   if (source.includes('://') || source.startsWith('git@')) {
     return { repoId: source, isUrl: true };
   }
 
-  // Check if it's a GitHub repo identifier (user/repo)
+  // Check if it's a repo identifier (owner/repo or group/subgroup/repo)
   if (source.includes('/')) {
+    if (configuredRemote.mode === 'gitlab') {
+      return {
+        repoId: buildProviderCloneUrl('gitlab', source, configuredRemote),
+        isUrl: true,
+      };
+    }
+
     return { repoId: source, isUrl: false };
   }
 
   // Assume it's a username, try to find their dotfiles repo
   logger.info(`Looking for dotfiles repository for ${source}...`);
 
-  if (await isGhInstalled()) {
-    const dotfilesRepo = await findDotfilesRepo(source);
-    if (dotfilesRepo) {
-      logger.success(`Found repository: ${dotfilesRepo}`);
-      return { repoId: dotfilesRepo, isUrl: false };
+  const providerModes: Array<Extract<ProviderMode, 'github' | 'gitlab'>> =
+    configuredRemote.mode === 'gitlab' ? ['gitlab', 'github'] : ['github', 'gitlab'];
+
+  for (const mode of providerModes) {
+    if (mode === 'github' && !(await isGhInstalled())) {
+      continue;
+    }
+
+    try {
+      const provider = getProvider(mode, configuredRemote.mode === mode ? configuredRemote : undefined);
+      const dotfilesRepo = await provider.findDotfilesRepo(source);
+      if (dotfilesRepo) {
+        logger.success(`Found repository: ${dotfilesRepo}`);
+        return {
+          repoId: mode === 'github' ? dotfilesRepo : buildProviderCloneUrl(mode, dotfilesRepo, configuredRemote),
+          isUrl: mode !== 'github',
+        };
+      }
+    } catch {
+      continue;
     }
   }
 
   // Try common repo names
   const commonNames = ['dotfiles', 'tuck', '.dotfiles'];
-  for (const name of commonNames) {
-    const repoId = `${source}/${name}`;
-    if (await repoExists(repoId)) {
-      logger.success(`Found repository: ${repoId}`);
-      return { repoId, isUrl: false };
+  for (const mode of providerModes) {
+    for (const name of commonNames) {
+      const repoId = `${source}/${name}`;
+
+      try {
+        if (
+          mode === 'github'
+            ? await repoExists(repoId)
+            : await getProvider(
+                mode,
+                configuredRemote.mode === mode ? configuredRemote : undefined
+              ).repoExists(repoId)
+        ) {
+          logger.success(`Found repository: ${repoId}`);
+          return {
+            repoId: mode === 'github' ? repoId : buildProviderCloneUrl(mode, repoId, configuredRemote),
+            isUrl: mode !== 'github',
+          };
+        }
+      } catch {
+        continue;
+      }
     }
   }
 

@@ -133,4 +133,52 @@ describe('doctor checks', () => {
     expect(tuckDirCheck?.status).toBe('fail');
     expect(tuckDirCheck?.message).toContain('not a directory');
   });
+
+  it('fails when legacy runtime artifacts still live under the tuck repo', async () => {
+    await initTestTuck();
+    vol.mkdirSync(join(TEST_TUCK_DIR, 'backups'), { recursive: true });
+    vol.writeFileSync(join(TEST_TUCK_DIR, 'audit.log'), 'legacy');
+
+    const report = await runDoctorChecks({ category: 'security' });
+    const check = report.checks.find((item) => item.id === 'security.repo-runtime-state');
+
+    expect(check?.status).toBe('fail');
+    expect(check?.details).toContain('~/.tuck/backups');
+    expect(check?.details).toContain('~/.tuck/audit.log');
+  });
+
+  it('warns when local secrets backend is configured explicitly', async () => {
+    await initTestTuck({
+      config: {
+        security: {
+          secretBackend: 'local',
+        },
+      },
+    });
+
+    const report = await runDoctorChecks({ category: 'security' });
+    const check = report.checks.find((item) => item.id === 'security.local-secrets');
+
+    expect(check?.status).toBe('warn');
+    expect(check?.message).toContain('Local secrets backend');
+  });
+
+  it('fails when reserved unsupported config keys are in use', async () => {
+    await initTestTuck({
+      config: {
+        templates: {
+          enabled: true,
+          variables: {
+            MACHINE: 'devbox',
+          },
+        },
+      },
+    });
+
+    const report = await runDoctorChecks({ category: 'security' });
+    const check = report.checks.find((item) => item.id === 'security.unsupported-config');
+
+    expect(check?.status).toBe('fail');
+    expect(check?.details).toContain('templates.enabled');
+  });
 });

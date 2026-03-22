@@ -105,6 +105,7 @@ vi.mock('../../src/lib/secretBackends/index.js', () => ({
   setMapping: setMappingMock,
   listMappings: listMappingsMock,
   BACKEND_NAMES: ['local', '1password', 'bitwarden', 'pass'],
+  CONFIGURABLE_BACKEND_NAMES: ['auto', 'local', '1password', 'bitwarden', 'pass'],
 }));
 
 vi.mock('../../src/lib/git.js', () => ({
@@ -205,5 +206,20 @@ describe('secrets command', () => {
       maxCount: 25,
       since: '2024-01-01',
     });
+  });
+
+  it('accepts auto as the configured secret backend', async () => {
+    const { secretsCommand } = await import('../../src/commands/secrets.js');
+
+    await secretsCommand.parseAsync(['backend', 'set', 'auto'], { from: 'user' });
+
+    expect(saveConfigMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        security: expect.objectContaining({
+          secretBackend: 'auto',
+        }),
+      }),
+      '/test-home/.tuck'
+    );
   });
 });

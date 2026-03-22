@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import { vol } from 'memfs';
 import {
+  detectDotfiles,
+  DETECTION_CATEGORIES,
   shouldExcludeFile,
   DEFAULT_EXCLUSION_PATTERNS,
 } from '../../src/lib/detect.js';
@@ -186,6 +189,27 @@ describe('detect', () => {
         expect(shouldExcludeFile('~/.cache-config')).toBe(false); // Different from ~/.cache
         expect(shouldExcludeFile('~/.history-manager')).toBe(false);
       });
+    });
+  });
+
+  describe('agent tooling detection', () => {
+    it('detects AI agent configs in a dedicated category', async () => {
+      vol.mkdirSync('/test-home/.codex', { recursive: true });
+      vol.mkdirSync('/test-home/.claude', { recursive: true });
+      vol.writeFileSync('/test-home/.codex/config.toml', 'model = "gpt-5"');
+      vol.writeFileSync('/test-home/.claude/settings.json', '{}');
+
+      const detected = await detectDotfiles();
+
+      expect(DETECTION_CATEGORIES.agents.name).toBe('AI & Agents');
+      expect(
+        detected.some((file) => file.category === 'agents' && file.path === '~/.codex/config.toml')
+      ).toBe(true);
+      expect(
+        detected.some(
+          (file) => file.category === 'agents' && file.path === '~/.claude/settings.json'
+        )
+      ).toBe(true);
     });
   });
 });

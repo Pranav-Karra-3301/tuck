@@ -64,6 +64,7 @@ import type { InitOptions } from '../types.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
 import { preparePathsForTracking } from '../lib/trackPipeline.js';
 import { errorToMessage } from '../lib/validation.js';
+import { REPO_RUNTIME_GITIGNORE_PATTERNS } from '../lib/state.js';
 
 const GITIGNORE_TEMPLATE = `# OS generated files
 .DS_Store
@@ -78,6 +79,9 @@ Thumbs.db
 *.bak
 *.backup
 *~
+
+# Local secrets and legacy runtime state
+${REPO_RUNTIME_GITIGNORE_PATTERNS.join('\n')}
 
 # Secret files (add patterns for files you want to exclude)
 # *.secret

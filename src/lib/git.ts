@@ -2,6 +2,8 @@ import simpleGit, { SimpleGit, StatusResult } from 'simple-git';
 import { GitError } from '../errors.js';
 import { pathExists } from './paths.js';
 import { join } from 'path';
+import { readdir } from 'fs/promises';
+import { REPO_STAGE_BLOCKLIST } from './state.js';
 
 export interface GitStatus {
   isRepo: boolean;
@@ -116,7 +118,16 @@ export const stageFiles = async (dir: string, files: string[]): Promise<void> =>
 export const stageAll = async (dir: string): Promise<void> => {
   try {
     const git = createGit(dir);
-    await git.add('.');
+    const entries = await readdir(dir, { withFileTypes: true });
+    const stageTargets = entries
+      .map((entry) => entry.name)
+      .filter((name) => !REPO_STAGE_BLOCKLIST.has(name));
+
+    if (stageTargets.length === 0) {
+      return;
+    }
+
+    await git.raw(['add', '--all', '--', ...stageTargets]);
   } catch (error) {
     throw new GitError('Failed to stage all files', String(error));
   }

@@ -78,6 +78,7 @@ describe('config', () => {
     it('should have security defaults', () => {
       expect(defaultConfig.security.scanSecrets).toBe(true);
       expect(defaultConfig.security.blockOnSecrets).toBe(true);
+      expect(defaultConfig.security.secretBackend).toBe('auto');
     });
 
     it('should have templates disabled by default', () => {

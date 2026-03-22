@@ -227,7 +227,21 @@ describe('git', () => {
 
   describe('stageAll', () => {
     it('should stage all changes', async () => {
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'README.md'), '# test');
       await expect(stageAll(TEST_TUCK_DIR)).resolves.not.toThrow();
+      expect(mockGitInstance.raw).toHaveBeenCalledWith(['add', '--all', '--', 'README.md']);
+    });
+
+    it('skips internal runtime artifacts when staging everything', async () => {
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'README.md'), '# test');
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'audit.log'), 'legacy');
+      vol.writeFileSync(join(TEST_TUCK_DIR, '.tuck-keystore.enc'), 'legacy');
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'secrets.local.json'), '{}');
+      vol.mkdirSync(join(TEST_TUCK_DIR, 'backups'), { recursive: true });
+
+      await stageAll(TEST_TUCK_DIR);
+
+      expect(mockGitInstance.raw).toHaveBeenCalledWith(['add', '--all', '--', 'README.md']);
     });
   });
 

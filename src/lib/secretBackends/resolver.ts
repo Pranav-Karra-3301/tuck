@@ -7,6 +7,7 @@
 
 import type {
   BackendName,
+  ConfiguredBackendName,
   SecretBackend,
   SecretReference,
   ResolvedSecret,
@@ -35,6 +36,8 @@ export class SecretResolver {
   private backends: Map<BackendName, SecretBackend>;
   private cache: SecretCache;
   private primaryBackend: BackendName;
+  private configuredBackend: ConfiguredBackendName;
+  private detectedBackend: BackendName | null;
   private useCache: boolean;
 
   /**
@@ -58,8 +61,10 @@ export class SecretResolver {
     this.cache = getGlobalCache();
 
     // Determine primary backend
-    const configured = config.secretBackend || 'local';
-    this.primaryBackend = configured === 'auto' ? 'local' : (configured as BackendName);
+    const configured = (config.secretBackend || 'auto') as ConfiguredBackendName;
+    this.configuredBackend = configured;
+    this.primaryBackend = configured === 'auto' ? 'local' : configured;
+    this.detectedBackend = configured === 'auto' ? null : this.primaryBackend;
   }
 
   /**
@@ -84,7 +89,24 @@ export class SecretResolver {
    * Get the primary backend name
    */
   getPrimaryBackendName(): BackendName {
-    return this.primaryBackend;
+    return this.detectedBackend || this.primaryBackend;
+  }
+
+  getConfiguredBackendName(): ConfiguredBackendName {
+    return this.configuredBackend;
+  }
+
+  async getEffectiveBackendName(): Promise<BackendName> {
+    if (this.configuredBackend !== 'auto') {
+      return this.primaryBackend;
+    }
+
+    if (this.detectedBackend) {
+      return this.detectedBackend;
+    }
+
+    this.detectedBackend = await this.autoDetectBackend();
+    return this.detectedBackend;
   }
 
   /**
@@ -182,7 +204,7 @@ export class SecretResolver {
     }
 
     // Determine which backend to use
-    const backendName = options?.backend || this.primaryBackend;
+    const backendName = options?.backend || (await this.getEffectiveBackendName());
     const backend = this.backends.get(backendName);
 
     if (!backend) {
@@ -276,7 +298,7 @@ export class SecretResolver {
     const result = await this.resolveAll(names, options);
 
     if (result.unresolved.length > 0) {
-      throw new UnresolvedSecretsError(result.unresolved, this.primaryBackend);
+      throw new UnresolvedSecretsError(result.unresolved, await this.getEffectiveBackendName());
     }
 
     return result.resolved;
@@ -345,7 +367,7 @@ export class SecretResolver {
         displayName: backend.displayName,
         available,
         authenticated,
-        isPrimary: name === this.primaryBackend,
+        isPrimary: name === (this.detectedBackend || this.primaryBackend),
       });
     }
 

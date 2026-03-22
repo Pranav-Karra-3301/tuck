@@ -6,13 +6,13 @@
  * - Force pushing to remote
  * - Overwriting files without backup
  *
- * Logs are stored in ~/.tuck/audit.log (not tracked by git)
+ * Logs are stored outside the tracked tuck repository state.
  */
 
-import { appendFile, mkdir } from 'fs/promises';
-import { join } from 'path';
-import { homedir } from 'os';
+import { appendFile, mkdir, readFile } from 'fs/promises';
+import { dirname } from 'path';
 import { existsSync } from 'fs';
+import { getAuditLogPath, getLegacyAuditLogPath } from './state.js';
 
 // ============================================================================
 // Types
@@ -38,17 +38,12 @@ export type AuditAction =
 // Constants
 // ============================================================================
 
-const AUDIT_FILENAME = 'audit.log';
-
-// ============================================================================
-// Logging Functions
-// ============================================================================
-
 /**
  * Get the path to the audit log file
  */
-function getAuditLogPath(): string {
-  return join(homedir(), '.tuck', AUDIT_FILENAME);
+function getAuditLogPaths(): string[] {
+  const paths = [getAuditLogPath(), getLegacyAuditLogPath()];
+  return [...new Set(paths)];
 }
 
 /**
@@ -64,13 +59,6 @@ export async function logAuditEntry(
   details?: string
 ): Promise<void> {
   try {
-    const tuckDir = join(homedir(), '.tuck');
-
-    // Ensure .tuck directory exists
-    if (!existsSync(tuckDir)) {
-      await mkdir(tuckDir, { recursive: true });
-    }
-
     const entry: AuditEntry = {
       timestamp: new Date().toISOString(),
       action,
@@ -83,6 +71,7 @@ export async function logAuditEntry(
     const logLine = JSON.stringify(entry) + '\n';
     const logPath = getAuditLogPath();
 
+    await mkdir(dirname(logPath), { recursive: true });
     await appendFile(logPath, logLine, 'utf-8');
   } catch {
     // Silently fail - audit logging should never break the main operation
@@ -140,30 +129,35 @@ export async function logDangerousConfirmed(operation: string, details?: string)
  */
 export async function getRecentAuditEntries(limit = 10): Promise<AuditEntry[]> {
   try {
-    const logPath = getAuditLogPath();
-    if (!existsSync(logPath)) {
-      return [];
+    const parsedEntries: AuditEntry[] = [];
+
+    for (const logPath of getAuditLogPaths()) {
+      if (!existsSync(logPath)) {
+        continue;
+      }
+
+      const content = await readFile(logPath, 'utf-8');
+      const lines = content.trim().split('\n').filter(Boolean);
+
+      for (const line of lines) {
+        try {
+          parsedEntries.push(JSON.parse(line) as AuditEntry);
+        } catch {
+          parsedEntries.push({
+            timestamp: 'unknown',
+            action: 'DANGEROUS_CONFIRMED' as AuditAction,
+            command: 'unknown',
+            details: line,
+          });
+        }
+      }
     }
 
-    const { readFile } = await import('fs/promises');
-    const content = await readFile(logPath, 'utf-8');
-    const lines = content.trim().split('\n').filter(Boolean);
-
-    // Get last N entries
-    const recentLines = lines.slice(-limit);
-
-    return recentLines.map((line) => {
-      try {
-        return JSON.parse(line) as AuditEntry;
-      } catch {
-        return {
-          timestamp: 'unknown',
-          action: 'DANGEROUS_CONFIRMED' as AuditAction,
-          command: 'unknown',
-          details: line,
-        };
-      }
+    const sortedEntries = parsedEntries.sort((a, b) => {
+      return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
     });
+
+    return sortedEntries.slice(-limit);
   } catch {
     return [];
   }
