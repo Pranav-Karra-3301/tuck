@@ -40,6 +40,7 @@ import {
 import { addToTuckignore, loadTuckignore, isIgnored } from '../lib/tuckignore.js';
 import { runPreSyncHook, runPostSyncHook, type HookOptions } from '../lib/hooks.js';
 import { NotInitializedError, SecretsDetectedError, MergeConflictsError } from '../errors.js';
+import { setJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import type { SyncOptions, FileChange } from '../types.js';
 import { detectDotfiles, DETECTION_CATEGORIES, type DetectedFile } from '../lib/detect.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
@@ -894,6 +895,7 @@ export const runSyncCommand = async (
   messageArg: string | undefined,
   options: SyncOptions
 ): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck sync');
   const tuckDir = getTuckDir();
 
   // Verify tuck is initialized
@@ -901,6 +903,64 @@ export const runSyncCommand = async (
     await loadManifest(tuckDir);
   } catch {
     throw new NotInitializedError();
+  }
+
+  // --plan / --dry-run: report what would happen and exit without mutating.
+  if (options.plan || options.dryRun) {
+    const changes = await detectChanges(tuckDir);
+    if (options.json) {
+      emitJsonOk({
+        plan: {
+          modified: changes.filter((c) => c.status === 'modified').map((c) => c.path),
+          deleted: changes.filter((c) => c.status === 'deleted').map((c) => c.path),
+        },
+      });
+      return;
+    }
+    logger.heading('Plan — would sync:');
+    for (const c of changes) logger.file(c.status === 'modified' ? 'modify' : 'delete', c.path);
+    return;
+  }
+
+  // If JSON or auto-yes mode and we have a path through, use non-interactive flow.
+  if (options.json || options.yes) {
+    const changes = await detectChanges(tuckDir);
+    if (changes.length === 0) {
+      if (options.json) {
+        emitJsonOk({ modified: [], deleted: [], commitHash: null });
+      } else {
+        logger.info('No changes detected');
+      }
+      return;
+    }
+    const message = messageArg || options.message;
+    const result = await syncFiles(tuckDir, changes, { ...options, message });
+    if (options.push !== false && (await hasRemote(tuckDir))) {
+      try {
+        await push(tuckDir);
+      } catch (err) {
+        if (options.json) {
+          emitJsonOk({
+            modified: result.modified,
+            deleted: result.deleted,
+            commitHash: result.commitHash ?? null,
+            pushError: err instanceof Error ? err.message : String(err),
+          });
+          return;
+        }
+        throw err;
+      }
+    }
+    if (options.json) {
+      emitJsonOk({
+        modified: result.modified,
+        deleted: result.deleted,
+        commitHash: result.commitHash ?? null,
+      });
+    } else {
+      logger.success(`Synced ${changes.length} file${changes.length > 1 ? 's' : ''}`);
+    }
+    return;
   }
 
   // If no options (except --no-push), run interactive
@@ -993,6 +1053,10 @@ export const syncCommand = new Command('sync')
   .option('--no-hooks', 'Skip execution of pre/post sync hooks')
   .option('--trust-hooks', 'Trust and run hooks without confirmation (use with caution)')
   .option('-f, --force', 'Skip secret scanning (not recommended)')
+  .option('--json', 'Emit JSON envelope; non-interactive (errors on conflict)')
+  .option('-y, --yes', 'Auto-confirm prompts (use with --json for full automation)')
+  .option('--plan', 'Compute and emit the planned changes, do not execute')
+  .option('--dry-run', 'Same as --plan but prints human text')
   .action(async (messageArg: string | undefined, options: SyncOptions) => {
     await runSyncCommand(messageArg, options);
   });
