@@ -26,6 +26,10 @@ import { customHelp, miniBanner } from './ui/banner.js';
 import { getTuckDir, pathExists } from './lib/paths.js';
 import { loadManifest } from './lib/manifest.js';
 import { getStatus } from './lib/git.js';
+import { setJsonMode } from './lib/jsonOutput.js';
+import { contextCommand } from './commands/context.js';
+import { mcpCommand } from './commands/mcp.js';
+import { presetCommand } from './commands/preset.js';
 
 const program = new Command();
 
@@ -58,6 +62,17 @@ program.addCommand(scanCommand);
 program.addCommand(secretsCommand);
 program.addCommand(encryptionCommand);
 program.addCommand(doctorCommand);
+program.addCommand(contextCommand);
+program.addCommand(mcpCommand);
+program.addCommand(presetCommand);
+
+// Detect JSON mode early — used by UI/error handler to suppress human output.
+// The actual --json flag is also bound per-command for Commander typing.
+const argv = process.argv.slice(2);
+if (argv.includes('--json')) {
+  const firstNonFlag = argv.find((a) => !a.startsWith('-'));
+  setJsonMode(true, firstNonFlag ? `tuck ${firstNonFlag}` : 'tuck');
+}
 
 // Default action when no command is provided
 const runDefaultAction = async (): Promise<void> => {
@@ -151,8 +166,9 @@ const isHelpOrVersion =
 
 // Main execution
 const main = async (): Promise<void> => {
-  // Check for updates (skipped for help/version)
-  if (!isHelpOrVersion) {
+  // Check for updates (skipped for help/version and JSON/agent mode — the
+  // update banner is human-only and would corrupt structured output).
+  if (!isHelpOrVersion && !process.argv.includes('--json')) {
     await checkForUpdates();
   }
 

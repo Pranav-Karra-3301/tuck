@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>tuck — Implementation Notes (WHATS_NEXT.md)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --bg: #0e1014;
+        --fg: #e8eaed;
+        --muted: #98a0ac;
+        --accent: #56d3c2;
+        --warn: #f3c64b;
+        --danger: #ff7e7e;
+        --good: #6cce8a;
+        --card: #161922;
+        --border: #232735;
+        --code-bg: #0a0c11;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
+      body { font: 15px/1.55 -apple-system, "SF Pro Text", "Inter", system-ui, sans-serif; }
+      .wrap { max-width: 940px; margin: 0 auto; padding: 56px 28px 120px; }
+      h1 { font-size: 30px; letter-spacing: -0.01em; margin: 0 0 6px; }
+      h2 { font-size: 22px; margin: 48px 0 8px; padding-top: 16px; border-top: 1px solid var(--border); }
+      h3 { font-size: 16px; margin: 24px 0 8px; color: var(--accent); }
+      h4 { font-size: 14px; margin: 16px 0 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+      .sub { color: var(--muted); margin: 0 0 28px; }
+      p { margin: 0 0 12px; }
+      code, kbd, pre { font-family: "SF Mono", "JetBrains Mono", Menlo, monospace; }
+      code { background: var(--code-bg); padding: 1px 6px; border-radius: 4px; font-size: 0.92em; color: #cfd5e0; }
+      pre { background: var(--code-bg); padding: 14px 16px; border-radius: 8px; border: 1px solid var(--border); overflow-x: auto; font-size: 13px; }
+      ul { padding-left: 22px; margin: 0 0 14px; }
+      li { margin-bottom: 4px; }
+      .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px 22px; margin: 14px 0; }
+      .tag { display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; vertical-align: middle; margin-left: 8px; }
+      .tag.decision { background: rgba(86, 211, 194, 0.13); color: var(--accent); }
+      .tag.deviation { background: rgba(255, 126, 126, 0.13); color: var(--danger); }
+      .tag.tradeoff { background: rgba(243, 198, 75, 0.13); color: var(--warn); }
+      .tag.question { background: rgba(108, 206, 138, 0.13); color: var(--good); }
+      .meta { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+      .toc { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 22px; margin-bottom: 28px; }
+      .toc ol { margin: 0; padding-left: 22px; }
+      .toc a { color: var(--fg); text-decoration: none; border-bottom: 1px dashed var(--border); }
+      .toc a:hover { color: var(--accent); }
+      .status { font-size: 12.5px; color: var(--muted); }
+      hr { border: 0; border-top: 1px solid var(--border); margin: 32px 0; }
+      .legend span { margin-right: 14px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>tuck — Implementation Notes</h1>
+      <p class="sub">
+        Running record of how the WHATS_NEXT.md plan is being interpreted in code.
+        Updated as work progresses — last sections are most recent.
+      </p>
+
+      <div class="legend">
+        <span class="tag decision">Decision</span>
+        <span class="tag deviation">Deviation</span>
+        <span class="tag tradeoff">Tradeoff</span>
+        <span class="tag question">Open question</span>
+      </div>
+
+      <div class="toc">
+        <h4>Contents</h4>
+        <ol>
+          <li><a href="#approach">Overall approach</a></li>
+          <li><a href="#json-everywhere">v1.3 #1 — JSON-everywhere</a></li>
+          <li><a href="#plan-mode">v1.3 #4 — --plan mode</a></li>
+          <li><a href="#context">v1.3 #2 — tuck context</a></li>
+          <li><a href="#mcp">v1.3 #3 — tuck mcp serve</a></li>
+          <li><a href="#patterns-registry">v1.4 #1 — Patterns registry</a></li>
+          <li><a href="#templating">v1.5 #1 — Templating</a></li>
+          <li><a href="#encryption">v1.5 #2 — File encryption</a></li>
+          <li><a href="#merge-ui">v1.5 #3 — Merge UI</a></li>
+          <li><a href="#dry-run">v1.5 #4 — --dry-run</a></li>
+          <li><a href="#init-refactor">v1.5 #5 — init.ts state machine</a></li>
+          <li><a href="#bundles">v1.6 #1 — Bundles</a></li>
+          <li><a href="#repo-scoped">v1.6 #2 — Repo-scoped tracking</a></li>
+          <li><a href="#presets">v1.6 #3 — Presets</a></li>
+          <li><a href="#single-binary">v1.4 #2 — Single binary</a></li>
+          <li><a href="#open-questions">Open questions (consolidated)</a></li>
+        </ol>
+      </div>
+
+      <h2 id="approach">Overall approach</h2>
+      <div class="card">
+        <p>
+          WHATS_NEXT.md is a strategic review, not a line-by-line spec. The "spec" I'm implementing
+          to is the explicit roadmap reset in §9 plus the agent-wedge concretions in §3, §4, §7.
+          Sequencing follows the doc's own priority: v1.3 wedge first, then v1.5 robustness, then
+          v1.6 generalization. v1.4 distribution (single binary, rename) ships last because it is
+          mostly packaging work and is the cheapest to defer.
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          I'm <em>not</em> renaming the npm package from <code>@prnv/tuck</code> to <code>@tuck/cli</code>
+          in code as part of this work. The doc recommends it but that's a publishing/registry move
+          that requires owning the <code>@tuck</code> npm scope. Listed as an open question instead.
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          I'm treating "JSON-everywhere" as the foundation everything else stands on. The state
+          machine refactor of <code>init.ts</code> (§3.3) explicitly depends on it. So I do JSON
+          first across all commands as a shallow envelope, even if a few commands still have a thin
+          interactive layer remaining. That gets us to "agents can drive every command" fastest;
+          full prompt-tree decomposition happens during the init refactor.
+        </p>
+      </div>
+
+      <p class="meta">More sections will appear here as features land.</p>
+    </div>
+  </body>
+</html>

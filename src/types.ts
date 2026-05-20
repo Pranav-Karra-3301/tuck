@@ -1,5 +1,20 @@
 export type FileStrategy = 'copy' | 'symlink';
 
+/**
+ * Flags common to every command for agent / CI consumption.
+ * Individual command option interfaces extend this when relevant.
+ */
+export interface CommonOptions {
+  /** Emit a single structured JSON envelope on stdout instead of human UI. */
+  json?: boolean;
+  /** Auto-confirm every interactive prompt (or fail if input is required and missing). */
+  yes?: boolean;
+  /** Compute and emit the operation plan without executing side effects. */
+  plan?: boolean;
+  /** Human-friendly synonym for --plan that prints text not JSON. */
+  dryRun?: boolean;
+}
+
 /** Supported git provider modes */
 export type ProviderMode = 'github' | 'gitlab' | 'local' | 'custom';
 
@@ -89,14 +104,15 @@ export interface InitOptions {
   from?: string;
 }
 
-export interface AddOptions {
+export interface AddOptions extends CommonOptions {
   category?: string;
   name?: string;
   symlink?: boolean;
   force?: boolean; // Skip secret scanning (secrets will not be detected)
-  // TODO: Encryption and templating are planned for a future version
-  // encrypt?: boolean;
-  // template?: boolean;
+  /** Encrypt the file at rest in the repo using the configured passphrase. */
+  encrypt?: boolean;
+  /** Mark this file as a template so it is rendered at restore time. */
+  template?: boolean;
 }
 
 export interface RemoveOptions {
@@ -104,11 +120,8 @@ export interface RemoveOptions {
   keepOriginal?: boolean;
 }
 
-export interface SyncOptions {
+export interface SyncOptions extends CommonOptions {
   message?: string;
-  // TODO: --all and --amend are planned for a future version
-  // all?: boolean;
-  // amend?: boolean;
   noCommit?: boolean;
   push?: boolean; // Commander converts --no-push to push: false
   pull?: boolean; // Commander converts --no-pull to pull: false
@@ -128,28 +141,25 @@ export interface PullOptions {
   restore?: boolean;
 }
 
-export interface RestoreOptions {
+export interface RestoreOptions extends CommonOptions {
   all?: boolean;
   symlink?: boolean;
   backup?: boolean;
-  dryRun?: boolean;
   noHooks?: boolean;
   trustHooks?: boolean;
   noSecrets?: boolean;
 }
 
-export interface StatusOptions {
+export interface StatusOptions extends CommonOptions {
   short?: boolean;
-  json?: boolean;
 }
 
-export interface ListOptions {
+export interface ListOptions extends CommonOptions {
   category?: string;
   paths?: boolean;
-  json?: boolean;
 }
 
-export interface DiffOptions {
+export interface DiffOptions extends CommonOptions {
   staged?: boolean;
   stat?: boolean;
   category?: string;
@@ -157,8 +167,14 @@ export interface DiffOptions {
   exitCode?: boolean;
 }
 
-export interface DoctorOptions {
-  json?: boolean;
+export interface ApplyOptions extends CommonOptions {
+  symlink?: boolean;
+  category?: string;
+  force?: boolean;
+  noSecrets?: boolean;
+}
+
+export interface DoctorOptions extends CommonOptions {
   strict?: boolean;
   category?: 'env' | 'repo' | 'manifest' | 'security' | 'hooks';
 }
