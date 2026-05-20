@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { prompts, logger } from '../ui/index.js';
 import { getTuckDir } from '../lib/paths.js';
-import { loadManifest } from '../lib/manifest.js';
+import { loadManifest, ensureBundle } from '../lib/manifest.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
 import { NotInitializedError } from '../errors.js';
 import { CATEGORIES } from '../constants.js';
@@ -19,6 +19,10 @@ const addFiles = async (
   tuckDir: string,
   options: AddOptions
 ): Promise<void> => {
+  if (options.bundle) {
+    await ensureBundle(tuckDir, options.bundle);
+  }
+
   const filesToTrack: FileToTrack[] = filesToAdd.map((f) => {
     const trackedFile: FileToTrack = {
       path: f.source,
@@ -27,6 +31,10 @@ const addFiles = async (
 
     if (f.nameOverride) {
       trackedFile.name = f.nameOverride;
+    }
+
+    if (options.bundle) {
+      trackedFile.bundle = options.bundle;
     }
 
     return trackedFile;
@@ -200,6 +208,7 @@ export const addCommand = new Command('add')
   .option('-n, --name <name>', 'Custom name for the file in manifest')
   .option('--symlink', 'Copy into tuck repo, then replace source path with a symlink')
   .option('-f, --force', 'Skip secret scanning (not recommended)')
+  .option('-b, --bundle <name>', 'Bundle to assign the file to (defaults to "default")')
   .action(async (paths: string[], options: AddOptions) => {
     await runAdd(paths, options);
   });

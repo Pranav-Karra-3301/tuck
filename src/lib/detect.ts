@@ -2,6 +2,7 @@ import { join, basename, isAbsolute } from 'path';
 import { readdir, stat } from 'fs/promises';
 import { pathExists, expandPath, collapsePath } from './paths.js';
 import { IS_WINDOWS, IS_MACOS, IS_LINUX } from './platform.js';
+import { loadPatterns, type DotfilePattern } from './patternsRegistry.js';
 
 export interface DetectedFile {
   path: string;
@@ -94,16 +95,16 @@ export const DETECTION_CATEGORIES: Record<string, DetectionCategory> = {
 };
 
 /**
- * Comprehensive list of dotfiles to detect
+ * Comprehensive list of dotfiles to detect.
+ *
+ * As of v1.8 this list is also mirrored as JSON under `templates/patterns/`
+ * and loaded via `patternsRegistry.loadPatterns()` so users can override
+ * individual entries from `~/.tuck/patterns/*.json`. This in-code copy is
+ * retained as a hardcoded fallback for dev builds where the JSON registry
+ * isn't packaged, and is exported for any external consumers that want a
+ * synchronous view of the built-in patterns.
  */
-const DOTFILE_PATTERNS: Array<{
-  path: string;
-  category: string;
-  description: string;
-  sensitive?: boolean;
-  exclude?: string[];
-  platform?: 'darwin' | 'linux' | 'win32' | 'all';
-}> = [
+export const DOTFILE_PATTERNS: DotfilePattern[] = [
   // ==================== SHELL CONFIGURATION ====================
   // Bash
   { path: '~/.bashrc', category: 'shell', description: 'Bash interactive shell config' },
@@ -892,7 +893,18 @@ export const detectDotfiles = async (options?: {
   const detected: DetectedFile[] = [];
   const includeExcluded = options?.includeExcluded ?? false;
 
-  for (const pattern of DOTFILE_PATTERNS) {
+  // Prefer the on-disk pattern registry (bundled JSON + user overrides).
+  // Fall back to the in-code DOTFILE_PATTERNS if the registry is empty,
+  // which can happen in dev builds where templates/ isn't co-located.
+  let patterns: DotfilePattern[];
+  try {
+    const loaded = await loadPatterns();
+    patterns = loaded.length > 0 ? loaded : DOTFILE_PATTERNS;
+  } catch {
+    patterns = DOTFILE_PATTERNS;
+  }
+
+  for (const pattern of patterns) {
     // Skip if not for current platform
     if (!shouldIncludeForPlatform(pattern)) continue;
 

@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { prompts, logger } from '../ui/index.js';
 import { colors as c } from '../ui/theme.js';
+import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import {
   getTuckDir,
   expandPath,
@@ -275,6 +276,7 @@ const formatUnifiedDiff = (diff: FileDiff): string => {
 };
 
 const runDiff = async (paths: string[], options: DiffOptions): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck diff');
   const tuckDir = getTuckDir();
 
   // Verify tuck is initialized
@@ -287,6 +289,10 @@ const runDiff = async (paths: string[], options: DiffOptions): Promise<void> => 
   // If --staged, show git diff
   if (options.staged) {
     const diff = await getDiff(tuckDir, { staged: true, stat: options.stat });
+    if (isJsonMode()) {
+      emitJsonOk({ staged: true, diff: diff ?? '' });
+      return;
+    }
     if (diff) {
       console.log(diff);
     } else {
@@ -339,6 +345,25 @@ const runDiff = async (paths: string[], options: DiffOptions): Promise<void> => 
         throw error;
       }
     }
+  }
+
+  if (isJsonMode()) {
+    emitJsonOk({
+      count: changedFiles.length,
+      files: changedFiles.map((d) => ({
+        source: d.source,
+        destination: d.destination,
+        isBinary: d.isBinary ?? false,
+        isDirectory: d.isDirectory ?? false,
+        hasChanges: d.hasChanges,
+        systemSize: d.systemSize,
+        repoSize: d.repoSize,
+        // Content is intentionally omitted from JSON output unless --stat is
+        // off and the consumer asks for it; keeping the envelope small.
+      })),
+    });
+    if (options.exitCode && changedFiles.length > 0) process.exit(1);
+    return;
   }
 
   if (changedFiles.length === 0) {
@@ -401,6 +426,7 @@ export const diffCommand = new Command('diff')
   )
   .option('--name-only', 'Show only changed file names')
   .option('--exit-code', 'Return exit code 1 if differences found')
+  .option('--json', 'Emit JSON envelope to stdout (suppresses interactive UI)')
   .action(async (paths: string[], options: DiffOptions) => {
     await runDiff(paths, options);
   });

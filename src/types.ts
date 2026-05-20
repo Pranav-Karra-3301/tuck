@@ -87,6 +87,13 @@ export interface TrackedFile {
   added: string;
   modified: string;
   checksum: string;
+  /** Logical group above category. Defaults to "default". */
+  bundle: string;
+}
+
+export interface BundleMetadata {
+  description?: string;
+  created: string;
 }
 
 export interface TuckManifest {
@@ -95,6 +102,7 @@ export interface TuckManifest {
   updated: string;
   machine?: string;
   files: Record<string, TrackedFile>;
+  bundles: Record<string, BundleMetadata>;
 }
 
 export interface InitOptions {
@@ -113,6 +121,8 @@ export interface AddOptions extends CommonOptions {
   encrypt?: boolean;
   /** Mark this file as a template so it is rendered at restore time. */
   template?: boolean;
+  /** Bundle to assign the tracked file to. Defaults to "default". */
+  bundle?: string;
 }
 
 export interface RemoveOptions {
@@ -172,6 +182,8 @@ export interface ApplyOptions extends CommonOptions {
   category?: string;
   force?: boolean;
   noSecrets?: boolean;
+  /** Scope apply to a single bundle. Defaults to all bundles when unset. */
+  bundle?: string;
 }
 
 export interface DoctorOptions extends CommonOptions {

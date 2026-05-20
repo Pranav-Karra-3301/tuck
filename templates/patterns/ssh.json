@@ -1,0 +1,72 @@
+{
+  "$schema": "https://tuck.sh/schemas/patterns-v1.json",
+  "category": "ssh",
+  "patterns": [
+    {
+      "pattern": "~/.ssh/config",
+      "category": "ssh",
+      "description": "SSH client configuration",
+      "sensitive": true,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.ssh/known_hosts",
+      "category": "ssh",
+      "description": "SSH known hosts",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.ssh/authorized_keys",
+      "category": "ssh",
+      "description": "Authorized SSH keys",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.ssh/rc",
+      "category": "ssh",
+      "description": "SSH connection script",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.gnupg/gpg.conf",
+      "category": "ssh",
+      "description": "GPG configuration",
+      "sensitive": true,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.gnupg/gpg-agent.conf",
+      "category": "ssh",
+      "description": "GPG agent configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "%USERPROFILE%/.ssh/config",
+      "category": "ssh",
+      "description": "SSH client configuration",
+      "sensitive": true,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    },
+    {
+      "pattern": "%USERPROFILE%/.ssh/known_hosts",
+      "category": "ssh",
+      "description": "SSH known hosts",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    }
+  ]
+}

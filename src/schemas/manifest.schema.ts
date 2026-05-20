@@ -13,6 +13,17 @@ export const trackedFileSchema = z.object({
   added: z.string(),
   modified: z.string(),
   checksum: z.string(),
+  /**
+   * Logical grouping above category — files default to the implicit "default"
+   * bundle so legacy manifests load unchanged. Bundles let callers scope
+   * `tuck apply --bundle <name>` and similar operations.
+   */
+  bundle: z.string().default('default'),
+});
+
+export const bundleMetadataSchema = z.object({
+  description: z.string().optional(),
+  created: z.string(),
 });
 
 export const tuckManifestSchema = z.object({
@@ -21,6 +32,11 @@ export const tuckManifestSchema = z.object({
   updated: z.string(),
   machine: z.string().optional(),
   files: z.record(trackedFileSchema),
+  /**
+   * Registry of known bundles. The `default` bundle is always present after
+   * load (the manifest loader migrates legacy manifests transparently).
+   */
+  bundles: z.record(bundleMetadataSchema).default({}),
 });
 
 export type TrackedFileInput = z.input<typeof trackedFileSchema>;
@@ -36,5 +52,8 @@ export const createEmptyManifest = (machine?: string): TuckManifestOutput => {
     updated: now,
     machine,
     files: {},
+    bundles: {
+      default: { created: now },
+    },
   };
 };

@@ -11,6 +11,32 @@ import { ManifestError } from '../errors.js';
 let cachedManifest: TuckManifestOutput | null = null;
 let cachedManifestDir: string | null = null;
 
+export const DEFAULT_BUNDLE = 'default';
+
+/**
+ * Forward-compatible migration: legacy manifests pre-dating bundles either
+ * lack the `bundles` registry entirely or have files with no `bundle` field.
+ * Zod's `.default(...)` already populates the missing values during parse, but
+ * we still need to guarantee a `default` bundle exists in the registry so the
+ * UI/JSON output stays consistent regardless of insertion order.
+ */
+const migrateBundles = (manifest: TuckManifestOutput): TuckManifestOutput => {
+  // After zod parse, bundle defaults are populated. Ensure the default bundle
+  // is registered if files reference it (which they will, after defaulting).
+  const needsDefault =
+    !manifest.bundles[DEFAULT_BUNDLE] &&
+    (Object.keys(manifest.bundles).length === 0 ||
+      Object.values(manifest.files).some((f) => f.bundle === DEFAULT_BUNDLE));
+
+  if (needsDefault) {
+    manifest.bundles[DEFAULT_BUNDLE] = {
+      created: manifest.created,
+    };
+  }
+
+  return manifest;
+};
+
 export const loadManifest = async (tuckDir: string): Promise<TuckManifestOutput> => {
   // Return cached manifest if same directory
   if (cachedManifest && cachedManifestDir === tuckDir) {
@@ -32,7 +58,7 @@ export const loadManifest = async (tuckDir: string): Promise<TuckManifestOutput>
       throw new ManifestError(`Invalid manifest: ${result.error.message}`);
     }
 
-    cachedManifest = result.data;
+    cachedManifest = migrateBundles(result.data);
     cachedManifestDir = tuckDir;
 
     return cachedManifest;
@@ -204,6 +230,106 @@ export const getCategories = async (tuckDir: string): Promise<string[]> => {
   }
 
   return Array.from(categories).sort();
+};
+
+export const ensureBundle = async (
+  tuckDir: string,
+  bundle: string,
+  description?: string
+): Promise<void> => {
+  const manifest = await loadManifest(tuckDir);
+  if (manifest.bundles[bundle]) {
+    if (description && !manifest.bundles[bundle].description) {
+      manifest.bundles[bundle].description = description;
+      await saveManifest(manifest, tuckDir);
+    }
+    return;
+  }
+
+  manifest.bundles[bundle] = {
+    created: new Date().toISOString(),
+    ...(description ? { description } : {}),
+  };
+  await saveManifest(manifest, tuckDir);
+};
+
+export const removeBundle = async (
+  tuckDir: string,
+  bundle: string,
+  options: { reassignTo?: string } = {}
+): Promise<{ reassigned: number }> => {
+  if (bundle === DEFAULT_BUNDLE) {
+    throw new ManifestError('Cannot remove the default bundle');
+  }
+
+  const manifest = await loadManifest(tuckDir);
+  if (!manifest.bundles[bundle]) {
+    throw new ManifestError(`Bundle not found: ${bundle}`);
+  }
+
+  const target = options.reassignTo ?? DEFAULT_BUNDLE;
+  if (!manifest.bundles[target] && target !== DEFAULT_BUNDLE) {
+    throw new ManifestError(`Reassignment target bundle not found: ${target}`);
+  }
+  if (target === DEFAULT_BUNDLE && !manifest.bundles[DEFAULT_BUNDLE]) {
+    manifest.bundles[DEFAULT_BUNDLE] = { created: new Date().toISOString() };
+  }
+
+  let reassigned = 0;
+  for (const [id, file] of Object.entries(manifest.files)) {
+    if (file.bundle === bundle) {
+      manifest.files[id] = { ...file, bundle: target, modified: new Date().toISOString() };
+      reassigned++;
+    }
+  }
+
+  delete manifest.bundles[bundle];
+  await saveManifest(manifest, tuckDir);
+  return { reassigned };
+};
+
+export const assignFileToBundle = async (
+  tuckDir: string,
+  id: string,
+  bundle: string
+): Promise<void> => {
+  const manifest = await loadManifest(tuckDir);
+  if (!manifest.files[id]) {
+    throw new ManifestError(`File not found in manifest: ${id}`);
+  }
+  if (!manifest.bundles[bundle]) {
+    throw new ManifestError(`Bundle not found: ${bundle}`);
+  }
+
+  manifest.files[id] = {
+    ...manifest.files[id],
+    bundle,
+    modified: new Date().toISOString(),
+  };
+  await saveManifest(manifest, tuckDir);
+};
+
+export const getFilesByBundle = async (
+  tuckDir: string,
+  bundle: string
+): Promise<Record<string, TrackedFileOutput>> => {
+  const manifest = await loadManifest(tuckDir);
+  const filtered: Record<string, TrackedFileOutput> = {};
+
+  for (const [id, file] of Object.entries(manifest.files)) {
+    if (file.bundle === bundle) {
+      filtered[id] = file;
+    }
+  }
+
+  return filtered;
+};
+
+export const getBundles = async (
+  tuckDir: string
+): Promise<Record<string, { description?: string; created: string }>> => {
+  const manifest = await loadManifest(tuckDir);
+  return manifest.bundles;
 };
 
 export const clearManifestCache = (): void => {

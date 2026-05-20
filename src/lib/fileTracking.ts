@@ -21,6 +21,8 @@ export interface FileToTrack {
   path: string;
   category?: string;
   name?: string;
+  /** Bundle to assign the tracked file to. Defaults to "default". */
+  bundle?: string;
 }
 
 export interface FileTrackingOptions {
@@ -222,6 +224,7 @@ export const trackFilesWithProgress = async (
         added: now,
         modified: now,
         checksum,
+        bundle: file.bundle ?? 'default',
       });
 
       spinner.stop();

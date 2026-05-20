@@ -87,6 +87,28 @@ export class GitError extends TuckError {
   }
 }
 
+export class MergeConflictsError extends TuckError {
+  /** Paths (repo-relative) that are currently conflicted. */
+  public readonly conflicts: string[];
+
+  constructor(conflicts: string[]) {
+    const sample = conflicts.slice(0, 3).join(', ');
+    const summary = conflicts.length > 3 ? `${sample} and ${conflicts.length - 3} more` : sample;
+    super(
+      `Pull produced ${conflicts.length} merge conflict${conflicts.length === 1 ? '' : 's'}: ${summary}`,
+      'MERGE_CONFLICTS',
+      [
+        'Run `tuck sync` in an interactive terminal to resolve conflicts',
+        'Inspect the repo manually with `git status` to see the conflicting files',
+        'Use `git rebase --abort` (or `git merge --abort`) to back out of the in-progress pull',
+      ]
+    );
+    this.conflicts = conflicts;
+    // Use a dedicated exit code so agents can branch on it.
+    this.exitCode = 3;
+  }
+}
+
 export class ConfigError extends TuckError {
   constructor(message: string) {
     super(`Configuration error: ${message}`, 'CONFIG_ERROR', [

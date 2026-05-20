@@ -1,0 +1,63 @@
+{
+  "$schema": "https://tuck.sh/schemas/patterns-v1.json",
+  "category": "prompt",
+  "patterns": [
+    {
+      "pattern": "~/.config/starship.toml",
+      "category": "prompt",
+      "description": "Starship prompt config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.p10k.zsh",
+      "category": "prompt",
+      "description": "Powerlevel10k config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.oh-my-zsh/custom",
+      "category": "prompt",
+      "description": "Oh My Zsh customizations",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/powerline",
+      "category": "prompt",
+      "description": "Powerline config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.dir_colors",
+      "category": "prompt",
+      "description": "Directory colors",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.dircolors",
+      "category": "prompt",
+      "description": "Directory colors (alt)",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "%USERPROFILE%/.config/starship.toml",
+      "category": "prompt",
+      "description": "Starship prompt config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    }
+  ]
+}

@@ -110,7 +110,208 @@
         </p>
       </div>
 
-      <p class="meta">More sections will appear here as features land.</p>
+      <h2 id="json-everywhere">v1.3 #1 — JSON-everywhere</h2>
+      <div class="card">
+        <h4>What landed</h4>
+        <ul>
+          <li><code>src/lib/jsonOutput.ts</code>: shared envelope <code>{ ok, command, data | error, warnings? }</code> plus <code>isJsonMode()</code> gate.</li>
+          <li><code>TuckError.toJSON()</code> with stable field order and per-class <code>exitCode</code>.</li>
+          <li><code>--json</code> flag added to: <code>scan</code>, <code>status</code>, <code>list</code>, <code>doctor</code> (preexisting), and <strong>new</strong>: <code>diff</code>, <code>restore</code>, <code>undo</code>, <code>encryption status/encrypt-file/decrypt-file</code>, <code>context *</code>, <code>mcp tools</code>, <code>preset *</code>, <code>bundle *</code>.</li>
+          <li>Early-detection of <code>--json</code> in <code>src/index.ts</code> so the UI layer + error handler can silence themselves before any command-specific action runs.</li>
+        </ul>
+        <h4>Decisions</h4>
+        <p>
+          <span class="tag decision">Decision</span>
+          Existing <code>--json</code> outputs on <code>status</code>/<code>list</code>/<code>scan</code>/<code>doctor</code> already shipped with their own shapes. To avoid breaking 800+ tests they were left as-is — new <code>--json</code> outputs go through the envelope.
+          A future minor release should migrate the legacy outputs (one schema everywhere is the goal).
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          <code>sync</code> and <code>apply</code> and <code>init</code> commands gained <code>--json</code> support indirectly: bundle agent added <code>--bundle</code> on apply with envelope-aware output; merge UI throws a structured <code>MergeConflictsError</code> with exit code 3 in non-interactive mode.
+        </p>
+        <p>
+          <span class="tag question">Open question</span>
+          The <code>sync</code> happy-path JSON envelope isn't yet wired — it still uses <code>prompts</code> intros even in <code>--json</code>. The plumbing is in place (<code>isJsonMode()</code>); ship the gating in the init refactor task.
+        </p>
+      </div>
+
+      <h2 id="plan-mode">v1.3 #4 — --plan mode</h2>
+      <div class="card">
+        <p>
+          Implemented on <code>preset apply</code> and <code>restore</code>. The semantic is: emit the operation as JSON (or text, with <code>--dry-run</code>) and exit before mutating anything.
+        </p>
+        <p>
+          <span class="tag tradeoff">Tradeoff</span>
+          <code>--plan</code> and <code>--dry-run</code> are intentionally distinct: <code>--plan</code> is the agent-facing JSON; <code>--dry-run</code> is the human-facing text. They share the same code path internally so they don't diverge.
+        </p>
+        <p>
+          <span class="tag question">Open question</span>
+          <code>sync</code> doesn't yet have <code>--plan</code> because the change set is more involved (need to compute new tracked files separately from modifications). Listed in the init refactor work.
+        </p>
+      </div>
+
+      <h2 id="context">v1.3 #2 — tuck context</h2>
+      <div class="card">
+        <p>
+          New top-level surface for AI agent configs across <strong>home</strong> and <strong>per-repo</strong> scopes. Subcommands: <code>add</code>, <code>list</code>, <code>scan</code>, <code>sync</code>, <code>apply</code>.
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          Repo-scope detection walks up from the file looking for a <code>.git</code> directory; if found, the file is repo-scoped (even if it lives under <code>$HOME</code>). This matches the WHATS_NEXT.md ask in §6.2.
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          A separate <code>context.json</code> sibling to <code>.tuckmanifest.json</code> holds context entries. Mixing them in one manifest would have required a schema migration on every existing install; this is cleaner and the on-disk layout under <code>context/home/</code> and <code>context/repos/&lt;repo-key&gt;/</code> makes the two scopes self-evident.
+        </p>
+        <p>
+          <span class="tag deviation">Deviation</span>
+          <code>tuck context apply</code> currently materializes only home-scoped files. Repo-scoped apply is deferred to land alongside templating (§5.1) so we don't render a <code>CLAUDE.md</code> from another repo without resolving its template variables to <em>this</em> machine first.
+        </p>
+        <p>
+          <span class="tag question">Open question</span>
+          The slugifier used for destination keys is intentionally lossy. If two paths slugify to the same key (rare but possible), the second add overwrites. Worth revisiting once the registry has real users.
+        </p>
+      </div>
+
+      <h2 id="mcp">v1.3 #3 — tuck mcp serve</h2>
+      <div class="card">
+        <p>
+          Hand-rolled stdio JSON-RPC MCP server. Exposes 6 tools: <code>list_tracked_files</code>, <code>status</code>, <code>scan</code>, <code>context_list</code>, <code>context_add</code>, <code>classify_agent_file</code>.
+        </p>
+        <p>
+          <span class="tag tradeoff">Tradeoff</span>
+          Chose hand-rolled JSON-RPC over <code>@modelcontextprotocol/sdk</code> to keep <code>tuck</code>'s install footprint small. The SDK adds material weight to a CLI that may be installed on minimal boxes. The handler is ~70 lines of glue and could be swapped for the SDK any time without API churn.
+        </p>
+        <p>
+          <span class="tag question">Open question</span>
+          Resources (vs tools) aren't exposed yet. Returning the tuck manifest as an MCP <em>resource</em> might be a nicer agent UX than a tool call. Decide once an MCP client actually consumes this.
+        </p>
+      </div>
+
+      <h2 id="patterns-registry">v1.4 #1 — Patterns-as-data registry</h2>
+      <div class="card">
+        <p>
+          <code>DOTFILE_PATTERNS</code> is no longer the source of truth at runtime. <code>src/lib/patternsRegistry.ts</code> loads JSON from <code>templates/patterns/*.json</code> first, then merges <code>~/.tuck/patterns/*.json</code> overrides on top. The in-code constant remains as a build-time fallback so dev builds without the data dir still work.
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          Format is one JSON file per category. Easier to PR a new tool than threading additions through a single mega-file.
+        </p>
+      </div>
+
+      <h2 id="templating">v1.5 #1 — Templating</h2>
+      <div class="card">
+        <p>
+          Small handlebars-flavored DSL + comment-marker style. <code>{{var | default "x"}}</code>, <code>{{#if os == "darwin"}}…{{/if}}</code>, and <code>#&nbsp;tuck:if&nbsp;os=darwin / #&nbsp;tuck:endif</code>.
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          No arbitrary expressions, no function calls, no template inheritance. The grammar is deliberately small so the sandbox boundary is trivial to audit. Variables come from a frozen context: <code>os</code>, <code>arch</code>, <code>user</code>, <code>home</code>, <code>hostname</code>, <code>ci</code>, plus <code>env.X</code>.
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          Rendering happens at <em>restore</em> time, never at storage. The doc was explicit about this being a chezmoi misstep; we match.
+        </p>
+      </div>
+
+      <h2 id="encryption">v1.5 #2 — File-level encryption</h2>
+      <div class="card">
+        <p>
+          AES-256-GCM + PBKDF2-HMAC-SHA256 (200k iterations). Magic header <code>TCKE1</code> + salt(16) + iv(12) + tag(16) + ciphertext. 14 tests cover round-trip, tamper, empty, large (≥1 MiB), wrong-password.
+        </p>
+        <p>
+          <span class="tag deviation">Deviation</span>
+          The spec mentions <code>age</code> by name. We use AES-GCM via Node's built-in <code>crypto</code> module instead. Reasons: no new dependency, no native binary requirement, no key-management surface to maintain. The on-disk format is documented and stable; users who want age compatibility can layer it externally.
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          User-facing surface is currently <code>tuck encryption encrypt-file</code> / <code>decrypt-file</code>. Wiring <code>tuck add --encrypt</code> end-to-end (decrypt at restore, transparent for the user) is a follow-up because it touches the manifest's <code>encrypted</code> field and the sync/restore pipeline.
+        </p>
+      </div>
+
+      <h2 id="merge-ui">v1.5 #3 — Merge UI</h2>
+      <div class="card">
+        <p>
+          <code>git pull --rebase</code> failures now route through <code>src/lib/mergeConflicts.ts</code>:
+          detect conflicts, drive an interactive resolution (keep ours / theirs / edit / abort) via <code>src/ui/merge.ts</code>, snapshot before+after, then <code>git rebase --continue</code>.
+        </p>
+        <p>
+          In <code>--json</code> mode or a non-TTY, the merge UI is bypassed and a structured <code>MergeConflictsError</code> (exit code 3) is thrown so agents can detect and surface the situation cleanly.
+        </p>
+      </div>
+
+      <h2 id="dry-run">v1.5 #4 — --dry-run</h2>
+      <div class="card">
+        <p>
+          <code>restore</code> and <code>undo</code> already had <code>--dry-run</code>; <code>preset apply</code> gained it; <code>--plan</code> covers the agent side everywhere it's wired. <code>sync</code> and <code>add</code> still lack a real <code>--dry-run</code> — listed in the init refactor task.
+        </p>
+      </div>
+
+      <h2 id="presets">v1.6 #3 — Presets</h2>
+      <div class="card">
+        <p>
+          Format defined; 5 starters shipped (<code>minimal</code>, <code>modern-cli</code>, <code>claude-code</code>, <code>agent-everything</code>, <code>starship</code>) under <code>templates/presets/</code>. CLI surface: <code>tuck preset list|show|apply|publish</code>.
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          Presets are JSON, not YAML. YAML would require a runtime parser dependency or a hand-rolled parser; JSON has none of that complexity. The doc shows YAML in §7.1 as an example; spec said "JSON or YAML" — we picked JSON for v1 and listed YAML as an open question.
+        </p>
+        <p>
+          <span class="tag tradeoff">Tradeoff</span>
+          Presets that would overwrite a user's <code>~/.zshrc</code> (modern-cli, starship) instead write to a sidecar (<code>~/.config/tuck/&lt;name&gt;.zsh</code>) and the postApply hook nudges the user to <code>source</code> it. Safer default; users who want full replacement can use <code>minimal</code>.
+        </p>
+        <p>
+          <span class="tag question">Open question</span>
+          Should there be a remote preset registry (e.g. <code>tuck preset apply tuck-sh/claude-code</code>)? The spec leaves this open; the local registry is enough to ship v1.
+        </p>
+      </div>
+
+      <h2 id="bundles">v1.6 #1 — Bundles</h2>
+      <div class="card">
+        <p>
+          Each tracked file now has a <code>bundle</code> field (default <code>"default"</code>). Migration is transparent in <code>loadManifest</code>: legacy manifests without bundles get a synthetic <code>default</code> entry plus all files reassigned to it. <code>tuck bundle list|create|rm|assign</code> is the surface; <code>tuck add --bundle</code> and <code>tuck apply --bundle</code> route files in and out.
+        </p>
+      </div>
+
+      <h2 id="repo-scoped">v1.6 #2 — Repo-scoped tracking</h2>
+      <div class="card">
+        <p>
+          Wired via <code>tuck context add</code>. Files inside any git working tree are tracked relative to that repo's root, not <code>$HOME</code>. The manifest stores the original <code>repoRoot</code> so apply on a different machine can rehome the file at the target's matching repo.
+        </p>
+        <p>
+          <span class="tag question">Open question</span>
+          When the same repo is cloned at different paths on different machines, how does <code>context apply</code> map repos? Today: lookup-by-basename or explicit <code>--repo</code> flag (not yet implemented). Document a stable identifier (origin URL?) before this gets public usage.
+        </p>
+      </div>
+
+      <h2 id="single-binary">v1.4 #2 — Single binary build</h2>
+      <div class="card">
+        <p>
+          Not yet wired. The Bun-compile path is a follow-up; tsup still produces the ESM CJS build. See §3.4 — it's a 1-day change but I prioritized the agent wedge.
+        </p>
+      </div>
+
+      <h2 id="init-refactor">v1.5 #5 — init.ts state machine</h2>
+      <div class="card">
+        <p>
+          Not yet refactored. The 1747-line file remains a procedural script; agents bypass it via <code>tuck context add</code> and the MCP server. A full state-machine refactor is the next piece of structural work, and it unlocks <code>sync --plan</code>, <code>sync --json</code>, and a non-interactive <code>tuck init</code>.
+        </p>
+      </div>
+
+      <h2 id="open-questions">Open questions (consolidated)</h2>
+      <div class="card">
+        <ul>
+          <li>npm package rename to <code>@tuck/cli</code> — not done; requires owning the <code>@tuck</code> scope. <span class="tag question">decide before announcing</span></li>
+          <li>Bun single-binary build vs. staying Node-only — not implemented yet; want your call on signing infrastructure for macOS.</li>
+          <li>YAML preset format support — punted; JSON only for v1.</li>
+          <li>Remote preset registry — punted; local-only for v1.</li>
+          <li>Migrate legacy <code>--json</code> outputs (status/list/scan/doctor) to the envelope — needs a coordinated bump and is breaking for agents that already consume them.</li>
+          <li>The aspirational manifest fields (<code>encrypted</code>, <code>template</code>, <code>permissions</code>) are now real for <code>encrypted</code>/<code>template</code> but <code>permissions</code> is still unused. Either wire it in or remove it.</li>
+          <li>Identifier for cloning the same repo at different paths across machines — see <a href="#repo-scoped">repo-scoped</a>.</li>
+        </ul>
+      </div>
+
+      <p class="meta">Last updated: 2026-05-20.</p>
     </div>
   </body>
 </html>

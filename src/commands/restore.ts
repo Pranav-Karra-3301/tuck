@@ -20,6 +20,7 @@ import { runPreRestoreHook, runPostRestoreHook, type HookOptions } from '../lib/
 import { NotInitializedError, FileNotFoundError } from '../errors.js';
 import { CATEGORIES } from '../constants.js';
 import type { RestoreOptions } from '../types.js';
+import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import { restoreFiles as restoreSecrets, getSecretCount } from '../lib/secrets/index.js';
 
 /**
@@ -374,6 +375,7 @@ export const runRestore = async (options: RestoreOptions): Promise<void> => {
 };
 
 const runRestoreCommand = async (paths: string[], options: RestoreOptions): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck restore');
   const tuckDir = getTuckDir();
 
   // Verify tuck is initialized
@@ -383,29 +385,60 @@ const runRestoreCommand = async (paths: string[], options: RestoreOptions): Prom
     throw new NotInitializedError();
   }
 
-  // If no paths and no --all, run interactive
-  if (paths.length === 0 && !options.all) {
+  // If no paths and no --all and not in JSON/auto mode, run interactive
+  if (paths.length === 0 && !options.all && !isJsonMode() && !options.yes) {
     await runInteractiveRestore(tuckDir, options);
     return;
   }
 
   // Prepare files to restore
-  const files = await prepareFilesToRestore(tuckDir, options.all ? undefined : paths);
+  const files = await prepareFilesToRestore(tuckDir, options.all || paths.length === 0 ? undefined : paths);
 
   if (files.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ restored: 0, files: [] });
+      return;
+    }
     logger.warning('No files to restore');
     return;
   }
 
+  // --plan: emit the operation plan without executing.
+  if (options.plan) {
+    if (isJsonMode()) {
+      emitJsonOk({
+        plan: files.map((f) => ({
+          source: f.source,
+          existsAtTarget: f.existsAtTarget,
+          category: f.category,
+        })),
+      });
+      return;
+    }
+    logger.heading('Plan — would restore:');
+    for (const f of files) logger.file('add', f.source);
+    return;
+  }
+
   // Show what will be restored
-  if (options.dryRun) {
-    logger.heading('Dry run - would restore:');
-  } else {
-    logger.heading('Restoring:');
+  if (!isJsonMode()) {
+    if (options.dryRun) logger.heading('Dry run - would restore:');
+    else logger.heading('Restoring:');
   }
 
   // Restore files
   const result = await restoreFilesInternal(tuckDir, files, options);
+
+  if (isJsonMode()) {
+    emitJsonOk({
+      restored: result.restoredCount,
+      secretsRestored: result.secretsRestored,
+      unresolvedPlaceholders: result.unresolvedPlaceholders,
+      total: files.length,
+      dryRun: !!options.dryRun,
+    });
+    return;
+  }
 
   logger.blank();
 
@@ -428,6 +461,9 @@ export const restoreCommand = new Command('restore')
   .option('--no-hooks', 'Skip execution of pre/post restore hooks')
   .option('--trust-hooks', 'Trust and run hooks without confirmation (use with caution)')
   .option('--no-secrets', 'Skip restoring secrets (keep placeholders as-is)')
+  .option('--json', 'Emit JSON envelope to stdout (suppresses interactive UI)')
+  .option('-y, --yes', 'Auto-confirm prompts (required with --json for full automation)')
+  .option('--plan', 'Print the operation plan and exit without restoring')
   .action(async (paths: string[], options: RestoreOptions) => {
     await runRestoreCommand(paths, options);
   });

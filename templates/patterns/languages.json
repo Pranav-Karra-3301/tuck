@@ -1,0 +1,298 @@
+{
+  "$schema": "https://tuck.sh/schemas/patterns-v1.json",
+  "category": "languages",
+  "patterns": [
+    {
+      "pattern": "~/.npmrc",
+      "category": "languages",
+      "description": "npm configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.yarnrc",
+      "category": "languages",
+      "description": "Yarn configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/yarn",
+      "category": "languages",
+      "description": "Yarn config directory",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.bunfig.toml",
+      "category": "languages",
+      "description": "Bun configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.nvmrc",
+      "category": "languages",
+      "description": "nvm default version",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.node-version",
+      "category": "languages",
+      "description": "Node version file",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/pip",
+      "category": "languages",
+      "description": "pip configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.pip",
+      "category": "languages",
+      "description": "pip config (legacy)",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.pypirc",
+      "category": "languages",
+      "description": "PyPI configuration",
+      "sensitive": true,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.python-version",
+      "category": "languages",
+      "description": "pyenv version",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/flake8",
+      "category": "languages",
+      "description": "Flake8 config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/black",
+      "category": "languages",
+      "description": "Black formatter",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/ruff",
+      "category": "languages",
+      "description": "Ruff linter",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.pylintrc",
+      "category": "languages",
+      "description": "Pylint config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/pypoetry",
+      "category": "languages",
+      "description": "Poetry config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/pdm",
+      "category": "languages",
+      "description": "PDM config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.gemrc",
+      "category": "languages",
+      "description": "RubyGems configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.irbrc",
+      "category": "languages",
+      "description": "IRB configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.pryrc",
+      "category": "languages",
+      "description": "Pry configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.ruby-version",
+      "category": "languages",
+      "description": "Ruby version file",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.bundle/config",
+      "category": "languages",
+      "description": "Bundler config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.cargo/config.toml",
+      "category": "languages",
+      "description": "Cargo configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.cargo/config",
+      "category": "languages",
+      "description": "Cargo config (legacy)",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.rustfmt.toml",
+      "category": "languages",
+      "description": "rustfmt config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/go",
+      "category": "languages",
+      "description": "Go configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.gradle/gradle.properties",
+      "category": "languages",
+      "description": "Gradle properties",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.m2/settings.xml",
+      "category": "languages",
+      "description": "Maven settings",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.sbt",
+      "category": "languages",
+      "description": "SBT config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.docker/config.json",
+      "category": "languages",
+      "description": "Docker config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.kube/config",
+      "category": "languages",
+      "description": "kubectl config",
+      "sensitive": true,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.aws/config",
+      "category": "languages",
+      "description": "AWS CLI config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/gcloud",
+      "category": "languages",
+      "description": "Google Cloud config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "%USERPROFILE%/.npmrc",
+      "category": "languages",
+      "description": "npm configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    },
+    {
+      "pattern": "%APPDATA%/npm/npmrc",
+      "category": "languages",
+      "description": "npm global configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    },
+    {
+      "pattern": "%USERPROFILE%/.docker/config.json",
+      "category": "languages",
+      "description": "Docker config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    },
+    {
+      "pattern": "%USERPROFILE%/.kube/config",
+      "category": "languages",
+      "description": "kubectl config",
+      "sensitive": true,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    }
+  ]
+}

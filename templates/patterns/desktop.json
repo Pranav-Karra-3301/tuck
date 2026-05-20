@@ -1,0 +1,204 @@
+{
+  "$schema": "https://tuck.sh/schemas/patterns-v1.json",
+  "category": "desktop",
+  "patterns": [
+    {
+      "pattern": "~/.config/i3",
+      "category": "desktop",
+      "description": "i3 window manager",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.config/sway",
+      "category": "desktop",
+      "description": "Sway (Wayland i3)",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.config/i3status",
+      "category": "desktop",
+      "description": "i3status bar",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.config/i3status-rust",
+      "category": "desktop",
+      "description": "i3status-rust bar",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.config/waybar",
+      "category": "desktop",
+      "description": "Waybar",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.config/polybar",
+      "category": "desktop",
+      "description": "Polybar",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.config/hypr",
+      "category": "desktop",
+      "description": "Hyprland config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.config/bspwm",
+      "category": "desktop",
+      "description": "bspwm config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.config/sxhkd",
+      "category": "desktop",
+      "description": "sxhkd hotkeys",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.config/awesome",
+      "category": "desktop",
+      "description": "AwesomeWM config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.config/openbox",
+      "category": "desktop",
+      "description": "Openbox config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.config/qtile",
+      "category": "desktop",
+      "description": "Qtile config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.config/herbstluftwm",
+      "category": "desktop",
+      "description": "herbstluftwm config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.yabairc",
+      "category": "desktop",
+      "description": "yabai config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "darwin"
+    },
+    {
+      "pattern": "~/.config/yabai",
+      "category": "desktop",
+      "description": "yabai config (XDG)",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "darwin"
+    },
+    {
+      "pattern": "~/.skhdrc",
+      "category": "desktop",
+      "description": "skhd hotkeys",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "darwin"
+    },
+    {
+      "pattern": "~/.config/skhd",
+      "category": "desktop",
+      "description": "skhd config (XDG)",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "darwin"
+    },
+    {
+      "pattern": "~/.config/spacebar",
+      "category": "desktop",
+      "description": "spacebar config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "darwin"
+    },
+    {
+      "pattern": "~/.config/borders",
+      "category": "desktop",
+      "description": "borders config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "darwin"
+    },
+    {
+      "pattern": "~/.aerospace.toml",
+      "category": "desktop",
+      "description": "AeroSpace config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "darwin"
+    },
+    {
+      "pattern": "~/.config/picom",
+      "category": "desktop",
+      "description": "Picom compositor",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.config/picom.conf",
+      "category": "desktop",
+      "description": "Picom config (alt)",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    }
+  ]
+}

@@ -18,6 +18,7 @@ import {
   secretsCommand,
   encryptionCommand,
   doctorCommand,
+  bundleCommand,
 } from './commands/index.js';
 import { handleError } from './errors.js';
 import { VERSION, DESCRIPTION } from './constants.js';
@@ -62,6 +63,7 @@ program.addCommand(scanCommand);
 program.addCommand(secretsCommand);
 program.addCommand(encryptionCommand);
 program.addCommand(doctorCommand);
+program.addCommand(bundleCommand);
 program.addCommand(contextCommand);
 program.addCommand(mcpCommand);
 program.addCommand(presetCommand);

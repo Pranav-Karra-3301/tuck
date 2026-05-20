@@ -13,6 +13,7 @@ import {
   formatSnapshotDate,
   Snapshot,
 } from '../lib/timemachine.js';
+import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 
 export interface UndoOptions {
   list?: boolean;
@@ -21,6 +22,7 @@ export interface UndoOptions {
   delete?: string;
   force?: boolean;
   dryRun?: boolean;
+  json?: boolean;
 }
 
 /**
@@ -260,8 +262,24 @@ const runInteractiveUndo = async (): Promise<void> => {
  * Main undo command handler
  */
 const runUndo = async (snapshotId: string | undefined, options: UndoOptions): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck undo');
+
   // Handle --list
   if (options.list) {
+    if (isJsonMode()) {
+      const snapshots = await listSnapshots();
+      emitJsonOk({
+        count: snapshots.length,
+        snapshots: snapshots.map((s) => ({
+          id: s.id,
+          date: formatSnapshotDate(s.id),
+          reason: s.reason,
+          machine: s.machine,
+          fileCount: s.files.filter((f) => f.existed).length,
+        })),
+      });
+      return;
+    }
     await showSnapshotList();
     return;
   }
@@ -316,6 +334,7 @@ export const undoCommand = new Command('undo')
   .option('--delete <id>', 'Delete a specific snapshot')
   .option('-f, --force', 'Skip confirmation prompts')
   .option('--dry-run', 'Show what would be restored without making changes')
+  .option('--json', 'Emit JSON envelope to stdout (suppresses interactive UI)')
   .action(async (snapshotId: string | undefined, options: UndoOptions) => {
     await runUndo(snapshotId, options);
   });

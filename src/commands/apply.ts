@@ -73,6 +73,8 @@ export interface ApplyOptions {
   dryRun?: boolean;
   force?: boolean;
   yes?: boolean;
+  /** Scope applied files to a single bundle. */
+  bundle?: string;
 }
 
 interface ApplyFile {
@@ -245,11 +247,17 @@ const readClonedManifest = async (repoDir: string): Promise<TuckManifest | null>
  */
 const prepareFilesToApply = async (
   repoDir: string,
-  manifest: TuckManifest
+  manifest: TuckManifest,
+  bundle?: string
 ): Promise<ApplyFile[]> => {
   const files: ApplyFile[] = [];
 
   for (const [_id, file] of Object.entries(manifest.files)) {
+    // Scope to a single bundle when requested. Treat missing/legacy bundle
+    // values as "default" so legacy manifests stay applicable.
+    if (bundle && (file.bundle ?? 'default') !== bundle) {
+      continue;
+    }
     try {
       validateSafeSourcePath(file.source);
       validateSafeManifestDestination(file.destination);
@@ -613,10 +621,11 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
     }
 
     // Prepare files to apply
-    const files = await prepareFilesToApply(repoDir, manifest);
+    const files = await prepareFilesToApply(repoDir, manifest, options.bundle);
 
     if (files.length === 0) {
-      prompts.log.warning('No files to apply');
+      const scope = options.bundle ? ` in bundle "${options.bundle}"` : '';
+      prompts.log.warning(`No files to apply${scope}`);
       return;
     }
 
@@ -785,10 +794,11 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
     }
 
     // Prepare files to apply
-    const files = await prepareFilesToApply(repoDir, manifest);
+    const files = await prepareFilesToApply(repoDir, manifest, options.bundle);
 
     if (files.length === 0) {
-      logger.warning('No files to apply');
+      const scope = options.bundle ? ` in bundle "${options.bundle}"` : '';
+      logger.warning(`No files to apply${scope}`);
       return;
     }
 
@@ -868,6 +878,7 @@ export const applyCommand = new Command('apply')
   .option('--dry-run', 'Show what would be applied without making changes')
   .option('-f, --force', 'Apply without confirmation prompts')
   .option('-y, --yes', 'Assume yes to all prompts')
+  .option('-b, --bundle <name>', 'Only apply files in the named bundle')
   .action(async (source: string, options: ApplyOptions) => {
     // Determine if we should run interactive mode
     const isInteractive = !options.force && !options.yes && process.stdout.isTTY;

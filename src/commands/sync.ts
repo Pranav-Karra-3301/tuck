@@ -20,6 +20,16 @@ import {
 } from '../lib/manifest.js';
 import { stageAll, commit, getStatus, push, hasRemote, fetch, pull } from '../lib/git.js';
 import {
+  detectConflicts,
+  applyResolution,
+  continueRebase,
+  abortRebase,
+  type FileConflict,
+} from '../lib/mergeConflicts.js';
+import { resolveConflictsInteractively } from '../ui/merge.js';
+import { createSnapshot } from '../lib/timemachine.js';
+import { isJsonMode } from '../lib/jsonOutput.js';
+import {
   copyFileOrDir,
   getFileChecksum,
   deleteFileOrDir,
@@ -29,7 +39,7 @@ import {
 } from '../lib/files.js';
 import { addToTuckignore, loadTuckignore, isIgnored } from '../lib/tuckignore.js';
 import { runPreSyncHook, runPostSyncHook, type HookOptions } from '../lib/hooks.js';
-import { NotInitializedError, SecretsDetectedError } from '../errors.js';
+import { NotInitializedError, SecretsDetectedError, MergeConflictsError } from '../errors.js';
 import type { SyncOptions, FileChange } from '../types.js';
 import { detectDotfiles, DETECTION_CATEGORIES, type DetectedFile } from '../lib/detect.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
@@ -110,11 +120,64 @@ const detectChanges = async (tuckDir: string): Promise<FileChange[]> => {
 };
 
 /**
- * Pull from remote if behind, returns info about what happened
+ * Snapshot every tracked file's source path before a potentially destructive
+ * pull. Failures here are non-fatal — we'd rather attempt the pull and warn
+ * than block sync entirely on a backup hiccup.
+ */
+const snapshotBeforePull = async (tuckDir: string, reason: string): Promise<void> => {
+  try {
+    const tracked = await getAllTrackedFiles(tuckDir);
+    const sources = Object.values(tracked).map((f) => expandPath(f.source));
+    if (sources.length === 0) return;
+    await createSnapshot(sources, reason);
+  } catch (error) {
+    logger.dim(
+      `Pre-pull snapshot skipped: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+};
+
+/**
+ * Drive the interactive conflict-resolution flow after a failed pull. Returns
+ * one of:
+ *   - `{ resolved: true }`  conflicts were resolved and the rebase continued.
+ *   - `{ resolved: false, aborted: true }`  user aborted; rebase rolled back.
+ *
+ * Any exception thrown is propagated to the caller for surfacing.
+ */
+const resolveConflictsInline = async (
+  tuckDir: string,
+  conflicts: FileConflict[]
+): Promise<{ resolved: boolean; aborted: boolean }> => {
+  const resolutions = await resolveConflictsInteractively(conflicts);
+
+  const aborted = resolutions.some((r) => r.choice === 'abort');
+  if (aborted) {
+    await abortRebase(tuckDir);
+    return { resolved: false, aborted: true };
+  }
+
+  for (const resolution of resolutions) {
+    await applyResolution(tuckDir, resolution);
+  }
+
+  await continueRebase(tuckDir);
+  return { resolved: true, aborted: false };
+};
+
+/**
+ * Pull from remote if behind, returns info about what happened.
+ *
+ * When `git pull --rebase` runs into per-file conflicts the rebase stops with
+ * a non-zero exit and the index is left with conflict markers. This function
+ * detects that case via {@link detectConflicts} and either:
+ *   - escalates a {@link MergeConflictsError} in non-interactive / JSON mode,
+ *   - or drives the interactive resolution UI before completing the rebase.
  */
 const pullIfBehind = async (
-  tuckDir: string
-): Promise<{ pulled: boolean; behind: number; error?: string }> => {
+  tuckDir: string,
+  options: SyncOptions = {}
+): Promise<{ pulled: boolean; behind: number; error?: string; resolvedConflicts?: string[] }> => {
   const hasRemoteRepo = await hasRemote(tuckDir);
   if (!hasRemoteRepo) {
     return { pulled: false, behind: 0 };
@@ -130,11 +193,55 @@ const pullIfBehind = async (
       return { pulled: false, behind: 0 };
     }
 
-    // Pull with rebase to keep history clean
-    await pull(tuckDir, { rebase: true });
+    // Snapshot tracked sources before a potentially-destructive pull so users
+    // can roll back if anything goes sideways during merge.
+    await snapshotBeforePull(tuckDir, 'Pre-sync pull backup');
 
-    return { pulled: true, behind: status.behind };
+    // Pull with rebase to keep history clean
+    try {
+      await pull(tuckDir, { rebase: true });
+      return { pulled: true, behind: status.behind };
+    } catch (pullError) {
+      // A failed pull --rebase may have left conflicts staged in the index.
+      // If it didn't, this is just a regular git error and we re-throw.
+      const conflicts = await detectConflicts(tuckDir);
+      if (conflicts.length === 0) {
+        throw pullError;
+      }
+
+      // Non-interactive / JSON callers cannot drive the resolution UI. Throw
+      // a structured error so agents can detect and report it via the JSON
+      // envelope.
+      const nonInteractive = options.json === true || options.yes === true || isJsonMode();
+      if (nonInteractive) {
+        // Leave the rebase in progress so the user / next interactive run can
+        // resolve it; the dedicated exit code lets agents detect this.
+        throw new MergeConflictsError(conflicts.map((c) => c.path));
+      }
+
+      const outcome = await resolveConflictsInline(tuckDir, conflicts);
+      if (outcome.aborted) {
+        return {
+          pulled: false,
+          behind: status.behind,
+          error: 'Pull aborted by user during conflict resolution',
+        };
+      }
+
+      // Snapshot post-resolution state too so the user has a checkpoint of the
+      // exact tree that survived the merge.
+      await snapshotBeforePull(tuckDir, 'Post-sync conflict resolution');
+
+      return {
+        pulled: true,
+        behind: status.behind,
+        resolvedConflicts: conflicts.map((c) => c.path),
+      };
+    }
   } catch (error) {
+    if (error instanceof MergeConflictsError) {
+      throw error;
+    }
     return {
       pulled: false,
       behind: 0,
@@ -441,13 +548,17 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
     const pullSpinner = prompts.spinner();
     pullSpinner.start('Checking remote for updates...');
 
-    const pullResult = await pullIfBehind(tuckDir);
+    const pullResult = await pullIfBehind(tuckDir, options);
     if (pullResult.error) {
       pullSpinner.stop(`Could not pull: ${pullResult.error}`);
       prompts.log.warning('Continuing with local changes...');
     } else if (pullResult.pulled) {
+      const conflictNote =
+        pullResult.resolvedConflicts && pullResult.resolvedConflicts.length > 0
+          ? ` (resolved ${pullResult.resolvedConflicts.length} conflict${pullResult.resolvedConflicts.length === 1 ? '' : 's'})`
+          : '';
       pullSpinner.stop(
-        `Pulled ${pullResult.behind} commit${pullResult.behind > 1 ? 's' : ''} from remote`
+        `Pulled ${pullResult.behind} commit${pullResult.behind > 1 ? 's' : ''} from remote${conflictNote}`
       );
     } else {
       pullSpinner.stop('Up to date with remote');
