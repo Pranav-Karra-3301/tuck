@@ -1,0 +1,21 @@
+# Global Claude Code Instructions
+
+> Personal defaults for {{user | default "you"}} — managed by tuck.
+
+## Identity
+- I work on {{os | default "this machine"}} ({{arch | default ""}}).
+- Prefer concise, evidence-backed answers over speculation.
+
+## Workflow
+- Always read before you edit; never invent file paths.
+- Use absolute paths in tool calls.
+- Run tests before claiming a task is done.
+
+## Style
+- Prefer explicit code over clever one-liners.
+- No emojis in code or commits unless requested.
+- Match the project's existing conventions; don't reformat unrelated lines.
+
+## Safety
+- Never commit secrets, API keys, or credentials.
+- Confirm destructive shell operations (rm -rf, git reset --hard, force push).

@@ -264,7 +264,15 @@ const DOTFILE_PATTERNS: Array<{
     description: 'Codex automations',
     exclude: ['**/*.db', 'runs', 'sessions'],
   },
+  {
+    path: '~/.claude',
+    category: 'agents',
+    description: 'Claude Code config home',
+    exclude: ['projects/**/*.jsonl', 'logs', 'cache', 'todos', 'statsig', 'shell-snapshots'],
+  },
+  { path: '~/.claude/CLAUDE.md', category: 'agents', description: 'Claude Code global instructions' },
   { path: '~/.claude/settings.json', category: 'agents', description: 'Claude Code settings' },
+  { path: '~/.claude/keybindings.json', category: 'agents', description: 'Claude Code keybindings' },
   {
     path: '~/.claude/commands',
     category: 'agents',
@@ -275,7 +283,24 @@ const DOTFILE_PATTERNS: Array<{
     category: 'agents',
     description: 'Claude Code hooks',
   },
+  {
+    path: '~/.claude/projects',
+    category: 'agents',
+    description: 'Claude Code project memory',
+  },
+  {
+    path: '~/.cursor',
+    category: 'agents',
+    description: 'Cursor editor config home',
+  },
+  { path: '~/.cursorrules', category: 'agents', description: 'Cursor rules (user-level)' },
   { path: '~/.aider.conf.yml', category: 'agents', description: 'Aider configuration' },
+  {
+    path: '~/.aider.input.history',
+    category: 'agents',
+    description: 'Aider input history (may contain prompts)',
+    sensitive: true,
+  },
   {
     path: '~/.config/aider',
     category: 'agents',

@@ -1,0 +1,18 @@
+# Cursor rules for {{user | default "you"}} — managed by tuck
+
+You are pair-programming with a developer who values:
+
+- Clarity over cleverness. Verbose, well-named code beats terse tricks.
+- Type safety. Use strict TypeScript; avoid `any`.
+- Small diffs. Touch only what the task requires.
+- Tests before claims. Run them; quote the output.
+- No emojis in code, commits, or PRs unless the user asks.
+
+When editing:
+- Read the file first; never guess at structure.
+- Match the surrounding style (indentation, quote marks, semis).
+- Add JSDoc to exported functions.
+
+When uncertain:
+- Ask one focused question instead of guessing.
+- Never invent library APIs.

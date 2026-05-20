@@ -1,0 +1,32 @@
+{
+  "name": "claude-code",
+  "version": "1.0.0",
+  "description": "Claude Code optimized setup: CLAUDE.md starter + settings",
+  "provides": [
+    {
+      "category": "agents",
+      "files": [
+        {
+          "source": "templates/CLAUDE.md.template",
+          "target": "~/.claude/CLAUDE.md",
+          "template": true,
+          "permissions": "0644"
+        },
+        {
+          "source": "templates/settings.json.template",
+          "target": "~/.claude/settings.json",
+          "template": true,
+          "permissions": "0644"
+        }
+      ]
+    }
+  ],
+  "requires": [
+    { "tool": "claude", "install": "npm i -g @anthropic-ai/claude-code" }
+  ],
+  "hooks": {
+    "postApply": [
+      "echo 'Next: run `claude /init` in a project directory to scaffold project-level CLAUDE.md'"
+    ]
+  }
+}

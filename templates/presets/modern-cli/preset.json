@@ -1,0 +1,31 @@
+{
+  "name": "modern-cli",
+  "version": "1.0.0",
+  "description": "Modern CLI replacements: eza, bat, ripgrep, fd, zoxide, fzf",
+  "provides": [
+    {
+      "category": "shell",
+      "files": [
+        {
+          "source": "templates/modern-cli.zshrc.template",
+          "target": "~/.config/tuck/modern-cli.zsh",
+          "template": true,
+          "permissions": "0644"
+        }
+      ]
+    }
+  ],
+  "requires": [
+    { "tool": "eza",      "install": "brew install eza" },
+    { "tool": "bat",      "install": "brew install bat" },
+    { "tool": "rg",       "install": "brew install ripgrep" },
+    { "tool": "fd",       "install": "brew install fd" },
+    { "tool": "zoxide",   "install": "brew install zoxide" },
+    { "tool": "fzf",      "install": "brew install fzf" }
+  ],
+  "hooks": {
+    "postApply": [
+      "echo 'Source the snippet from your ~/.zshrc:  source ~/.config/tuck/modern-cli.zsh'"
+    ]
+  }
+}

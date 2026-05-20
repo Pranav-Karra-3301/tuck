@@ -1,0 +1,32 @@
+{
+  "name": "starship",
+  "version": "1.0.0",
+  "description": "Starship cross-shell prompt with a curated default config",
+  "provides": [
+    {
+      "category": "shell",
+      "files": [
+        {
+          "source": "templates/starship.toml.template",
+          "target": "~/.config/starship.toml",
+          "template": true,
+          "permissions": "0644"
+        },
+        {
+          "source": "templates/zshrc.template",
+          "target": "~/.config/tuck/starship.zsh",
+          "template": true,
+          "permissions": "0644"
+        }
+      ]
+    }
+  ],
+  "requires": [
+    { "tool": "starship", "install": "brew install starship" }
+  ],
+  "hooks": {
+    "postApply": [
+      "echo 'Source the snippet from your ~/.zshrc:  source ~/.config/tuck/starship.zsh'"
+    ]
+  }
+}

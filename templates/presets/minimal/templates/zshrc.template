@@ -1,0 +1,33 @@
+# ~/.zshrc — managed by tuck (preset: minimal)
+# Generated for {{user | default "you"}} on {{hostname | default "this machine"}}
+
+# --- Prompt --------------------------------------------------------------
+# Minimal two-line prompt: user@host  cwd  ($/#)
+export PS1='%F{cyan}%n@%m%f %F{yellow}%~%f
+%# '
+
+# --- History -------------------------------------------------------------
+HISTFILE="$HOME/.zsh_history"
+HISTSIZE=10000
+SAVEHIST=10000
+setopt SHARE_HISTORY HIST_IGNORE_DUPS HIST_IGNORE_SPACE
+
+# --- Quality-of-life aliases --------------------------------------------
+alias ll='ls -lah'
+alias la='ls -A'
+alias ..='cd ..'
+alias ...='cd ../..'
+alias g='git'
+alias gs='git status'
+alias gd='git diff'
+
+# --- Platform-specific ---------------------------------------------------
+# tuck:if os=darwin
+# macOS: add Homebrew to PATH (Apple Silicon default)
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
+alias ls='ls -G'
+# tuck:endif
+
+# tuck:if os=linux
+alias ls='ls --color=auto'
+# tuck:endif

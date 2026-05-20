@@ -1,0 +1,32 @@
+{
+  "name": "minimal",
+  "version": "1.0.0",
+  "description": "Sensible bash/zsh + git defaults to start a fresh machine",
+  "provides": [
+    {
+      "category": "shell",
+      "files": [
+        {
+          "source": "templates/zshrc.template",
+          "target": "~/.zshrc",
+          "template": true,
+          "permissions": "0644"
+        }
+      ]
+    },
+    {
+      "category": "git",
+      "files": [
+        {
+          "source": "templates/gitconfig.template",
+          "target": "~/.gitconfig",
+          "template": true,
+          "permissions": "0644"
+        }
+      ]
+    }
+  ],
+  "requires": [
+    { "tool": "git", "install": "brew install git" }
+  ]
+}

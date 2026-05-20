@@ -1,0 +1,53 @@
+{
+  "name": "agent-everything",
+  "version": "1.0.0",
+  "description": "Claude Code + Cursor + Aider + MCP, all wired up",
+  "provides": [
+    {
+      "category": "agents",
+      "files": [
+        {
+          "source": "templates/CLAUDE.md.template",
+          "target": "~/.claude/CLAUDE.md",
+          "template": true,
+          "permissions": "0644"
+        },
+        {
+          "source": "templates/settings.json.template",
+          "target": "~/.claude/settings.json",
+          "template": true,
+          "permissions": "0644"
+        },
+        {
+          "source": "templates/cursorrules.template",
+          "target": "~/.cursorrules",
+          "template": true,
+          "permissions": "0644"
+        },
+        {
+          "source": "templates/aider.conf.yml.template",
+          "target": "~/.aider.conf.yml",
+          "template": true,
+          "permissions": "0644"
+        },
+        {
+          "source": "templates/mcp.json.template",
+          "target": "~/.config/mcp/mcp.json",
+          "template": true,
+          "permissions": "0644"
+        }
+      ]
+    }
+  ],
+  "requires": [
+    { "tool": "claude", "install": "npm i -g @anthropic-ai/claude-code" },
+    { "tool": "cursor", "install": "Download from https://cursor.sh" },
+    { "tool": "aider",  "install": "pipx install aider-chat" }
+  ],
+  "hooks": {
+    "postApply": [
+      "echo 'Configured Claude Code, Cursor, Aider, and an empty MCP servers map.'",
+      "echo 'Edit ~/.config/mcp/mcp.json to register MCP servers.'"
+    ]
+  }
+}

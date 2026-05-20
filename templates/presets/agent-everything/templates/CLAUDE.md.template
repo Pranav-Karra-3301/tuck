@@ -1,0 +1,16 @@
+# Global Claude Code Instructions
+
+> Personal defaults for {{user | default "you"}} — managed by tuck.
+
+## Workflow
+- Read before editing; use absolute paths.
+- Run tests before claiming completion.
+- Prefer editing existing files over creating new ones.
+
+## Style
+- Explicit over clever. No emojis unless asked.
+- Follow existing project conventions.
+
+## Safety
+- Never commit secrets.
+- Confirm destructive shell operations.

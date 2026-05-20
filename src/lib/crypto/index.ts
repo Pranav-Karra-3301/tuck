@@ -44,3 +44,12 @@ export {
 } from './manager.js';
 
 export type { EncryptionStatus } from './manager.js';
+
+// File-level encryption (per-file, PBKDF2 + AES-256-GCM, "TCKE1" header)
+// Note: aliased to avoid clashing with the file-path based `isEncryptedFile`
+// exported from './encryption.js'.
+export {
+  encryptFileContent,
+  decryptFileContent,
+  isEncryptedFile as isEncryptedFileBuffer,
+} from './fileEncryption.js';

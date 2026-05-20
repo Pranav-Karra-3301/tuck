@@ -1,0 +1,20 @@
+# aider config for {{user | default "you"}} — managed by tuck
+# https://aider.chat/docs/config/aider_conf.html
+
+# Default model (override per-session with --model)
+model: sonnet
+
+# Show diffs in the chat instead of just applying silently
+show-diffs: true
+
+# Auto-commit aider's edits — opt-in
+auto-commits: false
+
+# Use git for change tracking
+git: true
+
+# Dark terminal pretty output
+dark-mode: true
+
+# Skip the OpenAI ping at startup
+check-update: false
