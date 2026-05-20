@@ -1737,7 +1737,34 @@ export const initCommand = new Command('init')
   .option('-r, --remote <url>', 'Git remote URL to set up')
   .option('--bare', 'Initialize without any default files')
   .option('--from <url>', 'Clone from existing tuck repository')
-  .action(async (options: InitOptions) => {
+  .option('--json', 'Emit JSON envelope to stdout (requires --bare or --from)')
+  .option('-y, --yes', 'Auto-confirm prompts (use with --bare or --from)')
+  .action(async (options: InitOptions & { json?: boolean; yes?: boolean }) => {
+    // Agent / JSON mode: refuse interactive flow and require explicit args.
+    // The full init prompt tree (12+ branch points) requires the state-machine
+    // refactor to be safely JSON-driven; in the meantime --bare and --from are
+    // the two well-defined non-interactive paths that produce a usable repo.
+    if (options.json || options.yes) {
+      const { setJsonMode, isJsonMode, emitJsonOk } = await import('../lib/jsonOutput.js');
+      if (options.json) setJsonMode(true, 'tuck init');
+      if (!options.bare && !options.from) {
+        const { TuckError } = await import('../errors.js');
+        throw new TuckError(
+          'Interactive init is not supported in --json / --yes mode.',
+          'INIT_NEEDS_NON_INTERACTIVE_FLAGS',
+          [
+            'Use `tuck init --bare` for an empty local repo',
+            'Or `tuck init --from <url>` to clone an existing tuck repo',
+          ]
+        );
+      }
+      await runInit(options);
+      if (isJsonMode()) {
+        emitJsonOk({ initialized: true, dir: options.dir, bare: options.bare ?? false, from: options.from });
+      }
+      return;
+    }
+
     // If no options provided, run interactive mode
     if (!options.remote && !options.bare && !options.from && options.dir === '~/.tuck') {
       await runInteractiveInit();

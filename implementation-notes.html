@@ -287,14 +287,30 @@
       <h2 id="single-binary">v1.4 #2 — Single binary build</h2>
       <div class="card">
         <p>
-          Not yet wired. The Bun-compile path is a follow-up; tsup still produces the ESM CJS build. See §3.4 — it's a 1-day change but I prioritized the agent wedge.
+          Wired. <code>pnpm build:bin</code> produces a native binary for the current platform; <code>pnpm build:bin:all</code> cross-compiles to darwin-arm64/x64, linux-x64/arm64, windows-x64 in one shot. <code>scripts/install.sh</code> is the <code>curl | sh</code> installer that detects host arch and pulls from the GitHub Release.
+        </p>
+        <p>
+          <span class="tag tradeoff">Tradeoff</span>
+          Bun's <code>--compile</code> wins over Deno because tsup already targets ESM and our deps work under bun without porting. Picked Bun over <code>pkg</code>/<code>nexe</code> because it produces a single self-contained executable in seconds and is actively maintained.
+        </p>
+        <p>
+          <span class="tag question">Open question</span>
+          macOS code signing is not wired. Users who download via <code>curl | sh</code> on a fresh Mac will hit Gatekeeper. Need an Apple Developer ID + notarization step in CI before announcing.
         </p>
       </div>
 
       <h2 id="init-refactor">v1.5 #5 — init.ts state machine</h2>
       <div class="card">
         <p>
-          Not yet refactored. The 1747-line file remains a procedural script; agents bypass it via <code>tuck context add</code> and the MCP server. A full state-machine refactor is the next piece of structural work, and it unlocks <code>sync --plan</code>, <code>sync --json</code>, and a non-interactive <code>tuck init</code>.
+          <span class="tag deviation">Deviation</span>
+          The full state-machine refactor of the 1747-line <code>init.ts</code> was descoped from this session. A real decomposition is multi-day work and the risk of regressing 12+ branch points outweighs the benefit when agents already have viable paths.
+        </p>
+        <p>
+          What shipped instead: <code>tuck init --json</code> and <code>--yes</code> now refuse the interactive flow and require either <code>--bare</code> or <code>--from &lt;url&gt;</code>. Agents that need a fresh repo use <code>--bare</code>; agents joining an existing tuck use <code>--from</code>. Both paths already work non-interactively. The interactive remote-creation flow remains TTY-only until the state-machine refactor lands.
+        </p>
+        <p>
+          <span class="tag question">Open question</span>
+          Whether to deprecate the interactive init entirely once the refactor lands, or keep two parallel front-doors (interactive UI + state-machine core). Defer until the refactor is actually written.
         </p>
       </div>
 
@@ -302,13 +318,45 @@
       <div class="card">
         <ul>
           <li>npm package rename to <code>@tuck/cli</code> — not done; requires owning the <code>@tuck</code> scope. <span class="tag question">decide before announcing</span></li>
-          <li>Bun single-binary build vs. staying Node-only — not implemented yet; want your call on signing infrastructure for macOS.</li>
+          <li>macOS code signing / notarization for the Bun binary — not wired. Need an Apple Developer ID before <code>curl | sh</code> can install without Gatekeeper warnings.</li>
           <li>YAML preset format support — punted; JSON only for v1.</li>
           <li>Remote preset registry — punted; local-only for v1.</li>
           <li>Migrate legacy <code>--json</code> outputs (status/list/scan/doctor) to the envelope — needs a coordinated bump and is breaking for agents that already consume them.</li>
-          <li>The aspirational manifest fields (<code>encrypted</code>, <code>template</code>, <code>permissions</code>) are now real for <code>encrypted</code>/<code>template</code> but <code>permissions</code> is still unused. Either wire it in or remove it.</li>
+          <li>The aspirational manifest fields: <code>encrypted</code> (now real via encrypt-file), <code>template</code> (now real via presets / template engine), <code>permissions</code> (still written by add but unread). Either wire <code>permissions</code> into restore or remove it from the schema.</li>
           <li>Identifier for cloning the same repo at different paths across machines — see <a href="#repo-scoped">repo-scoped</a>.</li>
+          <li><code>init.ts</code> state-machine refactor still pending. Agents have viable alternatives (<code>--bare</code>, <code>--from</code>, <code>tuck context</code>, MCP) so the wedge isn't blocked, but the 1747-line procedural script remains a maintenance landmine.</li>
         </ul>
+      </div>
+
+      <h2 id="summary">What's done vs. what's left</h2>
+      <div class="card">
+        <h4>Shipped this session</h4>
+        <ul>
+          <li>JSON envelope (<code>{ok, command, data|error, warnings?}</code>) on add, sync, restore, undo, diff, encryption, context, preset, bundle, mcp.</li>
+          <li><code>TuckError.toJSON()</code> + structured errors + per-class exit codes (<code>NOT_INITIALIZED=2</code>, <code>MERGE_CONFLICTS=3</code>).</li>
+          <li><code>tuck context</code> (agent configs across home + per-repo scopes).</li>
+          <li><code>tuck mcp serve</code> (stdio JSON-RPC, 6 tools).</li>
+          <li>Expanded agent detection (<code>~/.claude</code>, <code>~/.cursor</code>, <code>.aider*</code>, etc.).</li>
+          <li>Patterns-as-data registry (<code>templates/patterns/*.json</code> + <code>~/.tuck/patterns/*.json</code> override).</li>
+          <li>Sandboxed templating engine ({{ }} + comment-marker grammar, render at restore time only).</li>
+          <li>AES-256-GCM file encryption module + <code>tuck encryption encrypt-file/decrypt-file</code>.</li>
+          <li>Real merge UI for sync conflicts (interactive ours/theirs/edit/abort, snapshots before+after, structured error in agent mode).</li>
+          <li><code>--plan</code> / <code>--dry-run</code> on add, sync, restore, preset apply.</li>
+          <li>Bundle concept in manifest (transparent migration of legacy installs).</li>
+          <li>Preset system + 5 bundled starters (<code>minimal</code>, <code>modern-cli</code>, <code>claude-code</code>, <code>agent-everything</code>, <code>starship</code>).</li>
+          <li>Bun single-binary build target + <code>curl | sh</code> installer.</li>
+        </ul>
+        <h4>Punted</h4>
+        <ul>
+          <li>Full <code>init.ts</code> state-machine refactor.</li>
+          <li>npm package rename.</li>
+          <li>macOS notarization / Apple signing.</li>
+          <li>Remote preset registry, YAML preset format.</li>
+        </ul>
+        <h4>Tests</h4>
+        <p>
+          <strong>795 → 831 passing.</strong> Coverage added for: encryption round-trip (14), bundle migration/CRUD (9), merge conflict detection + resolution (6), patterns registry load + override (7).
+        </p>
       </div>
 
       <p class="meta">Last updated: 2026-05-20.</p>

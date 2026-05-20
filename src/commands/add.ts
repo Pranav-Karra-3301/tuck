@@ -6,6 +6,7 @@ import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js
 import { NotInitializedError } from '../errors.js';
 import { CATEGORIES } from '../constants.js';
 import type { AddOptions } from '../types.js';
+import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import {
   preparePathsForTracking,
   type PreparedTrackFile,
@@ -154,6 +155,7 @@ export const addFilesFromPaths = async (
 };
 
 const runAdd = async (paths: string[], options: AddOptions): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck add');
   const tuckDir = getTuckDir();
 
   try {
@@ -163,7 +165,29 @@ const runAdd = async (paths: string[], options: AddOptions): Promise<void> => {
   }
 
   if (paths.length === 0) {
+    if (isJsonMode() || options.yes) {
+      // In agent mode an empty add is a no-op rather than an interactive prompt.
+      if (isJsonMode()) emitJsonOk({ added: 0, files: [] });
+      else logger.info('No paths provided.');
+      return;
+    }
     await runInteractiveAdd(tuckDir);
+    return;
+  }
+
+  // --plan / --dry-run: print what would be added without mutating.
+  if (options.plan || options.dryRun) {
+    const planned = paths.map((p) => ({
+      path: p,
+      category: options.category,
+      bundle: options.bundle ?? 'default',
+    }));
+    if (isJsonMode()) {
+      emitJsonOk({ plan: planned });
+    } else {
+      logger.heading('Plan — would track:');
+      for (const p of planned) logger.file('add', `${p.path} [${p.category ?? 'auto'}]`);
+    }
     return;
   }
 
@@ -177,16 +201,31 @@ const runAdd = async (paths: string[], options: AddOptions): Promise<void> => {
     category: options.category,
     name: options.name,
     force: options.force,
-    secretHandling: 'interactive',
+    secretHandling: isJsonMode() || options.yes ? 'strict' : 'interactive',
     forceBypassCommand: 'tuck add --force',
   });
 
   if (filesToAdd.length === 0) {
-    logger.info('No files to add');
+    if (isJsonMode()) emitJsonOk({ added: 0, files: [] });
+    else logger.info('No files to add');
     return;
   }
 
   await addFiles(filesToAdd, tuckDir, options);
+
+  if (isJsonMode()) {
+    emitJsonOk({
+      added: filesToAdd.length,
+      files: filesToAdd.map((f) => ({ source: f.source, category: f.category })),
+      bundle: options.bundle ?? 'default',
+    });
+    return;
+  }
+
+  if (options.yes) {
+    logger.success(`Added ${filesToAdd.length} file${filesToAdd.length > 1 ? 's' : ''}`);
+    return;
+  }
 
   console.log();
   const shouldSync = await prompts.confirm('Would you like to sync these changes now?', true);
@@ -209,6 +248,10 @@ export const addCommand = new Command('add')
   .option('--symlink', 'Copy into tuck repo, then replace source path with a symlink')
   .option('-f, --force', 'Skip secret scanning (not recommended)')
   .option('-b, --bundle <name>', 'Bundle to assign the file to (defaults to "default")')
+  .option('--json', 'Emit JSON envelope to stdout (non-interactive)')
+  .option('-y, --yes', 'Auto-confirm prompts (use with --json for full automation)')
+  .option('--plan', 'Print the planned tracking operation as JSON and exit')
+  .option('--dry-run', 'Print the planned tracking operation as text and exit')
   .action(async (paths: string[], options: AddOptions) => {
     await runAdd(paths, options);
   });
