@@ -28,6 +28,7 @@ import { getTuckDir, pathExists } from './lib/paths.js';
 import { loadManifest } from './lib/manifest.js';
 import { getStatus } from './lib/git.js';
 import { setJsonMode } from './lib/jsonOutput.js';
+import { buildCommandPath } from './lib/commandPath.js';
 import { contextCommand } from './commands/context.js';
 import { mcpCommand } from './commands/mcp.js';
 import { presetCommand } from './commands/preset.js';
@@ -68,13 +69,22 @@ program.addCommand(contextCommand);
 program.addCommand(mcpCommand);
 program.addCommand(presetCommand);
 
-// Detect JSON mode early — used by UI/error handler to suppress human output.
-// The actual --json flag is also bound per-command for Commander typing.
-const argv = process.argv.slice(2);
-if (argv.includes('--json')) {
-  const firstNonFlag = argv.find((a) => !a.startsWith('-'));
-  setJsonMode(true, firstNonFlag ? `tuck ${firstNonFlag}` : 'tuck');
+// Best-effort EARLY detection so the error handler can emit JSON even for
+// failures that occur before any command action runs (e.g. during parsing).
+// This is intentionally conservative (flag presence only, no command-name
+// guess); the authoritative value comes from the preAction hook below, which
+// reads the PARSED options and the full command path. This fixes the previous
+// heuristic that mis-fired when `--json` appeared as an option *value*
+// (e.g. `tuck add --message --json`) and mis-named subcommands.
+if (process.argv.slice(2).includes('--json')) {
+  setJsonMode(true);
 }
+
+// Authoritative JSON-mode resolution: runs after parsing, before the action.
+program.hook('preAction', (_thisCommand, actionCommand) => {
+  const opts = actionCommand.opts() as { json?: boolean };
+  setJsonMode(opts.json === true, buildCommandPath(actionCommand as { name(): string }));
+});
 
 // Default action when no command is provided
 const runDefaultAction = async (): Promise<void> => {
