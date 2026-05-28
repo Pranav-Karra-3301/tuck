@@ -13,6 +13,7 @@ import {
   validatePathWithinRoot,
   getTuckDir,
 } from '../lib/paths.js';
+import { resolveWriteTarget } from '../lib/writeContext.js';
 import { cloneRepo } from '../lib/git.js';
 import { isGhInstalled, ghCloneRepo, repoExists } from '../lib/github.js';
 import { createPreApplySnapshot } from '../lib/timemachine.js';
@@ -369,8 +370,10 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
           `${collapsePath(file.destination)} (${mergeResult.preservedBlocks} blocks preserved)`
         );
       } else {
-        await ensureDir(dirname(file.destination));
-        await writeFile(file.destination, mergeResult.content, 'utf-8');
+        // Confine the write under --root (no-op when not sandboxed).
+        const writeTarget = resolveWriteTarget(file.destination);
+        await ensureDir(dirname(writeTarget));
+        await writeFile(writeTarget, mergeResult.content, 'utf-8');
         logger.file('merge', collapsePath(file.destination));
       }
     } else {
@@ -383,10 +386,11 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
         }
       } else {
         const fileExists = await pathExists(file.destination);
+        const writeTarget = resolveWriteTarget(file.destination);
         // Write file content directly instead of copying (to preserve resolved secrets)
-        await ensureDir(dirname(file.destination));
-        await writeFile(file.destination, fileContent, 'utf-8');
-        await fixSecurePermissions(file.destination);
+        await ensureDir(dirname(writeTarget));
+        await writeFile(writeTarget, fileContent, 'utf-8');
+        await fixSecurePermissions(writeTarget);
         logger.file(fileExists ? 'modify' : 'add', collapsePath(file.destination));
       }
     }
@@ -432,10 +436,11 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
       }
     } else {
       const fileExists = await pathExists(file.destination);
+      const writeTarget = resolveWriteTarget(file.destination);
       // Write file content directly instead of copying (to preserve resolved secrets)
-      await ensureDir(dirname(file.destination));
-      await writeFile(file.destination, fileContent, 'utf-8');
-      await fixSecurePermissions(file.destination);
+      await ensureDir(dirname(writeTarget));
+      await writeFile(writeTarget, fileContent, 'utf-8');
+      await fixSecurePermissions(writeTarget);
       logger.file(fileExists ? 'modify' : 'add', collapsePath(file.destination));
     }
 

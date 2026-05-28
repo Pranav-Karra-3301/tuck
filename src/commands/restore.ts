@@ -13,6 +13,7 @@ import {
   validatePathWithinRoot,
 } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles, getTrackedFileBySource } from '../lib/manifest.js';
+import { resolveWriteTarget } from '../lib/writeContext.js';
 import { loadConfig } from '../lib/config.js';
 import { copyFileOrDir, createSymlink } from '../lib/files.js';
 import { createBackup } from '../lib/backup.js';
@@ -166,7 +167,9 @@ const restoreFilesInternal = async (
   for (const file of files) {
     validateSafeSourcePath(file.source);
     validatePathWithinRoot(file.destination, tuckDir, 'restore source');
-    const targetPath = expandPath(file.source);
+    // Resolve + confine the write target (redirected under --root in sandbox
+    // mode; identical to expandPath when not sandboxed). Never escapes the root.
+    const targetPath = resolveWriteTarget(file.source);
 
     // Check if source exists in repository
     if (!(await pathExists(file.destination))) {
@@ -199,9 +202,10 @@ const restoreFilesInternal = async (
         await copyFileOrDir(file.destination, targetPath, { overwrite: true });
       }
 
-      // Fix permissions for sensitive files
-      await fixSSHPermissions(file.source);
-      await fixGPGPermissions(file.source);
+      // Fix permissions on the RESOLVED target (the sandbox copy in --root
+      // mode), never the real-home path.
+      await fixSSHPermissions(targetPath);
+      await fixGPGPermissions(targetPath);
     });
 
     restoredCount++;
@@ -395,7 +399,7 @@ export const assertRestoreScopeExplicit = (
   }
 };
 
-const runRestoreCommand = async (paths: string[], options: RestoreOptions): Promise<void> => {
+export const runRestoreCommand = async (paths: string[], options: RestoreOptions): Promise<void> => {
   if (options.json) setJsonMode(true, 'tuck restore');
   const tuckDir = getTuckDir();
 
