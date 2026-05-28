@@ -16,3 +16,4 @@ export { secretsCommand } from './secrets.js';
 export { encryptionCommand } from './encryption.js';
 export { doctorCommand } from './doctor.js';
 export { bundleCommand } from './bundle.js';
+export { verifyCommand } from './verify.js';
