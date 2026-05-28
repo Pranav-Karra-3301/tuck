@@ -210,6 +210,31 @@ describe('sync command behavior', () => {
     expect(commitMock).not.toHaveBeenCalled();
   });
 
+  it('emits a noop JSON envelope when sync --json has nothing to do', async () => {
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: { source: '~/.zshrc', destination: 'files/shell/zshrc', checksum: 'same' },
+    });
+    getFileChecksumMock.mockResolvedValue('same'); // unchanged
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+    await runSyncCommand(undefined, { json: true, pull: false, noHooks: true } as never);
+
+    writeSpy.mockRestore();
+    const env = JSON.parse(writes.join('').trim());
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck sync');
+    expect(env.data.noop).toBe(true);
+    expect(commitMock).not.toHaveBeenCalled();
+  });
+
   it('blocks the non-interactive (--yes/--json) sync when modified files contain secrets', async () => {
     getAllTrackedFilesMock.mockResolvedValue({
       zshrc: { source: '~/.zshrc', destination: 'files/shell/zshrc', checksum: 'old' },

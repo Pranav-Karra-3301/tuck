@@ -17,6 +17,7 @@ import {
   updateFileInManifest,
   removeFileFromManifest,
   getTrackedFileBySource,
+  clearManifestCache,
 } from '../lib/manifest.js';
 import { stageAll, commit, getStatus, push, hasRemote, fetch, pull } from '../lib/git.js';
 import {
@@ -201,6 +202,9 @@ const pullIfBehind = async (
     // Pull with rebase to keep history clean
     try {
       await pull(tuckDir, { rebase: true });
+      // The rebase rewrote .tuckmanifest.json out-of-band; drop the cached copy
+      // so the rest of this run (and change detection) sees the pulled state.
+      clearManifestCache();
       return { pulled: true, behind: status.behind };
     } catch (pullError) {
       // A failed pull --rebase may have left conflicts staged in the index.
@@ -232,6 +236,9 @@ const pullIfBehind = async (
       // Snapshot post-resolution state too so the user has a checkpoint of the
       // exact tree that survived the merge.
       await snapshotBeforePull(tuckDir, 'Post-sync conflict resolution');
+
+      // Conflict resolution rewrote tracked files / the manifest; drop the cache.
+      clearManifestCache();
 
       return {
         pulled: true,
@@ -984,7 +991,9 @@ export const runSyncCommand = async (
     const changes = await detectChanges(tuckDir);
     if (changes.length === 0) {
       if (options.json) {
-        emitJsonOk({ modified: [], deleted: [], commitHash: null });
+        // Idempotent: re-running sync with nothing to do is a no-op, not a
+        // failure. Agents key on `noop` to tell "nothing changed" from "synced".
+        emitJsonOk({ modified: [], deleted: [], commitHash: null, noop: true });
       } else {
         logger.info('No changes detected');
       }
@@ -1003,9 +1012,10 @@ export const runSyncCommand = async (
       } catch (err) {
         if (options.json) {
           emitJsonOk({
-            modified: result.modified,
-            deleted: result.deleted,
+            modified: [...result.modified].sort(),
+            deleted: [...result.deleted].sort(),
             commitHash: result.commitHash ?? null,
+            noop: false,
             pushError: err instanceof Error ? err.message : String(err),
           });
           return;
@@ -1015,9 +1025,10 @@ export const runSyncCommand = async (
     }
     if (options.json) {
       emitJsonOk({
-        modified: result.modified,
-        deleted: result.deleted,
+        modified: [...result.modified].sort(),
+        deleted: [...result.deleted].sort(),
         commitHash: result.commitHash ?? null,
+        noop: false,
       });
     } else {
       logger.success(`Synced ${changes.length} file${changes.length > 1 ? 's' : ''}`);
