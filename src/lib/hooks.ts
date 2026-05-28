@@ -5,6 +5,7 @@ import { loadConfig } from './config.js';
 import { logger } from '../ui/logger.js';
 import { prompts } from '../ui/prompts.js';
 import { IS_WINDOWS } from './platform.js';
+import { isJsonMode, addJsonWarning } from './jsonOutput.js';
 
 const execAsync = promisify(exec);
 
@@ -49,6 +50,28 @@ export interface HookOptions {
   trustHooks?: boolean;
 }
 
+export type HookDecision = 'skip' | 'run' | 'prompt' | 'skip-non-interactive';
+
+/**
+ * Decide whether/how to execute a hook. Hooks run arbitrary shell from the
+ * config, so the rules are deliberately conservative:
+ *   - no command or explicitly disabled  → skip
+ *   - `--trust-hooks`                     → run
+ *   - non-interactive (JSON/agent/no TTY) → skip (NEVER block on a prompt)
+ *   - interactive                         → prompt for confirmation
+ */
+export const decideHookExecution = (input: {
+  skipHooks?: boolean;
+  hasCommand: boolean;
+  trustHooks?: boolean;
+  nonInteractive: boolean;
+}): HookDecision => {
+  if (input.skipHooks || !input.hasCommand) return 'skip';
+  if (input.trustHooks) return 'run';
+  if (input.nonInteractive) return 'skip-non-interactive';
+  return 'prompt';
+};
+
 /**
  * SECURITY: This function executes shell commands from the configuration file.
  * When cloning from untrusted repositories, hooks could contain malicious commands.
@@ -71,9 +94,26 @@ export const runHook = async (
     return { success: true };
   }
 
-  // SECURITY: Always show the hook command and require confirmation
-  // unless trustHooks is explicitly set (for non-interactive/scripted use)
-  if (!options?.trustHooks) {
+  // SECURITY: hooks execute arbitrary shell from the (possibly untrusted)
+  // config. Decide how to proceed based on trust + interactivity.
+  const nonInteractive = isJsonMode() || !process.stdout.isTTY;
+  const decision = decideHookExecution({
+    skipHooks: options?.skipHooks,
+    hasCommand: true,
+    trustHooks: options?.trustHooks,
+    nonInteractive,
+  });
+
+  if (decision === 'skip-non-interactive') {
+    // Never block on a stdin prompt an agent can't answer, and never corrupt
+    // the JSON stdout contract with a human warning block.
+    const msg = `Hook ${hookType} skipped: pass --trust-hooks to run hooks in non-interactive mode`;
+    if (isJsonMode()) addJsonWarning(msg);
+    else if (!options?.silent) logger.warning(msg);
+    return { success: true, skipped: true };
+  }
+
+  if (decision === 'prompt') {
     console.log();
     console.log(chalk.yellow.bold('WARNING: Hook Execution'));
     console.log(chalk.dim('─'.repeat(50)));
