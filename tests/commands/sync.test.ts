@@ -300,6 +300,189 @@ describe('sync command behavior', () => {
     expect(vi.mocked(secrets.scanForSecrets)).not.toHaveBeenCalled();
   });
 
+  it('emits a sorted success JSON envelope after a real --json sync', async () => {
+    // Two modified files in non-alphabetical iteration order so the .sort() in
+    // the success envelope is observable.
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: { source: '~/.zshrc', destination: 'files/shell/zshrc', checksum: 'old' },
+      bashrc: { source: '~/.bashrc', destination: 'files/shell/bashrc', checksum: 'old' },
+    });
+    getFileChecksumMock.mockResolvedValue('new'); // both differ -> both modified
+    hasRemoteMock.mockResolvedValue(true);
+    checkLocalModeMock.mockResolvedValue(false);
+    pushMock.mockResolvedValue(undefined);
+    commitMock.mockResolvedValue('deadbeefcafef00d');
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+    await runSyncCommand(undefined, { json: true, pull: false, noHooks: true } as never);
+
+    writeSpy.mockRestore();
+    const env = JSON.parse(writes.join('').trim());
+
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck sync');
+    expect(env.data.noop).toBe(false);
+    expect(env.data.commitHash).toBe('deadbeefcafef00d');
+    // basename of each source, alphabetically sorted by the .sort() call.
+    expect(env.data.modified).toEqual(['.bashrc', '.zshrc']);
+    expect(env.data.deleted).toEqual([]);
+    // No pushError key on the clean-push success path.
+    expect(env.data).not.toHaveProperty('pushError');
+    expect(pushMock).toHaveBeenCalledTimes(1);
+    expect(commitMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('emits a pushError JSON envelope when the push fails after a committed --json sync', async () => {
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: { source: '~/.zshrc', destination: 'files/shell/zshrc', checksum: 'old' },
+    });
+    getFileChecksumMock.mockResolvedValue('new');
+    hasRemoteMock.mockResolvedValue(true);
+    checkLocalModeMock.mockResolvedValue(false);
+    commitMock.mockResolvedValue('feedface00112233');
+    pushMock.mockRejectedValue(new Error('remote rejected: non-fast-forward'));
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+    // The push error must NOT bubble out of the JSON path; it is reported in
+    // the envelope instead.
+    await runSyncCommand(undefined, { json: true, pull: false, noHooks: true } as never);
+
+    writeSpy.mockRestore();
+    const env = JSON.parse(writes.join('').trim());
+
+    expect(env.ok).toBe(true); // still ok=true; commit succeeded, only push failed
+    expect(env.data.noop).toBe(false);
+    expect(env.data.commitHash).toBe('feedface00112233');
+    expect(env.data.modified).toEqual(['.zshrc']);
+    expect(env.data.pushError).toBe('remote rejected: non-fast-forward');
+    expect(commitMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('warns but still commits in --json mode when secrets are found and blockOnSecrets is disabled', async () => {
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: { source: '~/.zshrc', destination: 'files/shell/zshrc', checksum: 'old' },
+    });
+    getFileChecksumMock.mockResolvedValue('new');
+    hasRemoteMock.mockResolvedValue(false); // no push, isolate commit behavior
+    commitMock.mockResolvedValue('1234567890abcdef');
+
+    const secrets = await import('../../src/lib/secrets/index.js');
+    vi.mocked(secrets.isSecretScanningEnabled).mockResolvedValue(true);
+    vi.mocked(secrets.scanForSecrets).mockResolvedValue({
+      totalSecrets: 2,
+      results: [{ path: '~/.zshrc' }],
+    } as unknown as Awaited<ReturnType<typeof secrets.scanForSecrets>>);
+    vi.mocked(secrets.shouldBlockOnSecrets).mockResolvedValue(false); // disabled -> warn, proceed
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+    await runSyncCommand(undefined, { json: true, pull: false, noHooks: true } as never);
+
+    writeSpy.mockRestore();
+    const env = JSON.parse(writes.join('').trim());
+
+    // Did not throw, committed normally...
+    expect(env.ok).toBe(true);
+    expect(env.data.noop).toBe(false);
+    expect(env.data.commitHash).toBe('1234567890abcdef');
+    expect(commitMock).toHaveBeenCalledTimes(1);
+    // ...and surfaced a structured warning instead of human-readable output.
+    expect(Array.isArray(env.warnings)).toBe(true);
+    expect(env.warnings.some((w: string) => w.includes('blockOnSecrets is disabled'))).toBe(true);
+    expect(env.warnings.some((w: string) => w.includes('2 potential secret'))).toBe(true);
+  });
+
+  it('warns via logger but still commits in --yes mode when blockOnSecrets is disabled', async () => {
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: { source: '~/.zshrc', destination: 'files/shell/zshrc', checksum: 'old' },
+    });
+    getFileChecksumMock.mockResolvedValue('new');
+    hasRemoteMock.mockResolvedValue(false);
+    commitMock.mockResolvedValue('abcabcabcabcabc1');
+
+    const secrets = await import('../../src/lib/secrets/index.js');
+    vi.mocked(secrets.isSecretScanningEnabled).mockResolvedValue(true);
+    vi.mocked(secrets.scanForSecrets).mockResolvedValue({
+      totalSecrets: 1,
+      results: [{ path: '~/.zshrc' }],
+    } as unknown as Awaited<ReturnType<typeof secrets.scanForSecrets>>);
+    vi.mocked(secrets.shouldBlockOnSecrets).mockResolvedValue(false);
+
+    const ui = await import('../../src/ui/index.js');
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+
+    // Does not throw despite secrets present, because blocking is disabled.
+    await runSyncCommand(undefined, { yes: true, noHooks: true, pull: false } as never);
+
+    expect(commitMock).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(ui.logger.warning)).toHaveBeenCalledWith(
+      'Secrets detected but blockOnSecrets is disabled - proceeding with sync'
+    );
+    // The scan ran (not bypassed) because --force was NOT passed.
+    expect(vi.mocked(secrets.scanForSecrets)).toHaveBeenCalledTimes(1);
+  });
+
+  it('records a JSON force-bypass warning and skips scanning under --json --force', async () => {
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: { source: '~/.zshrc', destination: 'files/shell/zshrc', checksum: 'old' },
+    });
+    getFileChecksumMock.mockResolvedValue('new');
+    hasRemoteMock.mockResolvedValue(false);
+    commitMock.mockResolvedValue('0f0f0f0f0f0f0f0f');
+
+    const secrets = await import('../../src/lib/secrets/index.js');
+    vi.mocked(secrets.isSecretScanningEnabled).mockResolvedValue(true);
+
+    const audit = await import('../../src/lib/audit.js');
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+    await runSyncCommand(undefined, { json: true, force: true, noHooks: true, pull: false } as never);
+
+    writeSpy.mockRestore();
+    const env = JSON.parse(writes.join('').trim());
+
+    expect(env.ok).toBe(true);
+    expect(env.data.noop).toBe(false);
+    expect(env.data.commitHash).toBe('0f0f0f0f0f0f0f0f');
+    // Scan skipped entirely; audit entry recorded with the JSON command label.
+    expect(vi.mocked(secrets.scanForSecrets)).not.toHaveBeenCalled();
+    expect(vi.mocked(audit.logForceSecretBypass)).toHaveBeenCalledWith('tuck sync --json --force', 1);
+    // Force-bypass surfaced as a structured warning.
+    expect(Array.isArray(env.warnings)).toBe(true);
+    expect(env.warnings.some((w: string) => w.includes('bypassed via --force'))).toBe(true);
+  });
+
   it('fails fast when manifest destination is unsafe', async () => {
     getAllTrackedFilesMock.mockResolvedValue({
       zshrc: {

@@ -313,4 +313,76 @@ describe('secrets command', () => {
     expect(serialized).not.toContain('value');
     expect(serialized).not.toContain('context');
   });
+
+  it('emits an all-zero redacted JSON summary when there are no tracked files to scan', async () => {
+    getAllTrackedFilesMock.mockResolvedValue({});
+    const { secretsCommand } = await import('../../src/commands/secrets.js');
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    await secretsCommand.parseAsync(['scan', '--json'], { from: 'user' });
+
+    writeSpy.mockRestore();
+
+    const lines = writes.join('').trim().split('\n').filter(Boolean);
+    expect(lines.length).toBe(1);
+
+    const env = JSON.parse(lines[0]);
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck secrets scan');
+    expect(env.data).toEqual({
+      totalFiles: 0,
+      scannedFiles: 0,
+      skippedFiles: 0,
+      filesWithSecrets: 0,
+      totalSecrets: 0,
+      bySeverity: { critical: 0, high: 0, medium: 0, low: 0 },
+      files: [],
+    });
+
+    // In JSON mode the human-readable warning is suppressed and nothing is scanned.
+    expect(loggerWarningMock).not.toHaveBeenCalled();
+    expect(loggerDimMock).not.toHaveBeenCalled();
+    expect(scanForSecretsMock).not.toHaveBeenCalled();
+  });
+
+  it('emits an all-zero redacted JSON summary (and no path leak) when no provided files exist', async () => {
+    // Path that does not exist on disk -> existingPaths is empty.
+    pathExistsMock.mockResolvedValue(false);
+    const { secretsCommand } = await import('../../src/commands/secrets.js');
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    await secretsCommand.parseAsync(['scan', '--json', '~/.does-not-exist'], { from: 'user' });
+
+    writeSpy.mockRestore();
+
+    const lines = writes.join('').trim().split('\n').filter(Boolean);
+    expect(lines.length).toBe(1);
+
+    const env = JSON.parse(lines[0]);
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck secrets scan');
+    expect(env.data.totalSecrets).toBe(0);
+    expect(env.data.files).toEqual([]);
+
+    // No scan happens, and the missing-file path is not leaked via the warning logger
+    // (suppressed in JSON mode) nor anywhere in the JSON envelope.
+    expect(scanForSecretsMock).not.toHaveBeenCalled();
+    expect(loggerWarningMock).not.toHaveBeenCalled();
+    expect(loggerErrorMock).not.toHaveBeenCalled();
+    expect(JSON.stringify(env)).not.toContain('does-not-exist');
+  });
 });

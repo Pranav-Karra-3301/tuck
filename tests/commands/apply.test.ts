@@ -272,6 +272,119 @@ describe('apply command behavior', () => {
     expect(loggerSuccessMock).not.toHaveBeenCalled();
   });
 
+  it('applies from a local directory source without cloning a remote', async () => {
+    // A provider-free local source: a directory containing a manifest + files.
+    const localSrc = join(TEST_HOME, 'dotfiles-src');
+    const manifest = createMockManifest({
+      files: {
+        safe: createMockTrackedFile({
+          source: '~/.zshrc',
+          destination: 'files/shell/zshrc',
+        }),
+      },
+    });
+    vol.mkdirSync(join(localSrc, 'files', 'shell'), { recursive: true });
+    vol.writeFileSync(join(localSrc, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
+    vol.writeFileSync(join(localSrc, 'files', 'shell', 'zshrc'), 'export FROM_LOCAL=1');
+
+    // jsonMode is module-level state; ensure a prior --json test does not leak in.
+    const { setJsonMode } = await import('../../src/lib/jsonOutput.js');
+    setJsonMode(false);
+
+    const { runApply } = await import('../../src/commands/apply.js');
+    await runApply(localSrc, { replace: true });
+
+    // No remote was cloned — the local-dir branch of cloneSource was taken.
+    expect(cloneRepoMock).not.toHaveBeenCalled();
+    // The file landed at the home-relative destination.
+    expect(vol.readFileSync(join(TEST_HOME, '.zshrc'), 'utf-8')).toBe('export FROM_LOCAL=1');
+    expect(loggerInfoMock).toHaveBeenCalledWith('Reading local source...');
+    expect(loggerSuccessMock).toHaveBeenCalledWith('Applied 1 files');
+  });
+
+  it('emits a JSON envelope with source and dryRun when applying from a local directory', async () => {
+    const localSrc = join(TEST_HOME, 'dotfiles-src');
+    const manifest = createMockManifest({
+      files: {
+        safe: createMockTrackedFile({
+          source: '~/.zshrc',
+          destination: 'files/shell/zshrc',
+        }),
+      },
+    });
+    vol.mkdirSync(join(localSrc, 'files', 'shell'), { recursive: true });
+    vol.writeFileSync(join(localSrc, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
+    vol.writeFileSync(join(localSrc, 'files', 'shell', 'zshrc'), 'export FROM_LOCAL=1');
+
+    const { __resetJsonEmitState } = await import('../../src/lib/jsonOutput.js');
+    __resetJsonEmitState();
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const { runApply } = await import('../../src/commands/apply.js');
+    await runApply(localSrc, { json: true, dryRun: true } as never);
+
+    writeSpy.mockRestore();
+
+    const env = JSON.parse(writes.join('').trim());
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck apply');
+    expect(env.data.applied).toBe(1);
+    expect(env.data.source).toBe(localSrc);
+    expect(env.data.dryRun).toBe(true);
+
+    // Dry run must not write the destination file.
+    expect(vol.existsSync(join(TEST_HOME, '.zshrc'))).toBe(false);
+    expect(cloneRepoMock).not.toHaveBeenCalled();
+    expect(loggerSuccessMock).not.toHaveBeenCalled();
+  });
+
+  it('emits applied: 0 in JSON mode when the local source manifest matches no files', async () => {
+    // Manifest references a file that is absent from the source tree → 0 to apply.
+    const localSrc = join(TEST_HOME, 'dotfiles-src');
+    const manifest = createMockManifest({
+      files: {
+        missing: createMockTrackedFile({
+          source: '~/.zshrc',
+          destination: 'files/shell/zshrc',
+        }),
+      },
+    });
+    vol.mkdirSync(localSrc, { recursive: true });
+    vol.writeFileSync(join(localSrc, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
+    // Intentionally do NOT create files/shell/zshrc in the source.
+
+    const { __resetJsonEmitState } = await import('../../src/lib/jsonOutput.js');
+    __resetJsonEmitState();
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const { runApply } = await import('../../src/commands/apply.js');
+    await runApply(localSrc, { json: true } as never);
+
+    writeSpy.mockRestore();
+
+    const env = JSON.parse(writes.join('').trim());
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck apply');
+    expect(env.data.applied).toBe(0);
+    expect(env.data.source).toBe(localSrc);
+    // The no-files early-return envelope omits dryRun.
+    expect(env.data.dryRun).toBeUndefined();
+  });
+
   it('supports explicit GitLab-prefixed apply sources', async () => {
     cloneSetup = (dir: string) => {
       const manifest = createMockManifest({
