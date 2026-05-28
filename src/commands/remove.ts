@@ -11,6 +11,7 @@ import {
 import { loadManifest, removeFileFromManifest, getTrackedFileBySource, getAllTrackedFiles } from '../lib/manifest.js';
 import { deleteFileOrDir } from '../lib/files.js';
 import { NotInitializedError, FileNotTrackedError } from '../errors.js';
+import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import type { RemoveOptions } from '../types.js';
 
 interface FileToRemove {
@@ -65,14 +66,16 @@ const removeFiles = async (
       }
     }
 
-    logger.success(`Removed ${file.source} from tracking`);
-    if (options.delete) {
-      logger.dim('  Also deleted from repository');
+    if (!isJsonMode()) {
+      logger.success(`Removed ${file.source} from tracking`);
+      if (options.delete) {
+        logger.dim('  Also deleted from repository');
+      }
     }
   }
 };
 
-const runInteractiveRemove = async (tuckDir: string): Promise<void> => {
+const runInteractiveRemove = async (tuckDir: string, options: RemoveOptions = {}): Promise<void> => {
   prompts.intro('tuck remove');
 
   // Get all tracked files
@@ -102,17 +105,19 @@ const runInteractiveRemove = async (tuckDir: string): Promise<void> => {
   }
 
   // Ask if they want to delete from repo
-  const shouldDelete = await prompts.confirm('Also delete files from repository?');
+  const shouldDelete = options.yes ? !!options.delete : await prompts.confirm('Also delete files from repository?');
 
-  // Confirm
-  const confirm = await prompts.confirm(
-    `Remove ${selectedFiles.length} ${selectedFiles.length === 1 ? 'file' : 'files'} from tracking?`,
-    true
-  );
+  // Confirm (skip the confirmation prompt when --yes is passed)
+  if (!options.yes) {
+    const confirm = await prompts.confirm(
+      `Remove ${selectedFiles.length} ${selectedFiles.length === 1 ? 'file' : 'files'} from tracking?`,
+      true
+    );
 
-  if (!confirm) {
-    prompts.cancel('Operation cancelled');
-    return;
+    if (!confirm) {
+      prompts.cancel('Operation cancelled');
+      return;
+    }
   }
 
   // Prepare files to remove
@@ -134,6 +139,7 @@ const runInteractiveRemove = async (tuckDir: string): Promise<void> => {
 };
 
 export const runRemove = async (paths: string[], options: RemoveOptions): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck remove');
   const tuckDir = getTuckDir();
 
   // Verify tuck is initialized
@@ -144,7 +150,9 @@ export const runRemove = async (paths: string[], options: RemoveOptions): Promis
   }
 
   if (paths.length === 0) {
-    await runInteractiveRemove(tuckDir);
+    // The interactive picker requires a TTY; the prompt guards refuse (throwing
+    // a structured error) in JSON/non-TTY mode without explicit paths.
+    await runInteractiveRemove(tuckDir, options);
     return;
   }
 
@@ -153,6 +161,11 @@ export const runRemove = async (paths: string[], options: RemoveOptions): Promis
 
   // Remove files
   await removeFiles(filesToRemove, tuckDir, options);
+
+  if (isJsonMode()) {
+    emitJsonOk({ removed: filesToRemove.map((f) => f.source) });
+    return;
+  }
 
   logger.blank();
   logger.success(`Removed ${filesToRemove.length} ${filesToRemove.length === 1 ? 'item' : 'items'} from tracking`);
@@ -164,6 +177,8 @@ export const removeCommand = new Command('remove')
   .argument('[paths...]', 'Paths to dotfiles to untrack')
   .option('--delete', 'Also delete from tuck repository')
   .option('--keep-original', "Don't restore symlinks to regular files")
+  .option('--json', 'Emit JSON envelope to stdout (suppresses interactive UI)')
+  .option('-y, --yes', 'Auto-confirm prompts (required with --json for the interactive picker)')
   .action(async (paths: string[], options: RemoveOptions) => {
     await runRemove(paths, options);
   });

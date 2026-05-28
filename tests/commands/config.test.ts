@@ -178,6 +178,115 @@ describe('config command', () => {
     });
   });
 
+  describe('--json envelope output', () => {
+    // loadConfig caches by tuckDir at the module level, so a prior `set` test
+    // can leave a stale config in cache. Clear it before each case so the
+    // command reads the freshly written file from memfs.
+    beforeEach(async () => {
+      const { clearConfigCache } = await import('../../src/lib/config.js');
+      clearConfigCache();
+    });
+
+    const captureStdout = (): { writes: string[]; restore: () => void } => {
+      const writes: string[] = [];
+      const writeSpy = vi
+        .spyOn(process.stdout, 'write')
+        .mockImplementation((chunk: string | Uint8Array) => {
+          writes.push(String(chunk));
+          return true;
+        });
+      return { writes, restore: () => writeSpy.mockRestore() };
+    };
+
+    const parseEnvelope = (writes: string[]) => {
+      const lines = writes.join('').trim().split('\n').filter(Boolean);
+      expect(lines.length).toBe(1);
+      return JSON.parse(lines[0]);
+    };
+
+    it('emits { key, value } for config get --json', async () => {
+      const config = createMockConfig({
+        repository: {
+          defaultBranch: 'main',
+          autoCommit: true,
+          autoPush: false,
+        },
+      });
+      await initTestTuck({ config });
+
+      const { configCommand } = await import('../../src/commands/config.js');
+      const { restore, writes } = captureStdout();
+      try {
+        await configCommand.parseAsync(['get', 'repository.autoCommit', '--json'], {
+          from: 'user',
+        });
+      } finally {
+        restore();
+      }
+
+      const env = parseEnvelope(writes);
+      expect(env.ok).toBe(true);
+      expect(env.command).toBe('tuck config get');
+      expect(env.data).toEqual({ key: 'repository.autoCommit', value: true });
+    });
+
+    it('emits { key, value, updated } for config set --json', async () => {
+      await initTestTuck();
+
+      const { configCommand } = await import('../../src/commands/config.js');
+      const { restore, writes } = captureStdout();
+      try {
+        await configCommand.parseAsync(
+          ['set', 'repository.autoCommit', 'false', '--json'],
+          { from: 'user' }
+        );
+      } finally {
+        restore();
+      }
+
+      const env = parseEnvelope(writes);
+      expect(env.ok).toBe(true);
+      expect(env.command).toBe('tuck config set');
+      expect(env.data).toEqual({
+        key: 'repository.autoCommit',
+        value: false,
+        updated: true,
+      });
+
+      const { loadConfig } = await import('../../src/lib/config.js');
+      const updated = await loadConfig(TEST_TUCK_DIR);
+      expect(updated.repository.autoCommit).toBe(false);
+    });
+
+    it('emits { config } for config list --json', async () => {
+      const config = createMockConfig({
+        repository: {
+          defaultBranch: 'main',
+          autoCommit: true,
+          autoPush: false,
+        },
+      });
+      await initTestTuck({ config });
+
+      const { configCommand } = await import('../../src/commands/config.js');
+      const { restore, writes } = captureStdout();
+      try {
+        await configCommand.parseAsync(['list', '--json'], {
+          from: 'user',
+        });
+      } finally {
+        restore();
+      }
+
+      const env = parseEnvelope(writes);
+      expect(env.ok).toBe(true);
+      expect(env.command).toBe('tuck config list');
+      expect(env.data.config).toBeDefined();
+      expect(env.data.config.repository.autoCommit).toBe(true);
+      expect(env.data.config.repository.defaultBranch).toBe('main');
+    });
+  });
+
   describe('nested value helpers', () => {
     it('should correctly get nested values', async () => {
       const config = createMockConfig({

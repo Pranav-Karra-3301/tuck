@@ -230,6 +230,48 @@ describe('apply command behavior', () => {
     }
   });
 
+  it('emits a JSON envelope with applied count and source when --json is set', async () => {
+    cloneSetup = (dir: string) => {
+      const manifest = createMockManifest({
+        files: {
+          safe: createMockTrackedFile({
+            source: '~/.zshrc',
+            destination: 'files/shell/zshrc',
+          }),
+        },
+      });
+
+      vol.mkdirSync(join(dir, 'files', 'shell'), { recursive: true });
+      vol.writeFileSync(join(dir, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
+      vol.writeFileSync(join(dir, 'files', 'shell', 'zshrc'), 'export NEW=1');
+    };
+
+    const { __resetJsonEmitState } = await import('../../src/lib/jsonOutput.js');
+    __resetJsonEmitState();
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const { runApply } = await import('../../src/commands/apply.js');
+    await runApply('user/repo', { json: true, yes: true } as never);
+
+    writeSpy.mockRestore();
+
+    const env = JSON.parse(writes.join('').trim());
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck apply');
+    expect(env.data.applied).toBe(1);
+    expect(env.data.source).toBe('user/repo');
+
+    // JSON mode must not print human success output.
+    expect(loggerSuccessMock).not.toHaveBeenCalled();
+  });
+
   it('supports explicit GitLab-prefixed apply sources', async () => {
     cloneSetup = (dir: string) => {
       const manifest = createMockManifest({

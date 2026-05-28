@@ -14,6 +14,7 @@ import {
 import { NotInitializedError, GitError } from '../errors.js';
 import type { PushOptions } from '../types.js';
 import { logForcePush } from '../lib/audit.js';
+import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 
 const runInteractivePush = async (tuckDir: string): Promise<void> => {
   prompts.intro('tuck push');
@@ -133,6 +134,7 @@ const runInteractivePush = async (tuckDir: string): Promise<void> => {
 };
 
 const runPush = async (options: PushOptions): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck push');
   const tuckDir = getTuckDir();
 
   // Verify tuck is initialized
@@ -150,8 +152,9 @@ const runPush = async (options: PushOptions): Promise<void> => {
     );
   }
 
-  // If no options, run interactive
-  if (!options.force && !options.setUpstream) {
+  // If no options, run interactive. JSON mode is always non-interactive — it
+  // takes the deterministic push path below and emits a single envelope.
+  if (!options.force && !options.setUpstream && !options.json) {
     await runInteractivePush(tuckDir);
     return;
   }
@@ -163,19 +166,33 @@ const runPush = async (options: PushOptions): Promise<void> => {
   }
 
   const branch = await getCurrentBranch(tuckDir);
-
-  // Require explicit confirmation for force push
-  if (options.force) {
-    const confirmed = await prompts.confirmDangerous(
-      'Force push will overwrite remote history.\n' +
-        'This can cause data loss for collaborators and is generally discouraged.',
-      'force'
-    );
-    if (!confirmed) {
-      logger.info('Push cancelled');
-      return;
+  // Capture how far ahead of the remote we are, for the JSON envelope only.
+  // getStatus can throw (e.g. no tracking branch yet); never let it break push.
+  const nonInteractive = options.json === true || options.yes === true;
+  let ahead: number | undefined;
+  if (isJsonMode()) {
+    try {
+      ahead = (await getStatus(tuckDir)).ahead;
+    } catch {
+      ahead = undefined;
     }
-    logger.warning('Force pushing to remote...');
+  }
+
+  // Require explicit confirmation for force push. In non-interactive mode
+  // (--json / --yes) the caller has already opted in, so skip the prompt.
+  if (options.force) {
+    if (!nonInteractive) {
+      const confirmed = await prompts.confirmDangerous(
+        'Force push will overwrite remote history.\n' +
+          'This can cause data loss for collaborators and is generally discouraged.',
+        'force'
+      );
+      if (!confirmed) {
+        logger.info('Push cancelled');
+        return;
+      }
+      logger.warning('Force pushing to remote...');
+    }
     // Audit log for security tracking
     await logForcePush(branch);
   }
@@ -188,6 +205,10 @@ const runPush = async (options: PushOptions): Promise<void> => {
         branch: options.setUpstream || branch,
       });
     });
+    if (isJsonMode()) {
+      emitJsonOk({ pushed: true, ahead, branch });
+      return;
+    }
     logger.success('Pushed successfully!');
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -208,6 +229,8 @@ export const pushCommand = new Command('push')
   .description('Push changes to remote repository')
   .option('-f, --force', 'Force push')
   .option('--set-upstream <name>', 'Set upstream branch')
+  .option('--json', 'Emit JSON envelope to stdout')
+  .option('-y, --yes', 'Auto-confirm prompts (skip force-push confirmation)')
   .action(async (options: PushOptions) => {
     await runPush(options);
   });

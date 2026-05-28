@@ -37,6 +37,7 @@ import {
 } from '../lib/secretBackends/index.js';
 import { NotInitializedError } from '../errors.js';
 import { getLog } from '../lib/git.js';
+import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 
 const isConfiguredBackendName = (value: string): value is ConfiguredBackendName => {
   return (CONFIGURABLE_BACKEND_NAMES as readonly string[]).includes(value);
@@ -335,7 +336,41 @@ const runScanHistory = async (options: { since?: string; limit?: string }): Prom
 // Interactive Scan Command
 // ============================================================================
 
-const runScanFiles = async (paths: string[]): Promise<void> => {
+interface ScanFilesOptions {
+  json?: boolean;
+}
+
+/**
+ * Build a REDACTED summary of a scan suitable for JSON output.
+ *
+ * SECURITY-CRITICAL: this MUST NEVER include raw secret values, raw matched
+ * lines, or surrounding context. Only emit aggregate counts and a per-file
+ * `{ path, secretCount }` summary. Do not pass through `match.value`,
+ * `match.context`, or `match.redactedValue` (the file-level count is enough).
+ */
+const buildRedactedScanSummary = (summary: ScanSummary) => ({
+  totalFiles: summary.totalFiles,
+  scannedFiles: summary.scannedFiles,
+  skippedFiles: summary.skippedFiles,
+  filesWithSecrets: summary.filesWithSecrets,
+  totalSecrets: summary.totalSecrets,
+  bySeverity: {
+    critical: summary.bySeverity.critical,
+    high: summary.bySeverity.high,
+    medium: summary.bySeverity.medium,
+    low: summary.bySeverity.low,
+  },
+  files: summary.results
+    .filter((result) => result.hasSecrets)
+    .map((result) => ({
+      path: result.collapsedPath,
+      secretCount: result.matches.length,
+    })),
+});
+
+const runScanFiles = async (paths: string[], options: ScanFilesOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets scan');
+
   const tuckDir = getTuckDir();
 
   try {
@@ -354,6 +389,20 @@ const runScanFiles = async (paths: string[]): Promise<void> => {
         );
 
   if (expandedPaths.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk(
+        buildRedactedScanSummary({
+          totalFiles: 0,
+          scannedFiles: 0,
+          skippedFiles: 0,
+          filesWithSecrets: 0,
+          totalSecrets: 0,
+          bySeverity: { critical: 0, high: 0, medium: 0, low: 0 },
+          results: [],
+        })
+      );
+      return;
+    }
     logger.warning('No tracked files to scan');
     logger.dim("Run 'tuck add <path>' to start tracking files first");
     return;
@@ -362,7 +411,7 @@ const runScanFiles = async (paths: string[]): Promise<void> => {
   // Check files exist
   for (const path of expandedPaths) {
     if (!(await pathExists(path))) {
-      logger.warning(`File not found: ${path}`);
+      if (!isJsonMode()) logger.warning(`File not found: ${path}`);
     }
   }
 
@@ -374,6 +423,20 @@ const runScanFiles = async (paths: string[]): Promise<void> => {
   }
 
   if (existingPaths.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk(
+        buildRedactedScanSummary({
+          totalFiles: 0,
+          scannedFiles: 0,
+          skippedFiles: 0,
+          filesWithSecrets: 0,
+          totalSecrets: 0,
+          bySeverity: { critical: 0, high: 0, medium: 0, low: 0 },
+          results: [],
+        })
+      );
+      return;
+    }
     logger.error('No valid files to scan');
     return;
   }
@@ -384,6 +447,11 @@ const runScanFiles = async (paths: string[]): Promise<void> => {
   const summary = await scanForSecrets(existingPaths, tuckDir);
 
   spinner.stop('Scan complete');
+
+  if (isJsonMode()) {
+    emitJsonOk(buildRedactedScanSummary(summary));
+    return;
+  }
 
   if (summary.filesWithSecrets === 0) {
     console.log();
@@ -831,6 +899,7 @@ export const secretsCommand = new Command('secrets')
     new Command('scan')
       .description('Scan files for secrets')
       .argument('[paths...]', 'Files to scan')
+      .option('--json', 'Emit JSON envelope to stdout')
       .action(runScanFiles)
   )
   .addCommand(

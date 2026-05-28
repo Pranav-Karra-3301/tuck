@@ -26,6 +26,7 @@ import { loadConfig } from '../lib/config.js';
 import { IS_WINDOWS } from '../lib/platform.js';
 import { RepositoryNotFoundError } from '../errors.js';
 import { getProvider, type ProviderMode, type RemoteConfig as ProviderRemoteConfig } from '../lib/providers/index.js';
+import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 
 // Track if Windows permission warning has been shown this session
 let windowsPermissionWarningShown = false;
@@ -73,6 +74,8 @@ export interface ApplyOptions {
   dryRun?: boolean;
   force?: boolean;
   yes?: boolean;
+  /** Emit a single structured JSON envelope on stdout instead of human UI. */
+  json?: boolean;
   /** Scope applied files to a single bundle. */
   bundle?: string;
 }
@@ -778,6 +781,8 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
  * Run non-interactive apply
  */
 export const runApply = async (source: string, options: ApplyOptions): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck apply');
+
   // Resolve the source
   const { repoId, isUrl } = await resolveSource(source);
 
@@ -797,6 +802,10 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
     const files = await prepareFilesToApply(repoDir, manifest, options.bundle);
 
     if (files.length === 0) {
+      if (isJsonMode()) {
+        emitJsonOk({ applied: 0, source });
+        return;
+      }
       const scope = options.bundle ? ` in bundle "${options.bundle}"` : '';
       logger.warning(`No files to apply${scope}`);
       return;
@@ -833,6 +842,15 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
       applyResult = await applyWithMerge(files, options.dryRun || false);
     } else {
       applyResult = await applyWithReplace(files, options.dryRun || false);
+    }
+
+    if (isJsonMode()) {
+      emitJsonOk({
+        applied: applyResult.appliedCount,
+        source,
+        dryRun: !!options.dryRun,
+      });
+      return;
     }
 
     logger.blank();
@@ -878,10 +896,11 @@ export const applyCommand = new Command('apply')
   .option('--dry-run', 'Show what would be applied without making changes')
   .option('-f, --force', 'Apply without confirmation prompts')
   .option('-y, --yes', 'Assume yes to all prompts')
+  .option('--json', 'Emit JSON envelope to stdout')
   .option('-b, --bundle <name>', 'Only apply files in the named bundle')
   .action(async (source: string, options: ApplyOptions) => {
     // Determine if we should run interactive mode
-    const isInteractive = !options.force && !options.yes && process.stdout.isTTY;
+    const isInteractive = !options.force && !options.yes && !options.json && process.stdout.isTTY;
 
     if (isInteractive) {
       await runInteractiveApply(source, options);

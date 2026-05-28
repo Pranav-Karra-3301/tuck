@@ -6,6 +6,7 @@ import { checkLocalMode, showLocalModeWarningForPull } from '../lib/remoteChecks
 import { pull, fetch, hasRemote, getRemoteUrl, getStatus, getCurrentBranch } from '../lib/git.js';
 import { runRestore } from './restore.js';
 import { NotInitializedError, GitError } from '../errors.js';
+import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import type { PullOptions } from '../types.js';
 
 const runInteractivePull = async (tuckDir: string): Promise<void> => {
@@ -90,6 +91,7 @@ const runInteractivePull = async (tuckDir: string): Promise<void> => {
 };
 
 const runPull = async (options: PullOptions): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck pull');
   const tuckDir = getTuckDir();
 
   // Verify tuck is initialized
@@ -107,8 +109,8 @@ const runPull = async (options: PullOptions): Promise<void> => {
     );
   }
 
-  // If no options, run interactive
-  if (!options.rebase && !options.restore) {
+  // If no options, run interactive (JSON mode is always non-interactive)
+  if (!options.rebase && !options.restore && !isJsonMode()) {
     await runInteractivePull(tuckDir);
     return;
   }
@@ -129,6 +131,18 @@ const runPull = async (options: PullOptions): Promise<void> => {
     await pull(tuckDir, { rebase: options.rebase });
   });
 
+  // JSON path: pull (and optional restore) are complete; emit one envelope and
+  // skip all human output. Spinners auto-suppress in JSON mode.
+  if (isJsonMode()) {
+    let restored = false;
+    if (options.restore) {
+      await runRestore({ all: true });
+      restored = true;
+    }
+    emitJsonOk(restored ? { pulled: true, restored: 1 } : { pulled: true });
+    return;
+  }
+
   logger.success('Pulled successfully!');
 
   if (options.restore) {
@@ -140,6 +154,7 @@ export const pullCommand = new Command('pull')
   .description('Pull changes from remote')
   .option('--rebase', 'Pull with rebase')
   .option('--restore', 'Also restore files to system after pull')
+  .option('--json', 'Emit JSON envelope to stdout')
   .action(async (options: PullOptions) => {
     await runPull(options);
   });
