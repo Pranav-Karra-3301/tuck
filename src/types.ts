@@ -125,7 +125,7 @@ export interface AddOptions extends CommonOptions {
   bundle?: string;
 }
 
-export interface RemoveOptions {
+export interface RemoveOptions extends CommonOptions {
   delete?: boolean;
   keepOriginal?: boolean;
 }
@@ -141,12 +141,12 @@ export interface SyncOptions extends CommonOptions {
   force?: boolean; // Skip secret scanning
 }
 
-export interface PushOptions {
+export interface PushOptions extends CommonOptions {
   force?: boolean;
   setUpstream?: string;
 }
 
-export interface PullOptions {
+export interface PullOptions extends CommonOptions {
   rebase?: boolean;
   restore?: boolean;
 }
