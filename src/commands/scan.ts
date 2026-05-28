@@ -8,6 +8,7 @@ import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js
 import { preparePathsForTracking } from '../lib/trackPipeline.js';
 import { shouldExcludeFromBin } from '../lib/binary.js';
 import { isIgnored } from '../lib/tuckignore.js';
+import { setJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 
 export interface ScanOptions {
   all?: boolean;
@@ -304,7 +305,8 @@ export const runScan = async (options: ScanOptions): Promise<void> => {
 
   // JSON output
   if (options.json) {
-    console.log(JSON.stringify(filesToShow, null, 2));
+    setJsonMode(true, 'tuck scan');
+    emitJsonOk({ files: filesToShow }, 'tuck scan');
     return;
   }
 

@@ -72,17 +72,26 @@ describe('list command', () => {
     logSpy.mockRestore();
   });
 
-  it('prints JSON output when --json is passed', async () => {
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  it('prints a JSON envelope when --json is passed', async () => {
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
     const { listCommand } = await import('../../src/commands/list.js');
 
     await listCommand.parseAsync(['node', 'list', '--json'], { from: 'user' });
 
-    const output = logSpy.mock.calls.map((call) => String(call[0])).join('\n');
-    expect(output).toContain('"shell"');
-    expect(output).toContain('"source": "~/.zshrc"');
+    const lines = writes.join('').trim().split('\n').filter(Boolean);
+    expect(lines.length).toBe(1);
+    const env = JSON.parse(lines[0]);
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck list');
+    expect(env.data.shell).toEqual([{ source: '~/.zshrc', destination: expect.any(String) }]);
 
-    logSpy.mockRestore();
+    writeSpy.mockRestore();
   });
 
   it('prints only paths when --paths is passed', async () => {

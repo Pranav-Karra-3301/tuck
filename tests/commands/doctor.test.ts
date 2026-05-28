@@ -71,8 +71,14 @@ describe('doctor command', () => {
     expect(process.exitCode).toBe(1);
   });
 
-  it('prints JSON output when requested', async () => {
-    const jsonSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  it('prints a JSON envelope when requested', async () => {
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
 
     runDoctorChecksMock.mockResolvedValue({
       generatedAt: '2026-02-11T00:00:00.000Z',
@@ -86,11 +92,16 @@ describe('doctor command', () => {
 
     await runDoctor({ json: true, strict: true });
 
-    expect(jsonSpy).toHaveBeenCalledTimes(1);
+    const lines = writes.join('').trim().split('\n').filter(Boolean);
+    expect(lines.length).toBe(1);
+    const env = JSON.parse(lines[0]);
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck doctor');
+    expect(env.data.summary.passed).toBe(2);
     expect(promptsIntroMock).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(2);
 
-    jsonSpy.mockRestore();
+    writeSpy.mockRestore();
   });
 
   it('validates category option on command parse', async () => {
