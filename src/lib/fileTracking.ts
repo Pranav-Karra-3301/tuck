@@ -13,9 +13,10 @@ import { copyFileOrDir, createSymlink, deleteFileOrDir, getFileChecksum, getFile
 import { loadConfig } from './config.js';
 import { CATEGORIES } from '../constants.js';
 import { ensureDir } from 'fs-extra';
-import { dirname } from 'path';
+import { dirname, join } from 'path';
 import type { FileStrategy } from '../types.js';
 import { toPosixPath } from './platform.js';
+import { bindRepo } from './repoScope.js';
 
 export interface FileToTrack {
   path: string;
@@ -23,6 +24,25 @@ export interface FileToTrack {
   name?: string;
   /** Bundle to assign the tracked file to. Defaults to "default". */
   bundle?: string;
+  /**
+   * Repo-scoped tracking metadata. When `scope === 'repo'` the file lives inside
+   * a git repo whose absolute path differs per machine; it is stored by stable
+   * (repoKey, repoRelative) and the precomputed repo-scoped `destination`/`source`
+   * are used verbatim instead of being derived from a home-relative path.
+   */
+  scope?: 'home' | 'repo';
+  /** Stable cross-machine repo identity (repo scope only). */
+  repoKey?: string;
+  /** POSIX path relative to the repo root (repo scope only). */
+  repoRelative?: string;
+  /** Absolute repo root on THIS machine (repo scope only). */
+  repoRoot?: string;
+  /** Canonicalized remote URL, recorded in the binding when known. */
+  remoteUrl?: string;
+  /** Manifest source identity to store verbatim (repo scope only). */
+  source?: string;
+  /** Relative manifest destination to store verbatim (repo scope only). */
+  destination?: string;
 }
 
 export interface FileTrackingOptions {
@@ -153,13 +173,20 @@ export const trackFilesWithProgress = async (
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
+    const isRepo = file.scope === 'repo';
     const expandedPath = expandPath(file.path);
     const indexStr = chalk.dim(`[${i + 1}/${total}]`);
     const category = file.category || detectCategory(expandedPath);
     const categoryInfo = CATEGORIES[category];
     const icon = categoryInfo?.icon || '○';
-    const sourcePath = collapsePath(file.path);
-    const relativeDestination = getRelativeDestinationFromSource(category, expandedPath, file.name);
+    // Repo-scoped files store a stable `<repoKey>:<repoRelative>` source and a
+    // precomputed, namespaced destination; home-scoped files derive both from
+    // the home-relative path.
+    const sourcePath = isRepo ? (file.source ?? file.path) : collapsePath(file.path);
+    const relativeDestination =
+      isRepo && file.destination
+        ? file.destination
+        : getRelativeDestinationFromSource(category, expandedPath, file.name);
     const normalizedDestination = toPosixPath(relativeDestination);
     const existingSource = trackedDestinations.get(normalizedDestination);
 
@@ -178,14 +205,17 @@ export const trackFilesWithProgress = async (
         );
       }
 
-      // Get destination path
-      const destination = getDestinationPathFromSource(tuckDir, category, expandedPath, file.name);
+      // Get destination path (absolute, inside the tuck repo).
+      const destination = isRepo && file.destination
+        ? join(tuckDir, file.destination)
+        : getDestinationPathFromSource(tuckDir, category, expandedPath, file.name);
 
-      // Ensure category directory exists
+      // Ensure destination directory exists
       await ensureDir(dirname(destination));
 
-      // Copy or symlink based on strategy
-      if (strategy === 'symlink') {
+      // Copy or symlink based on strategy. Repo-scoped tracking is copy-only:
+      // the live file stays put inside its repo checkout (never symlinked).
+      if (strategy === 'symlink' && !isRepo) {
         // Symlink strategy keeps the repository as source of truth:
         // 1) copy source into repo, 2) replace source with symlink to repo.
         await copyFileOrDir(expandedPath, destination, { overwrite: true });
@@ -199,7 +229,7 @@ export const trackFilesWithProgress = async (
           throw error;
         }
       } else {
-        // Default: copy file into the repository
+        // Default: copy file into the repository (from the absolute live path).
         await copyFileOrDir(expandedPath, destination, { overwrite: true });
       }
 
@@ -208,15 +238,16 @@ export const trackFilesWithProgress = async (
       const info = await getFileInfo(expandedPath);
       const now = new Date().toISOString();
 
-      // Generate unique ID
-      const id = generateFileId(file.path);
+      // Generate unique ID (from the stable identity for repo files).
+      const id = generateFileId(sourcePath);
 
       // Add to manifest
       await addFileToManifest(tuckDir, id, {
         source: sourcePath,
         destination: relativeDestination,
         category,
-        strategy,
+        // Repo scope is copy-only regardless of the configured global strategy.
+        strategy: isRepo ? 'copy' : strategy,
         // TODO: Encryption and templating are planned for a future version
         encrypted: false,
         template: false,
@@ -225,7 +256,22 @@ export const trackFilesWithProgress = async (
         modified: now,
         checksum,
         bundle: file.bundle ?? 'default',
+        ...(isRepo
+          ? {
+              scope: 'repo' as const,
+              repoKey: file.repoKey,
+              repoRelative: file.repoRelative,
+            }
+          : {}),
       });
+
+      // Bind the repo on THIS machine so the stable key resolves to the live
+      // root for later sync/restore. Idempotent upsert.
+      if (isRepo && file.repoKey && file.repoRoot) {
+        await bindRepo(file.repoKey, file.repoRoot, {
+          ...(file.remoteUrl ? { remoteUrl: file.remoteUrl } : {}),
+        });
+      }
 
       spinner.stop();
       const categoryStr = showCategory ? chalk.dim(` ${icon} ${category}`) : '';
