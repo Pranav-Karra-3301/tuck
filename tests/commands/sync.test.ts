@@ -145,6 +145,11 @@ vi.mock('../../src/lib/audit.js', () => ({
   logForceSecretBypass: vi.fn(),
 }));
 
+const checkLocalModeMock = vi.fn();
+vi.mock('../../src/lib/remoteChecks.js', () => ({
+  checkLocalMode: checkLocalModeMock,
+}));
+
 describe('sync command behavior', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -157,6 +162,7 @@ describe('sync command behavior', () => {
     getFileChecksumMock.mockResolvedValue('new-checksum');
     hasRemoteMock.mockResolvedValue(false);
     commitMock.mockResolvedValue('abc123def456');
+    checkLocalModeMock.mockResolvedValue(false);
     validateSafeSourcePathMock.mockImplementation(() => {});
     validateSafeManifestDestinationMock.mockImplementation(() => {});
     validatePathWithinRootMock.mockImplementation(() => {});
@@ -208,6 +214,22 @@ describe('sync command behavior', () => {
     );
     expect(stageAllMock).not.toHaveBeenCalled();
     expect(commitMock).not.toHaveBeenCalled();
+  });
+
+  it('does not push in local-only mode even when a git remote exists', async () => {
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: { source: '~/.zshrc', destination: 'files/shell/zshrc', checksum: 'old' },
+    });
+    getFileChecksumMock.mockResolvedValue('new');
+    hasRemoteMock.mockResolvedValue(true); // a stray remote is present
+    checkLocalModeMock.mockResolvedValue(true); // ...but config is local-only mode
+
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+    await runSyncCommand(undefined, { yes: true, noHooks: true, pull: false } as never);
+
+    // Committed locally, but NOT pushed (local mode is authoritative over the
+    // mere presence of an origin remote).
+    expect(pushMock).not.toHaveBeenCalled();
   });
 
   it('emits a noop JSON envelope when sync --json has nothing to do', async () => {

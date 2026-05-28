@@ -39,6 +39,7 @@ import {
   SIZE_BLOCK_THRESHOLD,
 } from '../lib/files.js';
 import { addToTuckignore, loadTuckignore, isIgnored } from '../lib/tuckignore.js';
+import { checkLocalMode } from '../lib/remoteChecks.js';
 import { runPreSyncHook, runPostSyncHook, type HookOptions } from '../lib/hooks.js';
 import { NotInitializedError, SecretsDetectedError, MergeConflictsError } from '../errors.js';
 import { setJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
@@ -613,7 +614,7 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
         prompts.log.success(`Committed: ${hash.slice(0, 7)}`);
 
         // Push if remote exists
-        if (options.push !== false && (await hasRemote(tuckDir))) {
+        if (options.push !== false && !(await checkLocalMode(tuckDir)) && (await hasRemote(tuckDir))) {
           await pushWithSpinner(tuckDir, options);
         }
       }
@@ -843,7 +844,7 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
   if (result.commitHash) {
     prompts.log.success(`Committed: ${result.commitHash.slice(0, 7)}`);
 
-    if (options.push !== false && (await hasRemote(tuckDir))) {
+    if (options.push !== false && !(await checkLocalMode(tuckDir)) && (await hasRemote(tuckDir))) {
       pushFailed = !(await pushWithSpinner(tuckDir, options));
     } else if (options.push === false) {
       prompts.log.info("Run 'tuck push' when ready to upload");
@@ -1006,7 +1007,7 @@ export const runSyncCommand = async (
     });
     const message = messageArg || options.message;
     const result = await syncFiles(tuckDir, changes, { ...options, message });
-    if (options.push !== false && (await hasRemote(tuckDir))) {
+    if (options.push !== false && !(await checkLocalMode(tuckDir)) && (await hasRemote(tuckDir))) {
       try {
         await push(tuckDir);
       } catch (err) {
@@ -1072,7 +1073,7 @@ export const runSyncCommand = async (
 
     // Push by default unless --no-push
     // Commander converts --no-push to push: false, default is push: true
-    if (options.push !== false && (await hasRemote(tuckDir))) {
+    if (options.push !== false && !(await checkLocalMode(tuckDir)) && (await hasRemote(tuckDir))) {
       await withSpinner('Pushing to remote...', async () => {
         await push(tuckDir);
       });
