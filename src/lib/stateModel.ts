@@ -14,9 +14,10 @@
  */
 
 import { join } from 'path';
-import { expandPath, pathExists } from './paths.js';
+import { pathExists } from './paths.js';
 import { getFileChecksum } from './files.js';
 import { getAllTrackedFiles } from './manifest.js';
+import { resolveLiveTarget } from './repoScope.js';
 import type { TrackedFileOutput } from '../schemas/manifest.schema.js';
 
 export type FileState =
@@ -25,7 +26,9 @@ export type FileState =
   | 'drift-repo'
   | 'missing-live'
   | 'missing-repo'
-  | 'missing-both';
+  | 'missing-both'
+  // Repo-scoped file whose repo is not bound on this machine (run `tuck repo link`).
+  | 'unknown-repo';
 
 export interface FileStateEntry {
   id: string;
@@ -62,11 +65,25 @@ export const computeFileState = async (
   id: string,
   file: TrackedFileOutput
 ): Promise<FileStateEntry> => {
-  const sourceAbs = expandPath(file.source);
   const repoAbs = join(tuckDir, file.destination);
+  const repoChecksum = (await pathExists(repoAbs)) ? await getFileChecksum(repoAbs) : null;
+
+  // Resolve the LIVE location (home: expandPath; repo: bound root or null).
+  const sourceAbs = await resolveLiveTarget(file);
+  if (sourceAbs === null) {
+    // Repo-scoped file whose repo is not bound on this machine — cannot compare.
+    return {
+      id,
+      source: file.source,
+      destination: file.destination,
+      state: 'unknown-repo',
+      liveChecksum: null,
+      repoChecksum,
+      manifestChecksum: file.checksum,
+    };
+  }
 
   const liveChecksum = (await pathExists(sourceAbs)) ? await getFileChecksum(sourceAbs) : null;
-  const repoChecksum = (await pathExists(repoAbs)) ? await getFileChecksum(repoAbs) : null;
 
   return {
     id,
@@ -96,6 +113,7 @@ export interface StateSummary {
   missingLive: number;
   missingRepo: number;
   missingBoth: number;
+  unknownRepo: number;
 }
 
 export const summarizeStateModel = (entries: FileStateEntry[]): StateSummary => {
@@ -107,6 +125,7 @@ export const summarizeStateModel = (entries: FileStateEntry[]): StateSummary => 
     missingLive: 0,
     missingRepo: 0,
     missingBoth: 0,
+    unknownRepo: 0,
   };
   for (const e of entries) {
     switch (e.state) {
@@ -127,6 +146,9 @@ export const summarizeStateModel = (entries: FileStateEntry[]): StateSummary => 
         break;
       case 'missing-both':
         summary.missingBoth++;
+        break;
+      case 'unknown-repo':
+        summary.unknownRepo++;
         break;
     }
   }

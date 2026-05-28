@@ -41,6 +41,7 @@ const STATE_LABEL: Record<FileStateEntry['state'], string> = {
   'missing-live': 'missing on system (run `tuck restore`)',
   'missing-repo': 'missing in repo (run `tuck verify --fix`)',
   'missing-both': 'missing everywhere (manifest references a vanished file)',
+  'unknown-repo': 'repo not linked on this machine (run `tuck repo link`)',
 };
 
 /**

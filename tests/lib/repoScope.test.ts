@@ -15,6 +15,7 @@ import {
   getReposRegistryPath,
   canonicalRemoteUrl,
   repoKeyFromIdentity,
+  resolveLiveTarget,
 } from '../../src/lib/repoScope.js';
 
 beforeEach(() => {
@@ -76,5 +77,29 @@ describe('repoKeyFromIdentity', () => {
 
   it('differs for different identities', () => {
     expect(repoKeyFromIdentity('proj', 'a')).not.toBe(repoKeyFromIdentity('proj', 'b'));
+  });
+});
+
+describe('resolveLiveTarget', () => {
+  beforeEach(() => {
+    vol.reset();
+    vol.mkdirSync('/test-home', { recursive: true });
+  });
+
+  it('resolves a home file via expandPath', async () => {
+    expect(await resolveLiveTarget({ source: '~/.zshrc' })).toBe('/test-home/.zshrc');
+  });
+
+  it('resolves a repo file with an UNBOUND key to null (skip, never guess)', async () => {
+    expect(
+      await resolveLiveTarget({ source: 'k:a.txt', scope: 'repo', repoKey: 'k', repoRelative: 'a.txt' })
+    ).toBeNull();
+  });
+
+  it('resolves a repo file with a bound key to join(root, repoRelative)', async () => {
+    await bindRepo('k', '/srv/proj');
+    expect(
+      await resolveLiveTarget({ source: 'k:a.txt', scope: 'repo', repoKey: 'k', repoRelative: 'a.txt' })
+    ).toBe('/srv/proj/a.txt');
   });
 });

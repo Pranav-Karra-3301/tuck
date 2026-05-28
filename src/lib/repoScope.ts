@@ -16,7 +16,7 @@ import { readFile } from 'fs/promises';
 import { ensureDir } from 'fs-extra';
 import { getStateDir } from './state.js';
 import { atomicWriteFile } from './files.js';
-import { pathExists } from './paths.js';
+import { pathExists, expandPath } from './paths.js';
 import { getRemoteUrl } from './git.js';
 import { reposRegistrySchema, type ReposRegistry } from '../schemas/repos.schema.js';
 
@@ -72,6 +72,28 @@ export const unbindRepo = async (repoKey: string): Promise<boolean> => {
 export const resolveRepoRoot = async (repoKey: string): Promise<string | null> => {
   const reg = await loadReposRegistry();
   return reg.repos[repoKey]?.root ?? null;
+};
+
+/** Minimal shape needed to resolve a tracked file's live location. */
+export interface ResolvableFile {
+  source: string;
+  scope?: 'home' | 'repo';
+  repoKey?: string;
+  repoRelative?: string;
+}
+
+/**
+ * Resolve a tracked file's LIVE location on THIS machine.
+ *   - home (scope absent/'home'): expandPath(source).
+ *   - repo: join(resolveRepoRoot(repoKey), repoRelative), or `null` when the
+ *     repo is not bound on this machine (caller skips it — never guesses).
+ */
+export const resolveLiveTarget = async (file: ResolvableFile): Promise<string | null> => {
+  if (file.scope !== 'repo') return expandPath(file.source);
+  if (!file.repoKey || !file.repoRelative) return null;
+  const root = await resolveRepoRoot(file.repoKey);
+  if (!root) return null;
+  return join(root, file.repoRelative);
 };
 
 const slugify = (s: string): string =>
