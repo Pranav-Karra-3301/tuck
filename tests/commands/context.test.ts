@@ -152,6 +152,29 @@ describe('importContextFromDir (via context apply <dir>)', () => {
     await expect(runApply(APPLY_SRC)).rejects.toThrow(/No context\.json found/);
   });
 
+  it('skips an entry whose home target already exists (no clobber, no crash, no partial apply)', async () => {
+    const ctx = {
+      version: '1',
+      entries: {
+        existing: validEntry({ source: '~/.claude/CLAUDE.md', destination: 'context/home/c.md' }),
+        fresh: validEntry({ source: '~/.config/fresh', destination: 'context/home/fresh' }),
+      },
+    };
+    vol.writeFileSync(join(APPLY_SRC, 'context.json'), JSON.stringify(ctx));
+    vol.mkdirSync(join(APPLY_SRC, 'context', 'home'), { recursive: true });
+    vol.writeFileSync(join(APPLY_SRC, 'context', 'home', 'c.md'), 'INCOMING');
+    vol.writeFileSync(join(APPLY_SRC, 'context', 'home', 'fresh'), 'FRESH');
+    // A pre-existing home target — must be preserved, not clobbered or crashed on.
+    vol.mkdirSync(join(TEST_HOME, '.claude'), { recursive: true });
+    vol.writeFileSync(join(TEST_HOME, '.claude', 'CLAUDE.md'), 'EXISTING-LOCAL');
+
+    await runApply(APPLY_SRC); // must NOT throw
+
+    // Existing file preserved; the other (fresh) entry still applied.
+    expect(vol.readFileSync(join(TEST_HOME, '.claude', 'CLAUDE.md'), 'utf-8')).toBe('EXISTING-LOCAL');
+    expect(vol.readFileSync(join(TEST_HOME, '.config', 'fresh'), 'utf-8')).toBe('FRESH');
+  });
+
   it('rejects a home entry whose source escapes $HOME, writing nothing', async () => {
     const ctx = {
       version: '1',

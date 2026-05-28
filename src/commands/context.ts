@@ -552,6 +552,13 @@ const importContextFromDir = async (dir: string): Promise<void> => {
     if (!(await pathExists(src))) continue;
     // Confine + redirect the write under --root (no-op when not sandboxed).
     const dest = resolveWriteTarget(e.source);
+    // Never clobber an existing local config: skip it (and don't abort the whole
+    // import). Overwriting someone else's agent config is a destructive act that
+    // belongs behind explicit consent, not a silent side effect of apply.
+    if (await pathExists(dest)) {
+      logger.dim(`Skipping existing file: ${collapsePath(dest)}`);
+      continue;
+    }
     await mkdir(dirname(dest), { recursive: true });
     await copyFileOrDir(src, dest, { overwrite: false });
   }
