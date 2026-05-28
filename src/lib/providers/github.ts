@@ -22,6 +22,20 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Build the argv for `gh repo create`. Uses the modern non-interactive form
+ * (name + visibility [+ description]); deliberately omits `--confirm`/`--json`,
+ * which were removed in gh 2.x and made auto-create always fail.
+ */
+export const buildCreateRepoArgs = (options: CreateRepoOptions): string[] => {
+  const args: string[] = ['repo', 'create', options.name];
+  args.push(options.isPrivate !== false ? '--private' : '--public');
+  if (options.description) {
+    args.push('--description', options.description);
+  }
+  return args;
+};
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -175,33 +189,22 @@ export class GitHubProvider implements GitProvider {
       ]);
     }
 
-    const args: string[] = ['repo', 'create', options.name];
-
-    if (options.isPrivate !== false) {
-      args.push('--private');
-    } else {
-      args.push('--public');
-    }
-
-    if (options.description) {
-      args.push('--description', options.description);
-    }
-
-    args.push('--confirm', '--json', 'name,url,sshUrl');
+    const args = buildCreateRepoArgs(options);
 
     try {
-      const { stdout } = await execFileAsync('gh', args);
-      const result = JSON.parse(stdout);
-
-      return {
-        name: result.name,
-        fullName: `${user.login}/${result.name}`,
-        url: result.url,
-        sshUrl: result.sshUrl,
-        httpsUrl: result.url,
-        isPrivate: options.isPrivate !== false,
-      };
+      // Modern `gh repo create <name> --private|--public` is non-interactive and
+      // prints the URL; the old `--confirm`/`--json` flags were removed in gh 2.x.
+      // Read the structured result back via getRepoInfo (gh repo view --json).
+      await execFileAsync('gh', args);
+      const info = await this.getRepoInfo(fullName);
+      if (!info) {
+        throw new ProviderError('Repository created but could not be read back', 'github', [
+          `Verify with: gh repo view ${fullName}`,
+        ]);
+      }
+      return info;
     } catch (error) {
+      if (error instanceof ProviderError) throw error;
       // Sanitize error message to prevent information disclosure
       const sanitizedMessage = sanitizeErrorMessage(error, 'Failed to create repository');
       throw new ProviderError(sanitizedMessage, 'github', [
