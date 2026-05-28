@@ -26,9 +26,9 @@ import {
   pathExists,
   isDirectory,
   validateSafeSourcePath,
-  validateSafeDestinationPath,
   validatePathWithinRoot,
 } from '../lib/paths.js';
+import { resolveWriteTarget } from '../lib/writeContext.js';
 import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import {
   copyFileOrDir,
@@ -96,7 +96,9 @@ export const assertContextWriteSafe = (
   cloneDir: string,
   entry: { source: string; destination: string }
 ): void => {
-  validateSafeDestinationPath(expandPath(entry.source));
+  // The write target must resolve within the active root (real home, or the
+  // --root sandbox); resolveWriteTarget throws on any escape.
+  resolveWriteTarget(entry.source);
   validatePathWithinRoot(
     resolve(join(cloneDir, entry.destination)),
     resolve(cloneDir),
@@ -548,7 +550,8 @@ const importContextFromDir = async (dir: string): Promise<void> => {
     assertContextWriteSafe(dir, e);
     const src = join(dir, e.destination);
     if (!(await pathExists(src))) continue;
-    const dest = expandPath(e.source);
+    // Confine + redirect the write under --root (no-op when not sandboxed).
+    const dest = resolveWriteTarget(e.source);
     await mkdir(dirname(dest), { recursive: true });
     await copyFileOrDir(src, dest, { overwrite: false });
   }

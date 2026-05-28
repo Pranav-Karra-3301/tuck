@@ -29,7 +29,8 @@ import { readFile, writeFile, mkdir, readdir, stat } from 'fs/promises';
 import { join, isAbsolute, resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { homedir } from 'os';
-import { expandPath, collapsePath, pathExists, validateSafeDestinationPath } from '../lib/paths.js';
+import { collapsePath, pathExists, validateSafeDestinationPath } from '../lib/paths.js';
+import { resolveWriteTarget, allowedRoots } from '../lib/writeContext.js';
 import { copyFileOrDir } from '../lib/files.js';
 import { logger, prompts, colors as c } from '../ui/index.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
@@ -136,7 +137,7 @@ const renderIfTemplate = async (
  */
 export const assertPresetTargetsSafe = (entries: Array<{ target: string }>): void => {
   for (const e of entries) {
-    validateSafeDestinationPath(e.target);
+    validateSafeDestinationPath(e.target, allowedRoots());
   }
 };
 
@@ -234,7 +235,9 @@ const applyAction = async (
     for (const f of prov.files) {
       planEntries.push({
         source: isAbsolute(f.source) ? f.source : join(presetDir, f.source),
-        target: expandPath(f.target),
+        // Confine + redirect under --root (no-op when not sandboxed); also
+        // validates the target stays inside the allowed root.
+        target: resolveWriteTarget(f.target),
         template: !!f.template,
       });
     }
