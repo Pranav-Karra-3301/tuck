@@ -12,7 +12,7 @@ import {
   rm,
 } from 'fs/promises';
 import { copy, ensureDir } from 'fs-extra';
-import { join, dirname, basename } from 'path';
+import { join, dirname, basename, relative } from 'path';
 import { constants } from 'fs';
 import { FileNotFoundError, PermissionError } from '../errors.js';
 import { expandPath, pathExists, isDirectory, validateSafeDestinationPath } from './paths.js';
@@ -95,7 +95,10 @@ export const getFileChecksum = async (filepath: string): Promise<string> => {
   const expandedPath = expandPath(filepath);
 
   if (await isDirectory(expandedPath)) {
-    // For directories, create a hash of all file checksums
+    // For directories, hash each entry's RELATIVE PATH together with its content
+    // so the digest is sensitive to renames, additions, and deletions — not just
+    // raw content. (Hashing content alone meant a rename inside a tracked dir
+    // produced an identical checksum and the change was silently never synced.)
     const files = await getDirectoryFiles(expandedPath);
 
     // Handle empty directories - return hash of empty string for consistency
@@ -103,14 +106,17 @@ export const getFileChecksum = async (filepath: string): Promise<string> => {
       return createHash('sha256').update('').digest('hex');
     }
 
-    const hashes: string[] = [];
-
+    const entries: string[] = [];
     for (const file of files) {
+      const relPath = relative(expandedPath, file).replace(/\\/g, '/');
       const content = await readFile(file);
-      hashes.push(createHash('sha256').update(content).digest('hex'));
+      const contentHash = createHash('sha256').update(content).digest('hex');
+      entries.push(`${relPath}\0${contentHash}`);
     }
+    // Deterministic order regardless of readdir order.
+    entries.sort();
 
-    return createHash('sha256').update(hashes.join('')).digest('hex');
+    return createHash('sha256').update(entries.join('\n')).digest('hex');
   }
 
   const content = await readFile(expandedPath);
