@@ -23,6 +23,17 @@ import {
 } from './context.js';
 import { detectDotfiles } from '../lib/detect.js';
 import { getStatus } from '../lib/git.js';
+import { VERSION } from '../constants.js';
+import { setJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
+
+/** Max accepted stdin line length (1 MiB) — guards against memory abuse. */
+const MAX_LINE_BYTES = 1024 * 1024;
+
+/** Tools that mutate state; gated behind TUCK_MCP_ALLOW_WRITE. */
+const WRITE_TOOLS = new Set(['context_add']);
+
+const writesAllowed = (): boolean =>
+  process.env.TUCK_MCP_ALLOW_WRITE === 'true' || process.env.TUCK_MCP_ALLOW_WRITE === '1';
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -154,99 +165,142 @@ const respond = (resp: JsonRpcResponse): void => {
   process.stdout.write(JSON.stringify(resp) + '\n');
 };
 
-const handleRequest = async (req: JsonRpcRequest): Promise<void> => {
+export interface ServerState {
+  initialized: boolean;
+}
+
+export const createServerState = (): ServerState => ({ initialized: false });
+
+const rpcError = (
+  id: string | number | null,
+  code: number,
+  message: string
+): JsonRpcResponse => ({ jsonrpc: '2.0', id, error: { code, message } });
+
+/** An MCP tool RESULT signalling failure (isError) — NOT a JSON-RPC error. */
+const toolError = (id: string | number | null, message: string): JsonRpcResponse => ({
+  jsonrpc: '2.0',
+  id,
+  result: { content: [{ type: 'text', text: message }], isError: true },
+});
+
+/** Validate call arguments against a tool's declared inputSchema. */
+const validateArgs = (tool: ToolDef, args: Record<string, unknown>): string | null => {
+  for (const key of tool.inputSchema.required ?? []) {
+    if (!(key in args) || args[key] === undefined || args[key] === null) {
+      return `Missing required argument: ${key}`;
+    }
+    const expected = (tool.inputSchema.properties[key] as { type?: string } | undefined)?.type;
+    if (expected === 'string' && typeof args[key] !== 'string') {
+      return `Argument "${key}" must be a string`;
+    }
+  }
+  return null;
+};
+
+/**
+ * Pure request dispatcher. Returns the response (or null for notifications) so
+ * it can be unit-tested and so the serve loop can emit responses in order.
+ */
+export const dispatch = async (
+  req: JsonRpcRequest,
+  state: ServerState
+): Promise<JsonRpcResponse | null> => {
   const id = req.id ?? null;
 
-  try {
-    switch (req.method) {
-      case 'initialize':
-        respond({
-          jsonrpc: '2.0',
+  switch (req.method) {
+    case 'initialize':
+      state.initialized = true;
+      return {
+        jsonrpc: '2.0',
+        id,
+        result: {
+          protocolVersion: '2024-11-05',
+          capabilities: { tools: {} },
+          serverInfo: { name: 'tuck', version: VERSION },
+        },
+      };
+
+    case 'notifications/initialized':
+      return null; // notification — no response
+
+    case 'ping':
+      return { jsonrpc: '2.0', id, result: {} };
+
+    case 'tools/list':
+      if (!state.initialized) return rpcError(id, -32002, 'Server not initialized');
+      return {
+        jsonrpc: '2.0',
+        id,
+        result: {
+          tools: tools.map((t) => ({
+            name: t.name,
+            description: t.description,
+            inputSchema: t.inputSchema,
+          })),
+        },
+      };
+
+    case 'tools/call': {
+      if (!state.initialized) return rpcError(id, -32002, 'Server not initialized');
+      const params = (req.params ?? {}) as { name?: string; arguments?: Record<string, unknown> };
+      const tool = tools.find((t) => t.name === params.name);
+      if (!tool) return rpcError(id, -32601, `Unknown tool: ${params.name}`);
+
+      const args = params.arguments ?? {};
+      // Argument and write-permission failures are TOOL errors (isError), not
+      // transport errors — hosts surface them to the model instead of aborting.
+      const argErr = validateArgs(tool, args);
+      if (argErr) return toolError(id, argErr);
+      if (WRITE_TOOLS.has(tool.name) && !writesAllowed()) {
+        return toolError(
           id,
-          result: {
-            protocolVersion: '2024-11-05',
-            capabilities: { tools: {} },
-            serverInfo: { name: 'tuck', version: '1.0.0' },
-          },
-        });
-        return;
-      case 'tools/list':
-        respond({
-          jsonrpc: '2.0',
-          id,
-          result: {
-            tools: tools.map((t) => ({
-              name: t.name,
-              description: t.description,
-              inputSchema: t.inputSchema,
-            })),
-          },
-        });
-        return;
-      case 'tools/call': {
-        const params = req.params as { name: string; arguments?: Record<string, unknown> };
-        const tool = tools.find((t) => t.name === params.name);
-        if (!tool) {
-          respond({
-            jsonrpc: '2.0',
-            id,
-            error: { code: -32601, message: `Unknown tool: ${params.name}` },
-          });
-          return;
-        }
-        const result = await tool.handler(params.arguments ?? {});
-        respond({
-          jsonrpc: '2.0',
-          id,
-          result: {
-            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-          },
-        });
-        return;
+          `Tool "${tool.name}" mutates state and is disabled. Set TUCK_MCP_ALLOW_WRITE=1 to enable write tools.`
+        );
       }
-      case 'notifications/initialized':
-        // No response needed for notifications.
-        return;
-      case 'ping':
-        respond({ jsonrpc: '2.0', id, result: {} });
-        return;
-      default:
-        respond({
+
+      try {
+        const result = await tool.handler(args);
+        return {
           jsonrpc: '2.0',
           id,
-          error: { code: -32601, message: `Method not found: ${req.method}` },
-        });
+          result: { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], isError: false },
+        };
+      } catch (err) {
+        return toolError(id, err instanceof Error ? err.message : String(err));
+      }
     }
-  } catch (err) {
-    respond({
-      jsonrpc: '2.0',
-      id,
-      error: {
-        code: -32603,
-        message: err instanceof Error ? err.message : String(err),
-      },
-    });
+
+    default:
+      return rpcError(id, -32601, `Method not found: ${req.method}`);
   }
 };
 
 const runServe = async (): Promise<void> => {
-  // Stdio framing: line-delimited JSON. The official MCP transport supports
-  // both LSP-style Content-Length headers and pure line-delimited JSON over
-  // stdio; line-delimited is what Claude Code's MCP host uses, so we match.
+  // Stdio framing: line-delimited JSON (what Claude Code's MCP host uses).
   const rl = createInterface({ input: process.stdin });
+  const state = createServerState();
+  // Serialize handling so responses are emitted in request order.
+  let chain: Promise<void> = Promise.resolve();
+
   rl.on('line', (line) => {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    try {
-      const req = JSON.parse(trimmed) as JsonRpcRequest;
-      void handleRequest(req);
-    } catch {
-      respond({
-        jsonrpc: '2.0',
-        id: null,
-        error: { code: -32700, message: 'Parse error' },
-      });
-    }
+    chain = chain.then(async () => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      if (Buffer.byteLength(trimmed, 'utf8') > MAX_LINE_BYTES) {
+        respond(rpcError(null, -32600, 'Request exceeds maximum allowed size'));
+        return;
+      }
+      let req: JsonRpcRequest;
+      try {
+        req = JSON.parse(trimmed) as JsonRpcRequest;
+      } catch {
+        respond(rpcError(null, -32700, 'Parse error'));
+        return;
+      }
+      const resp = await dispatch(req, state);
+      if (resp) respond(resp);
+    });
   });
   rl.on('close', () => process.exit(0));
 };
@@ -271,9 +325,8 @@ export const mcpCommand = new Command('mcp')
           inputSchema: t.inputSchema,
         }));
         if (opts.json) {
-          process.stdout.write(
-            JSON.stringify({ ok: true, command: 'tuck mcp tools', data: { tools: list } }) + '\n'
-          );
+          setJsonMode(true, 'tuck mcp tools');
+          emitJsonOk({ tools: list }, 'tuck mcp tools');
           return;
         }
         console.log(`tuck MCP exposes ${list.length} tools:`);
