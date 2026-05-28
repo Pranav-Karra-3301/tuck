@@ -140,6 +140,30 @@ const generatePlaceholderFromRule = (ruleId: string): string => {
 };
 
 /**
+ * Convert a validated gitleaks finding into a SecretMatch.
+ *
+ * SECURITY: `context` is a DISPLAYED field (printed by displayScanResults), so
+ * it must never contain the raw secret. gitleaks' `Match` is the matched line
+ * including the live secret, so we redact it. `value` still holds the real
+ * secret because the redaction pipeline needs it to build placeholder mappings,
+ * but it is never printed directly.
+ */
+export const gitleaksResultToMatch = (finding: GitleaksResult): SecretMatch => {
+  const secretValue = finding.Secret || finding.Match;
+  return {
+    patternId: `gitleaks-${finding.RuleID}`,
+    patternName: finding.Description || finding.RuleID,
+    severity: mapGitleaksSeverity(finding.RuleID),
+    line: finding.StartLine,
+    column: finding.StartColumn,
+    value: secretValue,
+    redactedValue: redactSecret(secretValue),
+    context: redactSecret(finding.Match),
+    placeholder: generatePlaceholderFromRule(finding.RuleID),
+  };
+};
+
+/**
  * Sentinel value to indicate gitleaks failed for a specific file.
  * We use a Symbol (rather than null or a special error) to distinguish between:
  * - null: gitleaks succeeded but found no secrets
@@ -206,27 +230,7 @@ export const scanWithGitleaks = async (filepaths: string[]): Promise<ScanSummary
 
         if (gitleaksResults.length === 0) return null;
 
-        const matches: SecretMatch[] = [];
-
-        for (const finding of gitleaksResults) {
-          const severity = mapGitleaksSeverity(finding.RuleID);
-
-          // Security: Use consistent redactSecret function for better security
-          const secretValue = finding.Secret || finding.Match;
-          const redactedValue = redactSecret(secretValue);
-
-          matches.push({
-            patternId: `gitleaks-${finding.RuleID}`,
-            patternName: finding.Description || finding.RuleID,
-            severity,
-            line: finding.StartLine,
-            column: finding.StartColumn,
-            value: secretValue,
-            redactedValue,
-            context: finding.Match,
-            placeholder: generatePlaceholderFromRule(finding.RuleID),
-          });
-        }
+        const matches: SecretMatch[] = gitleaksResults.map(gitleaksResultToMatch);
 
         // Collapse home directory in path for display using utility function
         const collapsedPath = collapsePath(filepath);
