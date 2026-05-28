@@ -18,6 +18,10 @@ const KEY_LENGTH = 32; // 256 bits
 const SCRYPT_N = 2 ** 17; // 131072 - memory cost
 const SCRYPT_R = 8; // block size
 const SCRYPT_P = 1; // parallelism
+// scryptSync requires maxmem > 128 * N * r bytes (= 128 MiB for the params
+// above). Node's default maxmem is only 32 MiB, so without this every call
+// throws "memory limit exceeded" — the whole scrypt path was unusable.
+const SCRYPT_MAXMEM = 256 * 1024 * 1024; // 256 MiB headroom over the 128 MiB need
 
 export interface EncryptedFileHeader {
   magic: Buffer;
@@ -35,6 +39,7 @@ export const deriveKey = (password: string, salt: Buffer): Buffer => {
     N: SCRYPT_N,
     r: SCRYPT_R,
     p: SCRYPT_P,
+    maxmem: SCRYPT_MAXMEM,
   });
 };
 
