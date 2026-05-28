@@ -80,9 +80,9 @@ const renderCommentMarkers = (text: string, ctx: TemplateContext): string => {
   type Frame = { keep: boolean; sawElse: boolean };
   const stack: Frame[] = [];
 
-  const ifRe = /^\s*([#;\/\*]+)\s*tuck:if\s+(.+?)\s*$/;
-  const elseRe = /^\s*([#;\/\*]+)\s*tuck:else\s*$/;
-  const endIfRe = /^\s*([#;\/\*]+)\s*tuck:endif\s*$/;
+  const ifRe = /^\s*([#;/*]+)\s*tuck:if\s+(.+?)\s*$/;
+  const elseRe = /^\s*([#;/*]+)\s*tuck:else\s*$/;
+  const endIfRe = /^\s*([#;/*]+)\s*tuck:endif\s*$/;
 
   for (const line of lines) {
     const ifM = line.match(ifRe);
