@@ -1,7 +1,9 @@
 import { Command } from 'commander';
 import { join, dirname } from 'path';
 import { readFile, writeFile, rm, chmod, stat } from 'fs/promises';
-import { ensureDir, pathExists as fsPathExists } from 'fs-extra';
+import { ensureDir, pathExists as fsPathExists, copy } from 'fs-extra';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { tmpdir } from 'os';
 import { banner, prompts, logger, colors as c } from '../ui/index.js';
 import {
@@ -96,6 +98,26 @@ interface ApplyResult {
   }>;
 }
 
+const execFileAsync = promisify(execFile);
+
+export type ApplySourceKind = 'provider-prefixed' | 'git-url' | 'local' | 'repo-id' | 'username';
+
+/** True for tar archives we know how to extract. */
+export const isTarballPath = (p: string): boolean => /\.(tar\.gz|tgz|tar)$/i.test(p);
+
+/**
+ * Classify an `apply <source>` argument. An existing LOCAL path wins over the
+ * URL/owner-repo/username interpretations (after the explicit provider: prefix),
+ * so tuck can apply from a directory or tarball with no remote — and no GitHub.
+ */
+export const classifyApplySource = (source: string, localExists: boolean): ApplySourceKind => {
+  if (/^(github|gitlab|custom):/u.test(source)) return 'provider-prefixed';
+  if (localExists) return 'local';
+  if (source.includes('://') || source.startsWith('git@')) return 'git-url';
+  if (source.includes('/')) return 'repo-id';
+  return 'username';
+};
+
 const buildProviderCloneUrl = (
   providerMode: Extract<ProviderMode, 'github' | 'gitlab'>,
   repoId: string,
@@ -115,7 +137,9 @@ const buildProviderCloneUrl = (
 /**
  * Resolve a source (username or repo URL) to a full repository identifier
  */
-const resolveSource = async (source: string): Promise<{ repoId: string; isUrl: boolean }> => {
+const resolveSource = async (
+  source: string
+): Promise<{ repoId: string; isUrl: boolean; local?: 'dir' | 'tarball' }> => {
   const configuredRemote = (await loadConfig(getTuckDir()))?.remote ?? { mode: 'local' as const };
   const providerPrefixMatch = source.match(/^(github|gitlab|custom):(.*)$/u);
 
@@ -129,6 +153,16 @@ const resolveSource = async (source: string): Promise<{ repoId: string; isUrl: b
           ? repoId
           : buildProviderCloneUrl(providerMode, repoId, configuredRemote),
       isUrl: true,
+    };
+  }
+
+  // A LOCAL directory or tarball — fully provider-free, no remote/GitHub needed.
+  const expandedSource = expandPath(source);
+  if (await pathExists(expandedSource)) {
+    return {
+      repoId: expandedSource,
+      isUrl: false,
+      local: isTarballPath(expandedSource) ? 'tarball' : 'dir',
     };
   }
 
@@ -208,9 +242,25 @@ const resolveSource = async (source: string): Promise<{ repoId: string; isUrl: b
 /**
  * Clone the source repository to a temporary directory
  */
-const cloneSource = async (repoId: string, isUrl: boolean): Promise<string> => {
+const cloneSource = async (
+  repoId: string,
+  isUrl: boolean,
+  local?: 'dir' | 'tarball'
+): Promise<string> => {
   const tempDir = join(tmpdir(), `tuck-apply-${Date.now()}`);
   await ensureDir(tempDir);
+
+  if (local === 'dir') {
+    // Materialize the local source into a temp working copy (no remote).
+    await copy(repoId, tempDir, { overwrite: true });
+    return tempDir;
+  }
+
+  if (local === 'tarball') {
+    // Extract the archive into the temp dir (tar ships on macOS/Linux/Win10+).
+    await execFileAsync('tar', ['-xzf', repoId, '-C', tempDir]);
+    return tempDir;
+  }
 
   if (isUrl) {
     await cloneRepo(repoId, tempDir);
@@ -593,11 +643,13 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
   // Resolve the source
   let repoId: string;
   let isUrl: boolean;
+  let local: 'dir' | 'tarball' | undefined;
 
   try {
     const resolved = await resolveSource(source);
     repoId = resolved.repoId;
     isUrl = resolved.isUrl;
+    local = resolved.local;
   } catch (error) {
     prompts.log.error(error instanceof Error ? error.message : String(error));
     return;
@@ -607,9 +659,9 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
   let repoDir: string;
   try {
     const spinner = prompts.spinner();
-    spinner.start('Cloning repository...');
-    repoDir = await cloneSource(repoId, isUrl);
-    spinner.stop('Repository cloned');
+    spinner.start(local ? 'Reading local source...' : 'Cloning repository...');
+    repoDir = await cloneSource(repoId, isUrl, local);
+    spinner.stop(local ? 'Source ready' : 'Repository cloned');
   } catch (error) {
     prompts.log.error(`Failed to clone: ${error instanceof Error ? error.message : String(error)}`);
     return;
@@ -789,11 +841,11 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
   if (options.json) setJsonMode(true, 'tuck apply');
 
   // Resolve the source
-  const { repoId, isUrl } = await resolveSource(source);
+  const { repoId, isUrl, local } = await resolveSource(source);
 
-  // Clone the repository
-  logger.info('Cloning repository...');
-  const repoDir = await cloneSource(repoId, isUrl);
+  // Clone (or materialize a local source).
+  logger.info(local ? 'Reading local source...' : 'Cloning repository...');
+  const repoDir = await cloneSource(repoId, isUrl, local);
 
   try {
     // Read the manifest
@@ -895,7 +947,10 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
 
 export const applyCommand = new Command('apply')
   .description('Apply dotfiles from a repository to this machine')
-  .argument('<source>', 'GitHub username, user/repo, or full repository URL')
+  .argument(
+    '<source>',
+    'username, user/repo, provider:user/repo, a full git URL, or a local directory/tarball path'
+  )
   .option('-m, --merge', 'Merge with existing files (preserve local customizations)')
   .option('-r, --replace', 'Replace existing files completely')
   .option('--dry-run', 'Show what would be applied without making changes')
