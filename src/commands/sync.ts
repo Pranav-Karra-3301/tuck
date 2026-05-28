@@ -40,7 +40,7 @@ import {
 import { addToTuckignore, loadTuckignore, isIgnored } from '../lib/tuckignore.js';
 import { runPreSyncHook, runPostSyncHook, type HookOptions } from '../lib/hooks.js';
 import { NotInitializedError, SecretsDetectedError, MergeConflictsError } from '../errors.js';
-import { setJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
+import { setJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
 import type { SyncOptions, FileChange } from '../types.js';
 import { detectDotfiles, DETECTION_CATEGORIES, type DetectedFile } from '../lib/detect.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
@@ -891,6 +891,63 @@ export const runSync = async (options: SyncOptions = {}): Promise<void> => {
   await runInteractiveSync(tuckDir, options);
 };
 
+/**
+ * Scan the about-to-be-synced changes for secrets and either block or warn,
+ * honoring `security.blockOnSecrets`. This is the SINGLE secret gate shared by
+ * every non-interactive sync path (`--json`, `--yes`, and the message path) so
+ * none of them can drift back into committing secrets. With `--force`, scanning
+ * is skipped but an audit entry is always recorded.
+ *
+ * Throws {@link SecretsDetectedError} when secrets are found and blocking is on.
+ * In JSON mode it emits structured warnings instead of human-readable output so
+ * the single-JSON-object stdout contract is preserved.
+ */
+const scanChangesForSecretsOrThrow = async (
+  tuckDir: string,
+  changes: FileChange[],
+  options: { force?: boolean; json?: boolean }
+): Promise<void> => {
+  if (options.force) {
+    await logForceSecretBypass(
+      options.json ? 'tuck sync --json --force' : 'tuck sync --force',
+      changes.length
+    );
+    const msg = 'Secret scanning bypassed via --force';
+    if (options.json) addJsonWarning(msg);
+    else logger.warning(msg);
+    return;
+  }
+
+  if (!(await isSecretScanningEnabled(tuckDir))) return;
+
+  const modifiedPaths = changes
+    .filter((c) => c.status === 'modified')
+    .map((c) => expandPath(c.source));
+  if (modifiedPaths.length === 0) return;
+
+  const summary = await scanForSecrets(modifiedPaths, tuckDir);
+  if (summary.totalSecrets === 0) return;
+
+  if (await shouldBlockOnSecrets(tuckDir)) {
+    if (!options.json) displayScanResults(summary);
+    throw new SecretsDetectedError(
+      summary.totalSecrets,
+      summary.results.map((r) => collapsePath(r.path))
+    );
+  }
+
+  // blockOnSecrets disabled: warn but continue.
+  if (options.json) {
+    addJsonWarning(
+      `${summary.totalSecrets} potential secret(s) detected but blockOnSecrets is disabled — proceeding`
+    );
+  } else {
+    displayScanResults(summary);
+    logger.warning('Secrets detected but blockOnSecrets is disabled - proceeding with sync');
+    logger.warning('Make sure your repository is private!');
+  }
+};
+
 export const runSyncCommand = async (
   messageArg: string | undefined,
   options: SyncOptions
@@ -933,6 +990,11 @@ export const runSyncCommand = async (
       }
       return;
     }
+    // Secret gate: never let the non-interactive path commit/push secrets.
+    await scanChangesForSecretsOrThrow(tuckDir, changes, {
+      force: options.force,
+      json: options.json,
+    });
     const message = messageArg || options.message;
     const result = await syncFiles(tuckDir, changes, { ...options, message });
     if (options.push !== false && (await hasRemote(tuckDir))) {
@@ -977,35 +1039,8 @@ export const runSyncCommand = async (
     return;
   }
 
-  // Scan for secrets (non-interactive mode)
-  if (!options.force) {
-    const scanningEnabled = await isSecretScanningEnabled(tuckDir);
-    if (scanningEnabled) {
-      const modifiedPaths = changes
-        .filter((c) => c.status === 'modified')
-        .map((c) => expandPath(c.source));
-
-      if (modifiedPaths.length > 0) {
-        const summary = await scanForSecrets(modifiedPaths, tuckDir);
-        if (summary.totalSecrets > 0) {
-          displayScanResults(summary);
-
-          // Check if we should block or just warn
-          const shouldBlock = await shouldBlockOnSecrets(tuckDir);
-          if (shouldBlock) {
-            throw new SecretsDetectedError(
-              summary.totalSecrets,
-              summary.results.map((r) => collapsePath(r.path))
-            );
-          } else {
-            // Warn but continue
-            logger.warning('Secrets detected but blockOnSecrets is disabled - proceeding with sync');
-            logger.warning('Make sure your repository is private!');
-          }
-        }
-      }
-    }
-  }
+  // Scan for secrets (non-interactive message path) — shared gate.
+  await scanChangesForSecretsOrThrow(tuckDir, changes, { force: options.force, json: options.json });
 
   // Show changes
   logger.heading('Changes detected:');

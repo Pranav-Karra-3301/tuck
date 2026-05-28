@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { join } from 'path';
-import { NotInitializedError } from '../../src/errors.js';
+import { NotInitializedError, SecretsDetectedError } from '../../src/errors.js';
 
 const loadManifestMock = vi.fn();
 const getAllTrackedFilesMock = vi.fn();
@@ -208,6 +208,49 @@ describe('sync command behavior', () => {
     );
     expect(stageAllMock).not.toHaveBeenCalled();
     expect(commitMock).not.toHaveBeenCalled();
+  });
+
+  it('blocks the non-interactive (--yes/--json) sync when modified files contain secrets', async () => {
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: { source: '~/.zshrc', destination: 'files/shell/zshrc', checksum: 'old' },
+    });
+    getFileChecksumMock.mockResolvedValue('new');
+
+    const secrets = await import('../../src/lib/secrets/index.js');
+    vi.mocked(secrets.isSecretScanningEnabled).mockResolvedValue(true);
+    vi.mocked(secrets.scanForSecrets).mockResolvedValue({
+      totalSecrets: 1,
+      results: [{ path: '~/.zshrc' }],
+    } as unknown as Awaited<ReturnType<typeof secrets.scanForSecrets>>);
+    vi.mocked(secrets.shouldBlockOnSecrets).mockResolvedValue(true);
+
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+
+    await expect(
+      runSyncCommand(undefined, { yes: true, noHooks: true, pull: false } as never)
+    ).rejects.toBeInstanceOf(SecretsDetectedError);
+
+    // The secret must be caught BEFORE anything is committed or pushed.
+    expect(commitMock).not.toHaveBeenCalled();
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it('records a force-bypass audit entry when --yes --force skips scanning', async () => {
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: { source: '~/.zshrc', destination: 'files/shell/zshrc', checksum: 'old' },
+    });
+    getFileChecksumMock.mockResolvedValue('new');
+
+    const secrets = await import('../../src/lib/secrets/index.js');
+    vi.mocked(secrets.isSecretScanningEnabled).mockResolvedValue(true);
+
+    const audit = await import('../../src/lib/audit.js');
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+
+    await runSyncCommand(undefined, { yes: true, force: true, noHooks: true, pull: false } as never);
+
+    expect(vi.mocked(audit.logForceSecretBypass)).toHaveBeenCalled();
+    expect(vi.mocked(secrets.scanForSecrets)).not.toHaveBeenCalled();
   });
 
   it('fails fast when manifest destination is unsafe', async () => {
