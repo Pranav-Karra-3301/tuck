@@ -17,7 +17,7 @@ import { loadConfig } from '../lib/config.js';
 import { copyFileOrDir, createSymlink } from '../lib/files.js';
 import { createBackup } from '../lib/backup.js';
 import { runPreRestoreHook, runPostRestoreHook, type HookOptions } from '../lib/hooks.js';
-import { NotInitializedError, FileNotFoundError } from '../errors.js';
+import { NotInitializedError, FileNotFoundError, TuckError } from '../errors.js';
 import { CATEGORIES } from '../constants.js';
 import type { RestoreOptions } from '../types.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
@@ -374,6 +374,27 @@ export const runRestore = async (options: RestoreOptions): Promise<void> => {
   }
 };
 
+/**
+ * Refuse to restore "everything" implicitly in non-interactive mode. `--yes`
+ * means "skip the confirmation prompt", NOT "expand scope to all tracked
+ * files". Without this, `tuck restore --yes` (no paths, no --all) would
+ * silently overwrite every tracked dotfile on the live system. The caller must
+ * pass explicit paths or `--all`.
+ */
+export const assertRestoreScopeExplicit = (
+  pathCount: number,
+  options: { all?: boolean; yes?: boolean; json?: boolean }
+): void => {
+  if (pathCount === 0 && !options.all && (options.json || options.yes)) {
+    throw new TuckError(
+      'Refusing to restore: no paths given and --all not set. ' +
+        'In non-interactive mode you must specify paths or pass --all explicitly.',
+      'RESTORE_SCOPE_REQUIRED',
+      ['tuck restore ~/.zshrc', 'tuck restore --all']
+    );
+  }
+};
+
 const runRestoreCommand = async (paths: string[], options: RestoreOptions): Promise<void> => {
   if (options.json) setJsonMode(true, 'tuck restore');
   const tuckDir = getTuckDir();
@@ -384,6 +405,10 @@ const runRestoreCommand = async (paths: string[], options: RestoreOptions): Prom
   } catch {
     throw new NotInitializedError();
   }
+
+  // Non-interactive callers must scope the restore explicitly (--yes is not
+  // a license to overwrite every tracked file).
+  assertRestoreScopeExplicit(paths.length, options);
 
   // If no paths and no --all and not in JSON/auto mode, run interactive
   if (paths.length === 0 && !options.all && !isJsonMode() && !options.yes) {
