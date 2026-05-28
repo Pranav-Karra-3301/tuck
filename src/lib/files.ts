@@ -16,6 +16,7 @@ import { join, dirname, basename, relative } from 'path';
 import { constants } from 'fs';
 import { FileNotFoundError, PermissionError } from '../errors.js';
 import { expandPath, pathExists, isDirectory, validateSafeDestinationPath } from './paths.js';
+import { allowedRoots } from './writeContext.js';
 import { IS_WINDOWS } from './platform.js';
 
 export interface FileInfo {
@@ -246,7 +247,10 @@ export const copyFileOrDir = async (
     throw new FileNotFoundError(source);
   }
 
-  validateSafeDestinationPath(expandedDest);
+  // Validate against the active allowed roots ($HOME + bound repo roots, or the
+  // sandbox root) — not just $HOME — so repo-scoped writes to a bound checkout
+  // outside home are permitted while everything else stays confined.
+  validateSafeDestinationPath(expandedDest, allowedRoots());
 
   // Ensure destination directory exists
   await ensureDir(dirname(expandedDest));
@@ -325,7 +329,7 @@ export const createSymlink = async (
     throw new FileNotFoundError(target);
   }
 
-  validateSafeDestinationPath(expandedLink);
+  validateSafeDestinationPath(expandedLink, allowedRoots());
 
   // Ensure link parent directory exists
   await ensureDir(dirname(expandedLink));
