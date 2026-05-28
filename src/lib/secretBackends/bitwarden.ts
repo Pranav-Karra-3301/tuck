@@ -8,6 +8,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { SecretBackend, SecretReference, BitwardenConfig } from './types.js';
+import { assertSafeBackendPath } from './types.js';
 import { SecretBackendError, BackendAuthenticationError } from '../../errors.js';
 
 const execFileAsync = promisify(execFile);
@@ -151,6 +152,7 @@ export class BitwardenBackend implements SecretBackend {
         `Run: tuck secrets map ${ref.name} --bitwarden "item-name-or-id"`,
       ]);
     }
+    assertSafeBackendPath('bitwarden', ref.name, ref.backendPath);
 
     const env = this.getEnv();
 

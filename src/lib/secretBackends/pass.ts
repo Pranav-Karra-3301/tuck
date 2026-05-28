@@ -9,6 +9,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { access } from 'fs/promises';
 import type { SecretBackend, SecretReference, PassConfig, SecretInfo } from './types.js';
+import { assertSafeBackendPath } from './types.js';
 import { SecretBackendError } from '../../errors.js';
 import { expandPath } from '../paths.js';
 
@@ -106,11 +107,13 @@ export class PassBackend implements SecretBackend {
         `Run: tuck secrets map ${ref.name} --pass "path/to/secret"`,
       ]);
     }
+    assertSafeBackendPath('pass', ref.name, ref.backendPath);
 
     const env = this.getEnv();
 
     try {
-      const { stdout } = await execFileAsync('pass', ['show', ref.backendPath], { env });
+      // `--` ends option parsing so the (validated) path is never a flag.
+      const { stdout } = await execFileAsync('pass', ['show', '--', ref.backendPath], { env });
 
       // By default, return just the first line (the password)
       // If the path ends with /*, return the full content
