@@ -16,8 +16,9 @@
 
 import { Command } from 'commander';
 import { join, relative, resolve, isAbsolute, basename, dirname } from 'path';
-import { readFile, writeFile, mkdir, readdir, stat } from 'fs/promises';
+import { readFile, writeFile, mkdir, readdir, stat, rm } from 'fs/promises';
 import { homedir } from 'os';
+import { z } from 'zod';
 import {
   getTuckDir,
   expandPath,
@@ -25,6 +26,8 @@ import {
   pathExists,
   isDirectory,
   validateSafeSourcePath,
+  validateSafeDestinationPath,
+  validatePathWithinRoot,
 } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import {
@@ -37,7 +40,7 @@ import {
   isJsonMode,
   emitJsonOk,
 } from '../lib/jsonOutput.js';
-import { logger, colors as c } from '../ui/index.js';
+import { logger, prompts, colors as c } from '../ui/index.js';
 import simpleGit from 'simple-git';
 
 interface ContextEntry {
@@ -60,6 +63,46 @@ interface ContextManifest {
   version: '1';
   entries: Record<string, ContextEntry>;
 }
+
+/**
+ * Runtime schema used to validate an UNTRUSTED context.json fetched from a
+ * remote repo before we act on it. A cloned manifest is attacker-controlled
+ * input, so we never `as`-cast it; we parse it.
+ */
+const contextEntrySchema = z.object({
+  source: z.string(),
+  destination: z.string(),
+  scope: z.enum(['home', 'repo']),
+  repoRoot: z.string().optional(),
+  agent: z.string(),
+  added: z.string(),
+  modified: z.string(),
+  checksum: z.string(),
+});
+const contextManifestSchema = z.object({
+  version: z.literal('1'),
+  entries: z.record(contextEntrySchema),
+});
+
+/**
+ * Guard a single context entry before materializing it:
+ *   - the WRITE destination (`entry.source`, a home path) must resolve inside
+ *     $HOME — rejects `/etc/...`, `~/../../...`, etc.
+ *   - the READ source (`cloneDir/entry.destination`) must stay inside the clone
+ *     dir — rejects `../../` traversal that would copy arbitrary host files.
+ * Throws before any directory is created.
+ */
+export const assertContextWriteSafe = (
+  cloneDir: string,
+  entry: { source: string; destination: string }
+): void => {
+  validateSafeDestinationPath(expandPath(entry.source));
+  validatePathWithinRoot(
+    resolve(join(cloneDir, entry.destination)),
+    resolve(cloneDir),
+    'context source'
+  );
+};
 
 const CONTEXT_MANIFEST = 'context.json';
 const CONTEXT_DIR = 'context';
@@ -439,11 +482,35 @@ const applyAction = async (
         ['Examples: tuck context apply prnv/dotfiles', 'tuck context apply ./other-repo']
       );
     }
+    // Writing files from an untrusted remote into $HOME requires consent.
+    const nonInteractive = isJsonMode() || !process.stdout.isTTY;
+    if (!opts.yes) {
+      if (nonInteractive) {
+        throw new TuckError(
+          `Refusing to apply context from github.com/${user}/${repoName} non-interactively without --yes`,
+          'CONTEXT_APPLY_REFUSED',
+          ['Re-run with --yes once you trust the source repo.']
+        );
+      }
+      const ok = await prompts.confirm(
+        `Apply agent configs from github.com/${user}/${repoName}? Files will be written into your home.`,
+        false
+      );
+      if (!ok) {
+        logger.info('Aborted — no files changed.');
+        return;
+      }
+    }
     const tmp = join(getTuckDir(), '.tmp-context', `${user}-${repoName}`);
-    await mkdir(dirname(tmp), { recursive: true });
-    const git = simpleGit();
-    await git.clone(`https://github.com/${user}/${repoName}.git`, tmp, ['--depth', '1']);
-    await importContextFromDir(tmp);
+    try {
+      await mkdir(dirname(tmp), { recursive: true });
+      const git = simpleGit();
+      await git.clone(`https://github.com/${user}/${repoName}.git`, tmp, ['--depth', '1']);
+      await importContextFromDir(tmp);
+    } finally {
+      // Always remove the temp clone, even on failure.
+      await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+    }
   } else {
     await importContextFromDir(ref);
   }
@@ -464,12 +531,21 @@ const importContextFromDir = async (dir: string): Promise<void> => {
       ['Run `tuck context add` on the source machine first']
     );
   }
-  const manifest = JSON.parse(await readFile(ctxFile, 'utf-8')) as ContextManifest;
-  // For now, list-only; applying agent configs to a fresh machine is a
-  // material write operation that needs the templating engine in §5.1.
+  // Validate the (untrusted) cloned manifest instead of casting it.
+  const parsed = contextManifestSchema.safeParse(JSON.parse(await readFile(ctxFile, 'utf-8')));
+  if (!parsed.success) {
+    throw new TuckError(
+      `Invalid ${CONTEXT_MANIFEST} in ${dir}`,
+      'INVALID_CONTEXT_MANIFEST',
+      ['The source repo may be malformed or untrusted.']
+    );
+  }
+  const manifest = parsed.data;
   // Materialize home-scoped files immediately; defer repo-scoped to apply.
   for (const e of Object.values(manifest.entries)) {
     if (e.scope !== 'home') continue;
+    // Validate BEFORE creating any directory so a hostile entry plants nothing.
+    assertContextWriteSafe(dir, e);
     const src = join(dir, e.destination);
     if (!(await pathExists(src))) continue;
     const dest = expandPath(e.source);
