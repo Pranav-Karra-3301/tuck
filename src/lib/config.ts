@@ -1,8 +1,9 @@
-import { readFile, writeFile } from 'fs/promises';
+import { readFile } from 'fs/promises';
 import { dirname } from 'path';
 import { cosmiconfig } from 'cosmiconfig';
 import { tuckConfigSchema, defaultConfig, type TuckConfigOutput } from '../schemas/config.schema.js';
 import { getConfigPath, pathExists, getTuckDir } from './paths.js';
+import { atomicWriteFile } from './files.js';
 import { ConfigError } from '../errors.js';
 import { BACKUP_DIR } from '../constants.js';
 
@@ -109,7 +110,7 @@ export const saveConfig = async (
   }
 
   try {
-    await writeFile(configPath, JSON.stringify(result.data, null, 2) + '\n', 'utf-8');
+    await atomicWriteFile(configPath, JSON.stringify(result.data, null, 2) + '\n');
     // Update cache
     cachedConfig = result.data;
     cachedTuckDir = dir;
@@ -141,7 +142,7 @@ export const resetConfig = async (tuckDir?: string): Promise<void> => {
   const resetTo = { ...defaultConfig, repository: { ...defaultConfig.repository, path: dir } };
 
   try {
-    await writeFile(configPath, JSON.stringify(resetTo, null, 2) + '\n', 'utf-8');
+    await atomicWriteFile(configPath, JSON.stringify(resetTo, null, 2) + '\n');
     cachedConfig = resetTo;
     cachedTuckDir = dir;
   } catch (error) {
