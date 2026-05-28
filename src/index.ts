@@ -30,6 +30,10 @@ import { loadManifest } from './lib/manifest.js';
 import { getStatus } from './lib/git.js';
 import { setJsonMode } from './lib/jsonOutput.js';
 import { buildCommandPath } from './lib/commandPath.js';
+import { setWriteContext } from './lib/writeContext.js';
+import { expandPath as expandTuckPath } from './lib/paths.js';
+import { homedir } from 'os';
+import { resolve as resolvePath } from 'path';
 import { contextCommand } from './commands/context.js';
 import { mcpCommand } from './commands/mcp.js';
 import { presetCommand } from './commands/preset.js';
@@ -40,6 +44,11 @@ program
   .name('tuck')
   .description(DESCRIPTION)
   .version(VERSION, '-v, --version', 'Display version number')
+  .option(
+    '--root <dir>',
+    'Confine ALL writes under this directory (sandbox / dry-home mode). ' +
+      'Also settable via TUCK_TARGET_ROOT. Use to run tuck without touching your real ~.'
+  )
   .configureOutput({
     outputError: (str, write) => write(chalk.red(str)),
   })
@@ -82,10 +91,17 @@ if (process.argv.slice(2).includes('--json')) {
   setJsonMode(true);
 }
 
-// Authoritative JSON-mode resolution: runs after parsing, before the action.
+// Authoritative resolution of JSON mode AND the write sandbox: runs after
+// parsing, before the action. Global --root lives on the root program.
 program.hook('preAction', (_thisCommand, actionCommand) => {
   const opts = actionCommand.opts() as { json?: boolean };
   setJsonMode(opts.json === true, buildCommandPath(actionCommand as { name(): string }));
+
+  const rootOpt = (program.opts() as { root?: string }).root ?? process.env.TUCK_TARGET_ROOT;
+  if (rootOpt && rootOpt.trim()) {
+    const root = resolvePath(expandTuckPath(rootOpt.trim()));
+    setWriteContext({ root, isSandbox: root !== resolvePath(homedir()) });
+  }
 });
 
 // Default action when no command is provided
