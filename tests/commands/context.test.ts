@@ -271,6 +271,15 @@ const runContext = async (...args: string[]): Promise<void> => {
   await program.parseAsync(['node', 'tuck', 'context', ...args]);
 };
 
+// Forward-slash literals on purpose. These strings are passed verbatim as the
+// `context add` argument; for an absolute path addContextFile skips resolve(),
+// so the bytes flow straight into validateSafeSourcePath and memfs. path.join()
+// would emit backslashes on Windows, which trip the home-confinement check
+// against the POSIX-mocked homedir (and never match collapsePath's POSIX
+// output). memfs is natively POSIX, so forward slashes are correct everywhere.
+const HOME_CLAUDE_DIR = `${TEST_HOME}/.claude`;
+const HOME_CLAUDE_MD = `${TEST_HOME}/.claude/CLAUDE.md`;
+
 describe('context list/add --json envelope', () => {
   beforeEach(async () => {
     vol.reset();
@@ -299,12 +308,12 @@ describe('context list/add --json envelope', () => {
   it('add --json emits an ok envelope describing the tracked entry', async () => {
     writeBaseManifest();
     // A home-scoped agent config that lives outside any git tree.
-    vol.mkdirSync(join(TEST_HOME, '.claude'), { recursive: true });
-    vol.writeFileSync(join(TEST_HOME, '.claude', 'CLAUDE.md'), '# global\n');
+    vol.mkdirSync(HOME_CLAUDE_DIR, { recursive: true });
+    vol.writeFileSync(HOME_CLAUDE_MD, '# global\n');
 
     const { writes, restore } = captureStdout();
     try {
-      await runContext('add', join(TEST_HOME, '.claude', 'CLAUDE.md'), '--json');
+      await runContext('add', HOME_CLAUDE_MD, '--json');
     } finally {
       restore();
     }
@@ -322,13 +331,13 @@ describe('context list/add --json envelope', () => {
 
   it('list --json reflects an entry after add, with the same id and shape', async () => {
     writeBaseManifest();
-    vol.mkdirSync(join(TEST_HOME, '.claude'), { recursive: true });
-    vol.writeFileSync(join(TEST_HOME, '.claude', 'CLAUDE.md'), '# global\n');
+    vol.mkdirSync(HOME_CLAUDE_DIR, { recursive: true });
+    vol.writeFileSync(HOME_CLAUDE_MD, '# global\n');
 
     // First add.
     let cap = captureStdout();
     try {
-      await runContext('add', join(TEST_HOME, '.claude', 'CLAUDE.md'), '--json');
+      await runContext('add', HOME_CLAUDE_MD, '--json');
     } finally {
       cap.restore();
     }

@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { vol } from 'memfs';
-import { resolve, join } from 'path';
+import { resolve, join, dirname } from 'path';
 import { homedir } from 'os';
 import {
   loadReposRegistry,
@@ -51,7 +51,11 @@ describe('repos registry', () => {
 
   it('treats a malformed registry as empty rather than throwing', async () => {
     const p = getReposRegistryPath();
-    vol.mkdirSync(p.replace(/\/[^/]+$/, ''), { recursive: true });
+    // Use path.dirname (not a /-only regex): getReposRegistryPath() returns a
+    // native path, which uses backslashes on Windows — a forward-slash regex
+    // would no-op there, mkdir the full repos.json path as a directory, and
+    // make the later writeFileSync hit EISDIR.
+    vol.mkdirSync(dirname(p), { recursive: true });
     vol.writeFileSync(p, '{ not valid json');
     const reg = await loadReposRegistry();
     expect(reg.repos).toEqual({});
