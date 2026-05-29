@@ -110,4 +110,35 @@ describe('computeStateModel', () => {
     const model = await computeStateModel(TUCK);
     expect(model[0].state).toBe('drift-local');
   });
+
+  it('reports unknown-repo for a repo-scoped file whose repo is not bound here', async () => {
+    vol.mkdirSync(`${TUCK}/files/repos/proj-xyz`, { recursive: true });
+    vol.writeFileSync(`${TUCK}/files/repos/proj-xyz/a.txt`, 'x');
+    vol.writeFileSync(
+      `${TUCK}/.tuckmanifest.json`,
+      JSON.stringify({
+        version: '1',
+        created: '2026-01-01T00:00:00.000Z',
+        updated: '2026-01-01T00:00:00.000Z',
+        files: {
+          repofile: {
+            source: 'proj-xyz:a.txt',
+            destination: 'files/repos/proj-xyz/a.txt',
+            category: 'misc',
+            strategy: 'copy',
+            checksum: 'abc',
+            added: '2026-01-01T00:00:00.000Z',
+            modified: '2026-01-01T00:00:00.000Z',
+            scope: 'repo',
+            repoKey: 'proj-xyz',
+            repoRelative: 'a.txt',
+          },
+        },
+        bundles: {},
+      })
+    );
+
+    const model = await computeStateModel(TUCK);
+    expect(model[0].state).toBe('unknown-repo');
+  });
 });

@@ -11,9 +11,16 @@ import {
   validateSafeSourcePath,
   validateSafeManifestDestination,
   validatePathWithinRoot,
+  validateSafeRepoSourcePath,
 } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles, getTrackedFileBySource } from '../lib/manifest.js';
-import { resolveWriteTarget } from '../lib/writeContext.js';
+import { resolveWriteTarget, setKnownRepoRoots } from '../lib/writeContext.js';
+import {
+  resolveLiveTarget,
+  resolveRepoRoot,
+  bindRepo,
+  loadReposRegistry,
+} from '../lib/repoScope.js';
 import { loadConfig } from '../lib/config.js';
 import { copyFileOrDir, createSymlink } from '../lib/files.js';
 import { createBackup } from '../lib/backup.js';
@@ -83,12 +90,20 @@ interface FileToRestore {
   destination: string;
   category: string;
   existsAtTarget: boolean;
+  /** Tracking scope — absent/'home' resolves against $HOME; 'repo' against a bound repo root. */
+  scope?: 'home' | 'repo';
+  /** Stable cross-machine repo identity (repo-scoped files only). */
+  repoKey?: string;
+  /** POSIX path relative to the repo root (repo-scoped files only). */
+  repoRelative?: string;
 }
 
 interface RestoreResult {
   restoredCount: number;
   secretsRestored: number;
   unresolvedPlaceholders: string[];
+  /** Sources of repo-scoped files skipped because their repoKey is unbound on this machine. */
+  skipped: string[];
 }
 
 const prepareFilesToRestore = async (
@@ -109,33 +124,50 @@ const prepareFilesToRestore = async (
         throw new FileNotFoundError(`Not tracked: ${path}`);
       }
 
-      validateSafeSourcePath(tracked.file.source);
+      // Repo-scoped files live under a (per-machine) repo root that may be
+      // outside $HOME, so home-confinement does not apply; their live location
+      // is resolved later via the repo registry. Home files keep the existing
+      // home-confinement guard. The manifest destination is always confined.
+      const isRepo = tracked.file.scope === 'repo';
+      if (!isRepo) {
+        validateSafeSourcePath(tracked.file.source);
+      }
       validateSafeManifestDestination(tracked.file.destination);
       const repositoryPath = join(tuckDir, tracked.file.destination);
       validatePathWithinRoot(repositoryPath, tuckDir, 'restore source');
 
+      const liveTarget = await resolveLiveTarget(tracked.file);
       filesToRestore.push({
         id: tracked.id,
         source: tracked.file.source,
         destination: repositoryPath,
         category: tracked.file.category,
-        existsAtTarget: await pathExists(expandedPath),
+        existsAtTarget: liveTarget ? await pathExists(liveTarget) : false,
+        scope: tracked.file.scope,
+        repoKey: tracked.file.repoKey,
+        repoRelative: tracked.file.repoRelative,
       });
     }
   } else {
     // Restore all files
     for (const [id, file] of Object.entries(allFiles)) {
-      validateSafeSourcePath(file.source);
+      const isRepo = file.scope === 'repo';
+      if (!isRepo) {
+        validateSafeSourcePath(file.source);
+      }
       validateSafeManifestDestination(file.destination);
       const repositoryPath = join(tuckDir, file.destination);
       validatePathWithinRoot(repositoryPath, tuckDir, 'restore source');
-      const targetPath = expandPath(file.source);
+      const liveTarget = await resolveLiveTarget(file);
       filesToRestore.push({
         id,
         source: file.source,
         destination: repositoryPath,
         category: file.category,
-        existsAtTarget: await pathExists(targetPath),
+        existsAtTarget: liveTarget ? await pathExists(liveTarget) : false,
+        scope: file.scope,
+        repoKey: file.repoKey,
+        repoRelative: file.repoRelative,
       });
     }
   }
@@ -161,15 +193,57 @@ const restoreFilesInternal = async (
   // Run pre-restore hook
   await runPreRestoreHook(tuckDir, hookOptions);
 
+  // Register the machine's bound repo roots so copyFileOrDir/createSymlink will
+  // accept out-of-home repo write destinations (validated against allowedRoots).
+  // `extra` lets us guarantee a just-bound root is registered even before the
+  // registry round-trip is observable.
+  const refreshKnownRepoRoots = async (...extra: string[]): Promise<void> => {
+    const reg = await loadReposRegistry();
+    const roots = Object.values(reg.repos).map((r) => r.root);
+    setKnownRepoRoots([...roots, ...extra]);
+  };
+  await refreshKnownRepoRoots();
+
   let restoredCount = 0;
   const restoredPaths: string[] = [];
+  const skipped: string[] = [];
 
   for (const file of files) {
-    validateSafeSourcePath(file.source);
     validatePathWithinRoot(file.destination, tuckDir, 'restore source');
-    // Resolve + confine the write target (redirected under --root in sandbox
-    // mode; identical to expandPath when not sandboxed). Never escapes the root.
-    const targetPath = resolveWriteTarget(file.source);
+
+    // Resolve + confine the write target. Home files (scope absent/'home')
+    // resolve against $HOME (redirected under --root in sandbox mode). Repo
+    // files resolve against their per-machine bound root via the repo registry.
+    let targetPath: string;
+    if (file.scope === 'repo') {
+      // Resolve the repo's live root. If unbound, either bind it to an explicit
+      // --repo-root, or skip (never guess where the repo lives on this machine).
+      let repoRoot = file.repoKey ? await resolveRepoRoot(file.repoKey) : null;
+      if (!repoRoot && options.repoRoot && file.repoKey) {
+        await bindRepo(file.repoKey, options.repoRoot);
+        await refreshKnownRepoRoots(options.repoRoot);
+        repoRoot = (await resolveRepoRoot(file.repoKey)) ?? options.repoRoot;
+      }
+      if (!repoRoot || !file.repoKey || !file.repoRelative) {
+        logger.warning(
+          `Skipping repo-scoped file (repo not bound on this machine): ${file.source}`
+        );
+        skipped.push(file.source);
+        continue;
+      }
+      // Repo files live under a root that may be outside $HOME; confine to the
+      // repo root and reject unsafe repoRelative paths (absolute / traversal).
+      validateSafeRepoSourcePath(repoRoot, file.repoRelative);
+      // Compose through resolveWriteTarget so it still rebases under --root.
+      targetPath = resolveWriteTarget(file.source, {
+        repoKey: file.repoKey,
+        repoRelative: file.repoRelative,
+        repoRoot,
+      });
+    } else {
+      validateSafeSourcePath(file.source);
+      targetPath = resolveWriteTarget(file.source);
+    }
 
     // Check if source exists in repository
     if (!(await pathExists(file.destination))) {
@@ -232,6 +306,7 @@ const restoreFilesInternal = async (
     restoredCount,
     secretsRestored,
     unresolvedPlaceholders,
+    skipped,
   };
 };
 
@@ -463,6 +538,7 @@ export const runRestoreCommand = async (paths: string[], options: RestoreOptions
       restored: result.restoredCount,
       secretsRestored: result.secretsRestored,
       unresolvedPlaceholders: result.unresolvedPlaceholders,
+      skipped: result.skipped,
       total: files.length,
       dryRun: !!options.dryRun,
     });
@@ -477,6 +553,11 @@ export const runRestoreCommand = async (paths: string[], options: RestoreOptions
     displaySecretSummary(result);
     logger.success(`Restored ${result.restoredCount} file${result.restoredCount !== 1 ? 's' : ''}`);
   }
+  if (result.skipped.length > 0) {
+    logger.warning(
+      `Skipped ${result.skipped.length} repo-scoped file${result.skipped.length !== 1 ? 's' : ''} (repo not bound on this machine)`
+    );
+  }
 };
 
 export const restoreCommand = new Command('restore')
@@ -490,6 +571,10 @@ export const restoreCommand = new Command('restore')
   .option('--no-hooks', 'Skip execution of pre/post restore hooks')
   .option('--trust-hooks', 'Trust and run hooks without confirmation (use with caution)')
   .option('--no-secrets', 'Skip restoring secrets (keep placeholders as-is)')
+  .option(
+    '--repo-root <dir>',
+    'Bind an as-yet-unknown repo-scoped repo to this directory before restoring its files'
+  )
   .option('--json', 'Emit JSON envelope to stdout (suppresses interactive UI)')
   .option('-y, --yes', 'Auto-confirm prompts (required with --json for full automation)')
   .option('--plan', 'Print the operation plan and exit without restoring')

@@ -16,6 +16,7 @@ const isIgnoredMock = vi.fn();
 const validateSafeSourcePathMock = vi.fn();
 const validateSafeManifestDestinationMock = vi.fn();
 const validatePathWithinRootMock = vi.fn();
+const resolveLiveTargetMock = vi.fn();
 const runPreSyncHookMock = vi.fn();
 const runPostSyncHookMock = vi.fn();
 const stageAllMock = vi.fn();
@@ -83,6 +84,10 @@ vi.mock('../../src/lib/manifest.js', () => ({
   updateFileInManifest: updateFileInManifestMock,
   removeFileFromManifest: removeFileFromManifestMock,
   getTrackedFileBySource: getTrackedFileBySourceMock,
+}));
+
+vi.mock('../../src/lib/repoScope.js', () => ({
+  resolveLiveTarget: resolveLiveTargetMock,
 }));
 
 vi.mock('../../src/lib/git.js', () => ({
@@ -166,6 +171,10 @@ describe('sync command behavior', () => {
     validateSafeSourcePathMock.mockImplementation(() => {});
     validateSafeManifestDestinationMock.mockImplementation(() => {});
     validatePathWithinRootMock.mockImplementation(() => {});
+    // Default: home-scoped files resolve their live path exactly like expandPath.
+    resolveLiveTargetMock.mockImplementation(async (file: { scope?: string; source: string }) =>
+      file.source.replace(/^~\//, '/test-home/')
+    );
   });
 
   it('throws NotInitializedError when manifest is missing', async () => {
@@ -481,6 +490,98 @@ describe('sync command behavior', () => {
     // Force-bypass surfaced as a structured warning.
     expect(Array.isArray(env.warnings)).toBe(true);
     expect(env.warnings.some((w: string) => w.includes('bypassed via --force'))).toBe(true);
+  });
+
+  it('skips an unbound repo-scoped file instead of reporting it as deleted', async () => {
+    // A repo-scoped entry whose repo is NOT bound on this machine. resolveLiveTarget
+    // returns null, so detectChanges cannot read it. The CRITICAL regression to
+    // avoid: it must be SKIPPED, never reported as 'deleted' (which would delete
+    // the committed copy and drop it from the manifest).
+    getAllTrackedFilesMock.mockResolvedValue({
+      repofile: {
+        source: 'somekey-abcd1234:config/app.toml',
+        destination: 'files/repos/somekey-abcd1234/config/app.toml',
+        checksum: 'old',
+        scope: 'repo',
+        repoKey: 'somekey-abcd1234',
+        repoRelative: 'config/app.toml',
+      },
+    });
+    // Unbound repo → live target unresolvable.
+    resolveLiveTargetMock.mockResolvedValue(null);
+
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+    await runSyncCommand(undefined, { json: true, pull: false, noHooks: true } as never);
+
+    // Nothing to do — and crucially nothing deleted.
+    expect(deleteFileOrDirMock).not.toHaveBeenCalled();
+    expect(removeFileFromManifestMock).not.toHaveBeenCalled();
+    expect(commitMock).not.toHaveBeenCalled();
+  });
+
+  it('emits a noop JSON envelope (no deletions) when the only tracked file is an unbound repo entry', async () => {
+    getAllTrackedFilesMock.mockResolvedValue({
+      repofile: {
+        source: 'somekey-abcd1234:config/app.toml',
+        destination: 'files/repos/somekey-abcd1234/config/app.toml',
+        checksum: 'old',
+        scope: 'repo',
+        repoKey: 'somekey-abcd1234',
+        repoRelative: 'config/app.toml',
+      },
+    });
+    resolveLiveTargetMock.mockResolvedValue(null);
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+    await runSyncCommand(undefined, { json: true, pull: false, noHooks: true } as never);
+
+    writeSpy.mockRestore();
+    const env = JSON.parse(writes.join('').trim());
+    expect(env.ok).toBe(true);
+    expect(env.data.noop).toBe(true);
+    expect(env.data.deleted).toEqual([]);
+    expect(deleteFileOrDirMock).not.toHaveBeenCalled();
+  });
+
+  it('detects a BOUND repo-scoped file via its resolved live target, not expandPath', async () => {
+    // A repo-scoped entry bound to an out-of-home checkout. detectChanges must
+    // resolve the live path via resolveLiveTarget (NOT expandPath(source), which
+    // would mangle a "key:rel" source) and compare checksums against it.
+    getAllTrackedFilesMock.mockResolvedValue({
+      repofile: {
+        source: 'somekey-abcd1234:config/app.toml',
+        destination: 'files/repos/somekey-abcd1234/config/app.toml',
+        checksum: 'old',
+        scope: 'repo',
+        repoKey: 'somekey-abcd1234',
+        repoRelative: 'config/app.toml',
+      },
+    });
+    const liveRepoPath = '/work/myrepo/config/app.toml';
+    resolveLiveTargetMock.mockResolvedValue(liveRepoPath);
+    pathExistsMock.mockResolvedValue(true);
+    getFileChecksumMock.mockResolvedValue('new'); // differs from 'old' → modified
+
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+    await runSyncCommand('sync: repo change', {
+      noCommit: true,
+      noHooks: true,
+      scan: false,
+      pull: false,
+    });
+
+    // The checksum was read from the RESOLVED live path, proving resolveLiveTarget
+    // (not expandPath of "somekey-...:config/app.toml") drove change detection.
+    expect(getFileChecksumMock).toHaveBeenCalledWith(liveRepoPath);
+    expect(copyFileOrDirMock).toHaveBeenCalledTimes(1);
   });
 
   it('fails fast when manifest destination is unsafe', async () => {

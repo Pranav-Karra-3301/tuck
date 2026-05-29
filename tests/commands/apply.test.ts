@@ -385,6 +385,137 @@ describe('apply command behavior', () => {
     expect(env.data.dryRun).toBeUndefined();
   });
 
+  it('writes a BOUND repo-scoped file to the local checkout, not into $HOME', async () => {
+    // Bind the repoKey to an out-of-home checkout on THIS machine before applying.
+    const { bindRepo } = await import('../../src/lib/repoScope.js');
+    const { getRepoScopedDestination } = await import('../../src/lib/paths.js');
+    const repoKey = 'myrepo-deadbeef';
+    const repoRoot = '/work/myrepo';
+    const repoRelative = 'config/app.toml';
+    await bindRepo(repoKey, repoRoot);
+
+    const dest = getRepoScopedDestination(repoKey, repoRelative);
+
+    cloneSetup = (dir: string) => {
+      const manifest = createMockManifest({
+        files: {
+          repofile: createMockTrackedFile({
+            source: `${repoKey}:${repoRelative}`,
+            destination: dest,
+            scope: 'repo',
+            repoKey,
+            repoRelative,
+          }),
+        },
+      });
+
+      vol.mkdirSync(join(dir, 'files', 'repos', repoKey, 'config'), { recursive: true });
+      vol.writeFileSync(join(dir, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
+      vol.writeFileSync(join(dir, dest), 'from-repo = true');
+    };
+
+    const { setJsonMode } = await import('../../src/lib/jsonOutput.js');
+    setJsonMode(false);
+
+    const { runApply } = await import('../../src/commands/apply.js');
+    await runApply('user/repo', { replace: true });
+
+    // The file landed inside the bound checkout, NOT under $HOME.
+    expect(vol.readFileSync(join(repoRoot, repoRelative), 'utf-8')).toBe('from-repo = true');
+    expect(vol.existsSync(join(TEST_HOME, repoKey + ':' + repoRelative))).toBe(false);
+    expect(loggerSuccessMock).toHaveBeenCalledWith('Applied 1 files');
+  });
+
+  it('skips an UNBOUND repo-scoped file and lists it in the JSON envelope', async () => {
+    // No bindRepo() call → the repo is unbound on this machine. resolveLiveTarget
+    // returns null, so the file must be SKIPPED (never guessed / written) and
+    // surfaced in the envelope's `skipped` list.
+    const { getRepoScopedDestination } = await import('../../src/lib/paths.js');
+    const repoKey = 'otherrepo-cafef00d';
+    const repoRelative = 'settings/keys.json';
+    const dest = getRepoScopedDestination(repoKey, repoRelative);
+
+    cloneSetup = (dir: string) => {
+      const manifest = createMockManifest({
+        files: {
+          repofile: createMockTrackedFile({
+            source: `${repoKey}:${repoRelative}`,
+            destination: dest,
+            scope: 'repo',
+            repoKey,
+            repoRelative,
+          }),
+        },
+      });
+
+      vol.mkdirSync(join(dir, 'files', 'repos', repoKey, 'settings'), { recursive: true });
+      vol.writeFileSync(join(dir, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
+      vol.writeFileSync(join(dir, dest), '{"k":1}');
+    };
+
+    const { __resetJsonEmitState } = await import('../../src/lib/jsonOutput.js');
+    __resetJsonEmitState();
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const { runApply } = await import('../../src/commands/apply.js');
+    await runApply('user/repo', { json: true, yes: true } as never);
+
+    writeSpy.mockRestore();
+    const env = JSON.parse(writes.join('').trim());
+
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck apply');
+    // Nothing applied; the unbound repo file is reported as skipped.
+    expect(env.data.applied).toBe(0);
+    expect(Array.isArray(env.data.skipped)).toBe(true);
+    expect(env.data.skipped).toContain(`${repoKey}:${repoRelative}`);
+    expect(loggerSuccessMock).not.toHaveBeenCalled();
+  });
+
+  it('binds an unbound repo via --repo-root then writes the repo file there', async () => {
+    // On a fresh machine the repo is unbound; --repo-root binds the single repoKey
+    // present so the apply can place the file in the freshly-linked checkout.
+    const { getRepoScopedDestination } = await import('../../src/lib/paths.js');
+    const repoKey = 'freshrepo-12345678';
+    const repoRoot = '/freshly/cloned/repo';
+    const repoRelative = 'config/init.lua';
+    const dest = getRepoScopedDestination(repoKey, repoRelative);
+
+    cloneSetup = (dir: string) => {
+      const manifest = createMockManifest({
+        files: {
+          repofile: createMockTrackedFile({
+            source: `${repoKey}:${repoRelative}`,
+            destination: dest,
+            scope: 'repo',
+            repoKey,
+            repoRelative,
+          }),
+        },
+      });
+
+      vol.mkdirSync(join(dir, 'files', 'repos', repoKey, 'config'), { recursive: true });
+      vol.writeFileSync(join(dir, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
+      vol.writeFileSync(join(dir, dest), '-- lua config');
+    };
+
+    const { setJsonMode } = await import('../../src/lib/jsonOutput.js');
+    setJsonMode(false);
+
+    const { runApply } = await import('../../src/commands/apply.js');
+    await runApply('user/repo', { replace: true, repoRoot } as never);
+
+    expect(vol.readFileSync(join(repoRoot, repoRelative), 'utf-8')).toBe('-- lua config');
+    expect(loggerSuccessMock).toHaveBeenCalledWith('Applied 1 files');
+  });
+
   it('supports explicit GitLab-prefixed apply sources', async () => {
     cloneSetup = (dir: string) => {
       const manifest = createMockManifest({

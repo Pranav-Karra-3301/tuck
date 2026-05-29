@@ -10,6 +10,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import {
   setWriteContext,
   resetWriteContext,
+  setKnownRepoRoots,
   getWriteRoot,
   isSandbox,
   allowedRoots,
@@ -52,5 +53,42 @@ describe('sandbox (--root)', () => {
   it('rejects an absolute path outside the sandbox root', () => {
     setWriteContext({ root: '/tmp/fake-home', isSandbox: true });
     expect(() => resolveWriteTarget('/etc/cron.d/evil')).toThrow();
+  });
+});
+
+describe('repo-scoped write targets', () => {
+  const REPO = { repoKey: 'proj-abc12345', repoRelative: 'a/b.txt', repoRoot: '/srv/work/proj' };
+
+  it('resolves to the genuine repo path when not sandboxed', () => {
+    expect(resolveWriteTarget('ignored', REPO)).toBe('/srv/work/proj/a/b.txt');
+  });
+
+  it('rebases under the sandbox by stable identity (real repoRoot never places the file)', () => {
+    setWriteContext({ root: '/tmp/fake-home', isSandbox: true });
+    expect(resolveWriteTarget('ignored', REPO)).toBe('/tmp/fake-home/repos/proj-abc12345/a/b.txt');
+  });
+
+  it('a hostile repoRoot/repoRelative cannot escape the sandbox', () => {
+    setWriteContext({ root: '/tmp/fake-home', isSandbox: true });
+    const out = resolveWriteTarget('ignored', {
+      repoKey: 'k',
+      repoRelative: 'etc/passwd',
+      repoRoot: '/',
+    });
+    expect(out.startsWith('/tmp/fake-home/repos/')).toBe(true);
+  });
+
+  it('allowedRoots includes known repo roots (non-sandbox) and only the sandbox root (sandbox)', () => {
+    setKnownRepoRoots(['/srv/work/proj']);
+    expect(allowedRoots()).toContain('/srv/work/proj');
+    expect(allowedRoots()).toContain('/test-home'); // home still allowed
+
+    setWriteContext({ root: '/tmp/fake-home', isSandbox: true });
+    setKnownRepoRoots(['/srv/work/proj']);
+    expect(allowedRoots()).toEqual(['/tmp/fake-home']);
+  });
+
+  it('1-arg resolveWriteTarget is unchanged (home path)', () => {
+    expect(resolveWriteTarget('~/.zshrc')).toBe('/test-home/.zshrc');
   });
 });
