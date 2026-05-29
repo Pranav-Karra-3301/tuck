@@ -15,6 +15,21 @@ import {
 
 type FileToAdd = PreparedTrackFile;
 
+/** Whether the caller asked for repo-scoped tracking (`--repo [dir]`). */
+const isRepoScopeRequested = (options: AddOptions): boolean =>
+  options.repo !== undefined && options.repo !== false;
+
+/**
+ * Repo-scoped tracking is COPY-ONLY: the live file stays inside its repo
+ * checkout (it can't be symlinked into the tuck repo without breaking the
+ * checkout). Reject `--symlink --repo` up front with a clear message.
+ */
+const assertRepoScopeCompatible = (options: AddOptions): void => {
+  if (isRepoScopeRequested(options) && options.symlink) {
+    throw new Error('--symlink cannot be combined with --repo: repo-scoped files are copy-only');
+  }
+};
+
 const addFiles = async (
   filesToAdd: FileToAdd[],
   tuckDir: string,
@@ -25,8 +40,11 @@ const addFiles = async (
   }
 
   const filesToTrack: FileToTrack[] = filesToAdd.map((f) => {
+    const isRepo = f.scope === 'repo';
     const trackedFile: FileToTrack = {
-      path: f.source,
+      // For repo files the live absolute path is what we copy FROM; for home
+      // files the (home-relative) source doubles as the path.
+      path: isRepo ? (f.liveSource ?? f.source) : f.source,
       category: f.category,
     };
 
@@ -38,11 +56,22 @@ const addFiles = async (
       trackedFile.bundle = options.bundle;
     }
 
+    if (isRepo) {
+      trackedFile.scope = 'repo';
+      trackedFile.repoKey = f.repoKey;
+      trackedFile.repoRelative = f.repoRelative;
+      trackedFile.repoRoot = f.repoRoot;
+      trackedFile.remoteUrl = f.remoteUrl;
+      trackedFile.source = f.source;
+      trackedFile.destination = f.destination;
+    }
+
     return trackedFile;
   });
 
   await trackFilesWithProgress(filesToTrack, tuckDir, {
     showCategory: true,
+    // Repo scope is always copy; --symlink is rejected upstream for repo adds.
     strategy: options.symlink ? 'symlink' : undefined,
     actionVerb: 'Tracking',
   });
@@ -132,6 +161,8 @@ export const addFilesFromPaths = async (
     throw new NotInitializedError();
   }
 
+  assertRepoScopeCompatible(options);
+
   const candidates: TrackPathCandidate[] = paths.map((path) => ({
     path,
     category: options.category,
@@ -144,6 +175,8 @@ export const addFilesFromPaths = async (
     force: options.force,
     secretHandling: 'strict',
     forceBypassCommand: 'tuck add --force',
+    repo: options.repo,
+    repoKey: options.repoKey,
   });
 
   if (filesToAdd.length === 0) {
@@ -163,6 +196,8 @@ const runAdd = async (paths: string[], options: AddOptions): Promise<void> => {
   } catch {
     throw new NotInitializedError();
   }
+
+  assertRepoScopeCompatible(options);
 
   if (paths.length === 0) {
     if (isJsonMode() || options.yes) {
@@ -203,6 +238,8 @@ const runAdd = async (paths: string[], options: AddOptions): Promise<void> => {
     force: options.force,
     secretHandling: isJsonMode() || options.yes ? 'strict' : 'interactive',
     forceBypassCommand: 'tuck add --force',
+    repo: options.repo,
+    repoKey: options.repoKey,
   });
 
   if (filesToAdd.length === 0) {
@@ -246,6 +283,11 @@ export const addCommand = new Command('add')
   .option('-c, --category <name>', 'Category to organize under')
   .option('-n, --name <name>', 'Custom name for the file in manifest')
   .option('--symlink', 'Copy into tuck repo, then replace source path with a symlink')
+  .option(
+    '--repo [dir]',
+    'Track as repo-scoped (file lives in a git repo; auto-detects the root from the path when no dir is given)'
+  )
+  .option('--repo-key <key>', 'Explicit stable repo identity (advanced; default derives from the remote)')
   .option('-f, --force', 'Skip secret scanning (not recommended)')
   .option('-b, --bundle <name>', 'Bundle to assign the file to (defaults to "default")')
   .option('--json', 'Emit JSON envelope to stdout (non-interactive)')
