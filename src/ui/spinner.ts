@@ -7,6 +7,18 @@
 import * as p from '@clack/prompts';
 import logSymbols from 'log-symbols';
 import { colors as c } from './theme.js';
+import { isJsonMode } from '../lib/jsonOutput.js';
+
+/** A spinner that does nothing — used in JSON mode so no frames hit stdout. */
+const NOOP_SPINNER: SpinnerInstance = {
+  start: () => {},
+  stop: () => {},
+  succeed: () => {},
+  fail: () => {},
+  warn: () => {},
+  info: () => {},
+  text: () => {},
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -31,6 +43,11 @@ export interface SpinnerInstance {
  * Provides ora-compatible API for backward compatibility
  */
 export const createSpinner = (initialText?: string): SpinnerInstance => {
+  // In JSON/agent mode, suppress all spinner output to keep stdout to exactly
+  // one JSON object.
+  if (isJsonMode()) {
+    return NOOP_SPINNER;
+  }
   const spinner = p.spinner();
   let currentText = initialText || '';
   let started = false;

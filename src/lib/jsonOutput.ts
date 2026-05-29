@@ -32,6 +32,7 @@ export interface JsonEnvelopeErr {
   ok: false;
   command: string;
   error: JsonError;
+  warnings?: string[];
 }
 
 export type JsonEnvelope<T> = JsonEnvelopeOk<T> | JsonEnvelopeErr;
@@ -39,10 +40,24 @@ export type JsonEnvelope<T> = JsonEnvelopeOk<T> | JsonEnvelopeErr;
 let jsonMode = false;
 let currentCommand = 'tuck';
 const pendingWarnings: string[] = [];
+// The envelope contract is "exactly one JSON object on stdout". This guard
+// ensures a stray second emit (e.g. a success path that also hits an error
+// handler) can never print a second object and corrupt the stream.
+let hasEmitted = false;
+
+/** Test-only: reset the single-emit guard between cases. */
+export const __resetJsonEmitState = (): void => {
+  hasEmitted = false;
+  pendingWarnings.length = 0;
+};
 
 export const setJsonMode = (enabled: boolean, command?: string): void => {
   jsonMode = enabled;
   if (command) currentCommand = command;
+  // Each command run is a fresh emit context (one process == one command in
+  // production; in tests this resets the single-emit guard between cases).
+  hasEmitted = false;
+  pendingWarnings.length = 0;
 };
 
 export const isJsonMode = (): boolean => jsonMode;
@@ -60,6 +75,7 @@ export const consumeJsonWarnings = (): string[] => {
 };
 
 export const emitJsonOk = <T>(data: T, command?: string): void => {
+  if (hasEmitted) return;
   const env: JsonEnvelopeOk<T> = {
     ok: true,
     command: command ?? currentCommand,
@@ -67,14 +83,20 @@ export const emitJsonOk = <T>(data: T, command?: string): void => {
   };
   const warnings = consumeJsonWarnings();
   if (warnings.length > 0) env.warnings = warnings;
+  hasEmitted = true;
   process.stdout.write(JSON.stringify(env) + '\n');
 };
 
 export const emitJsonErr = (err: JsonError, command?: string): void => {
+  if (hasEmitted) return;
   const env: JsonEnvelopeErr = {
     ok: false,
     command: command ?? currentCommand,
     error: err,
   };
+  // Surface any warnings queued before the error instead of dropping them.
+  const warnings = consumeJsonWarnings();
+  if (warnings.length > 0) env.warnings = warnings;
+  hasEmitted = true;
   process.stdout.write(JSON.stringify(env) + '\n');
 };

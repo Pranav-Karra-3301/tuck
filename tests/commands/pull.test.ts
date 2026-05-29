@@ -167,4 +167,60 @@ describe('pull command', () => {
       code: 'GIT_ERROR',
     });
   });
+
+  it('emits a JSON envelope on a successful --json pull', async () => {
+    const { __resetJsonEmitState } = await import('../../src/lib/jsonOutput.js');
+    __resetJsonEmitState();
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const { pullCommand } = await import('../../src/commands/pull.js');
+    await pullCommand.parseAsync(['node', 'pull', '--rebase', '--json'], { from: 'user' });
+
+    writeSpy.mockRestore();
+
+    expect(fetchMock).toHaveBeenCalledWith('/test-home/.tuck');
+    expect(pullMock).toHaveBeenCalledWith('/test-home/.tuck', { rebase: true });
+
+    const env = JSON.parse(writes.join('').trim());
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck pull');
+    expect(env.data.pulled).toBe(true);
+
+    // Human output must be suppressed on the JSON path.
+    expect(loggerSuccessMock).not.toHaveBeenCalled();
+  });
+
+  it('reflects restore in the --json --restore envelope without printing human output', async () => {
+    const { __resetJsonEmitState } = await import('../../src/lib/jsonOutput.js');
+    __resetJsonEmitState();
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const { pullCommand } = await import('../../src/commands/pull.js');
+    await pullCommand.parseAsync(['node', 'pull', '--restore', '--json'], { from: 'user' });
+
+    writeSpy.mockRestore();
+
+    expect(pullMock).toHaveBeenCalledWith('/test-home/.tuck', { rebase: undefined });
+    expect(runRestoreMock).toHaveBeenCalledWith({ all: true });
+
+    const env = JSON.parse(writes.join('').trim());
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck pull');
+    expect(env.data.pulled).toBe(true);
+    expect(loggerSuccessMock).not.toHaveBeenCalled();
+  });
 });

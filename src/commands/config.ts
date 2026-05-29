@@ -9,6 +9,19 @@ import { NotInitializedError, ConfigError } from '../errors.js';
 import type { TuckConfigOutput } from '../schemas/config.schema.js';
 import { setupProvider } from '../lib/providerSetup.js';
 import { describeProviderConfig, getProvider } from '../lib/providers/index.js';
+import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
+
+interface ConfigGetOptions {
+  json?: boolean;
+}
+
+interface ConfigSetOptions {
+  json?: boolean;
+}
+
+interface ConfigListOptions {
+  json?: boolean;
+}
 
 /**
  * Configuration key metadata for validation and help
@@ -164,14 +177,25 @@ const parseValue = (value: string): unknown => {
   }
 };
 
-const runConfigGet = async (key: string): Promise<void> => {
+const runConfigGet = async (key: string, options: ConfigGetOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck config get');
+
   const tuckDir = getTuckDir();
   const config = await loadConfig(tuckDir);
 
   const value = getNestedValue(config as unknown as Record<string, unknown>, key);
 
   if (value === undefined) {
+    if (isJsonMode()) {
+      emitJsonOk({ key, value: null });
+      return;
+    }
     logger.error(`Key not found: ${key}`);
+    return;
+  }
+
+  if (isJsonMode()) {
+    emitJsonOk({ key, value });
     return;
   }
 
@@ -182,7 +206,13 @@ const runConfigGet = async (key: string): Promise<void> => {
   }
 };
 
-const runConfigSet = async (key: string, value: string): Promise<void> => {
+const runConfigSet = async (
+  key: string,
+  value: string,
+  options: ConfigSetOptions = {}
+): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck config set');
+
   const unsupportedPrefix = UNSUPPORTED_CONFIG_KEY_PREFIXES.find(
     (prefix) => key === prefix || key.startsWith(`${prefix}.`)
   );
@@ -202,12 +232,25 @@ const runConfigSet = async (key: string, value: string): Promise<void> => {
   setNestedValue(configObj, key, parsedValue);
 
   await saveConfig(config, tuckDir);
+
+  if (isJsonMode()) {
+    emitJsonOk({ key, value: parsedValue, updated: true });
+    return;
+  }
+
   logger.success(`Set ${key} = ${JSON.stringify(parsedValue)}`);
 };
 
-const runConfigList = async (): Promise<void> => {
+const runConfigList = async (options: ConfigListOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck config list');
+
   const tuckDir = getTuckDir();
   const config = await loadConfig(tuckDir);
+
+  if (isJsonMode()) {
+    emitJsonOk({ config });
+    return;
+  }
 
   prompts.intro('tuck config');
   console.log();
@@ -636,14 +679,15 @@ export const configCommand = new Command('config')
     new Command('get')
       .description('Get a config value')
       .argument('<key>', 'Config key (e.g., "repository.autoCommit")')
-      .action(async (key: string) => {
+      .option('--json', 'Emit JSON envelope to stdout')
+      .action(async (key: string, options: ConfigGetOptions) => {
         const tuckDir = getTuckDir();
         try {
           await loadManifest(tuckDir);
         } catch {
           throw new NotInitializedError();
         }
-        await runConfigGet(key);
+        await runConfigGet(key, options);
       })
   )
   .addCommand(
@@ -651,26 +695,30 @@ export const configCommand = new Command('config')
       .description('Set a config value')
       .argument('<key>', 'Config key')
       .argument('<value>', 'Value to set (JSON or string)')
-      .action(async (key: string, value: string) => {
+      .option('--json', 'Emit JSON envelope to stdout')
+      .action(async (key: string, value: string, options: ConfigSetOptions) => {
         const tuckDir = getTuckDir();
         try {
           await loadManifest(tuckDir);
         } catch {
           throw new NotInitializedError();
         }
-        await runConfigSet(key, value);
+        await runConfigSet(key, value, options);
       })
   )
   .addCommand(
-    new Command('list').description('List all config').action(async () => {
-      const tuckDir = getTuckDir();
-      try {
-        await loadManifest(tuckDir);
-      } catch {
-        throw new NotInitializedError();
-      }
-      await runConfigList();
-    })
+    new Command('list')
+      .description('List all config')
+      .option('--json', 'Emit JSON envelope to stdout')
+      .action(async (options: ConfigListOptions) => {
+        const tuckDir = getTuckDir();
+        try {
+          await loadManifest(tuckDir);
+        } catch {
+          throw new NotInitializedError();
+        }
+        await runConfigList(options);
+      })
   )
   .addCommand(
     new Command('edit').description('Open config in editor').action(async () => {

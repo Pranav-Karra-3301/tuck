@@ -5,6 +5,8 @@
  * that can be used to resolve placeholders in dotfiles.
  */
 
+import { SecretBackendError } from '../../errors.js';
+
 // ============================================================================
 // Backend Names
 // ============================================================================
@@ -23,6 +25,29 @@ export const CONFIGURABLE_BACKEND_NAMES: readonly ConfiguredBackendName[] = [
 // ============================================================================
 // Secret References
 // ============================================================================
+
+/**
+ * Guard against argument injection via a user-controlled backend path.
+ *
+ * `backendPath` is read from a committed mappings file and passed as an argv
+ * element to an external CLI (`op`/`bw`/`pass`). Because we always use
+ * `execFile` (no shell), a single argv element can only be reinterpreted as a
+ * flag if it STARTS with `-`. Rejecting leading-dash paths fully closes the
+ * injection vector regardless of whether the downstream CLI honors `--`.
+ */
+export const assertSafeBackendPath = (
+  backend: BackendName,
+  refName: string,
+  backendPath: string
+): void => {
+  if (backendPath.startsWith('-')) {
+    throw new SecretBackendError(
+      backend,
+      `Refusing secret path for "${refName}" that starts with '-' (possible argument injection): "${backendPath}"`,
+      ['Backend paths must not begin with a dash.']
+    );
+  }
+};
 
 /** Reference to a secret that needs to be resolved */
 export interface SecretReference {

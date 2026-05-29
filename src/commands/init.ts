@@ -30,6 +30,7 @@ import {
   type ProviderSetupResult,
 } from '../lib/providerSetup.js';
 import { getProvider, describeProviderConfig, buildRemoteConfig } from '../lib/providers/index.js';
+import type { ProviderMode } from '../lib/providers/types.js';
 import {
   isGhInstalled,
   isGhAuthenticated,
@@ -196,6 +197,56 @@ const validateGitHubUrl = (value: string): string | undefined => {
   }
 
   return undefined;
+};
+
+/**
+ * Validate a remote URL against the CHOSEN provider, returning an error message
+ * (for a prompt validator) or undefined when valid. This replaces the old
+ * GitHub-only validation in the init remote-setup flow, which rejected every
+ * GitLab/custom URL and funneled those users through GitHub.
+ */
+export const validateRemoteUrlForMode = (
+  mode: ProviderMode,
+  value: string
+): string | undefined => {
+  if (!value || !value.trim()) return 'Repository URL is required';
+  if (mode === 'github') return validateGitHubUrl(value);
+  if (mode === 'gitlab' || mode === 'custom') {
+    return getProvider(mode).validateUrl(value)
+      ? undefined
+      : `Please enter a valid ${mode === 'gitlab' ? 'GitLab' : 'repository'} URL`;
+  }
+  return undefined; // local mode: no remote URL needed
+};
+
+/**
+ * Set up a remote for a non-GitHub provider (GitLab / custom) using the
+ * GitProvider abstraction: show the provider's setup instructions, then accept
+ * a repository URL validated against THAT provider. Returns the configured URL
+ * or null. This replaces the old behavior of routing every provider through
+ * GitHub-specific setup.
+ */
+const setupRemoteForProvider = async (
+  mode: ProviderMode,
+  tuckDir: string
+): Promise<string | null> => {
+  const provider = getProvider(mode);
+  console.log();
+  prompts.note(provider.getSetupInstructions(), 'Repository Setup');
+  console.log();
+
+  const created = await prompts.confirm('Have you created the repository?', true);
+  if (!created) return null;
+
+  const url = await prompts.text('Paste your repository URL:', {
+    placeholder: mode === 'gitlab' ? 'git@gitlab.com:user/dotfiles.git' : 'https://host/user/dotfiles.git',
+    validate: (value) => validateRemoteUrlForMode(mode, value),
+  });
+
+  if (!url) return null;
+  await addRemote(tuckDir, 'origin', url);
+  prompts.log.success('Remote added successfully');
+  return url;
 };
 
 /**
@@ -1422,7 +1473,11 @@ const runInteractiveInit = async (): Promise<void> => {
       true
     );
 
-    if (wantsRemote) {
+    if (wantsRemote && providerResult.mode !== 'github') {
+      // GitLab / custom: use the provider abstraction instead of forcing the
+      // user through GitHub (the old funnel rejected their URLs outright).
+      remoteUrl = await setupRemoteForProvider(providerResult.mode, tuckDir);
+    } else if (wantsRemote) {
       // Try GitHub auto-setup
       const ghResult = await setupGitHubRepo(tuckDir);
       remoteUrl = ghResult.remoteUrl;

@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'fs/promises';
+import { readFile } from 'fs/promises';
 import {
   tuckManifestSchema,
   createEmptyManifest,
@@ -6,6 +6,7 @@ import {
   type TrackedFileOutput,
 } from '../schemas/manifest.schema.js';
 import { getManifestPath, pathExists } from './paths.js';
+import { atomicWriteFile } from './files.js';
 import { ManifestError } from '../errors.js';
 
 let cachedManifest: TuckManifestOutput | null = null;
@@ -89,7 +90,7 @@ export const saveManifest = async (
   }
 
   try {
-    await writeFile(manifestPath, JSON.stringify(result.data, null, 2) + '\n', 'utf-8');
+    await atomicWriteFile(manifestPath, JSON.stringify(result.data, null, 2) + '\n');
     cachedManifest = result.data;
     cachedManifestDir = tuckDir;
   } catch (error) {
@@ -110,7 +111,7 @@ export const createManifest = async (
   const manifest = createEmptyManifest(machine);
 
   try {
-    await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
+    await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
     cachedManifest = manifest;
     cachedManifestDir = tuckDir;
     return manifest;

@@ -135,17 +135,26 @@ describe('scan command behavior', () => {
     await expect(runScan({ quick: true })).rejects.toBeInstanceOf(NotInitializedError);
   });
 
-  it('outputs JSON when json mode is enabled', async () => {
+  it('outputs a JSON envelope when json mode is enabled', async () => {
     const { runScan } = await import('../../src/commands/scan.js');
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
 
     await runScan({ json: true });
 
-    expect(logSpy).toHaveBeenCalled();
-    const payload = logSpy.mock.calls.flat().map(String).join('\n');
-    expect(payload).toContain('~/.zshrc');
+    const lines = writes.join('').trim().split('\n').filter(Boolean);
+    expect(lines.length).toBe(1);
+    const env = JSON.parse(lines[0]);
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck scan');
+    expect(JSON.stringify(env.data)).toContain('~/.zshrc');
 
-    logSpy.mockRestore();
+    writeSpy.mockRestore();
   });
 
   it('runs quick mode without tracking files', async () => {

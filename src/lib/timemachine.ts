@@ -1,8 +1,9 @@
 import { join, dirname, relative, resolve, sep } from 'path';
-import { readdir, readFile, writeFile, rm, stat } from 'fs/promises';
+import { readdir, readFile, rm, stat } from 'fs/promises';
 import { copy, ensureDir, pathExists } from 'fs-extra';
 import { homedir } from 'os';
 import { expandPath, pathExists as checkPathExists } from './paths.js';
+import { atomicWriteFile } from './files.js';
 import { BackupError } from '../errors.js';
 import { getLegacySnapshotsDir, getSnapshotsDir } from './state.js';
 
@@ -102,8 +103,17 @@ export const createSnapshot = async (
   reason: string,
   profile?: string
 ): Promise<Snapshot> => {
-  const snapshotId = generateSnapshotId();
-  const snapshotPath = getSnapshotPath(snapshotId);
+  // Snapshot IDs are second-resolution, so two snapshots created within the
+  // same second (e.g. a pre-undo backup taken during restoreSnapshot) would
+  // collide and clobber each other. Keep the common-case id unchanged and only
+  // append a numeric suffix when the directory already exists.
+  const baseId = generateSnapshotId();
+  let snapshotId = baseId;
+  let snapshotPath = getSnapshotPath(snapshotId);
+  for (let n = 2; await pathExists(snapshotPath); n++) {
+    snapshotId = `${baseId}-${n}`;
+    snapshotPath = getSnapshotPath(snapshotId);
+  }
 
   await ensureDir(snapshotPath);
 
@@ -139,10 +149,11 @@ export const createSnapshot = async (
     profile,
   };
 
-  await writeFile(
+  // Write metadata atomically as the LAST step so a crash never leaves a
+  // metadata.json that claims files it didn't actually back up.
+  await atomicWriteFile(
     join(snapshotPath, 'metadata.json'),
-    JSON.stringify(metadata, null, 2),
-    'utf-8'
+    JSON.stringify(metadata, null, 2) + '\n'
   );
 
   return {
@@ -275,6 +286,15 @@ export const restoreSnapshot = async (snapshotId: string): Promise<string[]> => 
     throw new BackupError(`Snapshot not found: ${snapshotId}`, [
       'Run `tuck restore --list` to see available snapshots',
     ]);
+  }
+
+  // Safety: capture the CURRENT state of every path we're about to overwrite or
+  // delete BEFORE mutating anything, so this undo is itself reversible
+  // (undo-of-undo) and any file created after the original snapshot — which
+  // would otherwise be silently rm'd — can be recovered.
+  const touchedPaths = snapshot.files.map((f) => f.originalPath);
+  if (touchedPaths.length > 0) {
+    await createSnapshot(touchedPaths, `Pre-undo backup before restoring snapshot ${snapshotId}`);
   }
 
   const restoredFiles: string[] = [];

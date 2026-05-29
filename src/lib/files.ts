@@ -1,10 +1,22 @@
-import { createHash } from 'crypto';
-import { readFile, stat, lstat, readdir, copyFile, symlink, unlink, rm } from 'fs/promises';
+import { createHash, randomBytes } from 'crypto';
+import {
+  readFile,
+  writeFile,
+  rename,
+  stat,
+  lstat,
+  readdir,
+  copyFile,
+  symlink,
+  unlink,
+  rm,
+} from 'fs/promises';
 import { copy, ensureDir } from 'fs-extra';
-import { join, dirname, basename } from 'path';
+import { join, dirname, basename, relative } from 'path';
 import { constants } from 'fs';
 import { FileNotFoundError, PermissionError } from '../errors.js';
 import { expandPath, pathExists, isDirectory, validateSafeDestinationPath } from './paths.js';
+import { allowedRoots } from './writeContext.js';
 import { IS_WINDOWS } from './platform.js';
 
 export interface FileInfo {
@@ -23,11 +35,71 @@ export interface CopyResult {
   totalSize: number;
 }
 
+/**
+ * Atomically write `content` to `filepath`.
+ *
+ * Writes to a uniquely-named temp file in the **same directory** (so the final
+ * `rename` is a same-filesystem atomic swap), then renames it into place. A
+ * crash, SIGINT, or ENOSPC mid-write therefore leaves the target as either its
+ * previous content or the full new content — never a truncated fragment. This
+ * is the only safe way to persist source-of-truth files (manifest, config,
+ * secrets store).
+ *
+ * Mode resolution (in priority order):
+ *   1. `options.mode` when provided (e.g. `0o600` for the secrets store).
+ *   2. The existing file's mode when overwriting.
+ *   3. `0o600` for new dotfiles (basename starting with `.`).
+ *   4. The platform default otherwise.
+ */
+export const atomicWriteFile = async (
+  filepath: string,
+  content: string,
+  options?: { mode?: number }
+): Promise<void> => {
+  const tempSuffix = randomBytes(8).toString('hex');
+  const tempPath = join(dirname(filepath), `.${basename(filepath)}.tmp.${tempSuffix}`);
+
+  try {
+    let mode: number | undefined = options?.mode;
+
+    if (mode === undefined) {
+      let fileExists = false;
+      try {
+        const stats = await stat(filepath);
+        mode = stats.mode;
+        fileExists = true;
+      } catch {
+        // File does not exist yet.
+      }
+      // New security-sensitive dotfiles default to owner-only.
+      if (!fileExists && basename(filepath).startsWith('.')) {
+        mode = 0o600;
+      }
+    }
+
+    const writeOptions: { encoding: 'utf-8'; mode?: number } = { encoding: 'utf-8' };
+    if (typeof mode === 'number') writeOptions.mode = mode;
+    await writeFile(tempPath, content, writeOptions);
+    await rename(tempPath, filepath);
+  } catch (error) {
+    // Best-effort cleanup so a failed write never orphans a temp file.
+    try {
+      await unlink(tempPath);
+    } catch {
+      // Ignore cleanup errors.
+    }
+    throw error;
+  }
+};
+
 export const getFileChecksum = async (filepath: string): Promise<string> => {
   const expandedPath = expandPath(filepath);
 
   if (await isDirectory(expandedPath)) {
-    // For directories, create a hash of all file checksums
+    // For directories, hash each entry's RELATIVE PATH together with its content
+    // so the digest is sensitive to renames, additions, and deletions — not just
+    // raw content. (Hashing content alone meant a rename inside a tracked dir
+    // produced an identical checksum and the change was silently never synced.)
     const files = await getDirectoryFiles(expandedPath);
 
     // Handle empty directories - return hash of empty string for consistency
@@ -35,14 +107,17 @@ export const getFileChecksum = async (filepath: string): Promise<string> => {
       return createHash('sha256').update('').digest('hex');
     }
 
-    const hashes: string[] = [];
-
+    const entries: string[] = [];
     for (const file of files) {
+      const relPath = relative(expandedPath, file).replace(/\\/g, '/');
       const content = await readFile(file);
-      hashes.push(createHash('sha256').update(content).digest('hex'));
+      const contentHash = createHash('sha256').update(content).digest('hex');
+      entries.push(`${relPath}\0${contentHash}`);
     }
+    // Deterministic order regardless of readdir order.
+    entries.sort();
 
-    return createHash('sha256').update(hashes.join('')).digest('hex');
+    return createHash('sha256').update(entries.join('\n')).digest('hex');
   }
 
   const content = await readFile(expandedPath);
@@ -172,7 +247,10 @@ export const copyFileOrDir = async (
     throw new FileNotFoundError(source);
   }
 
-  validateSafeDestinationPath(expandedDest);
+  // Validate against the active allowed roots ($HOME + bound repo roots, or the
+  // sandbox root) — not just $HOME — so repo-scoped writes to a bound checkout
+  // outside home are permitted while everything else stays confined.
+  validateSafeDestinationPath(expandedDest, allowedRoots());
 
   // Ensure destination directory exists
   await ensureDir(dirname(expandedDest));
@@ -251,7 +329,7 @@ export const createSymlink = async (
     throw new FileNotFoundError(target);
   }
 
-  validateSafeDestinationPath(expandedLink);
+  validateSafeDestinationPath(expandedLink, allowedRoots());
 
   // Ensure link parent directory exists
   await ensureDir(dirname(expandedLink));

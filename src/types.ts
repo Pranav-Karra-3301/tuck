@@ -123,9 +123,17 @@ export interface AddOptions extends CommonOptions {
   template?: boolean;
   /** Bundle to assign the tracked file to. Defaults to "default". */
   bundle?: string;
+  /**
+   * Track the file as REPO-scoped: it lives inside a git repo (optionally at
+   * the given dir; auto-detected from the path otherwise) whose absolute path
+   * differs per machine. Stored by stable (repoKey, repoRelative).
+   */
+  repo?: string | boolean;
+  /** Explicit repoKey override (advanced; default derives from the remote). */
+  repoKey?: string;
 }
 
-export interface RemoveOptions {
+export interface RemoveOptions extends CommonOptions {
   delete?: boolean;
   keepOriginal?: boolean;
 }
@@ -141,12 +149,12 @@ export interface SyncOptions extends CommonOptions {
   force?: boolean; // Skip secret scanning
 }
 
-export interface PushOptions {
+export interface PushOptions extends CommonOptions {
   force?: boolean;
   setUpstream?: string;
 }
 
-export interface PullOptions {
+export interface PullOptions extends CommonOptions {
   rebase?: boolean;
   restore?: boolean;
 }
@@ -158,6 +166,8 @@ export interface RestoreOptions extends CommonOptions {
   noHooks?: boolean;
   trustHooks?: boolean;
   noSecrets?: boolean;
+  /** Bind an as-yet-unknown repo to this root before restoring repo-scoped files. */
+  repoRoot?: string;
 }
 
 export interface StatusOptions extends CommonOptions {
@@ -184,6 +194,8 @@ export interface ApplyOptions extends CommonOptions {
   noSecrets?: boolean;
   /** Scope apply to a single bundle. Defaults to all bundles when unset. */
   bundle?: string;
+  /** Bind an as-yet-unknown repo to this root before applying repo-scoped files. */
+  repoRoot?: string;
 }
 
 export interface DoctorOptions extends CommonOptions {

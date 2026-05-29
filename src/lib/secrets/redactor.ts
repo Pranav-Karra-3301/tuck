@@ -116,34 +116,36 @@ export const redactContent = (
   placeholderMap: Map<string, string> // secret value -> placeholder name
 ): RedactionResult => {
   let redactedContent = content;
-  const replacements: RedactionResult['replacements'] = [];
 
-  // Process all matches and replace secret values with placeholders
-  // Note: The split/join approach processes content multiple times, which could be
-  // optimized for large files by processing matches in reverse order by position.
-  // However, this approach is simpler and works well for typical config files.
-  for (const match of matches) {
-    const placeholderName = placeholderMap.get(match.value) || match.placeholder;
-    const placeholder = formatPlaceholder(placeholderName);
+  // Replace LONGEST values first. If a shorter detected secret is a literal
+  // substring of a longer one, replacing the shorter first would rewrite the
+  // longer secret's prefix and leave its remaining characters in cleartext
+  // (and orphan the longer placeholder). Length-descending order avoids this.
+  const ordered = [...matches].sort((a, b) => b.value.length - a.value.length);
 
-    // Replace all occurrences of this secret value
-    // Use a temporary marker to avoid replacing already-replaced content
-    // Security: Use crypto.randomBytes for unpredictable temp markers
+  for (const match of ordered) {
+    const placeholder = formatPlaceholder(placeholderMap.get(match.value) || match.placeholder);
+
+    // Replace all occurrences of this secret value. Use a temporary marker to
+    // avoid replacing already-replaced content.
+    // Security: Use crypto.randomBytes for unpredictable temp markers.
     const tempMarker = `__TUCK_TEMP_${randomBytes(16).toString('hex')}__`;
     redactedContent = redactedContent.split(match.value).join(tempMarker);
     redactedContent = redactedContent.split(tempMarker).join(placeholder);
-
-    replacements.push({
-      placeholder: placeholderName,
-      originalValue: match.value,
-      line: match.line,
-    });
   }
+
+  // Build the replacements report in original (line) order, then reverse — this
+  // preserves the prior contract (last line first) independent of replace order.
+  const replacements: RedactionResult['replacements'] = matches.map((match) => ({
+    placeholder: placeholderMap.get(match.value) || match.placeholder,
+    originalValue: match.value,
+    line: match.line,
+  }));
 
   return {
     originalContent: content,
     redactedContent,
-    replacements: replacements.reverse(), // Return in reverse line order (last line first) so callers can safely apply replacements without affecting subsequent line positions
+    replacements: replacements.reverse(), // reverse line order (last line first)
   };
 };
 

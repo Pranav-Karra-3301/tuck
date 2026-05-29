@@ -1,7 +1,9 @@
 import { Command } from 'commander';
 import { join, dirname } from 'path';
 import { readFile, writeFile, rm, chmod, stat } from 'fs/promises';
-import { ensureDir, pathExists as fsPathExists } from 'fs-extra';
+import { ensureDir, pathExists as fsPathExists, copy } from 'fs-extra';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { tmpdir } from 'os';
 import { banner, prompts, logger, colors as c } from '../ui/index.js';
 import {
@@ -11,21 +13,24 @@ import {
   validateSafeSourcePath,
   validateSafeManifestDestination,
   validatePathWithinRoot,
+  validateSafeRepoSourcePath,
   getTuckDir,
 } from '../lib/paths.js';
+import { resolveWriteTarget, setKnownRepoRoots, type RepoWriteTarget } from '../lib/writeContext.js';
+import { resolveLiveTarget, resolveRepoRoot, bindRepo } from '../lib/repoScope.js';
 import { cloneRepo } from '../lib/git.js';
 import { isGhInstalled, ghCloneRepo, repoExists } from '../lib/github.js';
 import { createPreApplySnapshot } from '../lib/timemachine.js';
 import { smartMerge, isShellFile, generateMergePreview } from '../lib/merge.js';
 import { CATEGORIES } from '../constants.js';
-import type { TuckManifest } from '../types.js';
-import { tuckManifestSchema } from '../schemas/manifest.schema.js';
+import { tuckManifestSchema, type TuckManifestOutput } from '../schemas/manifest.schema.js';
 import { findPlaceholders, restoreContent, restoreFiles as restoreSecrets, getAllSecrets, getSecretCount } from '../lib/secrets/index.js';
 import { createResolver } from '../lib/secretBackends/index.js';
 import { loadConfig } from '../lib/config.js';
 import { IS_WINDOWS } from '../lib/platform.js';
 import { RepositoryNotFoundError } from '../errors.js';
 import { getProvider, type ProviderMode, type RemoteConfig as ProviderRemoteConfig } from '../lib/providers/index.js';
+import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 
 // Track if Windows permission warning has been shown this session
 let windowsPermissionWarningShown = false;
@@ -73,15 +78,26 @@ export interface ApplyOptions {
   dryRun?: boolean;
   force?: boolean;
   yes?: boolean;
+  /** Emit a single structured JSON envelope on stdout instead of human UI. */
+  json?: boolean;
   /** Scope applied files to a single bundle. */
   bundle?: string;
+  /** Bind an as-yet-unknown repo to this root before applying repo-scoped files. */
+  repoRoot?: string;
 }
 
 interface ApplyFile {
   source: string;
+  /** Absolute LIVE write target on this machine (home path or repo checkout path). */
   destination: string;
   category: string;
+  /** Path to the file's committed copy inside the cloned tuck repo (READ side). */
   repoPath: string;
+  /**
+   * Repo-write descriptor for resolveWriteTarget. Present only for repo-scoped
+   * files; absent for home-scoped files (which route through the home logic).
+   */
+  repoTarget?: RepoWriteTarget;
 }
 
 interface ApplyResult {
@@ -90,7 +106,29 @@ interface ApplyResult {
     path: string;
     placeholders: string[];
   }>;
+  /** repo-scoped sources skipped because their repo is unbound on this machine. */
+  skippedUnboundRepos: string[];
 }
+
+const execFileAsync = promisify(execFile);
+
+export type ApplySourceKind = 'provider-prefixed' | 'git-url' | 'local' | 'repo-id' | 'username';
+
+/** True for tar archives we know how to extract. */
+export const isTarballPath = (p: string): boolean => /\.(tar\.gz|tgz|tar)$/i.test(p);
+
+/**
+ * Classify an `apply <source>` argument. An existing LOCAL path wins over the
+ * URL/owner-repo/username interpretations (after the explicit provider: prefix),
+ * so tuck can apply from a directory or tarball with no remote — and no GitHub.
+ */
+export const classifyApplySource = (source: string, localExists: boolean): ApplySourceKind => {
+  if (/^(github|gitlab|custom):/u.test(source)) return 'provider-prefixed';
+  if (localExists) return 'local';
+  if (source.includes('://') || source.startsWith('git@')) return 'git-url';
+  if (source.includes('/')) return 'repo-id';
+  return 'username';
+};
 
 const buildProviderCloneUrl = (
   providerMode: Extract<ProviderMode, 'github' | 'gitlab'>,
@@ -111,7 +149,9 @@ const buildProviderCloneUrl = (
 /**
  * Resolve a source (username or repo URL) to a full repository identifier
  */
-const resolveSource = async (source: string): Promise<{ repoId: string; isUrl: boolean }> => {
+const resolveSource = async (
+  source: string
+): Promise<{ repoId: string; isUrl: boolean; local?: 'dir' | 'tarball' }> => {
   const configuredRemote = (await loadConfig(getTuckDir()))?.remote ?? { mode: 'local' as const };
   const providerPrefixMatch = source.match(/^(github|gitlab|custom):(.*)$/u);
 
@@ -125,6 +165,16 @@ const resolveSource = async (source: string): Promise<{ repoId: string; isUrl: b
           ? repoId
           : buildProviderCloneUrl(providerMode, repoId, configuredRemote),
       isUrl: true,
+    };
+  }
+
+  // A LOCAL directory or tarball — fully provider-free, no remote/GitHub needed.
+  const expandedSource = expandPath(source);
+  if (await pathExists(expandedSource)) {
+    return {
+      repoId: expandedSource,
+      isUrl: false,
+      local: isTarballPath(expandedSource) ? 'tarball' : 'dir',
     };
   }
 
@@ -204,9 +254,25 @@ const resolveSource = async (source: string): Promise<{ repoId: string; isUrl: b
 /**
  * Clone the source repository to a temporary directory
  */
-const cloneSource = async (repoId: string, isUrl: boolean): Promise<string> => {
+const cloneSource = async (
+  repoId: string,
+  isUrl: boolean,
+  local?: 'dir' | 'tarball'
+): Promise<string> => {
   const tempDir = join(tmpdir(), `tuck-apply-${Date.now()}`);
   await ensureDir(tempDir);
+
+  if (local === 'dir') {
+    // Materialize the local source into a temp working copy (no remote).
+    await copy(repoId, tempDir, { overwrite: true });
+    return tempDir;
+  }
+
+  if (local === 'tarball') {
+    // Extract the archive into the temp dir (tar ships on macOS/Linux/Win10+).
+    await execFileAsync('tar', ['-xzf', repoId, '-C', tempDir]);
+    return tempDir;
+  }
 
   if (isUrl) {
     await cloneRepo(repoId, tempDir);
@@ -226,7 +292,7 @@ const cloneSource = async (repoId: string, isUrl: boolean): Promise<string> => {
 /**
  * Read the manifest from a cloned repository
  */
-const readClonedManifest = async (repoDir: string): Promise<TuckManifest | null> => {
+const readClonedManifest = async (repoDir: string): Promise<TuckManifestOutput | null> => {
   const manifestPath = join(repoDir, '.tuckmanifest.json');
 
   if (!(await fsPathExists(manifestPath))) {
@@ -243,14 +309,62 @@ const readClonedManifest = async (repoDir: string): Promise<TuckManifest | null>
 };
 
 /**
- * Prepare the list of files to apply
+ * On a fresh machine the repo-scoped entries in the cloned manifest are not yet
+ * bound to any local checkout. `--repo-root <dir>` binds the repoKey(s) present
+ * in the manifest to that directory so the apply can place the files there.
+ *
+ * The single-repo case (the common one) binds the lone unbound repoKey to the
+ * given root. When several distinct unbound repoKeys are present we bind them
+ * all to the same root only if there is exactly one — otherwise we cannot safely
+ * guess which key the root belongs to and leave the rest unbound (skipped).
+ */
+const bindReposFromOption = async (
+  manifest: TuckManifestOutput,
+  repoRoot: string
+): Promise<void> => {
+  const unboundKeys = new Set<string>();
+  for (const file of Object.values(manifest.files)) {
+    if (file.scope === 'repo' && file.repoKey) {
+      if ((await resolveRepoRoot(file.repoKey)) === null) {
+        unboundKeys.add(file.repoKey);
+      }
+    }
+  }
+  // Only bind when the target is unambiguous (a single unbound repo).
+  if (unboundKeys.size === 1) {
+    const [key] = [...unboundKeys];
+    await bindRepo(key, repoRoot);
+  }
+};
+
+/**
+ * Register every bound repo root with the write context so out-of-home repo
+ * writes pass the copy/symlink guard (`allowedRoots()`).
+ */
+const registerKnownRepoRoots = async (manifest: TuckManifestOutput): Promise<void> => {
+  const roots: string[] = [];
+  for (const file of Object.values(manifest.files)) {
+    if (file.scope === 'repo' && file.repoKey) {
+      const root = await resolveRepoRoot(file.repoKey);
+      if (root) roots.push(root);
+    }
+  }
+  if (roots.length > 0) setKnownRepoRoots(roots);
+};
+
+/**
+ * Prepare the list of files to apply. Repo-scoped files are resolved to their
+ * LIVE checkout location on this machine; an unbound repo (no local checkout) is
+ * skipped — never guessed, never written to a wrong path — and reported back so
+ * callers can surface it.
  */
 const prepareFilesToApply = async (
   repoDir: string,
-  manifest: TuckManifest,
+  manifest: TuckManifestOutput,
   bundle?: string
-): Promise<ApplyFile[]> => {
+): Promise<{ files: ApplyFile[]; skipped: string[] }> => {
   const files: ApplyFile[] = [];
+  const skipped: string[] = [];
 
   for (const [_id, file] of Object.entries(manifest.files)) {
     // Scope to a single bundle when requested. Treat missing/legacy bundle
@@ -258,8 +372,35 @@ const prepareFilesToApply = async (
     if (bundle && (file.bundle ?? 'default') !== bundle) {
       continue;
     }
+
+    const isRepoScoped = file.scope === 'repo';
+
     try {
-      validateSafeSourcePath(file.source);
+      if (isRepoScoped) {
+        // Repo-scoped: source is a "<repoKey>:<repoRelative>" pseudo-path that is
+        // NOT home-confined. Validate the repoRelative is a safe in-repo path.
+        if (!file.repoKey || !file.repoRelative) {
+          throw new Error('repo-scoped entry missing repoKey/repoRelative');
+        }
+        const root = await resolveRepoRoot(file.repoKey);
+        if (root) {
+          // Bound: confine the joined target within the actual repo root.
+          validateSafeRepoSourcePath(root, file.repoRelative);
+        } else {
+          // Unbound: only the structural shape of repoRelative is verifiable
+          // (no absolute, no "..") — there is no root to confine against yet.
+          const norm = file.repoRelative.replace(/\\/g, '/');
+          if (
+            norm.startsWith('/') ||
+            /^[A-Za-z]:[\\/]/.test(file.repoRelative) ||
+            norm.split('/').includes('..')
+          ) {
+            throw new Error(`Unsafe repo-relative path detected: ${file.repoRelative}`);
+          }
+        }
+      } else {
+        validateSafeSourcePath(file.source);
+      }
       validateSafeManifestDestination(file.destination);
     } catch {
       logger.warning(`Skipping unsafe manifest entry: ${file.source}`);
@@ -275,17 +416,41 @@ const prepareFilesToApply = async (
       continue;
     }
 
-    if (await fsPathExists(repoFilePath)) {
-      files.push({
-        source: file.source,
-        destination: expandPath(file.source),
-        category: file.category,
-        repoPath: repoFilePath,
-      });
+    if (!(await fsPathExists(repoFilePath))) {
+      continue;
     }
+
+    // Resolve the LIVE write location. Home files → expandPath(source). Repo files
+    // → the bound checkout path, or null when the repo is unbound on this machine.
+    const liveTarget = await resolveLiveTarget(file);
+
+    if (liveTarget === null) {
+      // Unbound repo — skip and report it. Never guess a destination.
+      skipped.push(file.source);
+      continue;
+    }
+
+    let repoTarget: RepoWriteTarget | undefined;
+    if (isRepoScoped) {
+      const root = await resolveRepoRoot(file.repoKey!);
+      // resolveLiveTarget already returned non-null → the repo is bound.
+      repoTarget = {
+        repoKey: file.repoKey!,
+        repoRelative: file.repoRelative!,
+        repoRoot: root!,
+      };
+    }
+
+    files.push({
+      source: file.source,
+      destination: liveTarget,
+      category: file.category,
+      repoPath: repoFilePath,
+      repoTarget,
+    });
   }
 
-  return files;
+  return { files, skipped };
 };
 
 /**
@@ -336,6 +501,7 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
   const result: ApplyResult = {
     appliedCount: 0,
     filesWithPlaceholders: [],
+    skippedUnboundRepos: [],
   };
 
   // Get tuck directory for secret resolution
@@ -366,8 +532,11 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
           `${collapsePath(file.destination)} (${mergeResult.preservedBlocks} blocks preserved)`
         );
       } else {
-        await ensureDir(dirname(file.destination));
-        await writeFile(file.destination, mergeResult.content, 'utf-8');
+        // Confine the write under --root (no-op when not sandboxed). Repo files
+        // route through their repo descriptor so the target is the local checkout.
+        const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
+        await ensureDir(dirname(writeTarget));
+        await writeFile(writeTarget, mergeResult.content, 'utf-8');
         logger.file('merge', collapsePath(file.destination));
       }
     } else {
@@ -380,10 +549,11 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
         }
       } else {
         const fileExists = await pathExists(file.destination);
+        const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
         // Write file content directly instead of copying (to preserve resolved secrets)
-        await ensureDir(dirname(file.destination));
-        await writeFile(file.destination, fileContent, 'utf-8');
-        await fixSecurePermissions(file.destination);
+        await ensureDir(dirname(writeTarget));
+        await writeFile(writeTarget, fileContent, 'utf-8');
+        await fixSecurePermissions(writeTarget);
         logger.file(fileExists ? 'modify' : 'add', collapsePath(file.destination));
       }
     }
@@ -401,6 +571,7 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
   const result: ApplyResult = {
     appliedCount: 0,
     filesWithPlaceholders: [],
+    skippedUnboundRepos: [],
   };
 
   // Get tuck directory for secret resolution
@@ -429,10 +600,11 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
       }
     } else {
       const fileExists = await pathExists(file.destination);
+      const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
       // Write file content directly instead of copying (to preserve resolved secrets)
-      await ensureDir(dirname(file.destination));
-      await writeFile(file.destination, fileContent, 'utf-8');
-      await fixSecurePermissions(file.destination);
+      await ensureDir(dirname(writeTarget));
+      await writeFile(writeTarget, fileContent, 'utf-8');
+      await fixSecurePermissions(writeTarget);
       logger.file(fileExists ? 'modify' : 'add', collapsePath(file.destination));
     }
 
@@ -585,11 +757,13 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
   // Resolve the source
   let repoId: string;
   let isUrl: boolean;
+  let local: 'dir' | 'tarball' | undefined;
 
   try {
     const resolved = await resolveSource(source);
     repoId = resolved.repoId;
     isUrl = resolved.isUrl;
+    local = resolved.local;
   } catch (error) {
     prompts.log.error(error instanceof Error ? error.message : String(error));
     return;
@@ -599,9 +773,9 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
   let repoDir: string;
   try {
     const spinner = prompts.spinner();
-    spinner.start('Cloning repository...');
-    repoDir = await cloneSource(repoId, isUrl);
-    spinner.stop('Repository cloned');
+    spinner.start(local ? 'Reading local source...' : 'Cloning repository...');
+    repoDir = await cloneSource(repoId, isUrl, local);
+    spinner.stop(local ? 'Source ready' : 'Repository cloned');
   } catch (error) {
     prompts.log.error(`Failed to clone: ${error instanceof Error ? error.message : String(error)}`);
     return;
@@ -620,8 +794,20 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
       return;
     }
 
+    // --repo-root: bind the (single) unbound repo present before resolving files.
+    if (options.repoRoot) {
+      await bindReposFromOption(manifest, options.repoRoot);
+    }
+    await registerKnownRepoRoots(manifest);
+
     // Prepare files to apply
-    const files = await prepareFilesToApply(repoDir, manifest, options.bundle);
+    const { files, skipped } = await prepareFilesToApply(repoDir, manifest, options.bundle);
+
+    if (skipped.length > 0) {
+      prompts.log.warning(
+        `Skipping ${skipped.length} repo-scoped file(s) for repos not linked on this machine:\n  ${skipped.join('\n  ')}`
+      );
+    }
 
     if (files.length === 0) {
       const scope = options.bundle ? ` in bundle "${options.bundle}"` : '';
@@ -778,12 +964,14 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
  * Run non-interactive apply
  */
 export const runApply = async (source: string, options: ApplyOptions): Promise<void> => {
-  // Resolve the source
-  const { repoId, isUrl } = await resolveSource(source);
+  if (options.json) setJsonMode(true, 'tuck apply');
 
-  // Clone the repository
-  logger.info('Cloning repository...');
-  const repoDir = await cloneSource(repoId, isUrl);
+  // Resolve the source
+  const { repoId, isUrl, local } = await resolveSource(source);
+
+  // Clone (or materialize a local source).
+  logger.info(local ? 'Reading local source...' : 'Cloning repository...');
+  const repoDir = await cloneSource(repoId, isUrl, local);
 
   try {
     // Read the manifest
@@ -793,12 +981,29 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
       throw new Error('No tuck manifest found in repository');
     }
 
+    // --repo-root: bind the (single) unbound repo present in the manifest so its
+    // files can be placed in the freshly-linked checkout on this machine.
+    if (options.repoRoot) {
+      await bindReposFromOption(manifest, options.repoRoot);
+    }
+    // Register bound repo roots so out-of-home repo writes pass the copy guard.
+    await registerKnownRepoRoots(manifest);
+
     // Prepare files to apply
-    const files = await prepareFilesToApply(repoDir, manifest, options.bundle);
+    const { files, skipped } = await prepareFilesToApply(repoDir, manifest, options.bundle);
 
     if (files.length === 0) {
+      if (isJsonMode()) {
+        emitJsonOk({ applied: 0, source, skipped });
+        return;
+      }
       const scope = options.bundle ? ` in bundle "${options.bundle}"` : '';
       logger.warning(`No files to apply${scope}`);
+      if (skipped.length > 0) {
+        logger.warning(
+          `Skipped ${skipped.length} repo-scoped file(s) for unlinked repos: ${skipped.join(', ')}`
+        );
+      }
       return;
     }
 
@@ -835,12 +1040,30 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
       applyResult = await applyWithReplace(files, options.dryRun || false);
     }
 
+    const allSkipped = [...skipped, ...applyResult.skippedUnboundRepos];
+
+    if (isJsonMode()) {
+      emitJsonOk({
+        applied: applyResult.appliedCount,
+        source,
+        dryRun: !!options.dryRun,
+        skipped: allSkipped,
+      });
+      return;
+    }
+
     logger.blank();
 
     if (options.dryRun) {
       logger.info(`Would apply ${applyResult.appliedCount} files`);
     } else {
       logger.success(`Applied ${applyResult.appliedCount} files`);
+    }
+
+    if (allSkipped.length > 0) {
+      logger.warning(
+        `Skipped ${allSkipped.length} repo-scoped file(s) for unlinked repos: ${allSkipped.join(', ')}`
+      );
     }
 
     // Show placeholder warnings
@@ -872,16 +1095,24 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
 
 export const applyCommand = new Command('apply')
   .description('Apply dotfiles from a repository to this machine')
-  .argument('<source>', 'GitHub username, user/repo, or full repository URL')
+  .argument(
+    '<source>',
+    'username, user/repo, provider:user/repo, a full git URL, or a local directory/tarball path'
+  )
   .option('-m, --merge', 'Merge with existing files (preserve local customizations)')
   .option('-r, --replace', 'Replace existing files completely')
   .option('--dry-run', 'Show what would be applied without making changes')
   .option('-f, --force', 'Apply without confirmation prompts')
   .option('-y, --yes', 'Assume yes to all prompts')
+  .option('--json', 'Emit JSON envelope to stdout')
   .option('-b, --bundle <name>', 'Only apply files in the named bundle')
+  .option(
+    '--repo-root <dir>',
+    'Bind an as-yet-unlinked repo to this checkout before applying repo-scoped files'
+  )
   .action(async (source: string, options: ApplyOptions) => {
     // Determine if we should run interactive mode
-    const isInteractive = !options.force && !options.yes && process.stdout.isTTY;
+    const isInteractive = !options.force && !options.yes && !options.json && process.stdout.isTTY;
 
     if (isInteractive) {
       await runInteractiveApply(source, options);

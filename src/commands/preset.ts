@@ -29,12 +29,14 @@ import { readFile, writeFile, mkdir, readdir, stat } from 'fs/promises';
 import { join, isAbsolute, resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { homedir } from 'os';
-import { expandPath, pathExists } from '../lib/paths.js';
+import { collapsePath, pathExists, validateSafeDestinationPath } from '../lib/paths.js';
+import { resolveWriteTarget, allowedRoots } from '../lib/writeContext.js';
 import { copyFileOrDir } from '../lib/files.js';
-import { logger, colors as c } from '../ui/index.js';
+import { logger, prompts, colors as c } from '../ui/index.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import { TuckError } from '../errors.js';
 import { renderTemplate } from '../lib/template.js';
+import { createPreApplySnapshot } from '../lib/timemachine.js';
 
 interface PresetFile {
   source: string;
@@ -126,6 +128,35 @@ const renderIfTemplate = async (
   return renderTemplate(buf.toString('utf-8'), vars);
 };
 
+/**
+ * Reject any preset write target that escapes the user's home directory.
+ * A preset.json is untrusted input; without this guard a `target` like
+ * `/etc/cron.d/x` or `~/../../root/.bashrc` would let `apply` write anywhere
+ * the process can write. Validates ALL targets up front so nothing is written
+ * (or even `mkdir`'d) when a single entry is unsafe.
+ */
+export const assertPresetTargetsSafe = (entries: Array<{ target: string }>): void => {
+  for (const e of entries) {
+    validateSafeDestinationPath(e.target, allowedRoots());
+  }
+};
+
+/**
+ * Decide how to handle a preset that would overwrite existing files.
+ *   - `proceed`: nothing to clobber, or the user passed `--yes`.
+ *   - `refuse` : files exist, no `--yes`, and we're non-interactive (JSON/agent
+ *                /piped) — never silently overwrite.
+ *   - `confirm`: interactive — ask the user.
+ */
+export const decidePresetOverwrite = (
+  existingCount: number,
+  opts: { yes?: boolean; nonInteractive: boolean }
+): 'proceed' | 'confirm' | 'refuse' => {
+  if (existingCount === 0) return 'proceed';
+  if (opts.yes) return 'proceed';
+  return opts.nonInteractive ? 'refuse' : 'confirm';
+};
+
 const listAction = async (opts: { json?: boolean }): Promise<void> => {
   if (opts.json) setJsonMode(true, 'tuck preset list');
   const reg = bundledRegistryDir();
@@ -204,7 +235,9 @@ const applyAction = async (
     for (const f of prov.files) {
       planEntries.push({
         source: isAbsolute(f.source) ? f.source : join(presetDir, f.source),
-        target: expandPath(f.target),
+        // Confine + redirect under --root (no-op when not sandboxed); also
+        // validates the target stays inside the allowed root.
+        target: resolveWriteTarget(f.target),
         template: !!f.template,
       });
     }
@@ -218,6 +251,42 @@ const applyAction = async (
     console.log(c.bold(`Plan for ${preset.name}:`));
     for (const e of planEntries) console.log(`  ${e.source} → ${e.target}`);
     return;
+  }
+
+  // Safety gate 1: refuse to write anywhere outside $HOME, BEFORE any mkdir/write.
+  assertPresetTargetsSafe(planEntries);
+
+  // Safety gate 2: never silently clobber existing files. Snapshot + consent.
+  const existing: string[] = [];
+  for (const e of planEntries) {
+    if (await pathExists(e.target)) existing.push(e.target);
+  }
+  const nonInteractive = isJsonMode() || !process.stdout.isTTY;
+  const decision = decidePresetOverwrite(existing.length, { yes: opts.yes, nonInteractive });
+
+  if (decision === 'refuse') {
+    throw new TuckError(
+      `Applying "${preset.name}" would overwrite ${existing.length} existing file(s). Re-run with --yes to confirm.`,
+      'PRESET_OVERWRITE_REFUSED',
+      ['Pass --yes to overwrite (a snapshot is taken first so you can `tuck undo`).']
+    );
+  }
+  if (decision === 'confirm') {
+    logger.warning(`This will overwrite ${existing.length} existing file(s):`);
+    for (const t of existing) logger.dim(`  ${collapsePath(t)}`);
+    const confirmed = await prompts.confirm(
+      `Apply preset "${preset.name}" and overwrite these files?`,
+      false
+    );
+    if (!confirmed) {
+      logger.info('Aborted — no files changed.');
+      return;
+    }
+  }
+
+  // Snapshot existing targets so `tuck undo` can roll the apply back.
+  if (existing.length > 0) {
+    await createPreApplySnapshot(existing, `preset:${preset.name}`);
   }
 
   for (const e of planEntries) {

@@ -340,21 +340,20 @@ export const createRepo = async (options: CreateRepoOptions): Promise<GitHubRepo
     if (options.homepage) {
       args.push('--homepage', options.homepage);
     }
-    
-    args.push('--confirm', '--json', 'name,url,sshUrl');
-    
-    const { stdout } = await execFileAsync('gh', args);
-    const result = JSON.parse(stdout);
 
-    return {
-      name: result.name,
-      fullName: `${user.login}/${result.name}`,
-      url: result.url,
-      sshUrl: result.sshUrl,
-      httpsUrl: result.url.replace('github.com', 'github.com').replace(/^https?:\/\//, 'https://'),
-      isPrivate: options.isPrivate !== false,
-    };
+    // Modern non-interactive form; `--confirm`/`--json` were removed in gh 2.x.
+    // Read the structured result back via getRepoInfo (gh repo view --json).
+    await execFileAsync('gh', args);
+    const fullName = `${user.login}/${options.name}`;
+    const info = await getRepoInfo(fullName);
+    if (!info) {
+      throw new GitHubCliError(`Repository created but could not be read back: ${fullName}`, [
+        `Verify with: gh repo view ${fullName}`,
+      ]);
+    }
+    return info;
   } catch (error) {
+    if (error instanceof GitHubCliError) throw error;
     const errorMessage = error instanceof Error ? error.message : String(error);
     const diagnosis = await diagnoseRepoCreationFailure(options.name, errorMessage);
     throw new GitHubCliError(diagnosis.reason, diagnosis.suggestions);

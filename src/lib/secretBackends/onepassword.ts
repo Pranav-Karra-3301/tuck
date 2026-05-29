@@ -8,6 +8,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { SecretBackend, SecretReference, OnePasswordConfig } from './types.js';
+import { assertSafeBackendPath } from './types.js';
 import { SecretBackendError, BackendAuthenticationError } from '../../errors.js';
 
 const execFileAsync = promisify(execFile);
@@ -129,6 +130,7 @@ export class OnePasswordBackend implements SecretBackend {
         `Run: tuck secrets map ${ref.name} --1password "op://vault/item/field"`,
       ]);
     }
+    assertSafeBackendPath('1password', ref.name, ref.backendPath);
 
     // Ensure the path is in op:// format
     let path = ref.backendPath;
@@ -145,7 +147,9 @@ export class OnePasswordBackend implements SecretBackend {
     }
 
     try {
-      const { stdout } = await execFileAsync('op', ['read', path, '--no-newline'], {
+      // `--` ends option parsing so the (validated) reference is never treated
+      // as a flag — defense-in-depth alongside the leading-dash rejection.
+      const { stdout } = await execFileAsync('op', ['read', '--no-newline', '--', path], {
         env: { ...process.env },
       });
       return stdout;

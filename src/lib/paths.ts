@@ -348,6 +348,41 @@ export const validateSafeManifestDestination = (destination: string): void => {
 };
 
 /**
+ * Validate a repo-scoped file's live target. Repo files live under a repo root
+ * that may be OUTSIDE $HOME, so home-confinement (validateSafeSourcePath) does
+ * not apply; instead the file must stay within its (bound) repo root. The
+ * `repoRelative` must be a safe relative path (no absolute, no `..`).
+ */
+export const validateSafeRepoSourcePath = (repoRoot: string, repoRelative: string): void => {
+  const norm = repoRelative.replace(/\\/g, '/');
+  if (
+    isAbsolute(repoRelative) ||
+    /^[A-Za-z]:[\\/]/.test(repoRelative) ||
+    norm.split('/').includes('..')
+  ) {
+    throw new Error(`Unsafe repo-relative path detected: ${repoRelative}`);
+  }
+  const root = resolve(expandPath(repoRoot));
+  validatePathWithinRoot(join(root, norm), root, 'repo-scoped source');
+};
+
+/**
+ * Build the in-repo destination for a repo-scoped file's tracked copy,
+ * namespaced under `files/repos/<repoKey>/...`. The result is a safe relative
+ * manifest path (validated by validateSafeManifestDestination).
+ */
+export const getRepoScopedDestination = (repoKey: string, repoRelative: string): string => {
+  const norm = repoRelative.replace(/\\/g, '/');
+  if (isAbsolute(repoRelative) || norm.split('/').includes('..')) {
+    throw new Error(`Unsafe repoRelative path detected: ${repoRelative}`);
+  }
+  const keySlug = repoKey.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const dest = posix.join(FILES_DIR, 'repos', keySlug, norm);
+  validateSafeManifestDestination(dest);
+  return dest;
+};
+
+/**
  * Resolve a manifest destination to an absolute repository path safely.
  * Ensures the destination is a valid manifest path and cannot escape the tuck root.
  */

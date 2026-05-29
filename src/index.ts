@@ -19,6 +19,7 @@ import {
   encryptionCommand,
   doctorCommand,
   bundleCommand,
+  verifyCommand,
 } from './commands/index.js';
 import { handleError } from './errors.js';
 import { VERSION, DESCRIPTION } from './constants.js';
@@ -28,9 +29,15 @@ import { getTuckDir, pathExists } from './lib/paths.js';
 import { loadManifest } from './lib/manifest.js';
 import { getStatus } from './lib/git.js';
 import { setJsonMode } from './lib/jsonOutput.js';
+import { buildCommandPath } from './lib/commandPath.js';
+import { setWriteContext } from './lib/writeContext.js';
+import { expandPath as expandTuckPath } from './lib/paths.js';
+import { homedir } from 'os';
+import { resolve as resolvePath } from 'path';
 import { contextCommand } from './commands/context.js';
 import { mcpCommand } from './commands/mcp.js';
 import { presetCommand } from './commands/preset.js';
+import { repoCommand } from './commands/repo.js';
 
 const program = new Command();
 
@@ -38,6 +45,11 @@ program
   .name('tuck')
   .description(DESCRIPTION)
   .version(VERSION, '-v, --version', 'Display version number')
+  .option(
+    '--root <dir>',
+    'Confine ALL writes under this directory (sandbox / dry-home mode). ' +
+      'Also settable via TUCK_TARGET_ROOT. Use to run tuck without touching your real ~.'
+  )
   .configureOutput({
     outputError: (str, write) => write(chalk.red(str)),
   })
@@ -64,17 +76,35 @@ program.addCommand(secretsCommand);
 program.addCommand(encryptionCommand);
 program.addCommand(doctorCommand);
 program.addCommand(bundleCommand);
+program.addCommand(verifyCommand);
 program.addCommand(contextCommand);
 program.addCommand(mcpCommand);
 program.addCommand(presetCommand);
+program.addCommand(repoCommand);
 
-// Detect JSON mode early — used by UI/error handler to suppress human output.
-// The actual --json flag is also bound per-command for Commander typing.
-const argv = process.argv.slice(2);
-if (argv.includes('--json')) {
-  const firstNonFlag = argv.find((a) => !a.startsWith('-'));
-  setJsonMode(true, firstNonFlag ? `tuck ${firstNonFlag}` : 'tuck');
+// Best-effort EARLY detection so the error handler can emit JSON even for
+// failures that occur before any command action runs (e.g. during parsing).
+// This is intentionally conservative (flag presence only, no command-name
+// guess); the authoritative value comes from the preAction hook below, which
+// reads the PARSED options and the full command path. This fixes the previous
+// heuristic that mis-fired when `--json` appeared as an option *value*
+// (e.g. `tuck add --message --json`) and mis-named subcommands.
+if (process.argv.slice(2).includes('--json')) {
+  setJsonMode(true);
 }
+
+// Authoritative resolution of JSON mode AND the write sandbox: runs after
+// parsing, before the action. Global --root lives on the root program.
+program.hook('preAction', (_thisCommand, actionCommand) => {
+  const opts = actionCommand.opts() as { json?: boolean };
+  setJsonMode(opts.json === true, buildCommandPath(actionCommand as { name(): string }));
+
+  const rootOpt = (program.opts() as { root?: string }).root ?? process.env.TUCK_TARGET_ROOT;
+  if (rootOpt && rootOpt.trim()) {
+    const root = resolvePath(expandTuckPath(rootOpt.trim()));
+    setWriteContext({ root, isSandbox: root !== resolvePath(homedir()) });
+  }
+});
 
 // Default action when no command is provided
 const runDefaultAction = async (): Promise<void> => {

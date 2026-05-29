@@ -222,4 +222,167 @@ describe('secrets command', () => {
       '/test-home/.tuck'
     );
   });
+
+  it('emits a redacted JSON envelope for scan --json without leaking secret values', async () => {
+    // A known cleartext secret that must NEVER appear in the JSON output.
+    const KNOWN_SECRET = 'AKIAIOSFODNN7EXAMPLE-super-secret-value';
+    const KNOWN_CONTEXT = `AWS_SECRET=${KNOWN_SECRET}`;
+
+    getAllTrackedFilesMock.mockResolvedValue({
+      env: { source: '~/.env', destination: 'files/env', category: 'env' },
+    });
+    scanForSecretsMock.mockResolvedValue({
+      totalFiles: 1,
+      scannedFiles: 1,
+      skippedFiles: 0,
+      filesWithSecrets: 1,
+      totalSecrets: 2,
+      bySeverity: { critical: 1, high: 1, medium: 0, low: 0 },
+      results: [
+        {
+          path: '/test-home/.env',
+          collapsedPath: '~/.env',
+          hasSecrets: true,
+          criticalCount: 1,
+          highCount: 1,
+          mediumCount: 0,
+          lowCount: 0,
+          skipped: false,
+          matches: [
+            {
+              patternId: 'aws-secret',
+              patternName: 'AWS Secret Access Key',
+              severity: 'critical',
+              value: KNOWN_SECRET,
+              redactedValue: '[REDACTED]',
+              line: 3,
+              column: 12,
+              context: KNOWN_CONTEXT,
+              placeholder: '{{AWS_SECRET}}',
+            },
+            {
+              patternId: 'generic-token',
+              patternName: 'Generic Token',
+              severity: 'high',
+              value: KNOWN_SECRET,
+              redactedValue: '[REDACTED]',
+              line: 5,
+              column: 1,
+              context: KNOWN_CONTEXT,
+              placeholder: '{{TOKEN}}',
+            },
+          ],
+        },
+      ],
+    });
+
+    const { secretsCommand } = await import('../../src/commands/secrets.js');
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    await secretsCommand.parseAsync(['scan', '--json'], { from: 'user' });
+
+    writeSpy.mockRestore();
+
+    const lines = writes.join('').trim().split('\n').filter(Boolean);
+    expect(lines.length).toBe(1);
+
+    const env = JSON.parse(lines[0]);
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck secrets scan');
+
+    // Counts are present.
+    expect(env.data.totalSecrets).toBe(2);
+    expect(env.data.filesWithSecrets).toBe(1);
+    expect(env.data.bySeverity).toEqual({ critical: 1, high: 1, medium: 0, low: 0 });
+
+    // Per-file summary: path + secretCount, no raw matches.
+    expect(env.data.files).toEqual([{ path: '~/.env', secretCount: 2 }]);
+
+    // SECURITY: the full serialized envelope must not contain the cleartext secret
+    // or its surrounding raw matched line / context.
+    const serialized = JSON.stringify(env);
+    expect(serialized).not.toContain(KNOWN_SECRET);
+    expect(serialized).not.toContain(KNOWN_CONTEXT);
+    expect(serialized).not.toContain('value');
+    expect(serialized).not.toContain('context');
+  });
+
+  it('emits an all-zero redacted JSON summary when there are no tracked files to scan', async () => {
+    getAllTrackedFilesMock.mockResolvedValue({});
+    const { secretsCommand } = await import('../../src/commands/secrets.js');
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    await secretsCommand.parseAsync(['scan', '--json'], { from: 'user' });
+
+    writeSpy.mockRestore();
+
+    const lines = writes.join('').trim().split('\n').filter(Boolean);
+    expect(lines.length).toBe(1);
+
+    const env = JSON.parse(lines[0]);
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck secrets scan');
+    expect(env.data).toEqual({
+      totalFiles: 0,
+      scannedFiles: 0,
+      skippedFiles: 0,
+      filesWithSecrets: 0,
+      totalSecrets: 0,
+      bySeverity: { critical: 0, high: 0, medium: 0, low: 0 },
+      files: [],
+    });
+
+    // In JSON mode the human-readable warning is suppressed and nothing is scanned.
+    expect(loggerWarningMock).not.toHaveBeenCalled();
+    expect(loggerDimMock).not.toHaveBeenCalled();
+    expect(scanForSecretsMock).not.toHaveBeenCalled();
+  });
+
+  it('emits an all-zero redacted JSON summary (and no path leak) when no provided files exist', async () => {
+    // Path that does not exist on disk -> existingPaths is empty.
+    pathExistsMock.mockResolvedValue(false);
+    const { secretsCommand } = await import('../../src/commands/secrets.js');
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    await secretsCommand.parseAsync(['scan', '--json', '~/.does-not-exist'], { from: 'user' });
+
+    writeSpy.mockRestore();
+
+    const lines = writes.join('').trim().split('\n').filter(Boolean);
+    expect(lines.length).toBe(1);
+
+    const env = JSON.parse(lines[0]);
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck secrets scan');
+    expect(env.data.totalSecrets).toBe(0);
+    expect(env.data.files).toEqual([]);
+
+    // No scan happens, and the missing-file path is not leaked via the warning logger
+    // (suppressed in JSON mode) nor anywhere in the JSON envelope.
+    expect(scanForSecretsMock).not.toHaveBeenCalled();
+    expect(loggerWarningMock).not.toHaveBeenCalled();
+    expect(loggerErrorMock).not.toHaveBeenCalled();
+    expect(JSON.stringify(env)).not.toContain('does-not-exist');
+  });
 });

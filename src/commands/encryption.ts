@@ -272,13 +272,33 @@ const runEncryptFile = async (
   logger.success(`Encrypted → ${outAbs} (${ciphertext.length} bytes)`);
 };
 
+/**
+ * Resolve the plaintext output path for `decrypt-file`, never in place.
+ *   - explicit `out` is honored;
+ *   - otherwise strip a trailing `.enc`;
+ *   - if there is no `.enc` to strip, append `.dec` (so the output is never the
+ *     input — the old `|| `${inAbs}.dec`` fallback could never fire because a
+ *     non-empty path is truthy, silently overwriting the ciphertext).
+ * Throws if the resolved output would equal the input.
+ */
+export const resolveDecryptOutPath = (inAbs: string, outExpanded?: string): string => {
+  const stripped = inAbs.replace(/\.enc$/, '');
+  const outAbs = outExpanded ?? (stripped !== inAbs ? stripped : `${inAbs}.dec`);
+  if (outAbs === inAbs) {
+    throw new DecryptionError('Refusing to overwrite the encrypted input file in place', [
+      'Pass --out <path> to write the decrypted plaintext somewhere else',
+    ]);
+  }
+  return outAbs;
+};
+
 const runDecryptFile = async (
   input: string,
   opts: { out?: string; password?: string; json?: boolean }
 ): Promise<void> => {
   if (opts.json) setJsonMode(true, 'tuck encryption decrypt-file');
   const inAbs = expandPath(input);
-  const outAbs = opts.out ? expandPath(opts.out) : inAbs.replace(/\.enc$/, '') || `${inAbs}.dec`;
+  const outAbs = resolveDecryptOutPath(inAbs, opts.out ? expandPath(opts.out) : undefined);
   const ciphertext = await readFile(inAbs);
   if (!isEncryptedFileBuffer(ciphertext)) {
     throw new DecryptionError('File is not a tuck-encrypted file (missing TCKE1 header)');

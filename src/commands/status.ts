@@ -20,6 +20,7 @@ import {
 import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import { getStatus, hasRemote, getRemoteUrl, getCurrentBranch } from '../lib/git.js';
 import { getFileChecksum } from '../lib/files.js';
+import { setJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import { loadTuckignore } from '../lib/tuckignore.js';
 import { NotInitializedError } from '../errors.js';
 import { VERSION } from '../constants.js';
@@ -310,7 +311,8 @@ const printShortStatus = (status: TuckStatus): void => {
 };
 
 const printJsonStatus = (status: TuckStatus): void => {
-  console.log(JSON.stringify(status, null, 2));
+  setJsonMode(true, 'tuck status');
+  emitJsonOk(status, 'tuck status');
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

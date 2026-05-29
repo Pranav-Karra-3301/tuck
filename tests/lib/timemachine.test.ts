@@ -276,6 +276,32 @@ describe('timemachine', () => {
 
       expect(vol.existsSync(newFile)).toBe(false);
     });
+
+    it('takes a recoverable pre-undo snapshot before deleting valuable files', async () => {
+      const file = join(TEST_HOME, '.later-created');
+
+      // Snapshot taken when the file did NOT exist.
+      const snapA = await createSnapshot([file], 'Before file existed');
+
+      // User later creates valuable content at that path.
+      vol.writeFileSync(file, 'valuable-user-data');
+
+      // Undo (restore snapA) deletes the file...
+      await restoreSnapshot(snapA.id);
+      expect(vol.existsSync(file)).toBe(false);
+
+      // ...but a pre-undo snapshot must have captured the valuable content,
+      // and it must have a DISTINCT id from the snapshot being restored.
+      const snaps = await listSnapshots();
+      const preUndo = snaps.find((s) => s.reason.toLowerCase().includes('undo'));
+      expect(preUndo).toBeTruthy();
+      expect(preUndo!.id).not.toBe(snapA.id);
+
+      // Restoring the pre-undo snapshot recovers the data (undo-of-undo).
+      await restoreSnapshot(preUndo!.id);
+      expect(vol.existsSync(file)).toBe(true);
+      expect(vol.readFileSync(file, 'utf-8')).toBe('valuable-user-data');
+    });
   });
 
   // ============================================================================

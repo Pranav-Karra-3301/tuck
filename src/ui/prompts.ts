@@ -5,6 +5,22 @@
 
 import * as p from '@clack/prompts';
 import { colors as c } from './theme.js';
+import { isJsonMode } from '../lib/jsonOutput.js';
+import { OperationCancelledError } from '../errors.js';
+
+/**
+ * Refuse to prompt when stdin is not a TTY (agent/CI/piped). Without this the
+ * underlying clack prompt would read EOF and silently cancel — historically
+ * exiting 0 (a false "success"). Throwing a structured error gives a non-zero
+ * exit and a JSON error envelope in JSON mode.
+ */
+const ensureInteractive = (): void => {
+  if (!process.stdin.isTTY) {
+    throw new OperationCancelledError(
+      'a prompt was required but stdin is not a TTY — pass the needed flags (e.g. --yes) to run non-interactively'
+    );
+  }
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -39,6 +55,7 @@ export const prompts = {
    * Confirm dialog (yes/no)
    */
   confirm: async (message: string, initial = false): Promise<boolean> => {
+    ensureInteractive();
     const result = await p.confirm({ message, initialValue: initial });
     if (p.isCancel(result)) {
       prompts.cancel();
@@ -50,6 +67,7 @@ export const prompts = {
    * Single select from options
    */
   select: async <T>(message: string, options: SelectOption<T>[]): Promise<T> => {
+    ensureInteractive();
     const result = await p.select({
       message,
       options: options.map((opt) => ({
@@ -75,6 +93,7 @@ export const prompts = {
       initialValues?: T[];
     }
   ): Promise<T[]> => {
+    ensureInteractive();
     const mappedOptions = options.map((opt) => ({
       value: opt.value,
       label: opt.label,
@@ -105,6 +124,7 @@ export const prompts = {
       validate?: (value: string) => string | undefined;
     }
   ): Promise<string> => {
+    ensureInteractive();
     const result = await p.text({
       message,
       placeholder: options?.placeholder,
@@ -121,6 +141,7 @@ export const prompts = {
    * Password input (hidden)
    */
   password: async (message: string): Promise<string> => {
+    ensureInteractive();
     const result = await p.password({ message });
     if (p.isCancel(result)) {
       prompts.cancel();
@@ -144,8 +165,11 @@ export const prompts = {
    * Cancel operation and exit
    */
   cancel: (message = 'Operation cancelled'): never => {
-    p.cancel(message);
-    process.exit(0);
+    // Human cancel frame only when not emitting JSON (it would corrupt stdout).
+    if (!isJsonMode()) p.cancel(message);
+    // Throw rather than process.exit(0): cancellation is NOT success. handleError
+    // maps this to a non-zero exit and a structured JSON error envelope.
+    throw new OperationCancelledError();
   },
 
   /**

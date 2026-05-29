@@ -163,4 +163,62 @@ describe('push command', () => {
     });
     expect(promptsLogSuccessMock).toHaveBeenCalledWith('Pushed successfully!');
   });
+
+  it('emits a JSON envelope on a successful --json --force push', async () => {
+    getStatusMock.mockResolvedValue({ ahead: 3, behind: 0, tracking: 'origin/main' });
+    getCurrentBranchMock.mockResolvedValue('main');
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const { pushCommand } = await import('../../src/commands/push.js');
+    await pushCommand.parseAsync(['--json', '--force'], { from: 'user' });
+
+    writeSpy.mockRestore();
+
+    expect(pushMock).toHaveBeenCalled();
+    const env = JSON.parse(writes.join('').trim());
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck push');
+    expect(env.data.pushed).toBe(true);
+    expect(env.data.ahead).toBe(3);
+    expect(env.data.branch).toBe('main');
+
+    // Human output must be suppressed on the JSON path.
+    expect(loggerSuccessMock).not.toHaveBeenCalled();
+  });
+
+  it('emits a JSON envelope on a plain --json push without going interactive', async () => {
+    getStatusMock.mockResolvedValue({ ahead: 1, behind: 0, tracking: 'origin/main' });
+    getCurrentBranchMock.mockResolvedValue('main');
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const { pushCommand } = await import('../../src/commands/push.js');
+    await pushCommand.parseAsync(['--json'], { from: 'user' });
+
+    writeSpy.mockRestore();
+
+    // Must not invoke the interactive flow.
+    expect(promptsIntroMock).not.toHaveBeenCalled();
+    expect(pushMock).toHaveBeenCalled();
+
+    const env = JSON.parse(writes.join('').trim());
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck push');
+    expect(env.data.pushed).toBe(true);
+    expect(env.data.ahead).toBe(1);
+    expect(env.data.branch).toBe('main');
+  });
 });

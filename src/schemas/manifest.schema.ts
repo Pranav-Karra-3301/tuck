@@ -2,24 +2,61 @@ import { z } from 'zod';
 
 export const fileStrategySchema = z.enum(['copy', 'symlink']);
 
-export const trackedFileSchema = z.object({
-  source: z.string(),
-  destination: z.string(),
-  category: z.string(),
-  strategy: fileStrategySchema,
-  encrypted: z.boolean().default(false),
-  template: z.boolean().default(false),
-  permissions: z.string().optional(),
-  added: z.string(),
-  modified: z.string(),
-  checksum: z.string(),
-  /**
-   * Logical grouping above category — files default to the implicit "default"
-   * bundle so legacy manifests load unchanged. Bundles let callers scope
-   * `tuck apply --bundle <name>` and similar operations.
-   */
-  bundle: z.string().default('default'),
-});
+export const trackedFileSchema = z
+  .object({
+    source: z.string(),
+    destination: z.string(),
+    category: z.string(),
+    strategy: fileStrategySchema,
+    encrypted: z.boolean().default(false),
+    template: z.boolean().default(false),
+    permissions: z.string().optional(),
+    added: z.string(),
+    modified: z.string(),
+    checksum: z.string(),
+    /**
+     * Logical grouping above category — files default to the implicit "default"
+     * bundle so legacy manifests load unchanged. Bundles let callers scope
+     * `tuck apply --bundle <name>` and similar operations.
+     */
+    bundle: z.string().default('default'),
+    /**
+     * Tracking scope. ABSENT (undefined) means a legacy/home-scoped file,
+     * resolved against `$HOME` and validated exactly as before — so existing
+     * manifests parse byte-identical (these fields are `.optional()`, never
+     * `.default()`). `'repo'` means the file lives inside a git repo whose
+     * absolute path differs per machine; it is identified by a stable, machine-
+     * INDEPENDENT (repoKey, repoRelative) pair and resolved via the machine-
+     * local repo registry. The manifest never stores an absolute repo path.
+     */
+    scope: z.enum(['home', 'repo']).optional(),
+    /** Stable cross-machine repo identity (never an absolute path). */
+    repoKey: z.string().optional(),
+    /** POSIX path of the file relative to the repo root. */
+    repoRelative: z.string().optional(),
+  })
+  .superRefine((file, ctx) => {
+    if (file.scope === 'repo') {
+      if (!file.repoKey) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['repoKey'], message: 'repoKey is required for repo-scoped files' });
+      }
+      if (!file.repoRelative) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['repoRelative'], message: 'repoRelative is required for repo-scoped files' });
+      } else {
+        const norm = file.repoRelative.replace(/\\/g, '/');
+        const unsafe =
+          norm.startsWith('/') ||
+          /^[A-Za-z]:[\\/]/.test(file.repoRelative) ||
+          norm.split('/').includes('..');
+        if (unsafe) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['repoRelative'], message: `Unsafe repoRelative path: ${file.repoRelative}` });
+        }
+      }
+    } else if (file.repoKey !== undefined || file.repoRelative !== undefined) {
+      // Home-scoped (or scope absent) files must not carry repo fields.
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['repoKey'], message: 'repoKey/repoRelative are only valid on repo-scoped files' });
+    }
+  });
 
 export const bundleMetadataSchema = z.object({
   description: z.string().optional(),
