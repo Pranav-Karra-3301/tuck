@@ -29,6 +29,12 @@ import {
   abortRebase,
 } from '../../src/lib/mergeConflicts.js';
 
+// Every test builds real git repos and runs a real `pull --rebase` (~15 git
+// process spawns). On slow CI runners — notably Windows + Node 18 — that
+// legitimately exceeds Vitest's default 10s per-test timeout. These are
+// environment-speed limits, not hangs, so raise the budget for this file.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
 /**
  * Create two repos that share history, then diverge on the same file so a
  * `git pull --rebase` will produce a conflict on `conflict.txt`.
