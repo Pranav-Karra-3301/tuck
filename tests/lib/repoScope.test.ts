@@ -8,6 +8,8 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { vol } from 'memfs';
+import { resolve, join } from 'path';
+import { homedir } from 'os';
 import {
   loadReposRegistry,
   bindRepo,
@@ -31,7 +33,9 @@ describe('repos registry', () => {
 
   it('binds a repoKey to a root and resolves it back', async () => {
     await bindRepo('proj-abcd1234', '/Users/me/work/proj', { remoteUrl: 'git@github.com:me/proj.git' });
-    expect(await resolveRepoRoot('proj-abcd1234')).toBe('/Users/me/work/proj');
+    // The registry stores a MACHINE-LOCAL absolute root via resolve(); on Windows
+    // that becomes a drive-prefixed native path. resolve() is a no-op on POSIX.
+    expect(await resolveRepoRoot('proj-abcd1234')).toBe(resolve('/Users/me/work/proj'));
   });
 
   it('stores the registry off-repo (under the state dir, not ~/.tuck)', async () => {
@@ -87,7 +91,8 @@ describe('resolveLiveTarget', () => {
   });
 
   it('resolves a home file via expandPath', async () => {
-    expect(await resolveLiveTarget({ source: '~/.zshrc' })).toBe('/test-home/.zshrc');
+    // expandPath('~/.zshrc') === join(homedir(), '.zshrc'); native separators on Windows.
+    expect(await resolveLiveTarget({ source: '~/.zshrc' })).toBe(join(homedir(), '.zshrc'));
   });
 
   it('resolves a repo file with an UNBOUND key to null (skip, never guess)', async () => {
@@ -98,8 +103,9 @@ describe('resolveLiveTarget', () => {
 
   it('resolves a repo file with a bound key to join(root, repoRelative)', async () => {
     await bindRepo('k', '/srv/proj');
+    // repo target = join(resolveRepoRoot('k'), repoRelative); machine-local native path.
     expect(
       await resolveLiveTarget({ source: 'k:a.txt', scope: 'repo', repoKey: 'k', repoRelative: 'a.txt' })
-    ).toBe('/srv/proj/a.txt');
+    ).toBe(join(resolve('/srv/proj'), 'a.txt'));
   });
 });

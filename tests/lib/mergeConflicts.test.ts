@@ -54,6 +54,11 @@ const buildConflictingRepos = async (
   await seedGit.addConfig('user.email', 'seed@tuck.test');
   await seedGit.addConfig('user.name', 'Seed');
   await seedGit.addConfig('commit.gpgsign', 'false');
+  // Keep line endings as LF on every platform. Git for Windows defaults to
+  // `core.autocrlf=true`, which would rewrite our `\n` test content to `\r\n`
+  // on checkout and break the byte-for-byte content assertions below.
+  await seedGit.addConfig('core.autocrlf', 'false');
+  await seedGit.addConfig('core.eol', 'lf');
   await fs.writeFile(join(seed, 'conflict.txt'), 'base line\n', 'utf-8');
   await seedGit.add('conflict.txt');
   await seedGit.commit('base');
@@ -68,6 +73,9 @@ const buildConflictingRepos = async (
   await localGit.addConfig('user.email', 'local@tuck.test');
   await localGit.addConfig('user.name', 'Local');
   await localGit.addConfig('commit.gpgsign', 'false');
+  // Match the seed repo: never translate LF <-> CRLF (see note above).
+  await localGit.addConfig('core.autocrlf', 'false');
+  await localGit.addConfig('core.eol', 'lf');
   await fs.writeFile(join(local, 'conflict.txt'), 'local change\n', 'utf-8');
   await localGit.add('conflict.txt');
   await localGit.commit('local change');
@@ -222,6 +230,8 @@ describe('mergeConflicts', () => {
     await git.addConfig('user.email', 'clean@tuck.test');
     await git.addConfig('user.name', 'Clean');
     await git.addConfig('commit.gpgsign', 'false');
+    await git.addConfig('core.autocrlf', 'false');
+    await git.addConfig('core.eol', 'lf');
     await fs.writeFile(join(clean, 'a.txt'), 'hello', 'utf-8');
     await git.add('a.txt');
     await git.commit('init');

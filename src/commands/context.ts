@@ -15,7 +15,7 @@
  */
 
 import { Command } from 'commander';
-import { join, relative, resolve, isAbsolute, basename, dirname } from 'path';
+import { join, relative, resolve, isAbsolute, basename, dirname, posix } from 'path';
 import { readFile, writeFile, mkdir, readdir, stat, rm } from 'fs/promises';
 import { homedir } from 'os';
 import { z } from 'zod';
@@ -210,11 +210,14 @@ const repoScopeKey = (repoRoot: string): string => {
 };
 
 const destinationFor = (entry: { scope: 'home' | 'repo'; repoRoot?: string; source: string }): string => {
+  // `destination` is a manifest value committed to and shared across machines,
+  // so it MUST use POSIX separators. Node's `join` from 'path' yields backslashes
+  // on Windows; use posix.join to keep the stored key portable.
   if (entry.scope === 'home') {
-    return join(CONTEXT_DIR, 'home', slugifyPath(entry.source));
+    return posix.join(CONTEXT_DIR, 'home', slugifyPath(entry.source));
   }
   const rel = relative(entry.repoRoot!, expandPath(entry.source));
-  return join(CONTEXT_DIR, 'repos', repoScopeKey(entry.repoRoot!), slugifyPath(rel));
+  return posix.join(CONTEXT_DIR, 'repos', repoScopeKey(entry.repoRoot!), slugifyPath(rel));
 };
 
 /**

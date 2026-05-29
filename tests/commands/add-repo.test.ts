@@ -15,7 +15,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { vol } from 'memfs';
-import { join, posix } from 'path';
+import { join, posix, resolve } from 'path';
 import { TEST_HOME, TEST_TUCK_DIR } from '../utils/testHelpers.js';
 import { initTestTuck } from '../utils/testHelpers.js';
 import { addFilesFromPaths } from '../../src/commands/add.js';
@@ -104,7 +104,9 @@ describe('tuck add --repo (repo-scoped tracking)', () => {
     });
 
     // The off-repo registry now resolves the key back to the live root.
-    expect(await resolveRepoRoot('myrepo')).toBe(REPO_ROOT);
+    // bindRepo stores resolve(root), which is OS-native (drive-prefixed on
+    // Windows), so build the expected value with the same path API.
+    expect(await resolveRepoRoot('myrepo')).toBe(resolve(REPO_ROOT));
     // ...and it lives off-repo, not inside ~/.tuck.
     expect(getReposRegistryPath()).not.toContain('/.tuck/');
     expect(vol.existsSync(getReposRegistryPath())).toBe(true);
@@ -128,7 +130,7 @@ describe('tuck add --repo (repo-scoped tracking)', () => {
     expect(entry.scope).toBe('repo');
     expect(entry.repoKey).toBe('autorepo');
     expect(entry.repoRelative).toBe('config/settings.toml');
-    expect(await resolveRepoRoot('autorepo')).toBe(REPO_ROOT);
+    expect(await resolveRepoRoot('autorepo')).toBe(resolve(REPO_ROOT));
   });
 
   it('rejects --symlink combined with --repo (repo scope is copy-only)', async () => {

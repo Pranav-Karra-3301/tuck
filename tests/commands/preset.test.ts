@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { vol } from 'memfs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { TEST_HOME } from '../setup.js';
 import { assertPresetTargetsSafe, decidePresetOverwrite } from '../../src/commands/preset.js';
 
@@ -176,9 +176,10 @@ describe('preset apply (integration)', () => {
 
     await runApply([PRESET_DIR, '--json']);
 
-    // Files landed under the (mocked) home.
-    expect(vol.readFileSync(join(TEST_HOME, '.claude', 'CLAUDE.md'), 'utf-8')).toBe('hello claude');
-    expect(vol.readFileSync(join(TEST_HOME, '.config', 'zshrc'), 'utf-8')).toBe('export A=1');
+    // Files landed under the (mocked) home. Built with resolve() to match
+    // resolveWriteTarget's output on both POSIX and Windows (drive-prefixed).
+    expect(vol.readFileSync(resolve(TEST_HOME, '.claude', 'CLAUDE.md'), 'utf-8')).toBe('hello claude');
+    expect(vol.readFileSync(resolve(TEST_HOME, '.config', 'zshrc'), 'utf-8')).toBe('export A=1');
 
     const env = jsonEnvelope();
     expect(env.ok).toBe(true);
@@ -192,32 +193,35 @@ describe('preset apply (integration)', () => {
 
   it('refuses to overwrite in non-interactive json mode without --yes and writes nothing', async () => {
     stagePreset([{ source: 'files/CLAUDE.md', target: '~/.claude/CLAUDE.md', content: 'NEW' }]);
-    // Pre-existing target → would be clobbered.
-    vol.mkdirSync(join(TEST_HOME, '.claude'), { recursive: true });
-    vol.writeFileSync(join(TEST_HOME, '.claude', 'CLAUDE.md'), 'ORIGINAL');
+    // Pre-existing target → would be clobbered. resolve() matches the write
+    // target production checks via pathExists() (drive-prefixed on Windows).
+    vol.mkdirSync(resolve(TEST_HOME, '.claude'), { recursive: true });
+    vol.writeFileSync(resolve(TEST_HOME, '.claude', 'CLAUDE.md'), 'ORIGINAL');
 
     await expect(runApply([PRESET_DIR, '--json'])).rejects.toMatchObject({
       code: 'PRESET_OVERWRITE_REFUSED',
     });
 
     // The existing file is untouched and no snapshot/copy occurred.
-    expect(vol.readFileSync(join(TEST_HOME, '.claude', 'CLAUDE.md'), 'utf-8')).toBe('ORIGINAL');
+    expect(vol.readFileSync(resolve(TEST_HOME, '.claude', 'CLAUDE.md'), 'utf-8')).toBe('ORIGINAL');
     expect(createPreApplySnapshotMock).not.toHaveBeenCalled();
   });
 
   it('overwrites with --yes and snapshots the existing target first', async () => {
     stagePreset([{ source: 'files/CLAUDE.md', target: '~/.claude/CLAUDE.md', content: 'NEW' }]);
-    vol.mkdirSync(join(TEST_HOME, '.claude'), { recursive: true });
-    vol.writeFileSync(join(TEST_HOME, '.claude', 'CLAUDE.md'), 'ORIGINAL');
+    vol.mkdirSync(resolve(TEST_HOME, '.claude'), { recursive: true });
+    vol.writeFileSync(resolve(TEST_HOME, '.claude', 'CLAUDE.md'), 'ORIGINAL');
 
     await runApply([PRESET_DIR, '--json', '--yes']);
 
-    expect(vol.readFileSync(join(TEST_HOME, '.claude', 'CLAUDE.md'), 'utf-8')).toBe('NEW');
+    expect(vol.readFileSync(resolve(TEST_HOME, '.claude', 'CLAUDE.md'), 'utf-8')).toBe('NEW');
 
-    // Snapshot taken before the clobber, with the existing target.
+    // Snapshot taken before the clobber, with the existing target. The target
+    // comes from resolveWriteTarget (resolve-based), so the expected value must
+    // also use resolve() to match on Windows (drive-prefixed) as well as POSIX.
     expect(createPreApplySnapshotMock).toHaveBeenCalledTimes(1);
     const [snapTargets] = createPreApplySnapshotMock.mock.calls[0] as [string[], string];
-    expect(snapTargets).toEqual([join(TEST_HOME, '.claude', 'CLAUDE.md')]);
+    expect(snapTargets).toEqual([resolve(TEST_HOME, '.claude', 'CLAUDE.md')]);
 
     const env = jsonEnvelope();
     expect(env.ok).toBe(true);
@@ -243,10 +247,11 @@ describe('preset apply (integration)', () => {
     expect(env.ok).toBe(true);
     expect(env.data.preset).toBe('demo');
     expect(Array.isArray(env.data.plan)).toBe(true);
-    expect(env.data.plan[0].target).toBe(join(TEST_HOME, '.claude', 'CLAUDE.md'));
+    // plan target is resolveWriteTarget output (resolve-based) — match with resolve().
+    expect(env.data.plan[0].target).toBe(resolve(TEST_HOME, '.claude', 'CLAUDE.md'));
 
     // Plan is read-only: target not written, no snapshot.
-    expect(vol.existsSync(join(TEST_HOME, '.claude', 'CLAUDE.md'))).toBe(false);
+    expect(vol.existsSync(resolve(TEST_HOME, '.claude', 'CLAUDE.md'))).toBe(false);
     expect(createPreApplySnapshotMock).not.toHaveBeenCalled();
   });
 });

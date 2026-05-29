@@ -7,6 +7,7 @@
  * home without any possibility of touching the real ~.
  */
 import { describe, it, expect, afterEach } from 'vitest';
+import { resolve, sep } from 'path';
 import {
   setWriteContext,
   resetWriteContext,
@@ -23,7 +24,7 @@ describe('default (no sandbox)', () => {
   it('uses the real home as the write root', () => {
     expect(getWriteRoot()).toBe('/test-home');
     expect(isSandbox()).toBe(false);
-    expect(resolveWriteTarget('~/.zshrc')).toBe('/test-home/.zshrc');
+    expect(resolveWriteTarget('~/.zshrc')).toBe(resolve('/test-home', '.zshrc'));
   });
 
   it('still rejects a traversal escape from the real home', () => {
@@ -35,14 +36,14 @@ describe('sandbox (--root)', () => {
   it('redirects ~/ writes under the sandbox root', () => {
     setWriteContext({ root: '/tmp/fake-home', isSandbox: true });
     expect(isSandbox()).toBe(true);
-    expect(allowedRoots()).toEqual(['/tmp/fake-home']);
-    expect(resolveWriteTarget('~/.zshrc')).toBe('/tmp/fake-home/.zshrc');
-    expect(resolveWriteTarget('$HOME/.config/x')).toBe('/tmp/fake-home/.config/x');
+    expect(allowedRoots()).toEqual([resolve('/tmp/fake-home')]);
+    expect(resolveWriteTarget('~/.zshrc')).toBe(resolve('/tmp/fake-home', '.zshrc'));
+    expect(resolveWriteTarget('$HOME/.config/x')).toBe(resolve('/tmp/fake-home', '.config/x'));
   });
 
   it('re-bases an absolute real-home path into the sandbox root', () => {
     setWriteContext({ root: '/tmp/fake-home', isSandbox: true });
-    expect(resolveWriteTarget('/test-home/.gitconfig')).toBe('/tmp/fake-home/.gitconfig');
+    expect(resolveWriteTarget('/test-home/.gitconfig')).toBe(resolve('/tmp/fake-home', '.gitconfig'));
   });
 
   it('rejects a traversal escape out of the sandbox root', () => {
@@ -60,12 +61,14 @@ describe('repo-scoped write targets', () => {
   const REPO = { repoKey: 'proj-abc12345', repoRelative: 'a/b.txt', repoRoot: '/srv/work/proj' };
 
   it('resolves to the genuine repo path when not sandboxed', () => {
-    expect(resolveWriteTarget('ignored', REPO)).toBe('/srv/work/proj/a/b.txt');
+    expect(resolveWriteTarget('ignored', REPO)).toBe(resolve('/srv/work/proj', 'a/b.txt'));
   });
 
   it('rebases under the sandbox by stable identity (real repoRoot never places the file)', () => {
     setWriteContext({ root: '/tmp/fake-home', isSandbox: true });
-    expect(resolveWriteTarget('ignored', REPO)).toBe('/tmp/fake-home/repos/proj-abc12345/a/b.txt');
+    expect(resolveWriteTarget('ignored', REPO)).toBe(
+      resolve('/tmp/fake-home', 'repos', 'proj-abc12345', 'a/b.txt')
+    );
   });
 
   it('a hostile repoRoot/repoRelative cannot escape the sandbox', () => {
@@ -75,20 +78,20 @@ describe('repo-scoped write targets', () => {
       repoRelative: 'etc/passwd',
       repoRoot: '/',
     });
-    expect(out.startsWith('/tmp/fake-home/repos/')).toBe(true);
+    expect(out.startsWith(resolve('/tmp/fake-home', 'repos') + sep)).toBe(true);
   });
 
   it('allowedRoots includes known repo roots (non-sandbox) and only the sandbox root (sandbox)', () => {
     setKnownRepoRoots(['/srv/work/proj']);
-    expect(allowedRoots()).toContain('/srv/work/proj');
-    expect(allowedRoots()).toContain('/test-home'); // home still allowed
+    expect(allowedRoots()).toContain(resolve('/srv/work/proj'));
+    expect(allowedRoots()).toContain(resolve('/test-home')); // home still allowed
 
     setWriteContext({ root: '/tmp/fake-home', isSandbox: true });
     setKnownRepoRoots(['/srv/work/proj']);
-    expect(allowedRoots()).toEqual(['/tmp/fake-home']);
+    expect(allowedRoots()).toEqual([resolve('/tmp/fake-home')]);
   });
 
   it('1-arg resolveWriteTarget is unchanged (home path)', () => {
-    expect(resolveWriteTarget('~/.zshrc')).toBe('/test-home/.zshrc');
+    expect(resolveWriteTarget('~/.zshrc')).toBe(resolve('/test-home', '.zshrc'));
   });
 });

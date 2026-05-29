@@ -14,6 +14,7 @@
  * (never bind a key to a phantom or non-repo root).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { resolve } from 'path';
 import { vol } from 'memfs';
 
 // Silence UI noise (banners/logs/colors). The command's behaviour is observed
@@ -101,13 +102,13 @@ describe('tuck repo', () => {
 
       await runRepo(['link', 'proj-abcd1234', '/srv/proj', '--json']);
 
-      expect(await resolveRepoRoot('proj-abcd1234')).toBe('/srv/proj');
+      expect(await resolveRepoRoot('proj-abcd1234')).toBe(resolve('/srv/proj'));
 
       const env = jsonEnvelope();
       expect(env.ok).toBe(true);
       expect(env.command).toBe('tuck repo link');
       expect(env.data.repoKey).toBe('proj-abcd1234');
-      expect(env.data.root).toBe('/srv/proj');
+      expect(env.data.root).toBe(resolve('/srv/proj'));
     });
 
     it('binds when given a subdirectory of a git repo (findGitRoot walks up)', async () => {
@@ -117,7 +118,7 @@ describe('tuck repo', () => {
       await runRepo(['link', 'proj-deep', '/srv/proj/src/deep']);
 
       // It binds to the discovered repo ROOT, not the subdirectory.
-      expect(await resolveRepoRoot('proj-deep')).toBe('/srv/proj');
+      expect(await resolveRepoRoot('proj-deep')).toBe(resolve('/srv/proj'));
     });
 
     it('rejects a non-existent path and binds nothing', async () => {
@@ -154,7 +155,7 @@ describe('tuck repo', () => {
       const keys = env.data.repos.map((r: { repoKey: string }) => r.repoKey).sort();
       expect(keys).toEqual(['key-a', 'key-b']);
       const a = env.data.repos.find((r: { repoKey: string }) => r.repoKey === 'key-a');
-      expect(a.root).toBe('/srv/a');
+      expect(a.root).toBe(resolve('/srv/a'));
     });
 
     it('returns an empty repos list when nothing is bound', async () => {
@@ -169,7 +170,7 @@ describe('tuck repo', () => {
     it('removes a binding so resolveRepoRoot returns null', async () => {
       stageGitRepo('/srv/proj');
       await runRepo(['link', 'rm-me', '/srv/proj']);
-      expect(await resolveRepoRoot('rm-me')).toBe('/srv/proj');
+      expect(await resolveRepoRoot('rm-me')).toBe(resolve('/srv/proj'));
 
       writes = [];
       const { __resetJsonEmitState } = await import('../../src/lib/jsonOutput.js');
