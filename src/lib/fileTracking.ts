@@ -9,7 +9,7 @@ import {
   detectCategory,
 } from './paths.js';
 import { addFileToManifest, loadManifest } from './manifest.js';
-import { copyFileOrDir, createSymlink, getFileChecksum, getFileInfo } from './files.js';
+import { copyFileOrDir, createSymlink, getFileChecksum, getFileInfo, getSourceStatCache } from './files.js';
 import { loadConfig } from './config.js';
 import { CATEGORIES } from '../constants.js';
 import { ensureDir } from 'fs-extra';
@@ -258,6 +258,9 @@ export const trackFilesWithProgress = async (
       // Get file info
       const checksum = await getFileChecksum(destination);
       const info = await getFileInfo(expandedPath);
+      // Record the LIVE source's stat for the mtime+size short-circuit. Empty
+      // (no fields) for directories — they are never short-circuited.
+      const statCache = await getSourceStatCache(expandedPath);
       const now = new Date().toISOString();
 
       // Generate unique ID (from the stable identity for repo files).
@@ -277,6 +280,7 @@ export const trackFilesWithProgress = async (
         added: now,
         modified: now,
         checksum,
+        ...statCache,
         bundle: file.bundle ?? 'default',
         ...(isRepo
           ? {

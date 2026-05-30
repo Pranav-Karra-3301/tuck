@@ -15,6 +15,18 @@ export const trackedFileSchema = z
     modified: z.string(),
     checksum: z.string(),
     /**
+     * Live-source stat cache for the mtime+size short-circuit (git/make style).
+     * Recorded ONLY for single regular files when their checksum is captured;
+     * directories leave these `undefined` (a nested change never moves the dir's
+     * own mtime/size, so a dir short-circuit would MISS real changes). When both
+     * are present and the live file's stat still matches, the recorded checksum
+     * is reused instead of re-hashing. They are `.optional()` (never
+     * `.default()`) so legacy manifests parse byte-identical and simply fall back
+     * to full hashing.
+     */
+    sourceMtimeMs: z.number().optional(),
+    sourceSize: z.number().optional(),
+    /**
      * Logical grouping above category — files default to the implicit "default"
      * bundle so legacy manifests load unchanged. Bundles let callers scope
      * `tuck apply --bundle <name>` and similar operations.

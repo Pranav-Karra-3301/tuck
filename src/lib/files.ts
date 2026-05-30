@@ -124,6 +124,30 @@ export const getFileChecksum = async (filepath: string): Promise<string> => {
   return createHash('sha256').update(content).digest('hex');
 };
 
+/**
+ * Live-source stat cache for the mtime+size short-circuit.
+ *
+ * Returns `{ sourceMtimeMs, sourceSize }` ONLY for an existing regular file, so
+ * the caller can persist them next to the recorded checksum and later skip
+ * re-hashing an unchanged single file (see `stateModel.computeLiveChecksum`).
+ *
+ * Directories deliberately yield `{}`: a nested file change does not move a
+ * directory's own mtime/size, so a stat short-circuit on a dir would MISS real
+ * changes. Missing/inaccessible paths also yield `{}` (fall back to hashing).
+ */
+export const getSourceStatCache = async (
+  filepath: string
+): Promise<{ sourceMtimeMs?: number; sourceSize?: number }> => {
+  const expandedPath = expandPath(filepath);
+  try {
+    const stats = await stat(expandedPath);
+    if (!stats.isFile()) return {};
+    return { sourceMtimeMs: stats.mtimeMs, sourceSize: stats.size };
+  } catch {
+    return {};
+  }
+};
+
 export const getFileInfo = async (filepath: string): Promise<FileInfo> => {
   const expandedPath = expandPath(filepath);
 
