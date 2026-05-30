@@ -1,9 +1,17 @@
-import simpleGit, { SimpleGit, StatusResult } from 'simple-git';
+import simpleGit, { SimpleGit, StatusResult, SimpleGitOptions } from 'simple-git';
 import { GitError } from '../errors.js';
 import { pathExists } from './paths.js';
 import { join } from 'path';
 import { readdir } from 'fs/promises';
 import { REPO_STAGE_BLOCKLIST } from './state.js';
+import { GIT_OPERATION_TIMEOUTS } from './validation.js';
+
+/**
+ * Upper bound on the buffered output of a single git child process. Mirrors
+ * CustomProvider.cloneRepo so a hostile/huge remote cannot make tuck buffer
+ * unbounded data into memory during a clone.
+ */
+const CLONE_MAX_BUFFER = 10 * 1024 * 1024; // 10MB
 
 export interface GitStatus {
   isRepo: boolean;
@@ -49,7 +57,15 @@ export const initRepo = async (dir: string): Promise<void> => {
 
 export const cloneRepo = async (url: string, dir: string): Promise<void> => {
   try {
-    const git = simpleGit();
+    // Bound the clone: a hung or hostile remote must never let `tuck init` /
+    // `tuck apply` hang forever. `timeout.block` forcibly closes the git child
+    // process if it stops producing output, and `maxBuffer` caps how much output
+    // we buffer (mirrors CustomProvider.cloneRepo).
+    const cloneOptions: Partial<SimpleGitOptions> & { maxBuffer: number } = {
+      timeout: { block: GIT_OPERATION_TIMEOUTS.CLONE },
+      maxBuffer: CLONE_MAX_BUFFER,
+    };
+    const git = simpleGit(cloneOptions);
     await git.clone(url, dir);
   } catch (error) {
     throw new GitError(`Failed to clone repository from ${url}`, String(error));

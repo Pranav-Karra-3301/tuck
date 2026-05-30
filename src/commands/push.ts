@@ -15,6 +15,8 @@ import { NotInitializedError, GitError } from '../errors.js';
 import type { PushOptions } from '../types.js';
 import { logForcePush } from '../lib/audit.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
+import { loadConfig } from '../lib/config.js';
+import { assertRemoteAvailable } from '../lib/providers/index.js';
 
 const runInteractivePush = async (tuckDir: string): Promise<void> => {
   prompts.intro('tuck push');
@@ -91,6 +93,12 @@ const runInteractivePush = async (tuckDir: string): Promise<void> => {
   // Push
   const needsUpstream = !status.tracking;
 
+  // Provider gate: refuse to push in local-only mode regardless of any stray
+  // 'origin' remote that may be present. This is authoritative over the mere
+  // existence of a git remote.
+  const config = await loadConfig(tuckDir);
+  assertRemoteAvailable(config.remote, 'push');
+
   try {
     await withSpinner('Pushing...', async () => {
       await push(tuckDir, {
@@ -164,6 +172,11 @@ const runPush = async (options: PushOptions): Promise<void> => {
   if (!hasRemoteRepo) {
     throw new GitError('No remote configured', "Run 'tuck init -r <url>' or add a remote manually");
   }
+
+  // Provider gate: refuse to push in local-only mode even if a stray 'origin'
+  // remote exists. The provider mode in config is authoritative.
+  const config = await loadConfig(tuckDir);
+  assertRemoteAvailable(config.remote, 'push');
 
   const branch = await getCurrentBranch(tuckDir);
   // Capture how far ahead of the remote we are, for the JSON envelope only.

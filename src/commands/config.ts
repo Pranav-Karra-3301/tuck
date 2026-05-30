@@ -9,6 +9,7 @@ import { NotInitializedError, ConfigError } from '../errors.js';
 import type { TuckConfigOutput } from '../schemas/config.schema.js';
 import { setupProvider } from '../lib/providerSetup.js';
 import { describeProviderConfig, getProvider } from '../lib/providers/index.js';
+import { setupRemoteForProvider } from '../lib/remoteSetup.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import { IS_WINDOWS } from '../lib/platform.js';
 
@@ -538,9 +539,11 @@ const runInteractiveConfig = async (): Promise<void> => {
 };
 
 /**
- * Run the remote provider configuration flow
+ * Run the remote provider configuration flow.
+ *
+ * Exported for unit testing the provider-agnostic remote-setup dedup.
  */
-const runConfigRemote = async (): Promise<void> => {
+export const runConfigRemote = async (): Promise<void> => {
   banner();
   prompts.intro('tuck config remote');
 
@@ -598,72 +601,30 @@ const runConfigRemote = async (): Promise<void> => {
     }
   }
 
-  // If switching to a provider that can create repos, offer to create one
-  if (result.mode !== 'local' && result.mode !== 'custom' && !result.remoteUrl) {
-    const shouldCreateRepo = await prompts.confirm(
-      'Would you like to create a repository now?',
-      true
-    );
-
-    if (shouldCreateRepo) {
-      const provider = getProvider(result.mode, result.config);
-
-      const repoName = await prompts.text('Repository name:', {
-        defaultValue: 'dotfiles',
-        placeholder: 'dotfiles',
-        validate: (value) => {
-          if (!value) return 'Repository name is required';
-          // Ensure name starts and ends with alphanumeric
-          if (!/^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$/.test(value)) {
-            return 'Repository name must start and end with alphanumeric characters';
-          }
-          return undefined;
-        },
+  // If no remote URL was configured yet and the provider needs one (github /
+  // gitlab / custom), route through the SAME provider-agnostic remote-setup
+  // helper that `tuck init` uses. This deduplicates the old ad-hoc
+  // createRepo/getPreferredRepoUrl flow and ensures gitlab/custom go through
+  // their own provider instead of a github-shaped path.
+  if (result.mode !== 'local' && !result.remoteUrl) {
+    // Clear any pre-existing origin first so the shared helper's `addRemote`
+    // (which adds 'origin') succeeds when reconfiguring an existing repo.
+    if (await hasRemote(tuckDir)) {
+      await removeRemote(tuckDir, 'origin').catch(() => {
+        /* best effort: a missing/locked remote shouldn't block setup */
       });
+    }
 
-      const visibility = await prompts.select('Repository visibility:', [
-        { value: 'private', label: 'Private (recommended)', hint: 'Only you can see it' },
-        { value: 'public', label: 'Public', hint: 'Anyone can see it' },
-      ]);
+    const provider = getProvider(result.mode, result.config);
+    const { remoteUrl } = await setupRemoteForProvider(provider, tuckDir);
 
-      try {
-        const spinner = prompts.spinner();
-        spinner.start('Creating repository...');
-
-        const repo = await provider.createRepo({
-          name: repoName,
-          description: 'My dotfiles managed with tuck',
-          isPrivate: visibility === 'private',
-        });
-
-        spinner.stop(`Repository created: ${repo.fullName}`);
-
-        // Get preferred URL and add as remote
-        const remoteUrl = await provider.getPreferredRepoUrl(repo);
-
-        try {
-          if (await hasRemote(tuckDir)) {
-            await removeRemote(tuckDir, 'origin');
-          }
-          await addRemote(tuckDir, 'origin', remoteUrl);
-          prompts.log.success('Remote configured');
-        } catch (error) {
-          prompts.log.warning(
-            `Could not add remote: ${error instanceof Error ? error.message : String(error)}`
-          );
-        }
-
-        // Update config with repo name
-        updatedConfig.remote = {
-          ...updatedConfig.remote,
-          repoName,
-        };
-        await saveConfig(updatedConfig, tuckDir);
-      } catch (error) {
-        prompts.log.error(
-          `Failed to create repository: ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
+    if (remoteUrl) {
+      // The shared helper already wired up `origin`; persist the config so the
+      // remote selection survives across runs.
+      updatedConfig.remote = {
+        ...updatedConfig.remote,
+      };
+      await saveConfig(updatedConfig, tuckDir);
     }
   }
 

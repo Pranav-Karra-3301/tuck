@@ -14,6 +14,7 @@ import {
 } from '../lib/paths.js';
 import { saveConfig } from '../lib/config.js';
 import { createManifest } from '../lib/manifest.js';
+import { loadManifestFile } from '../lib/manifestFile.js';
 import type { TuckManifest, RemoteConfig } from '../types.js';
 import {
   initRepo,
@@ -31,6 +32,7 @@ import {
 } from '../lib/providerSetup.js';
 import { getProvider, describeProviderConfig, buildRemoteConfig } from '../lib/providers/index.js';
 import type { ProviderMode } from '../lib/providers/types.js';
+import { setupRemoteForProvider } from '../lib/remoteSetup.js';
 import {
   isGhInstalled,
   isGhAuthenticated,
@@ -57,7 +59,7 @@ import {
 import { detectDotfiles, DetectedFile, DETECTION_CATEGORIES } from '../lib/detect.js';
 import { copy } from 'fs-extra';
 import { tmpdir } from 'os';
-import { readFile, rm } from 'fs/promises';
+import { rm } from 'fs/promises';
 import { AlreadyInitializedError } from '../errors.js';
 import { CATEGORIES } from '../constants.js';
 import { defaultConfig } from '../schemas/config.schema.js';
@@ -220,33 +222,20 @@ export const validateRemoteUrlForMode = (
 };
 
 /**
- * Set up a remote for a non-GitHub provider (GitLab / custom) using the
- * GitProvider abstraction: show the provider's setup instructions, then accept
- * a repository URL validated against THAT provider. Returns the configured URL
- * or null. This replaces the old behavior of routing every provider through
- * GitHub-specific setup.
+ * Set up a remote for the CHOSEN provider (GitLab / custom / github) using the
+ * shared, provider-agnostic {@link setupRemoteForProvider}. This routes each
+ * provider through ITS OWN setup instructions + URL validation + URL builder,
+ * instead of funneling everything through GitHub-specific code that hard-coded
+ * github.com and rejected GitLab/custom URLs.
+ *
+ * Returns the configured URL or null. Exported for unit testing the gitlab path.
  */
-const setupRemoteForProvider = async (
+export const setupRemoteForChosenProvider = async (
   mode: ProviderMode,
   tuckDir: string
 ): Promise<string | null> => {
-  const provider = getProvider(mode);
-  console.log();
-  prompts.note(provider.getSetupInstructions(), 'Repository Setup');
-  console.log();
-
-  const created = await prompts.confirm('Have you created the repository?', true);
-  if (!created) return null;
-
-  const url = await prompts.text('Paste your repository URL:', {
-    placeholder: mode === 'gitlab' ? 'git@gitlab.com:user/dotfiles.git' : 'https://host/user/dotfiles.git',
-    validate: (value) => validateRemoteUrlForMode(mode, value),
-  });
-
-  if (!url) return null;
-  await addRemote(tuckDir, 'origin', url);
-  prompts.log.success('Remote added successfully');
-  return url;
+  const { remoteUrl } = await setupRemoteForProvider(getProvider(mode), tuckDir);
+  return remoteUrl;
 };
 
 /**
@@ -854,8 +843,10 @@ const analyzeRepository = async (repoDir: string): Promise<RepositoryAnalysis> =
   // Check for valid tuck manifest
   if (await pathExists(manifestPath)) {
     try {
-      const content = await readFile(manifestPath, 'utf-8');
-      const manifest = JSON.parse(content) as TuckManifest;
+      // A cloned manifest is UNTRUSTED input: load it through the shared,
+      // schema-validating loader so a hostile/malformed manifest is rejected
+      // (caught below as "corrupted or invalid") before any import acts on it.
+      const manifest = (await loadManifestFile(manifestPath)) as unknown as TuckManifest;
 
       // Validate manifest has files
       if (manifest.files && Object.keys(manifest.files).length > 0) {
@@ -1476,7 +1467,7 @@ const runInteractiveInit = async (): Promise<void> => {
     if (wantsRemote && providerResult.mode !== 'github') {
       // GitLab / custom: use the provider abstraction instead of forcing the
       // user through GitHub (the old funnel rejected their URLs outright).
-      remoteUrl = await setupRemoteForProvider(providerResult.mode, tuckDir);
+      remoteUrl = await setupRemoteForChosenProvider(providerResult.mode, tuckDir);
     } else if (wantsRemote) {
       // Try GitHub auto-setup
       const ghResult = await setupGitHubRepo(tuckDir);

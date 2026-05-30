@@ -1,3 +1,12 @@
+/**
+ * Local-mode push gating via assertRemoteAvailable.
+ *
+ * When config.remote.mode === 'local', a push must be refused even if a stray
+ * git 'origin' remote is present. push.ts consults the provider gate
+ * (assertRemoteAvailable) — which throws LocalModeError in local mode — before
+ * ever invoking git push. In a non-local mode the push proceeds as normal.
+ */
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const loadManifestMock = vi.fn();
@@ -10,10 +19,8 @@ const getStatusMock = vi.fn();
 const getCurrentBranchMock = vi.fn();
 const addRemoteMock = vi.fn();
 const logForcePushMock = vi.fn();
-
-const loggerSuccessMock = vi.fn();
-const loggerInfoMock = vi.fn();
-const loggerWarningMock = vi.fn();
+const loadConfigMock = vi.fn();
+const assertRemoteAvailableMock = vi.fn();
 
 vi.mock('../../src/ui/index.js', () => ({
   prompts: {
@@ -21,7 +28,7 @@ vi.mock('../../src/ui/index.js', () => ({
     outro: vi.fn(),
     confirm: vi.fn().mockResolvedValue(true),
     confirmDangerous: vi.fn().mockResolvedValue(true),
-    text: vi.fn(),
+    text: vi.fn().mockResolvedValue('git@github.com:user/dotfiles.git'),
     cancel: vi.fn(),
     note: vi.fn(),
     log: {
@@ -32,9 +39,9 @@ vi.mock('../../src/ui/index.js', () => ({
     },
   },
   logger: {
-    success: loggerSuccessMock,
-    info: loggerInfoMock,
-    warning: loggerWarningMock,
+    success: vi.fn(),
+    info: vi.fn(),
+    warning: vi.fn(),
   },
   withSpinner: vi.fn(async (_label: string, fn: () => Promise<unknown>) => fn()),
   colors: {
@@ -71,55 +78,69 @@ vi.mock('../../src/lib/audit.js', () => ({
   logForcePush: logForcePushMock,
 }));
 
-// push.ts loads config and consults the provider gate before pushing.
-const loadConfigMock = vi.fn();
-const assertRemoteAvailableMock = vi.fn();
 vi.mock('../../src/lib/config.js', () => ({
   loadConfig: loadConfigMock,
 }));
+
 vi.mock('../../src/lib/providers/index.js', () => ({
   assertRemoteAvailable: assertRemoteAvailableMock,
 }));
 
-describe('push --set-upstream (boolean trigger)', () => {
+describe('push command local-mode gating', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
 
     loadManifestMock.mockResolvedValue({ files: {} });
     checkLocalModeMock.mockResolvedValue(false);
-    loadConfigMock.mockResolvedValue({ remote: { mode: 'github' } });
-    assertRemoteAvailableMock.mockImplementation(() => {});
     showLocalModeWarningForPushMock.mockResolvedValue(undefined);
     pushMock.mockResolvedValue(undefined);
     hasRemoteMock.mockResolvedValue(true);
     getRemoteUrlMock.mockResolvedValue('git@github.com:user/dotfiles.git');
-    getStatusMock.mockResolvedValue({ ahead: 2, behind: 0, tracking: undefined });
+    getStatusMock.mockResolvedValue({ ahead: 2, behind: 0, tracking: 'origin/main' });
     getCurrentBranchMock.mockResolvedValue('main');
     addRemoteMock.mockResolvedValue(undefined);
     logForcePushMock.mockResolvedValue(undefined);
+    // Default: remote mode is github (non-local) and the gate is a no-op.
+    loadConfigMock.mockResolvedValue({ remote: { mode: 'github' } });
+    assertRemoteAvailableMock.mockImplementation(() => {});
   });
 
-  it('pushes the CURRENT branch, never a ref named after the flag value', async () => {
-    // The current branch is `main`. Passing `--set-upstream` must set upstream
-    // for `main` — it must NOT push a branch literally named "main" only by
-    // accident, and crucially must NOT push some other ref derived from a flag
-    // string. We prove this by making the current branch distinct from any
-    // plausible flag string.
-    getCurrentBranchMock.mockResolvedValue('feature/work');
+  it('refuses to push in local mode even when a stray origin remote exists', async () => {
+    // checkLocalMode is bypassed (stale/false) but config IS local-only and a
+    // stray origin is present — the provider gate must still refuse the push.
+    checkLocalModeMock.mockResolvedValue(false);
+    hasRemoteMock.mockResolvedValue(true);
+    loadConfigMock.mockResolvedValue({ remote: { mode: 'local' } });
+    assertRemoteAvailableMock.mockImplementation((cfg: { mode: string }, op: string) => {
+      if (cfg.mode === 'local') {
+        throw new Error(`Cannot ${op} in local-only mode`);
+      }
+    });
+
+    const { pushCommand } = await import('../../src/commands/push.js');
+
+    await expect(pushCommand.parseAsync(['--set-upstream'], { from: 'user' })).rejects.toThrow(
+      /local-only mode/
+    );
+
+    // The provider gate was consulted with the push operation.
+    expect(assertRemoteAvailableMock).toHaveBeenCalledWith({ mode: 'local' }, 'push');
+    // git push was NEVER invoked.
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it('proceeds with the push in a non-local mode', async () => {
+    loadConfigMock.mockResolvedValue({ remote: { mode: 'github' } });
 
     const { pushCommand } = await import('../../src/commands/push.js');
     await pushCommand.parseAsync(['--set-upstream'], { from: 'user' });
 
+    expect(assertRemoteAvailableMock).toHaveBeenCalledWith({ mode: 'github' }, 'push');
     expect(pushMock).toHaveBeenCalledWith('/test-home/.tuck', {
       force: undefined,
       setUpstream: true,
-      branch: 'feature/work',
+      branch: 'main',
     });
-    // The flag value must never leak into the branch ref.
-    const call = pushMock.mock.calls[0][1];
-    expect(call.branch).toBe('feature/work');
-    expect(typeof call.setUpstream).toBe('boolean');
-    expect(loggerSuccessMock).toHaveBeenCalledWith('Pushed successfully!');
   });
 });

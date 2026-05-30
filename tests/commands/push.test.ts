@@ -83,6 +83,19 @@ vi.mock('../../src/lib/audit.js', () => ({
   logForcePush: logForcePushMock,
 }));
 
+// push.ts loads config and consults the provider gate before pushing. Mock both
+// so these tests exercise the (non-local) happy path without touching real config.
+const loadConfigMock = vi.fn();
+const assertRemoteAvailableMock = vi.fn();
+
+vi.mock('../../src/lib/config.js', () => ({
+  loadConfig: loadConfigMock,
+}));
+
+vi.mock('../../src/lib/providers/index.js', () => ({
+  assertRemoteAvailable: assertRemoteAvailableMock,
+}));
+
 describe('push command', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -90,6 +103,8 @@ describe('push command', () => {
 
     loadManifestMock.mockResolvedValue({ files: {} });
     checkLocalModeMock.mockResolvedValue(false);
+    loadConfigMock.mockResolvedValue({ remote: { mode: 'github' } });
+    assertRemoteAvailableMock.mockImplementation(() => {});
     showLocalModeWarningForPushMock.mockResolvedValue(undefined);
     pushMock.mockResolvedValue(undefined);
     hasRemoteMock.mockResolvedValue(true);
