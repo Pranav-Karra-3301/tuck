@@ -213,6 +213,13 @@ export const trackFilesWithProgress = async (
       // Ensure destination directory exists
       await ensureDir(dirname(destination));
 
+      // Capture the LIVE source's stat BEFORE the copy/symlink, so the recorded
+      // mtime+size correspond to the content we are about to hash. If the file
+      // were edited mid-track, the live file then diverges from this stat and the
+      // next status re-hashes (rather than trusting a now-stale checksum). Empty
+      // (no fields) for directories — they are never short-circuited.
+      const statCache = await getSourceStatCache(expandedPath);
+
       // Copy or symlink based on strategy. Repo-scoped tracking is copy-only:
       // the live file stays put inside its repo checkout (never symlinked).
       if (strategy === 'symlink' && !isRepo) {
@@ -258,9 +265,6 @@ export const trackFilesWithProgress = async (
       // Get file info
       const checksum = await getFileChecksum(destination);
       const info = await getFileInfo(expandedPath);
-      // Record the LIVE source's stat for the mtime+size short-circuit. Empty
-      // (no fields) for directories — they are never short-circuited.
-      const statCache = await getSourceStatCache(expandedPath);
       const now = new Date().toISOString();
 
       // Generate unique ID (from the stable identity for repo files).

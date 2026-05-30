@@ -200,7 +200,13 @@ describe('file-hash short-circuit', () => {
     const model = await computeStateModel(TUCK);
     // Directory still hashed (no short-circuit) -> recomputed, state ok here.
     expect(model[0].state).toBe('ok');
-    expect(spy).toHaveBeenCalledWith('/test-home/.config/app');
+    // Separator-agnostic (Windows resolves to backslashes): assert the LIVE dir
+    // source was hashed — its '/.config/app' suffix distinguishes it from the repo
+    // copy under '/files/config/app'.
+    const dirHashed = spy.mock.calls.some((c) =>
+      String(c[0]).replace(/\\/g, '/').endsWith('/.config/app')
+    );
+    expect(dirHashed).toBe(true);
   });
 
   it('falls back to full hashing for a LEGACY entry (no mtime/size recorded)', async () => {
@@ -221,6 +227,11 @@ describe('file-hash short-circuit', () => {
     const model = await computeStateModel(TUCK);
     expect(model[0].state).toBe('ok');
     // Legacy entry: the live source IS hashed (no recorded stat to trust).
-    expect(spy).toHaveBeenCalledWith('/test-home/.zshrc');
+    // Separator-agnostic; '/.zshrc' suffix distinguishes the live source from the
+    // repo copy under '/files/shell/zshrc'.
+    const liveHashed = spy.mock.calls.some((c) =>
+      String(c[0]).replace(/\\/g, '/').endsWith('/.zshrc')
+    );
+    expect(liveHashed).toBe(true);
   });
 });

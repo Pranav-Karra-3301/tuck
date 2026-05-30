@@ -212,10 +212,12 @@ describe('non-GitHub provider e2e', () => {
     const committedBytes = await fs.readFile(committedCopy, 'utf-8');
     await fs.writeFile(liveTarget, committedBytes, 'utf-8');
 
-    // The dotfile is materialized on the fresh machine, byte-for-byte, proving a
-    // non-GitHub (file://, custom provider) apply works end to end.
+    // The dotfile is materialized on the fresh machine, proving a non-GitHub
+    // (file://, custom provider) apply delivers the content end to end. EOL is
+    // normalized: Git-for-Windows may apply autocrlf when checking out the cloned
+    // working tree (a git environment policy, not tuck behavior).
     const applied = await fs.readFile(liveTarget, 'utf-8');
-    expect(applied).toBe(trackedContent);
+    expect(applied.replace(/\r\n/g, '\n')).toBe(trackedContent);
   });
 
   it('(b) commits in LOCAL mode and REFUSES a push (assertRemoteAvailable throws LocalModeError)', async () => {
