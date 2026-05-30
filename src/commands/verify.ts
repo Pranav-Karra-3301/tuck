@@ -13,7 +13,7 @@
  */
 import { Command } from 'commander';
 import { resolve, dirname } from 'path';
-import { readFile, writeFile } from 'fs/promises';
+import { readFile, writeFile, stat } from 'fs/promises';
 import { ensureDir } from 'fs-extra';
 import { logger, colors as c } from '../ui/index.js';
 import {
@@ -32,6 +32,8 @@ import {
   snapshotWriteContext,
   restoreWriteContext,
   resolveWriteTarget,
+  isSandbox,
+  getWriteRoot,
 } from '../lib/writeContext.js';
 import { smartMerge, isShellFile, type MergeConflict } from '../lib/merge.js';
 import { prepareFilesToApply } from './apply.js';
@@ -159,6 +161,38 @@ const dryApplyIntoSandbox = async (
     // Read side uses the REAL live target (real home), never the sandbox.
     const liveExists = await pathExists(file.destination);
 
+    // Resolve + confine the write target up front. An escape (traversal /
+    // out-of-sandbox absolute) throws → report it and write NOTHING.
+    let writeTarget: string;
+    try {
+      writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
+    } catch {
+      wouldEscapeRoot.push(file.source);
+      continue;
+    }
+
+    // A tracked DIRECTORY entry: copy the whole tree into the sandbox (smartMerge
+    // applies to shell TEXT files only) and diff by directory checksum. Reading a
+    // directory as a file below would throw EISDIR.
+    if ((await stat(file.repoPath)).isDirectory()) {
+      await ensureDir(dirname(writeTarget));
+      await copyFileOrDir(file.repoPath, writeTarget, { overwrite: true });
+      let dirStatus: DryApplyChange['status'];
+      if (!liveExists) {
+        dirStatus = 'created';
+      } else {
+        const [liveSum, sandboxSum] = await Promise.all([
+          getFileChecksum(file.destination),
+          getFileChecksum(writeTarget),
+        ]);
+        dirStatus = liveSum === sandboxSum ? 'unchanged' : 'modified';
+      }
+      // Byte counts are per-file; for a directory the status is the signal.
+      changes.push({ target: writeTarget, status: dirStatus, bytesBefore: 0, bytesAfter: 0 });
+      continue;
+    }
+
+    // ── single file ──
     // Determine the content apply WOULD write: smart-merged for shell files with
     // an existing live copy (and surface the conflicts apply discards), else the
     // verbatim repo copy.
@@ -169,16 +203,6 @@ const dryApplyIntoSandbox = async (
       for (const conflict of merge.conflicts) {
         conflicts.push({ ...conflict, target: collapsePath(file.destination) });
       }
-    }
-
-    // Resolve + confine the write target. An escape (traversal / out-of-sandbox
-    // absolute) throws → report it and write NOTHING.
-    let writeTarget: string;
-    try {
-      writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
-    } catch {
-      wouldEscapeRoot.push(file.source);
-      continue;
     }
 
     await ensureDir(dirname(writeTarget));
@@ -223,11 +247,18 @@ const runVerifyApply = async (options: VerifyOptions): Promise<void> => {
     throw new NotInitializedError();
   }
 
-  // The sandbox root: an explicit --root (resolved) or an internal scratch dir.
-  const sandboxRoot = options.root
+  // The sandbox root: an explicit --root, else an internal scratch dir.
+  // `--root` is a GLOBAL option the preAction hook resolves into the WriteContext,
+  // so when the subcommand didn't receive its own `options.root` (the common CLI
+  // case) honor the global sandbox via getWriteRoot() — otherwise `--apply` would
+  // silently ignore the user's `--root` and write into a throwaway temp dir.
+  const explicitRoot = options.root
     ? resolve(expandPath(options.root))
-    : resolve(tuckDir, '.verify-sandbox', `dry-${Date.now()}`);
-  const usingTempSandbox = !options.root;
+    : isSandbox()
+      ? getWriteRoot()
+      : undefined;
+  const sandboxRoot = explicitRoot ?? resolve(tuckDir, '.verify-sandbox', `dry-${Date.now()}`);
+  const usingTempSandbox = !explicitRoot;
 
   // Confine ALL writes under the sandbox for the duration of the dry-apply.
   // Snapshot first so the finally restores any PRIOR boundary (e.g. a global

@@ -146,6 +146,22 @@ describe('init command behavior', () => {
     saveConfigMock.mockResolvedValue(undefined);
   });
 
+  it('--bare still creates the security .gitignore (runtime exclusions)', async () => {
+    const { vol } = await import('memfs');
+    pathExistsMock.mockResolvedValue(false); // not already initialized
+    const { runInit } = await import('../../src/commands/init.js');
+
+    await runInit({ bare: true, yes: true });
+
+    // The runtime .gitignore is a SECURITY control (excludes secrets/keystore/
+    // backups) and must exist even for --bare, which only skips README/samples.
+    // Regression caught by live sandbox testing of `tuck init --bare`.
+    expect(vol.existsSync('/test-home/.tuck/.gitignore')).toBe(true);
+    expect(vol.readFileSync('/test-home/.tuck/.gitignore', 'utf-8')).toContain(
+      'secrets.local.json'
+    );
+  });
+
   it('clones from remote and backfills missing manifest/config', async () => {
     pathExistsMock.mockResolvedValue(false);
     const { runInit } = await import('../../src/commands/init.js');

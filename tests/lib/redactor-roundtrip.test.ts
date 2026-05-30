@@ -9,7 +9,8 @@
  * ordering guarantee cannot silently regress.
  */
 import { describe, it, expect } from 'vitest';
-import { redactContent, restoreContent } from '../../src/lib/secrets/redactor.js';
+import { vol } from 'memfs';
+import { redactContent, restoreContent, restoreFiles } from '../../src/lib/secrets/redactor.js';
 import type { SecretMatch } from '../../src/lib/secrets/scanner.js';
 
 const makeMatch = (value: string, placeholder: string): SecretMatch => ({
@@ -58,5 +59,23 @@ describe('redactor round-trip with overlapping (short ⊂ long) secrets', () => 
 
     expect(restored).toBe(1);
     expect(restoredContent).toBe(original);
+  });
+});
+
+describe('restoreFiles with a tracked directory path', () => {
+  it('skips a directory entry without throwing EISDIR', async () => {
+    // restore (and apply) pass restored target paths to restoreFiles to swap
+    // placeholders back. A tracked DIRECTORY path would readFile→EISDIR; it must
+    // be skipped. Caught by live sandbox testing of `tuck restore --all`.
+    vol.reset();
+    vol.mkdirSync('/test-home/.config/app', { recursive: true });
+    vol.writeFileSync('/test-home/.config/app/settings.conf', 'theme=dark\n');
+    vol.mkdirSync('/test-home/.tuck', { recursive: true }); // tuckDir, no secrets store
+
+    const res = await restoreFiles(['~/.config/app'], '/test-home/.tuck');
+
+    expect(res.filesModified).toBe(0);
+    // The directory's contents are untouched (no spurious rewrite).
+    expect(vol.readFileSync('/test-home/.config/app/settings.conf', 'utf-8')).toBe('theme=dark\n');
   });
 });

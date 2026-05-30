@@ -67,7 +67,7 @@ import type { InitOptions } from '../types.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
 import { preparePathsForTracking } from '../lib/trackPipeline.js';
 import { errorToMessage } from '../lib/validation.js';
-import { REPO_RUNTIME_GITIGNORE_PATTERNS } from '../lib/state.js';
+import { REPO_RUNTIME_GITIGNORE_PATTERNS, ensureRuntimeArtifactsGitignored } from '../lib/state.js';
 
 const GITIGNORE_TEMPLATE = `# OS generated files
 .DS_Store
@@ -329,6 +329,12 @@ const initFromScratch = async (
       await createDefaultFiles(tuckDir, hostname);
     });
   }
+
+  // Always exclude runtime secrets / keystore / backups from commits. This is a
+  // SECURITY control, not a "default file", so it must exist even for --bare
+  // (which only skips the README and sample files). For non-bare the full
+  // template above already contains these patterns, so this is a no-op.
+  await ensureRuntimeArtifactsGitignored(tuckDir);
 
   // Add remote if provided
   if (options.remote) {

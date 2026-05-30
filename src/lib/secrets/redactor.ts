@@ -315,6 +315,12 @@ export const restoreFiles = async (
       continue;
     }
 
+    // Secret placeholders are per-file; a tracked DIRECTORY has no content to
+    // restore at the directory level (and readFile on a dir throws EISDIR).
+    if ((await stat(expandedPath)).isDirectory()) {
+      continue;
+    }
+
     const content = await readFile(expandedPath, 'utf-8');
     const result = restoreContent(content, secrets);
 
@@ -442,6 +448,12 @@ export const restoreFilesWithResolver = async (
     const expandedPath = expandPath(filepath);
 
     if (!(await pathExists(expandedPath))) {
+      continue;
+    }
+
+    // Secret placeholders are per-file; a tracked DIRECTORY has no content to
+    // restore at the directory level (and readFile on a dir throws EISDIR).
+    if ((await stat(expandedPath)).isDirectory()) {
       continue;
     }
 

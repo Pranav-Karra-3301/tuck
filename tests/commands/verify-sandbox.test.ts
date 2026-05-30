@@ -201,6 +201,64 @@ describe('verify --root / --apply', () => {
     expect(byTarget('.modrc').bytesBefore).toBe('LIVE VERSION\n'.length);
   });
 
+  it('--apply honors a GLOBAL --root (WriteContext) when options.root is unset', async () => {
+    // `--root` is a global program option resolved into the WriteContext by the
+    // preAction hook, so the verify subcommand's options.root is empty on a real
+    // CLI run. --apply must then use the global sandbox root (for inspection),
+    // not a throwaway internal temp dir. (Regression from live sandbox testing.)
+    const globalRoot = '/test-home/global-dry';
+    setWriteContext({ root: globalRoot, isSandbox: true });
+
+    vol.writeFileSync(`${TUCK}/files/shell/zshrc`, 'export A=1\n');
+    writeManifestFiles({
+      zshrc: {
+        source: '~/.zshrc',
+        destination: 'files/shell/zshrc',
+        checksum: await checksum(`${TUCK}/files/shell/zshrc`),
+      },
+    });
+
+    // No options.root passed → must fall back to the global sandbox root.
+    await runVerify({ json: true, apply: true });
+
+    const env = envelope();
+    expect(env.ok).toBe(true);
+    expect(resolve(env.data.root)).toBe(resolve(globalRoot));
+    // The preview materialized under the GLOBAL root, never an internal temp dir.
+    expect(env.data.changes.every((c: { target: string }) => resolve(c.target).startsWith(resolve(globalRoot)))).toBe(true);
+  });
+
+  it('handles a tracked DIRECTORY entry without crashing (EISDIR regression)', async () => {
+    // A tracked directory: repo copy + an identical live tree (unchanged).
+    vol.mkdirSync(`${TUCK}/files/config/app`, { recursive: true });
+    vol.writeFileSync(`${TUCK}/files/config/app/settings.conf`, 'theme=dark\n');
+    vol.mkdirSync('/test-home/.config/app', { recursive: true });
+    vol.writeFileSync('/test-home/.config/app/settings.conf', 'theme=dark\n');
+
+    writeManifestFiles({
+      app: {
+        source: '~/.config/app',
+        destination: 'files/config/app',
+        category: 'misc',
+        checksum: await checksum(`${TUCK}/files/config/app`),
+      },
+    });
+
+    // Must NOT throw EISDIR (reading a directory as a file) — the live repro that
+    // mocked unit tests missed but a real sandbox run surfaced.
+    await runVerify({ json: true, apply: true, root: SANDBOX });
+
+    const env = envelope();
+    expect(env.ok).toBe(true);
+    const dirChange = env.data.changes.find((ch: { target: string }) =>
+      ch.target.replace(/\\/g, '/').includes('/.config/app')
+    );
+    expect(dirChange).toBeTruthy();
+    expect(dirChange.status).toBe('unchanged');
+    // The directory tree was materialized under the SANDBOX, never the live home.
+    expect(vol.existsSync(`${dirChange.target}/settings.conf`)).toBe(true);
+  });
+
   it('reports a traversal/escaping manifest entry in wouldEscapeRoot and writes NOTHING', async () => {
     // A safe entry alongside an escaping one.
     vol.writeFileSync(`${TUCK}/files/shell/okrc`, 'OK\n');

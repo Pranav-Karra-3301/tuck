@@ -17,7 +17,7 @@ import {
   getTuckDir,
 } from '../lib/paths.js';
 import { resolveWriteTarget, setKnownRepoRoots, type RepoWriteTarget } from '../lib/writeContext.js';
-import { setFilePermissions } from '../lib/files.js';
+import { setFilePermissions, copyFileOrDir } from '../lib/files.js';
 import { resolveLiveTarget, resolveRepoRoot, bindRepo } from '../lib/repoScope.js';
 import { cloneRepo } from '../lib/git.js';
 import { isGhInstalled, ghCloneRepo, repoExists } from '../lib/github.js';
@@ -91,6 +91,28 @@ const applyRecordedPermissions = async (
   } catch {
     // Never fail an apply over a chmod that the filesystem rejects.
   }
+};
+
+/**
+ * Apply a tracked DIRECTORY entry by copying the whole tree into place.
+ *
+ * The per-file apply loops read `repoPath` as text (for secret resolution /
+ * smart-merge), which throws EISDIR on a directory. Directory entries (e.g.
+ * `~/.config/nvim`, `~/.ssh`) are copied verbatim instead; secret/merge handling
+ * is per-file and does not apply to a directory tree.
+ */
+const applyDirectoryEntry = async (file: ApplyFile, dryRun: boolean): Promise<void> => {
+  const exists = await pathExists(file.destination);
+  if (dryRun) {
+    logger.file(exists ? 'modify' : 'add', `${collapsePath(file.destination)} (directory)`);
+    return;
+  }
+  const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
+  await ensureDir(dirname(writeTarget));
+  await copyFileOrDir(file.repoPath, writeTarget, { overwrite: true });
+  await applyRecordedPermissions(writeTarget, file.permissions);
+  await fixSecurePermissions(writeTarget);
+  logger.file(exists ? 'modify' : 'add', `${collapsePath(file.destination)} (directory)`);
 };
 
 export interface ApplyOptions {
@@ -590,6 +612,13 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
   const tuckDir = getTuckDir();
 
   for (const file of files) {
+    // Directory entries are copied as a tree; readFile / secret-resolution /
+    // smart-merge are text-file operations that throw EISDIR on a directory.
+    if ((await stat(file.repoPath)).isDirectory()) {
+      await applyDirectoryEntry(file, dryRun);
+      result.appliedCount++;
+      continue;
+    }
     let fileContent = await readFile(file.repoPath, 'utf-8');
 
     // Resolve placeholders using configured backend (1Password, Bitwarden, pass, or local)
@@ -664,6 +693,13 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
   const tuckDir = getTuckDir();
 
   for (const file of files) {
+    // Directory entries are copied as a tree; readFile / secret-resolution /
+    // smart-merge are text-file operations that throw EISDIR on a directory.
+    if ((await stat(file.repoPath)).isDirectory()) {
+      await applyDirectoryEntry(file, dryRun);
+      result.appliedCount++;
+      continue;
+    }
     let fileContent = await readFile(file.repoPath, 'utf-8');
 
     // Resolve placeholders using configured backend (1Password, Bitwarden, pass, or local)
