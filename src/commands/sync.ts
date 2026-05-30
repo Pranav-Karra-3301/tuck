@@ -263,8 +263,21 @@ const pullIfBehind = async (
       // envelope.
       const nonInteractive = options.json === true || options.yes === true || isJsonMode();
       if (nonInteractive) {
-        // Leave the rebase in progress so the user / next interactive run can
-        // resolve it; the dedicated exit code lets agents detect this.
+        // Abort the in-progress rebase BEFORE throwing so ~/.tuck is left in a
+        // clean state — an automated/JSON caller cannot resolve conflicts, and
+        // leaving a half-finished rebase behind would wedge every subsequent
+        // git operation. The pre-pull snapshot already captured the live files
+        // so nothing is lost. If the abort itself fails we surface that too
+        // rather than masking it behind the conflict error.
+        try {
+          await abortRebase(tuckDir);
+        } catch (abortError) {
+          const abortMsg =
+            abortError instanceof Error ? abortError.message : String(abortError);
+          logger.dim(`Could not abort in-progress rebase automatically: ${abortMsg}`);
+        }
+        // The dedicated exit code (3) + stable MERGE_CONFLICTS code + recovery
+        // suggestions let agents detect and report this via the JSON envelope.
         throw new MergeConflictsError(conflicts.map((c) => c.path));
       }
 

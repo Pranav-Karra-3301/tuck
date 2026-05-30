@@ -17,6 +17,7 @@ import {
   getTuckDir,
 } from '../lib/paths.js';
 import { resolveWriteTarget, setKnownRepoRoots, type RepoWriteTarget } from '../lib/writeContext.js';
+import { setFilePermissions } from '../lib/files.js';
 import { resolveLiveTarget, resolveRepoRoot, bindRepo } from '../lib/repoScope.js';
 import { cloneRepo } from '../lib/git.js';
 import { isGhInstalled, ghCloneRepo, repoExists } from '../lib/github.js';
@@ -72,6 +73,24 @@ const fixSecurePermissions = async (path: string): Promise<void> => {
   }
 };
 
+/**
+ * Reapply the permissions recorded in the manifest to a freshly-written file.
+ * writeFile uses the umask default, so without this a 0755 script lands
+ * non-executable and a 0600 file lands world-readable. No-op on Windows (handled
+ * inside setFilePermissions) and when no permissions were recorded.
+ */
+const applyRecordedPermissions = async (
+  writeTarget: string,
+  permissions?: string
+): Promise<void> => {
+  if (!permissions) return;
+  try {
+    await setFilePermissions(writeTarget, permissions);
+  } catch {
+    // Never fail an apply over a chmod that the filesystem rejects.
+  }
+};
+
 export interface ApplyOptions {
   merge?: boolean;
   replace?: boolean;
@@ -98,6 +117,8 @@ interface ApplyFile {
    * files; absent for home-scoped files (which route through the home logic).
    */
   repoTarget?: RepoWriteTarget;
+  /** Recorded octal permissions (e.g. "755"), reapplied to the written file. */
+  permissions?: string;
 }
 
 interface ApplyResult {
@@ -447,6 +468,7 @@ const prepareFilesToApply = async (
       category: file.category,
       repoPath: repoFilePath,
       repoTarget,
+      permissions: file.permissions,
     });
   }
 
@@ -537,6 +559,7 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
         const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
         await ensureDir(dirname(writeTarget));
         await writeFile(writeTarget, mergeResult.content, 'utf-8');
+        await applyRecordedPermissions(writeTarget, file.permissions);
         logger.file('merge', collapsePath(file.destination));
       }
     } else {
@@ -553,6 +576,9 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
         // Write file content directly instead of copying (to preserve resolved secrets)
         await ensureDir(dirname(writeTarget));
         await writeFile(writeTarget, fileContent, 'utf-8');
+        // Reapply recorded permissions first (so a 0755 script lands executable),
+        // then the SSH/GPG fixup enforces its stricter floor for those dirs.
+        await applyRecordedPermissions(writeTarget, file.permissions);
         await fixSecurePermissions(writeTarget);
         logger.file(fileExists ? 'modify' : 'add', collapsePath(file.destination));
       }
@@ -604,6 +630,9 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
       // Write file content directly instead of copying (to preserve resolved secrets)
       await ensureDir(dirname(writeTarget));
       await writeFile(writeTarget, fileContent, 'utf-8');
+      // Reapply recorded permissions first (so a 0755 script lands executable),
+      // then the SSH/GPG fixup enforces its stricter floor for those dirs.
+      await applyRecordedPermissions(writeTarget, file.permissions);
       await fixSecurePermissions(writeTarget);
       logger.file(fileExists ? 'modify' : 'add', collapsePath(file.destination));
     }

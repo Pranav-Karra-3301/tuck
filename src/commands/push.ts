@@ -201,8 +201,11 @@ const runPush = async (options: PushOptions): Promise<void> => {
     await withSpinner('Pushing...', async () => {
       await push(tuckDir, {
         force: options.force,
+        // --set-upstream is a boolean trigger. We ALWAYS push the current
+        // branch — never a ref named after the flag's value — so the upstream
+        // is set for the branch the user is actually on.
         setUpstream: Boolean(options.setUpstream),
-        branch: options.setUpstream || branch,
+        branch,
       });
     });
     if (isJsonMode()) {
@@ -228,7 +231,7 @@ const runPush = async (options: PushOptions): Promise<void> => {
 export const pushCommand = new Command('push')
   .description('Push changes to remote repository')
   .option('-f, --force', 'Force push')
-  .option('--set-upstream <name>', 'Set upstream branch')
+  .option('--set-upstream', 'Set upstream tracking for the current branch')
   .option('--json', 'Emit JSON envelope to stdout')
   .option('-y, --yes', 'Auto-confirm prompts (skip force-push confirmation)')
   .action(async (options: PushOptions) => {

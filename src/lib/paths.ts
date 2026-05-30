@@ -2,6 +2,7 @@ import { homedir } from 'os';
 import { join, basename, dirname, relative, isAbsolute, resolve, sep, posix } from 'path';
 import { stat, lstat, access } from 'fs/promises';
 import { constants } from 'fs';
+import { createHash } from 'crypto';
 import {
   DEFAULT_TUCK_DIR,
   FILES_DIR,
@@ -433,10 +434,46 @@ export const generateFileId = (source: string): string => {
   // 3. Replace . with -
   // 4. Strip all remaining unsafe characters (keep only a-z, A-Z, 0-9, _, -)
   // 5. Remove leading - if present
-  return normalized
+  const readable = normalized
     .replace(/^~\//, '')
     .replace(/\//g, '_')
     .replace(/\./g, '-')
     .replace(/[^a-zA-Z0-9_-]/g, '')
     .replace(/^-/, '');
+
+  // INJECTIVITY: the readable form strips the leading dot off a home-root entry,
+  // so `~/.foo` and `~/foo` both collapsed to `foo` (a misleading "already
+  // tracked"). Dotfiles are the overwhelmingly common — and the
+  // historically-stable — case, so they keep their exact readable id. The rarer
+  // NON-dotfile home-root entry (e.g. `~/foo`, whose first segment has no `.`)
+  // is the one that aliases onto a dotfile id, so disambiguate THAT side with a
+  // short, deterministic suffix derived from the full collapsed path.
+  const homeRelative = normalized.replace(/^~\//, '');
+  const firstSegment = homeRelative.split('/')[0] ?? '';
+  const isHomeRootDotfile = firstSegment.startsWith('.');
+  if (!isHomeRootDotfile && readable) {
+    return `${readable}_${shortPathHash(normalized)}`;
+  }
+
+  return readable;
+};
+
+/**
+ * Short, deterministic hash of a collapsed path, used to disambiguate file ids
+ * whose readable form would otherwise collide.
+ */
+const shortPathHash = (value: string): string =>
+  createHash('sha256').update(value).digest('hex').slice(0, 8);
+
+/**
+ * Detect a case-insensitive collision between two repository destinations.
+ *
+ * On macOS/Windows filesystems are case-insensitive, so `files/misc/config` and
+ * `files/misc/Config` resolve to ONE physical file — tracking both would
+ * silently clobber. Callers use this to disambiguate or reject before writing.
+ * Separator differences are normalized so the comparison is purely on case.
+ */
+export const destinationsCollideCaseInsensitively = (a: string, b: string): boolean => {
+  const norm = (d: string): string => d.replace(/\\/g, '/').toLowerCase();
+  return norm(a) === norm(b);
 };

@@ -22,7 +22,7 @@ import {
   loadReposRegistry,
 } from '../lib/repoScope.js';
 import { loadConfig } from '../lib/config.js';
-import { copyFileOrDir, createSymlink } from '../lib/files.js';
+import { copyFileOrDir, createSymlink, setFilePermissions } from '../lib/files.js';
 import { createBackup } from '../lib/backup.js';
 import { runPreRestoreHook, runPostRestoreHook, type HookOptions } from '../lib/hooks.js';
 import { NotInitializedError, FileNotFoundError, TuckError } from '../errors.js';
@@ -96,6 +96,8 @@ interface FileToRestore {
   repoKey?: string;
   /** POSIX path relative to the repo root (repo-scoped files only). */
   repoRelative?: string;
+  /** Recorded octal permissions (e.g. "755"), reapplied to the restored file. */
+  permissions?: string;
 }
 
 interface RestoreResult {
@@ -146,6 +148,7 @@ const prepareFilesToRestore = async (
         scope: tracked.file.scope,
         repoKey: tracked.file.repoKey,
         repoRelative: tracked.file.repoRelative,
+        permissions: tracked.file.permissions,
       });
     }
   } else {
@@ -168,6 +171,7 @@ const prepareFilesToRestore = async (
         scope: file.scope,
         repoKey: file.repoKey,
         repoRelative: file.repoRelative,
+        permissions: file.permissions,
       });
     }
   }
@@ -274,6 +278,19 @@ const restoreFilesInternal = async (
         await createSymlink(file.destination, targetPath, { overwrite: true });
       } else {
         await copyFileOrDir(file.destination, targetPath, { overwrite: true });
+      }
+
+      // Reapply the recorded permissions so a 0755 script restores executable
+      // and a 0600 file is not left world-readable. Symlinks have no own mode,
+      // so only copies are adjusted. The SSH/GPG fixups below still run and act
+      // as a stricter safety floor for those directories.
+      if (file.permissions && !useSymlink) {
+        try {
+          await setFilePermissions(targetPath, file.permissions);
+        } catch {
+          // Permission set may fail on exotic filesystems / Windows — never fail
+          // the restore over it.
+        }
       }
 
       // Fix permissions on the RESOLVED target (the sandbox copy in --root

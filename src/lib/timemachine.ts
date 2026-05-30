@@ -1,11 +1,12 @@
 import { join, dirname, relative, resolve, sep } from 'path';
-import { readdir, readFile, rm, stat } from 'fs/promises';
+import { readdir, readFile, rename, rm, stat } from 'fs/promises';
 import { copy, ensureDir, pathExists } from 'fs-extra';
 import { homedir } from 'os';
 import { expandPath, pathExists as checkPathExists } from './paths.js';
 import { atomicWriteFile } from './files.js';
 import { BackupError } from '../errors.js';
 import { getLegacySnapshotsDir, getSnapshotsDir } from './state.js';
+import { snapshotMetadataSchema } from '../schemas/snapshot.schema.js';
 
 export interface SnapshotMetadata {
   id: string;
@@ -206,7 +207,10 @@ export const listSnapshots = async (): Promise<Snapshot[]> => {
 
       try {
         const content = await readFile(metadataPath, 'utf-8');
-        const metadata: SnapshotMetadata = JSON.parse(content);
+        // Validate the on-disk metadata against the schema. A corrupted or
+        // schema-violating metadata.json must skip THIS snapshot only — never
+        // crash the whole list.
+        const metadata = snapshotMetadataSchema.parse(JSON.parse(content));
 
         snapshots.push({
           id: metadata.id,
@@ -249,7 +253,9 @@ export const getSnapshot = async (snapshotId: string): Promise<Snapshot | null> 
 
     try {
       const content = await readFile(metadataPath, 'utf-8');
-      const metadata: SnapshotMetadata = JSON.parse(content);
+      // Validate against the schema; a corrupted/invalid metadata.json is
+      // treated as a missing snapshot rather than crashing the caller.
+      const metadata = snapshotMetadataSchema.parse(JSON.parse(content));
 
       return {
         id: metadata.id,
@@ -292,31 +298,101 @@ export const restoreSnapshot = async (snapshotId: string): Promise<string[]> => 
   // delete BEFORE mutating anything, so this undo is itself reversible
   // (undo-of-undo) and any file created after the original snapshot — which
   // would otherwise be silently rm'd — can be recovered.
+  //
+  // We keep this pre-restore snapshot in hand so that if the restore loop fails
+  // partway through, we can roll the live filesystem back to exactly this
+  // captured state (best-effort) instead of leaving it half-restored.
   const touchedPaths = snapshot.files.map((f) => f.originalPath);
+  let preRestore: Snapshot | undefined;
   if (touchedPaths.length > 0) {
-    await createSnapshot(touchedPaths, `Pre-undo backup before restoring snapshot ${snapshotId}`);
+    preRestore = await createSnapshot(
+      touchedPaths,
+      `Pre-undo backup before restoring snapshot ${snapshotId}`
+    );
   }
 
   const restoredFiles: string[] = [];
 
-  for (const file of snapshot.files) {
-    if (!file.existed) {
-      // File didn't exist before, delete it if it exists now
-      if (await checkPathExists(file.originalPath)) {
-        await rm(file.originalPath, { recursive: true });
+  try {
+    for (const file of snapshot.files) {
+      if (!file.existed) {
+        // File didn't exist before, delete it if it exists now
+        if (await checkPathExists(file.originalPath)) {
+          await rm(file.originalPath, { recursive: true });
+        }
+        continue;
       }
-      continue;
-    }
 
-    // Restore the backup
-    if (await pathExists(file.backupPath)) {
-      await ensureDir(dirname(file.originalPath));
-      await copy(file.backupPath, file.originalPath, { overwrite: true, preserveTimestamps: true });
-      restoredFiles.push(file.originalPath);
+      // Restore the backup. Stage the copy into a temp path alongside the
+      // destination first, then rename it into place. A rename is atomic, so a
+      // mid-copy failure can never leave a half-written file at the live path.
+      if (await pathExists(file.backupPath)) {
+        await ensureDir(dirname(file.originalPath));
+        const stagingPath = `${file.originalPath}.tuck-restore-${process.pid}-${Date.now()}.tmp`;
+        try {
+          await copy(file.backupPath, stagingPath, {
+            overwrite: true,
+            preserveTimestamps: true,
+          });
+          // If a previous restore left the live path as a directory (or any
+          // non-file), rename() can refuse to overwrite it — clear it first.
+          if (await checkPathExists(file.originalPath)) {
+            await rm(file.originalPath, { recursive: true });
+          }
+          await rename(stagingPath, file.originalPath);
+        } catch (error) {
+          // Clean up the staging artifact so a failed restore leaves no debris.
+          await rm(stagingPath, { recursive: true, force: true }).catch(() => {});
+          throw error;
+        }
+        restoredFiles.push(file.originalPath);
+      }
     }
+  } catch (error) {
+    // Best-effort rollback: return every touched path to its pre-restore state
+    // captured above, then rethrow so the caller knows the undo did not apply.
+    if (preRestore) {
+      await rollbackToSnapshot(preRestore);
+    }
+    throw error;
   }
 
   return restoredFiles;
+};
+
+/**
+ * Best-effort rollback of the live filesystem to the state captured in a
+ * (pre-restore) snapshot. Used to recover after a failed `restoreSnapshot`.
+ *
+ * For each captured file: if it existed at capture time, copy its backup back
+ * over the live path; if it did NOT exist at capture time, delete whatever is
+ * now at that path. Every step is wrapped so one failure cannot abort the rest
+ * of the rollback.
+ */
+const rollbackToSnapshot = async (preRestore: Snapshot): Promise<void> => {
+  for (const file of preRestore.files) {
+    try {
+      if (!file.existed) {
+        if (await checkPathExists(file.originalPath)) {
+          await rm(file.originalPath, { recursive: true, force: true });
+        }
+        continue;
+      }
+
+      if (await pathExists(file.backupPath)) {
+        await ensureDir(dirname(file.originalPath));
+        if (await checkPathExists(file.originalPath)) {
+          await rm(file.originalPath, { recursive: true, force: true });
+        }
+        await copy(file.backupPath, file.originalPath, {
+          overwrite: true,
+          preserveTimestamps: true,
+        });
+      }
+    } catch {
+      // Best-effort: keep rolling back the remaining paths.
+    }
+  }
 };
 
 /**

@@ -121,21 +121,24 @@ describe('push command', () => {
     const { pushCommand } = await import('../../src/commands/push.js');
 
     await expect(
-      pushCommand.parseAsync(['--set-upstream', 'main'], { from: 'user' })
+      pushCommand.parseAsync(['--set-upstream'], { from: 'user' })
     ).rejects.toMatchObject({
       code: 'GIT_ERROR',
     });
   });
 
-  it('pushes with a requested upstream branch in non-interactive mode', async () => {
+  it('sets upstream on the current branch in non-interactive mode', async () => {
+    // --set-upstream is a boolean trigger: it always pushes the CURRENT branch,
+    // never a ref named after a flag value.
+    getCurrentBranchMock.mockResolvedValue('main');
     const { pushCommand } = await import('../../src/commands/push.js');
 
-    await pushCommand.parseAsync(['--set-upstream', 'release'], { from: 'user' });
+    await pushCommand.parseAsync(['--set-upstream'], { from: 'user' });
 
     expect(pushMock).toHaveBeenCalledWith('/test-home/.tuck', {
       force: undefined,
       setUpstream: true,
-      branch: 'release',
+      branch: 'main',
     });
     expect(loggerSuccessMock).toHaveBeenCalledWith('Pushed successfully!');
   });

@@ -1,6 +1,6 @@
 import { open, stat } from 'fs/promises';
 import { expandPath } from './paths.js';
-import { basename, dirname } from 'path';
+import { sep } from 'path';
 import { IS_WINDOWS } from './platform.js';
 
 /**
@@ -183,12 +183,13 @@ export const isScriptFile = async (path: string): Promise<boolean> => {
 export const shouldExcludeFromBin = async (path: string): Promise<boolean> => {
   const expandedPath = expandPath(path);
 
-  // Check if file is in a bin directory by checking if parent directory is 'bin'
-  // This matches both ~/bin and ~/.local/bin directories
-  const parentDir = dirname(expandedPath);
-  const parentBasename = basename(parentDir);
-  
-  const isInBinDir = parentBasename === 'bin';
+  // Only the user's executable bin roots count. Resolve them to absolute
+  // paths and require the file to live *under* one of those exact roots.
+  // Matching on the parent directory's basename ('bin') is wrong because it
+  // would also exclude unrelated paths like ~/projects/bin/script and would
+  // over/under-match variants such as ~/.local/foo-bin.
+  const binRoots = [expandPath('~/bin'), expandPath('~/.local/bin')];
+  const isInBinDir = binRoots.some((root) => expandedPath.startsWith(root + sep));
 
   if (!isInBinDir) {
     return false;
