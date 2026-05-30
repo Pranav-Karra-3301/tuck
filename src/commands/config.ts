@@ -4,11 +4,12 @@ import { prompts, logger, banner, colors as c } from '../ui/index.js';
 import { getTuckDir, getConfigPath, collapsePath } from '../lib/paths.js';
 import { loadConfig, saveConfig, resetConfig } from '../lib/config.js';
 import { loadManifest } from '../lib/manifest.js';
-import { addRemote, removeRemote, hasRemote } from '../lib/git.js';
+import { upsertRemote } from '../lib/git.js';
 import { NotInitializedError, ConfigError } from '../errors.js';
 import type { TuckConfigOutput } from '../schemas/config.schema.js';
 import { setupProvider } from '../lib/providerSetup.js';
 import { describeProviderConfig, getProvider } from '../lib/providers/index.js';
+import { setupRemoteForProvider } from '../lib/remoteSetup.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import { IS_WINDOWS } from '../lib/platform.js';
 
@@ -538,9 +539,11 @@ const runInteractiveConfig = async (): Promise<void> => {
 };
 
 /**
- * Run the remote provider configuration flow
+ * Run the remote provider configuration flow.
+ *
+ * Exported for unit testing the provider-agnostic remote-setup dedup.
  */
-const runConfigRemote = async (): Promise<void> => {
+export const runConfigRemote = async (): Promise<void> => {
   banner();
   prompts.intro('tuck config remote');
 
@@ -579,96 +582,63 @@ const runConfigRemote = async (): Promise<void> => {
 
   await saveConfig(updatedConfig, tuckDir);
 
-  // If a remote URL was provided, update git remote
+  // Track whether a remote URL was ACTUALLY configured so the final message
+  // reflects reality (and never prints a false "Remote configured" success).
+  let configuredRemoteUrl: string | null = result.remoteUrl ?? null;
+
+  // If a remote URL was provided, update the git remote.
   if (result.remoteUrl) {
     try {
-      // Check if origin already exists
-      if (await hasRemote(tuckDir)) {
-        // Remove existing remote
-        await removeRemote(tuckDir, 'origin');
-      }
-      // Add new remote
-      await addRemote(tuckDir, 'origin', result.remoteUrl);
+      // Idempotent upsert: set-url if origin exists, else add. This avoids the
+      // remove-then-add race (a transient state with NO origin) that the old
+      // code created when reconfiguring an existing repo.
+      await upsertRemote(tuckDir, 'origin', result.remoteUrl);
       prompts.log.success('Git remote updated');
     } catch (error) {
       prompts.log.warning(
         `Could not update git remote: ${error instanceof Error ? error.message : String(error)}`
       );
       prompts.log.info(`Manually add remote: git remote add origin ${result.remoteUrl}`);
+      // The remote wasn't actually wired up; don't claim it was.
+      configuredRemoteUrl = null;
     }
   }
 
-  // If switching to a provider that can create repos, offer to create one
-  if (result.mode !== 'local' && result.mode !== 'custom' && !result.remoteUrl) {
-    const shouldCreateRepo = await prompts.confirm(
-      'Would you like to create a repository now?',
-      true
-    );
+  // If no remote URL was configured yet and the provider needs one (github /
+  // gitlab / custom), route through the SAME provider-agnostic remote-setup
+  // helper that `tuck init` uses. This deduplicates the old ad-hoc
+  // createRepo/getPreferredRepoUrl flow and ensures gitlab/custom go through
+  // their own provider instead of a github-shaped path.
+  //
+  // The helper now UPSERTS `origin` itself (no pre-remove dance here), so a
+  // reconfiguration won't hit the remove-then-add race.
+  if (result.mode !== 'local' && !result.remoteUrl) {
+    const provider = getProvider(result.mode, result.config);
+    const { remoteUrl } = await setupRemoteForProvider(provider, tuckDir);
 
-    if (shouldCreateRepo) {
-      const provider = getProvider(result.mode, result.config);
-
-      const repoName = await prompts.text('Repository name:', {
-        defaultValue: 'dotfiles',
-        placeholder: 'dotfiles',
-        validate: (value) => {
-          if (!value) return 'Repository name is required';
-          // Ensure name starts and ends with alphanumeric
-          if (!/^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$/.test(value)) {
-            return 'Repository name must start and end with alphanumeric characters';
-          }
-          return undefined;
-        },
-      });
-
-      const visibility = await prompts.select('Repository visibility:', [
-        { value: 'private', label: 'Private (recommended)', hint: 'Only you can see it' },
-        { value: 'public', label: 'Public', hint: 'Anyone can see it' },
-      ]);
-
-      try {
-        const spinner = prompts.spinner();
-        spinner.start('Creating repository...');
-
-        const repo = await provider.createRepo({
-          name: repoName,
-          description: 'My dotfiles managed with tuck',
-          isPrivate: visibility === 'private',
-        });
-
-        spinner.stop(`Repository created: ${repo.fullName}`);
-
-        // Get preferred URL and add as remote
-        const remoteUrl = await provider.getPreferredRepoUrl(repo);
-
-        try {
-          if (await hasRemote(tuckDir)) {
-            await removeRemote(tuckDir, 'origin');
-          }
-          await addRemote(tuckDir, 'origin', remoteUrl);
-          prompts.log.success('Remote configured');
-        } catch (error) {
-          prompts.log.warning(
-            `Could not add remote: ${error instanceof Error ? error.message : String(error)}`
-          );
-        }
-
-        // Update config with repo name
-        updatedConfig.remote = {
-          ...updatedConfig.remote,
-          repoName,
-        };
-        await saveConfig(updatedConfig, tuckDir);
-      } catch (error) {
-        prompts.log.error(
-          `Failed to create repository: ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
+    if (remoteUrl) {
+      configuredRemoteUrl = remoteUrl;
+      // The shared helper already wired up `origin`; persist the config so the
+      // remote selection survives across runs.
+      updatedConfig.remote = {
+        ...updatedConfig.remote,
+      };
+      await saveConfig(updatedConfig, tuckDir);
     }
   }
 
   console.log();
-  prompts.log.success(`Remote configured: ${describeProviderConfig(result.config)}`);
+  // Final message must mirror reality. For a remote-requiring provider, only
+  // claim success if a remote URL was genuinely configured; otherwise warn with
+  // an actionable next step instead of a silent false "Remote configured".
+  if (result.mode !== 'local' && !configuredRemoteUrl) {
+    prompts.log.warning(
+      `Provider set to ${describeProviderConfig(result.config)}, but no remote was configured — ` +
+        'run `tuck config remote` again or add one manually'
+    );
+  } else {
+    prompts.log.success(`Remote configured: ${describeProviderConfig(result.config)}`);
+  }
   prompts.outro('Done!');
 };
 

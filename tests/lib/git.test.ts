@@ -62,6 +62,12 @@ vi.mock('simple-git', () => {
   };
 });
 
+// cloneRepo shells out to `git clone` via child_process.execFile (simple-git
+// does not honor maxBuffer), so mock execFile to emulate a successful run and
+// guarantee no real git process is ever spawned.
+const { execFileMock } = vi.hoisted(() => ({ execFileMock: vi.fn() }));
+vi.mock('child_process', () => ({ execFile: execFileMock }));
+
 // Import after mocking
 import {
   initRepo,
@@ -81,6 +87,8 @@ import {
   getRemotes,
   addRemote,
   removeRemote,
+  setRemoteUrl,
+  upsertRemote,
   setDefaultBranch,
   cloneRepo,
 } from '../../src/lib/git.js';
@@ -92,6 +100,11 @@ describe('git', () => {
     // Reset the mock git instance before each test
     mockGitInstance = createMockGit();
     vi.clearAllMocks();
+    // promisify(execFile) calls execFile(cmd, args, opts, callback); resolve it.
+    execFileMock.mockImplementation((_cmd, _args, opts, cb) => {
+      const callback = typeof opts === 'function' ? opts : cb;
+      callback?.(null, { stdout: '', stderr: '' });
+    });
   });
 
   afterEach(() => {
@@ -131,9 +144,16 @@ describe('git', () => {
   // ============================================================================
 
   describe('cloneRepo', () => {
-    it('should clone a repository', async () => {
+    it('should clone a repository via execFile', async () => {
       const destDir = join(TEST_HOME, 'cloned-repo');
       await expect(cloneRepo('https://github.com/user/repo.git', destDir)).resolves.not.toThrow();
+
+      expect(execFileMock).toHaveBeenCalledWith(
+        'git',
+        ['clone', 'https://github.com/user/repo.git', destDir],
+        expect.objectContaining({ maxBuffer: expect.any(Number) }),
+        expect.any(Function)
+      );
     });
   });
 
@@ -152,6 +172,49 @@ describe('git', () => {
   describe('removeRemote', () => {
     it('should remove a remote', async () => {
       await expect(removeRemote(TEST_TUCK_DIR, 'origin')).resolves.not.toThrow();
+    });
+  });
+
+  describe('setRemoteUrl', () => {
+    it('should run git remote set-url', async () => {
+      mockGitInstance.remote = vi.fn().mockResolvedValue(undefined);
+      await expect(
+        setRemoteUrl(TEST_TUCK_DIR, 'origin', 'https://github.com/user/new.git')
+      ).resolves.not.toThrow();
+      expect(mockGitInstance.remote).toHaveBeenCalledWith([
+        'set-url',
+        'origin',
+        'https://github.com/user/new.git',
+      ]);
+    });
+  });
+
+  describe('upsertRemote', () => {
+    it('updates an existing origin in place (set-url, never add)', async () => {
+      // Default mock getRemotes returns an existing origin → hasRemote === true.
+      mockGitInstance.remote = vi.fn().mockResolvedValue(undefined);
+      await upsertRemote(TEST_TUCK_DIR, 'origin', 'https://github.com/user/new.git');
+
+      expect(mockGitInstance.remote).toHaveBeenCalledWith([
+        'set-url',
+        'origin',
+        'https://github.com/user/new.git',
+      ]);
+      expect(mockGitInstance.addRemote).not.toHaveBeenCalled();
+    });
+
+    it('adds origin when none exists (no remove+add race)', async () => {
+      // No remotes → hasRemote === false → addRemote path.
+      mockGitInstance.getRemotes = vi.fn().mockResolvedValue([]);
+      mockGitInstance.remote = vi.fn().mockResolvedValue(undefined);
+
+      await upsertRemote(TEST_TUCK_DIR, 'origin', 'https://github.com/user/new.git');
+
+      expect(mockGitInstance.addRemote).toHaveBeenCalledWith(
+        'origin',
+        'https://github.com/user/new.git'
+      );
+      expect(mockGitInstance.remote).not.toHaveBeenCalled();
     });
   });
 

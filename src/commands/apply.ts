@@ -24,7 +24,8 @@ import { isGhInstalled, ghCloneRepo, repoExists } from '../lib/github.js';
 import { createPreApplySnapshot } from '../lib/timemachine.js';
 import { smartMerge, isShellFile, generateMergePreview } from '../lib/merge.js';
 import { CATEGORIES } from '../constants.js';
-import { tuckManifestSchema, type TuckManifestOutput } from '../schemas/manifest.schema.js';
+import { type TuckManifestOutput } from '../schemas/manifest.schema.js';
+import { loadManifestFile } from '../lib/manifestFile.js';
 import { findPlaceholders, restoreContent, restoreFiles as restoreSecrets, getAllSecrets, getSecretCount } from '../lib/secrets/index.js';
 import { createResolver } from '../lib/secretBackends/index.js';
 import { loadConfig } from '../lib/config.js';
@@ -168,11 +169,31 @@ const buildProviderCloneUrl = (
 };
 
 /**
+ * How {@link cloneSource} should materialize a resolved source.
+ *
+ * - `custom`  → clone through the CUSTOM provider's cloneRepo (file:// / full
+ *   git URLs / explicit `custom:` prefix). Carries the provider's clone
+ *   timeout/maxBuffer and never touches any github code path.
+ * - `git`     → clone a provider-BUILT URL (gitlab/github) through the capped
+ *   git.ts cloneRepo.
+ * - `github-repo-id` → a bare owner/repo resolved against github: gh-clone when
+ *   the CLI is present, otherwise a github URL BUILT via provider.buildRepoUrl
+ *   (never a hard-coded literal) cloned through git.ts.
+ */
+type CloneTransport = 'custom' | 'git' | 'github-repo-id';
+
+interface ResolvedSource {
+  repoId: string;
+  isUrl: boolean;
+  local?: 'dir' | 'tarball';
+  /** Clone transport for non-local sources (ignored when `local` is set). */
+  cloneVia?: CloneTransport;
+}
+
+/**
  * Resolve a source (username or repo URL) to a full repository identifier
  */
-const resolveSource = async (
-  source: string
-): Promise<{ repoId: string; isUrl: boolean; local?: 'dir' | 'tarball' }> => {
+const resolveSource = async (source: string): Promise<ResolvedSource> => {
   const configuredRemote = (await loadConfig(getTuckDir()))?.remote ?? { mode: 'local' as const };
   const providerPrefixMatch = source.match(/^(github|gitlab|custom):(.*)$/u);
 
@@ -180,12 +201,15 @@ const resolveSource = async (
     const providerMode = providerPrefixMatch[1] as Extract<ProviderMode, 'github' | 'gitlab' | 'custom'>;
     const repoId = providerPrefixMatch[2];
 
+    // custom:<URL> → provider-neutral clone (custom provider). github/gitlab →
+    // a provider-BUILT URL cloned through the capped git.ts path.
+    if (providerMode === 'custom') {
+      return { repoId, isUrl: true, cloneVia: 'custom' };
+    }
     return {
-      repoId:
-        providerMode === 'custom'
-          ? repoId
-          : buildProviderCloneUrl(providerMode, repoId, configuredRemote),
+      repoId: buildProviderCloneUrl(providerMode, repoId, configuredRemote),
       isUrl: true,
+      cloneVia: 'git',
     };
   }
 
@@ -199,21 +223,34 @@ const resolveSource = async (
     };
   }
 
-  // Check if it's a full URL
+  // A file:// URL or full git URL (https/git@). These are provider-neutral and
+  // route through the CUSTOM provider's capped clone — never github.
   if (source.includes('://') || source.startsWith('git@')) {
-    return { repoId: source, isUrl: true };
+    return { repoId: source, isUrl: true, cloneVia: 'custom' };
   }
 
-  // Check if it's a repo identifier (owner/repo or group/subgroup/repo)
+  // Check if it's a repo identifier (owner/repo or group/subgroup/repo).
+  // Resolve against the CONFIGURED provider first, building the URL via that
+  // provider's buildRepoUrl — never an unconditional github.com.
   if (source.includes('/')) {
     if (configuredRemote.mode === 'gitlab') {
       return {
         repoId: buildProviderCloneUrl('gitlab', source, configuredRemote),
         isUrl: true,
+        cloneVia: 'git',
+      };
+    }
+    if (configuredRemote.mode === 'github') {
+      return {
+        repoId: buildProviderCloneUrl('github', source, configuredRemote),
+        isUrl: true,
+        cloneVia: 'git',
       };
     }
 
-    return { repoId: source, isUrl: false };
+    // No (or local) configured provider → fall back to github resolution, but
+    // still build the URL via the provider, never a hard-coded literal.
+    return { repoId: source, isUrl: false, cloneVia: 'github-repo-id' };
   }
 
   // Assume it's a username, try to find their dotfiles repo
@@ -232,10 +269,13 @@ const resolveSource = async (
       const dotfilesRepo = await provider.findDotfilesRepo(source);
       if (dotfilesRepo) {
         logger.success(`Found repository: ${dotfilesRepo}`);
-        return {
-          repoId: mode === 'github' ? dotfilesRepo : buildProviderCloneUrl(mode, dotfilesRepo, configuredRemote),
-          isUrl: mode !== 'github',
-        };
+        return mode === 'github'
+          ? { repoId: dotfilesRepo, isUrl: false, cloneVia: 'github-repo-id' }
+          : {
+              repoId: buildProviderCloneUrl(mode, dotfilesRepo, configuredRemote),
+              isUrl: true,
+              cloneVia: 'git',
+            };
       }
     } catch {
       continue;
@@ -258,10 +298,13 @@ const resolveSource = async (
               ).repoExists(repoId)
         ) {
           logger.success(`Found repository: ${repoId}`);
-          return {
-            repoId: mode === 'github' ? repoId : buildProviderCloneUrl(mode, repoId, configuredRemote),
-            isUrl: mode !== 'github',
-          };
+          return mode === 'github'
+            ? { repoId, isUrl: false, cloneVia: 'github-repo-id' }
+            : {
+                repoId: buildProviderCloneUrl(mode, repoId, configuredRemote),
+                isUrl: true,
+                cloneVia: 'git',
+              };
         }
       } catch {
         continue;
@@ -273,13 +316,15 @@ const resolveSource = async (
 };
 
 /**
- * Clone the source repository to a temporary directory
+ * Clone the source repository to a temporary directory.
+ *
+ * The clone is routed by {@link ResolvedSource.cloneVia} so a provider-neutral
+ * source (file:// / full git URL / `custom:`) goes through the CUSTOM provider's
+ * capped clone instead of any github code path, and a bare owner/repo never
+ * builds a hard-coded `https://github.com/...` literal.
  */
-const cloneSource = async (
-  repoId: string,
-  isUrl: boolean,
-  local?: 'dir' | 'tarball'
-): Promise<string> => {
+const cloneSource = async (resolved: ResolvedSource): Promise<string> => {
+  const { repoId, isUrl, local, cloneVia } = resolved;
   const tempDir = join(tmpdir(), `tuck-apply-${Date.now()}`);
   await ensureDir(tempDir);
 
@@ -295,18 +340,32 @@ const cloneSource = async (
     return tempDir;
   }
 
-  if (isUrl) {
-    await cloneRepo(repoId, tempDir);
-  } else {
-    // Use gh CLI to clone if available, otherwise construct URL
+  if (cloneVia === 'custom') {
+    // file:// / full git URL / explicit custom: — clone through the custom
+    // provider (its timeout/maxBuffer), provider-neutral, never github.
+    await getProvider('custom').cloneRepo(repoId, tempDir);
+    return tempDir;
+  }
+
+  if (cloneVia === 'github-repo-id' || (!cloneVia && !isUrl)) {
+    // Bare owner/repo resolved against github: gh-clone when the CLI is present,
+    // otherwise a github URL BUILT via the provider (never a hard-coded literal)
+    // cloned through the capped git.ts path.
     if (await isGhInstalled()) {
       await ghCloneRepo(repoId, tempDir);
     } else {
-      const url = `https://github.com/${repoId}.git`;
+      const slashIndex = repoId.indexOf('/');
+      const owner = repoId.slice(0, slashIndex);
+      const repoName = repoId.slice(slashIndex + 1);
+      const url = getProvider('github').buildRepoUrl(owner, repoName, 'https');
       await cloneRepo(url, tempDir);
     }
+    return tempDir;
   }
 
+  // cloneVia === 'git' (or a legacy isUrl source): a provider-built URL cloned
+  // through the capped git.ts path.
+  await cloneRepo(repoId, tempDir);
   return tempDir;
 };
 
@@ -321,9 +380,9 @@ const readClonedManifest = async (repoDir: string): Promise<TuckManifestOutput |
   }
 
   try {
-    const content = await readFile(manifestPath, 'utf-8');
-    const parsed = JSON.parse(content) as unknown;
-    return tuckManifestSchema.parse(parsed);
+    // A cloned/remote manifest is untrusted: load it through the shared,
+    // schema-validating loader so a hostile manifest is rejected before use.
+    return await loadManifestFile(manifestPath);
   } catch {
     return null;
   }
@@ -784,26 +843,24 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
   prompts.intro('tuck apply');
 
   // Resolve the source
-  let repoId: string;
-  let isUrl: boolean;
-  let local: 'dir' | 'tarball' | undefined;
+  let resolved: ResolvedSource;
+  const repoId = source; // Snapshot label: the original source the user typed.
 
   try {
-    const resolved = await resolveSource(source);
-    repoId = resolved.repoId;
-    isUrl = resolved.isUrl;
-    local = resolved.local;
+    resolved = await resolveSource(source);
   } catch (error) {
     prompts.log.error(error instanceof Error ? error.message : String(error));
     return;
   }
+
+  const { local } = resolved;
 
   // Clone the repository
   let repoDir: string;
   try {
     const spinner = prompts.spinner();
     spinner.start(local ? 'Reading local source...' : 'Cloning repository...');
-    repoDir = await cloneSource(repoId, isUrl, local);
+    repoDir = await cloneSource(resolved);
     spinner.stop(local ? 'Source ready' : 'Repository cloned');
   } catch (error) {
     prompts.log.error(`Failed to clone: ${error instanceof Error ? error.message : String(error)}`);
@@ -996,11 +1053,12 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
   if (options.json) setJsonMode(true, 'tuck apply');
 
   // Resolve the source
-  const { repoId, isUrl, local } = await resolveSource(source);
+  const resolved = await resolveSource(source);
+  const { local } = resolved;
 
   // Clone (or materialize a local source).
   logger.info(local ? 'Reading local source...' : 'Cloning repository...');
-  const repoDir = await cloneSource(repoId, isUrl, local);
+  const repoDir = await cloneSource(resolved);
 
   try {
     // Read the manifest
@@ -1050,7 +1108,7 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
 
       if (existingPaths.length > 0) {
         logger.info('Creating backup snapshot...');
-        const snapshot = await createPreApplySnapshot(existingPaths, repoId);
+        const snapshot = await createPreApplySnapshot(existingPaths, source);
         logger.success(`Backup created: ${snapshot.id}`);
       }
     }

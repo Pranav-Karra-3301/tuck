@@ -1,9 +1,21 @@
 import simpleGit, { SimpleGit, StatusResult } from 'simple-git';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { GitError } from '../errors.js';
 import { pathExists } from './paths.js';
 import { join } from 'path';
 import { readdir } from 'fs/promises';
 import { REPO_STAGE_BLOCKLIST } from './state.js';
+import { GIT_OPERATION_TIMEOUTS } from './validation.js';
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Upper bound on the buffered output of a single git child process. Mirrors
+ * CustomProvider.cloneRepo so a hostile/huge remote cannot make tuck buffer
+ * unbounded data into memory during a clone.
+ */
+const CLONE_MAX_BUFFER = 10 * 1024 * 1024; // 10MB
 
 export interface GitStatus {
   isRepo: boolean;
@@ -49,8 +61,18 @@ export const initRepo = async (dir: string): Promise<void> => {
 
 export const cloneRepo = async (url: string, dir: string): Promise<void> => {
   try {
-    const git = simpleGit();
-    await git.clone(url, dir);
+    // Bound the clone: a hung or hostile remote must never let `tuck init` /
+    // `tuck apply` hang forever, nor buffer unbounded output into memory.
+    //
+    // We shell out to `git clone` via Node's `execFile` (mirroring
+    // CustomProvider.cloneRepo) instead of simple-git, because simple-git v3
+    // does NOT forward `maxBuffer` to the underlying child process — only its
+    // `timeout.block` is honored, so the memory bound would silently be a no-op.
+    // `execFile`'s own `timeout` kills the process and `maxBuffer` caps output.
+    await execFileAsync('git', ['clone', url, dir], {
+      timeout: GIT_OPERATION_TIMEOUTS.CLONE,
+      maxBuffer: CLONE_MAX_BUFFER,
+    });
   } catch (error) {
     throw new GitError(`Failed to clone repository from ${url}`, String(error));
   }
@@ -71,6 +93,38 @@ export const removeRemote = async (dir: string, name: string): Promise<void> => 
     await git.removeRemote(name);
   } catch (error) {
     throw new GitError('Failed to remove remote', String(error));
+  }
+};
+
+/**
+ * Point an existing remote at a new URL (`git remote set-url <name> <url>`).
+ */
+export const setRemoteUrl = async (dir: string, name: string, url: string): Promise<void> => {
+  try {
+    const git = createGit(dir);
+    await git.remote(['set-url', name, url]);
+  } catch (error) {
+    throw new GitError('Failed to set remote url', String(error));
+  }
+};
+
+/**
+ * Idempotently configure a remote: if it already exists, update its URL in
+ * place; otherwise add it. This avoids the remove-then-add race (a transient
+ * state with NO origin) that breaks concurrent/repeated reconfiguration.
+ */
+export const upsertRemote = async (dir: string, name: string, url: string): Promise<void> => {
+  try {
+    if (await hasRemote(dir, name)) {
+      await setRemoteUrl(dir, name, url);
+    } else {
+      await addRemote(dir, name, url);
+    }
+  } catch (error) {
+    if (error instanceof GitError) {
+      throw error;
+    }
+    throw new GitError('Failed to upsert remote', String(error));
   }
 };
 

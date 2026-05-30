@@ -155,10 +155,23 @@ vi.mock('../../src/lib/remoteChecks.js', () => ({
   checkLocalMode: checkLocalModeMock,
 }));
 
+// sync.ts loads config and consults the provider gate before pushing. Mock both
+// so these tests exercise the (non-local) happy path without touching real config.
+const loadConfigMock = vi.fn();
+const assertRemoteAvailableMock = vi.fn();
+vi.mock('../../src/lib/config.js', () => ({
+  loadConfig: loadConfigMock,
+}));
+vi.mock('../../src/lib/providers/index.js', () => ({
+  assertRemoteAvailable: assertRemoteAvailableMock,
+}));
+
 describe('sync command behavior', () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
+    loadConfigMock.mockResolvedValue({ remote: { mode: 'github' } });
+    assertRemoteAvailableMock.mockImplementation(() => {});
     loadManifestMock.mockResolvedValue({ files: {} });
     loadTuckignoreMock.mockResolvedValue(new Set());
     getAllTrackedFilesMock.mockResolvedValue({});

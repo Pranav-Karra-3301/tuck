@@ -41,6 +41,8 @@ import {
 } from '../lib/files.js';
 import { addToTuckignore, loadTuckignore, isIgnored } from '../lib/tuckignore.js';
 import { checkLocalMode } from '../lib/remoteChecks.js';
+import { loadConfig } from '../lib/config.js';
+import { assertRemoteAvailable } from '../lib/providers/index.js';
 import { runPreSyncHook, runPostSyncHook, type HookOptions } from '../lib/hooks.js';
 import { NotInitializedError, SecretsDetectedError, MergeConflictsError } from '../errors.js';
 import { setJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
@@ -937,6 +939,11 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
 const pushWithSpinner = async (tuckDir: string, _options: SyncOptions): Promise<boolean> => {
   const spinner = prompts.spinner();
   try {
+    // Provider gate: refuse to push in local-only mode even if a stray 'origin'
+    // remote is present. The configured provider mode is authoritative.
+    const config = await loadConfig(tuckDir);
+    assertRemoteAvailable(config.remote, 'push');
+
     const status = await getStatus(tuckDir);
     const needsUpstream = !status.tracking;
     const branch = status.branch;
@@ -1080,6 +1087,10 @@ export const runSyncCommand = async (
     const message = messageArg || options.message;
     const result = await syncFiles(tuckDir, changes, { ...options, message });
     if (options.push !== false && !(await checkLocalMode(tuckDir)) && (await hasRemote(tuckDir))) {
+      // Provider gate: local-only mode refuses the push regardless of any stray
+      // 'origin' remote. The configured provider mode is authoritative.
+      const config = await loadConfig(tuckDir);
+      assertRemoteAvailable(config.remote, 'push');
       try {
         await push(tuckDir);
       } catch (err) {
@@ -1146,6 +1157,10 @@ export const runSyncCommand = async (
     // Push by default unless --no-push
     // Commander converts --no-push to push: false, default is push: true
     if (options.push !== false && !(await checkLocalMode(tuckDir)) && (await hasRemote(tuckDir))) {
+      // Provider gate: local-only mode refuses the push regardless of any stray
+      // 'origin' remote. The configured provider mode is authoritative.
+      const config = await loadConfig(tuckDir);
+      assertRemoteAvailable(config.remote, 'push');
       await withSpinner('Pushing to remote...', async () => {
         await push(tuckDir);
       });
