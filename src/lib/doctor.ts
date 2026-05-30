@@ -26,8 +26,17 @@ import {
   validateSafeManifestDestination,
   validateSafeSourcePath,
 } from './paths.js';
+import { isSandbox, getWriteRoot } from './writeContext.js';
+import { platform } from 'os';
 
-export const DOCTOR_CATEGORIES = ['env', 'repo', 'manifest', 'security', 'hooks'] as const;
+export const DOCTOR_CATEGORIES = [
+  'env',
+  'repo',
+  'manifest',
+  'security',
+  'hooks',
+  'sandboxing',
+] as const;
 
 export type DoctorCategory = (typeof DOCTOR_CATEGORIES)[number];
 export type DoctorStatus = 'pass' | 'warn' | 'fail';
@@ -812,6 +821,84 @@ const checkHooksSafety: DoctorCheck = {
   },
 };
 
+/**
+ * OS-level sandbox wrapper recipes (audit §3.3). tuck's own `--root`
+ * confinement is a software boundary; for stronger isolation an agent runner
+ * should ALSO wrap the whole `tuck` invocation in an OS sandbox. We surface
+ * copy-pasteable recipes for the platforms tuck targets so an operator can pick
+ * the appropriate one without leaving the tool.
+ */
+const SANDBOX_RECIPES: Record<string, string> = {
+  // macOS: Apple's seatbelt. Confine writes to a single scratch directory.
+  'macOS sandbox-exec (.sb profile)':
+    'sandbox-exec -p \'(version 1)(deny default)(allow process*)(allow file-read*)' +
+    '(allow file-write* (subpath "/tmp/tuck-sandbox"))\' tuck apply <src> --root /tmp/tuck-sandbox',
+  // Linux: bubblewrap — bind a tmpfs over $HOME and a writable sandbox dir.
+  'Linux bubblewrap (bwrap)':
+    'bwrap --ro-bind / / --tmpfs /tmp --bind /tmp/tuck-sandbox /tmp/tuck-sandbox ' +
+    '--unshare-net tuck apply <src> --root /tmp/tuck-sandbox',
+  // Linux: Landlock LSM (kernel >= 5.13) — restrict the filesystem hierarchy a
+  // process may touch; pair with a small launcher that adds a write rule for the
+  // sandbox dir only. (No setuid required.)
+  'Linux Landlock (LSM, kernel >= 5.13)':
+    'Use a Landlock launcher granting LANDLOCK_ACCESS_FS_WRITE_FILE only under ' +
+    '/tmp/tuck-sandbox, then exec: tuck apply <src> --root /tmp/tuck-sandbox',
+  // Container: the strongest, fully disposable boundary.
+  'Container / docker':
+    'docker run --rm -v "$PWD/sandbox:/sandbox" -e TUCK_TARGET_ROOT=/sandbox ' +
+    'node:20 npx tuck apply <src>',
+};
+
+const checkSandboxRecipes: DoctorCheck = {
+  id: 'sandboxing.os-wrappers',
+  category: 'sandboxing',
+  run: async () => {
+    const recipeLines = Object.entries(SANDBOX_RECIPES).map(
+      ([name, cmd]) => `${name}: ${cmd}`
+    );
+    return {
+      id: 'sandboxing.os-wrappers',
+      category: 'sandboxing',
+      // Mention every wrapper in the message so it is greppable even without details.
+      message:
+        'OS-level sandbox wrappers available: macOS sandbox-exec, Linux bubblewrap (bwrap), ' +
+        'Linux Landlock, and container/docker (audit §3.3)',
+      status: 'pass',
+      details: recipeLines.join(' | '),
+      fix: 'Wrap `tuck apply/restore` in one of these OS sandboxes for defense-in-depth alongside `--root`',
+    };
+  },
+};
+
+const checkRootConfinement: DoctorCheck = {
+  id: 'sandboxing.root-confinement',
+  category: 'sandboxing',
+  run: async () => {
+    // `--root`/TUCK_TARGET_ROOT confinement is always compiled in. When a sandbox
+    // is actively engaged we surface the live root so the operator can confirm it.
+    if (isSandbox()) {
+      return {
+        id: 'sandboxing.root-confinement',
+        category: 'sandboxing',
+        status: 'pass',
+        message: `--root write confinement is ACTIVE (sandbox engaged on ${platform()})`,
+        details: `All writes are confined under: ${collapsePath(getWriteRoot())}`,
+      };
+    }
+
+    return {
+      id: 'sandboxing.root-confinement',
+      category: 'sandboxing',
+      status: 'pass',
+      message: '--root write confinement is available (pass `--root <dir>` or set TUCK_TARGET_ROOT)',
+      details:
+        'Run any mutating command with `--root <dir>` to confine every write under a dry home; ' +
+        'reads still use the real ~. Combine with `tuck verify --apply --root <dir>` for a safe preview.',
+      fix: 'For untrusted/agent-driven runs, always pass `--root <dir>` (and ideally an OS sandbox wrapper)',
+    };
+  },
+};
+
 const doctorChecks: DoctorCheck[] = [
   checkNodeVersion,
   checkHomeDirectory,
@@ -831,6 +918,8 @@ const doctorChecks: DoctorCheck[] = [
   checkFallbackKeystoreUsage,
   checkUnsupportedReservedConfig,
   checkHooksSafety,
+  checkSandboxRecipes,
+  checkRootConfinement,
 ];
 
 const buildDoctorSummary = (checks: DoctorCheckResult[]): DoctorSummary => {

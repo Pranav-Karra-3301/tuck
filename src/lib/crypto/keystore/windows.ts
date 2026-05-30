@@ -46,15 +46,12 @@ export class WindowsKeystore implements Keystore {
   }
 
   async isAvailable(): Promise<boolean> {
-    if (process.platform !== 'win32') return false;
-
-    try {
-      // Check if cmdkey is available (should be on all Windows versions)
-      await execFileAsync('where', ['cmdkey'], { timeout: 5000 });
-      return true;
-    } catch {
-      return false;
-    }
+    // Intentionally always false: while `cmdkey` can *store* credentials, it
+    // cannot retrieve passwords programmatically (see retrieve() below), so a
+    // store-without-retrieve keystore is worse than not storing at all. Reporting
+    // unavailable makes tuck cleanly fall back to the encrypted file keystore,
+    // which supports the full store/retrieve/delete cycle on Windows.
+    return false;
   }
 
   async store(service: string, account: string, secret: string): Promise<void> {

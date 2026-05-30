@@ -38,12 +38,15 @@ export const getKeystore = async (): Promise<Keystore> => {
       return linux;
     }
   } else if (platform === 'win32') {
+    // Windows uses the encrypted fallback file keystore by design. The Windows
+    // Credential Manager (cmdkey) can store credentials but cannot retrieve
+    // passwords programmatically, so WindowsKeystore.isAvailable() always returns
+    // false and we fall through to the fallback below — which supports the full
+    // store/retrieve/delete cycle and encrypts secrets at rest.
     const windows = new WindowsKeystore();
-    // Windows keystore can't retrieve passwords, so we skip it
-    // and go straight to fallback
     if (await windows.isAvailable()) {
-      // Only use for store/delete, not retrieve
-      // Actually, just use fallback for consistency
+      cachedKeystore = windows;
+      return windows;
     }
   }
 

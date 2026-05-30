@@ -15,9 +15,17 @@ import { spawn } from 'child_process';
 import boxen from 'boxen';
 import { prompts } from './prompts.js';
 import { colors as c } from './theme.js';
+import { IS_WINDOWS } from '../lib/platform.js';
 import type { FileConflict, ConflictResolution } from '../lib/mergeConflicts.js';
 
 const MAX_PREVIEW_LINES = 20;
+
+/**
+ * Resolve the editor used for manual conflict resolution. Honors $EDITOR then
+ * $VISUAL, falling back to a platform default (Windows ships notepad, not vi).
+ */
+export const getDefaultEditor = (): string =>
+  process.env.EDITOR || process.env.VISUAL || (IS_WINDOWS ? 'notepad' : 'vi');
 
 /**
  * Build a compact side-by-side preview of the conflict for the terminal.
@@ -64,7 +72,7 @@ const truncate = (content: string, maxLines: number): string => {
  * back when the editor exits.
  */
 const editInEditor = async (conflict: FileConflict): Promise<string> => {
-  const editor = process.env.EDITOR || process.env.VISUAL || 'vi';
+  const editor = getDefaultEditor();
   const tmpPath = join(
     tmpdir(),
     `tuck-merge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${sanitizeForFilename(conflict.path)}`
@@ -144,7 +152,7 @@ export const resolveConflictsInteractively = async (
       [
         { value: 'ours', label: 'Keep local (ours)', hint: 'discard remote changes for this file' },
         { value: 'theirs', label: 'Keep remote (theirs)', hint: 'discard local changes for this file' },
-        { value: 'edited', label: `Edit in $EDITOR (${process.env.EDITOR || 'vi'})`, hint: 'merge manually' },
+        { value: 'edited', label: `Edit in $EDITOR (${getDefaultEditor()})`, hint: 'merge manually' },
         { value: 'abort', label: 'Abort entire sync', hint: 'roll back the pull, no changes applied' },
       ]
     );

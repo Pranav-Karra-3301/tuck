@@ -41,6 +41,30 @@ export const resetWriteContext = (): void => {
   knownRepoRoots = [];
 };
 
+/** A captured write-context state for save/restore around a transient override. */
+export interface WriteContextSnapshot {
+  ctx: WriteContext | null;
+  repoRoots: string[];
+}
+
+/**
+ * Capture the full write-context state so a transient override (e.g. a sandboxed
+ * dry-apply) can restore the PRIOR state afterward instead of nuking it —
+ * preserving any global `--root` boundary set by the CLI preAction hook. A
+ * blind resetWriteContext() in a long-running process (MCP) would otherwise drop
+ * the sandbox and let subsequent commands write to the real home.
+ */
+export const snapshotWriteContext = (): WriteContextSnapshot => ({
+  ctx: ctx ? { ...ctx } : null,
+  repoRoots: [...knownRepoRoots],
+});
+
+/** Restore a previously captured write-context state. */
+export const restoreWriteContext = (snap: WriteContextSnapshot): void => {
+  ctx = snap.ctx ? { ...snap.ctx } : null;
+  knownRepoRoots = [...snap.repoRoots];
+};
+
 /** The directory all writes are confined to (real home unless sandboxed). */
 export const getWriteRoot = (): string => (ctx ? ctx.root : homedir());
 

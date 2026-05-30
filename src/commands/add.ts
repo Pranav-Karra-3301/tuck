@@ -210,27 +210,45 @@ const runAdd = async (paths: string[], options: AddOptions): Promise<void> => {
     return;
   }
 
-  // --plan / --dry-run: print what would be added without mutating.
-  if (options.plan || options.dryRun) {
-    const planned = paths.map((p) => ({
-      path: p,
-      category: options.category,
-      bundle: options.bundle ?? 'default',
-    }));
-    if (isJsonMode()) {
-      emitJsonOk({ plan: planned });
-    } else {
-      logger.heading('Plan — would track:');
-      for (const p of planned) logger.file('add', `${p.path} [${p.category ?? 'auto'}]`);
-    }
-    return;
-  }
-
   const candidates: TrackPathCandidate[] = paths.map((path) => ({
     path,
     category: options.category,
     name: options.name,
   }));
+
+  // --plan / --dry-run: run the FULL preparation pipeline (category detection,
+  // secret scan, validation) so the plan output is what a real `tuck add` would
+  // produce — not an echo of raw input. preparePathsForTracking performs no
+  // manifest writes; addFiles (skipped below) is the only mutating step.
+  if (options.plan || options.dryRun) {
+    const plannedFiles = await preparePathsForTracking(candidates, tuckDir, {
+      category: options.category,
+      name: options.name,
+      force: options.force,
+      secretHandling: isJsonMode() || options.yes ? 'strict' : 'interactive',
+      forceBypassCommand: 'tuck add --force',
+      repo: options.repo,
+      repoKey: options.repoKey,
+    });
+
+    const bundle = options.bundle ?? 'default';
+    if (isJsonMode()) {
+      emitJsonOk({
+        plan: plannedFiles.map((f) => ({
+          source: f.source,
+          category: f.category,
+          destination: f.destination,
+          sensitive: f.sensitive,
+          scope: f.scope ?? 'home',
+          bundle,
+        })),
+      });
+    } else {
+      logger.heading('Plan — would track:');
+      for (const f of plannedFiles) logger.file('add', `${f.source} [${f.category}]`);
+    }
+    return;
+  }
 
   const filesToAdd = await preparePathsForTracking(candidates, tuckDir, {
     category: options.category,

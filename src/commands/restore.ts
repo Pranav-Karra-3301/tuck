@@ -28,7 +28,7 @@ import { runPreRestoreHook, runPostRestoreHook, type HookOptions } from '../lib/
 import { NotInitializedError, FileNotFoundError, TuckError } from '../errors.js';
 import { CATEGORIES } from '../constants.js';
 import type { RestoreOptions } from '../types.js';
-import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
+import { setJsonMode, isJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
 import { restoreFiles as restoreSecrets, getSecretCount } from '../lib/secrets/index.js';
 
 /**
@@ -229,9 +229,9 @@ const restoreFilesInternal = async (
         repoRoot = (await resolveRepoRoot(file.repoKey)) ?? options.repoRoot;
       }
       if (!repoRoot || !file.repoKey || !file.repoRelative) {
-        logger.warning(
-          `Skipping repo-scoped file (repo not bound on this machine): ${file.source}`
-        );
+        const msg = `Skipping repo-scoped file (repo not bound on this machine): ${file.source}`;
+        logger.warning(msg);
+        if (isJsonMode()) addJsonWarning(msg);
         skipped.push(file.source);
         continue;
       }
@@ -251,7 +251,9 @@ const restoreFilesInternal = async (
 
     // Check if source exists in repository
     if (!(await pathExists(file.destination))) {
-      logger.warning(`Source not found in repository: ${file.source}`);
+      const msg = `Source not found in repository: ${file.source}`;
+      logger.warning(msg);
+      if (isJsonMode()) addJsonWarning(msg);
       continue;
     }
 

@@ -146,6 +146,48 @@ describe('restore command behavior', () => {
     );
   });
 
+  it('surfaces skipped-file warnings in the JSON envelope.warnings', async () => {
+    // A tracked file whose repository copy is missing on disk triggers the
+    // "Source not found in repository" skip path. In JSON mode that human
+    // warning must also surface in envelope.warnings.
+    getTrackedFileBySourceMock.mockResolvedValue({
+      id: 'zshrc',
+      file: {
+        source: '~/.zshrc',
+        destination: 'files/shell/zshrc',
+        category: 'shell',
+      },
+    });
+    // Repository source does not exist -> the file is skipped with a warning.
+    pathExistsMock.mockResolvedValue(false);
+
+    const { runRestoreCommand } = await import('../../src/commands/restore.js');
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    await runRestoreCommand(['~/.zshrc'], { json: true, yes: true, noHooks: true });
+
+    writeSpy.mockRestore();
+
+    const lines = writes.join('').trim().split('\n').filter(Boolean);
+    expect(lines.length).toBe(1);
+
+    const env = JSON.parse(lines[0]);
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck restore');
+    expect(Array.isArray(env.warnings)).toBe(true);
+    expect(env.warnings.length).toBeGreaterThan(0);
+    expect(env.warnings.some((w: string) => /source not found in repository/i.test(w))).toBe(true);
+    // Nothing was restored.
+    expect(env.data.restored).toBe(0);
+  });
+
   it('fails fast when manifest destination is unsafe', async () => {
     getAllTrackedFilesMock.mockResolvedValue({
       zshrc: {
