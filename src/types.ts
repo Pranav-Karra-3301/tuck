@@ -151,7 +151,10 @@ export interface SyncOptions extends CommonOptions {
 
 export interface PushOptions extends CommonOptions {
   force?: boolean;
-  setUpstream?: string;
+  // Boolean trigger: set the upstream for the CURRENT branch on push.
+  // (Was historically typed as a string ref, which let `--set-upstream <name>`
+  // push a ref named after the flag value instead of the current branch.)
+  setUpstream?: boolean;
 }
 
 export interface PullOptions extends CommonOptions {

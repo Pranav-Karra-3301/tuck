@@ -157,8 +157,10 @@ export class BitwardenBackend implements SecretBackend {
     const env = this.getEnv();
 
     try {
-      // Get the item by name or ID
-      const { stdout } = await execFileAsync('bw', ['get', 'item', ref.backendPath], { env });
+      // Get the item by name or ID. The `--` end-of-options separator ensures
+      // the user-controlled backendPath is treated as a positional argument and
+      // never reinterpreted as a flag (matches op/pass).
+      const { stdout } = await execFileAsync('bw', ['get', 'item', '--', ref.backendPath], { env });
       const item = JSON.parse(stdout) as BitwardenItem;
 
       // Determine which field to return

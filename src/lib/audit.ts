@@ -141,14 +141,18 @@ export async function getRecentAuditEntries(limit = 10): Promise<AuditEntry[]> {
 
       for (const line of lines) {
         try {
-          parsedEntries.push(JSON.parse(line) as AuditEntry);
+          const parsed = JSON.parse(line) as AuditEntry;
+          // Skip entries whose timestamp is unparseable. A NaN timestamp would
+          // poison the sort below and break the recency check, so we never
+          // fabricate placeholder 'unknown' entries for corrupted log lines.
+          if (Number.isNaN(new Date(parsed.timestamp).getTime())) {
+            continue;
+          }
+          parsedEntries.push(parsed);
         } catch {
-          parsedEntries.push({
-            timestamp: 'unknown',
-            action: 'DANGEROUS_CONFIRMED' as AuditAction,
-            command: 'unknown',
-            details: line,
-          });
+          // Corrupted/garbage log line — skip it entirely rather than
+          // fabricating an 'unknown' entry that would produce NaN downstream.
+          continue;
         }
       }
     }

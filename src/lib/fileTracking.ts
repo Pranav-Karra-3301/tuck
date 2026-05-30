@@ -9,7 +9,7 @@ import {
   detectCategory,
 } from './paths.js';
 import { addFileToManifest, loadManifest } from './manifest.js';
-import { copyFileOrDir, createSymlink, deleteFileOrDir, getFileChecksum, getFileInfo } from './files.js';
+import { copyFileOrDir, createSymlink, getFileChecksum, getFileInfo } from './files.js';
 import { loadConfig } from './config.js';
 import { CATEGORIES } from '../constants.js';
 import { ensureDir } from 'fs-extra';
@@ -216,17 +216,39 @@ export const trackFilesWithProgress = async (
       // Copy or symlink based on strategy. Repo-scoped tracking is copy-only:
       // the live file stays put inside its repo checkout (never symlinked).
       if (strategy === 'symlink' && !isRepo) {
-        // Symlink strategy keeps the repository as source of truth:
-        // 1) copy source into repo, 2) replace source with symlink to repo.
+        // Symlink strategy keeps the repository as source of truth. Order is
+        // safety-critical:
+        //   1) Copy source into the repo FIRST so a durable copy exists before
+        //      we touch the user's original at all.
+        //   2) Only then replace the source with a symlink to the repo copy.
+        // The original is never removed by us until the durable repo copy is in
+        // place — createSymlink performs the replacement against that durable
+        // copy, so if it fails we can always restore from the repo.
         await copyFileOrDir(expandedPath, destination, { overwrite: true });
 
         try {
           await createSymlink(destination, expandedPath, { overwrite: true });
-        } catch (error) {
-          // Best effort rollback so users keep a working source file if symlinking fails.
-          await deleteFileOrDir(expandedPath).catch(() => undefined);
-          await copyFileOrDir(destination, expandedPath, { overwrite: true }).catch(() => undefined);
-          throw error;
+        } catch (symlinkError) {
+          // The symlink failed. createSymlink's overwrite step may have already
+          // removed the user's original source, so restore it from the durable
+          // repo copy. NEVER swallow errors here: if the restore ALSO fails the
+          // user could be left without their file, and they must be told loudly.
+          try {
+            await copyFileOrDir(destination, expandedPath, { overwrite: true });
+          } catch (restoreError) {
+            const symlinkMsg =
+              symlinkError instanceof Error ? symlinkError.message : String(symlinkError);
+            const restoreMsg =
+              restoreError instanceof Error ? restoreError.message : String(restoreError);
+            throw new Error(
+              `Failed to create symlink for ${collapsePath(file.path)} (${symlinkMsg}) ` +
+                `and restoring the original from the repository copy also failed (${restoreMsg}). ` +
+                `A durable copy may remain at ${destination}.`
+            );
+          }
+          // Restore succeeded: surface the original symlink failure so the
+          // caller records it and the user is never told this silently "worked".
+          throw symlinkError;
         }
       } else {
         // Default: copy file into the repository (from the absolute live path).
