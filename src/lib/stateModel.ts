@@ -14,6 +14,7 @@
  */
 
 import { join } from 'path';
+import { stat } from 'fs/promises';
 import { pathExists } from './paths.js';
 import { getFileChecksum } from './files.js';
 import { getAllTrackedFiles } from './manifest.js';
@@ -59,6 +60,43 @@ export const classifyFileState = (
   return 'ok';
 };
 
+/**
+ * Compute the LIVE checksum for a tracked source, with a conservative
+ * mtime+size short-circuit (the git/make cache).
+ *
+ * For a SINGLE regular file that carries a recorded `sourceMtimeMs` +
+ * `sourceSize` (captured when its checksum was last written), we stat the live
+ * file first; if it is a regular file whose size AND mtimeMs both equal the
+ * recorded values, the content cannot have changed under any normal edit, so we
+ * reuse the recorded `checksum` instead of re-hashing.
+ *
+ * Deliberate limitations (kept narrow so we never MISS a real change):
+ *   - Directories are NEVER short-circuited: a nested file change does not move
+ *     the directory's own mtime/size, so we always re-hash dirs.
+ *   - Legacy entries without recorded mtime/size fall back to full hashing.
+ *   - The ONLY accepted miss is a content change that preserves BOTH the mtime
+ *     and the byte size — the same (vanishingly rare) blind spot every
+ *     mtime+size cache has.
+ */
+const computeLiveChecksum = async (
+  sourceAbs: string,
+  file: TrackedFileOutput
+): Promise<string | null> => {
+  if (file.sourceMtimeMs !== undefined && file.sourceSize !== undefined) {
+    try {
+      const st = await stat(sourceAbs);
+      if (st.isFile() && st.size === file.sourceSize && st.mtimeMs === file.sourceMtimeMs) {
+        // Unchanged single file — trust the recorded checksum, skip re-hashing.
+        return file.checksum;
+      }
+    } catch {
+      // Missing/inaccessible — fall through; pathExists + hashing below decide.
+    }
+  }
+
+  return (await pathExists(sourceAbs)) ? await getFileChecksum(sourceAbs) : null;
+};
+
 /** Resolve and classify the state of a single tracked file. */
 export const computeFileState = async (
   tuckDir: string,
@@ -83,7 +121,7 @@ export const computeFileState = async (
     };
   }
 
-  const liveChecksum = (await pathExists(sourceAbs)) ? await getFileChecksum(sourceAbs) : null;
+  const liveChecksum = await computeLiveChecksum(sourceAbs, file);
 
   return {
     id,
