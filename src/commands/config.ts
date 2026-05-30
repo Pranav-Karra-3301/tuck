@@ -438,6 +438,8 @@ const runConfigWizard = async (config: TuckConfigOutput, tuckDir: string): Promi
   };
 
   await saveConfig(updatedConfig, tuckDir);
+  // Drop the now-stale cache so a later read in the same run sees the write.
+  clearConfigCache();
 
   console.log();
   prompts.log.success('Configuration updated!');
@@ -493,6 +495,8 @@ const editConfigInteractive = async (config: TuckConfigOutput, tuckDir: string):
 
   setNestedValue(configObj, selectedKey, newValue);
   await saveConfig(config, tuckDir);
+  // Drop the now-stale cache so a later read in the same run sees the write.
+  clearConfigCache();
 
   prompts.log.success(`Updated ${selectedKey} = ${formatConfigValue(newValue)}`);
 };
