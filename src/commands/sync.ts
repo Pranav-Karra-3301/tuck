@@ -16,7 +16,7 @@ import {
   getAllTrackedFiles,
   updateFileInManifest,
   removeFileFromManifest,
-  getTrackedFileBySource,
+  buildSourceIndex,
   clearManifestCache,
 } from '../lib/manifest.js';
 import { stageAll, commit, getStatus, push, hasRemote, fetch, pull } from '../lib/git.js';
@@ -39,7 +39,7 @@ import {
   formatFileSize,
   SIZE_BLOCK_THRESHOLD,
 } from '../lib/files.js';
-import { addToTuckignore, loadTuckignore, isIgnored } from '../lib/tuckignore.js';
+import { addToTuckignore, loadTuckignore, isIgnoredInSet } from '../lib/tuckignore.js';
 import { checkLocalMode } from '../lib/remoteChecks.js';
 import { loadConfig } from '../lib/config.js';
 import { assertRemoteAvailable } from '../lib/providers/index.js';
@@ -62,6 +62,19 @@ interface SyncResult {
   // The sync command only handles changes to already-tracked files.
 }
 
+/**
+ * A {@link FileChange} that also carries the manifest `id` it was derived from.
+ *
+ * detectChanges already knows each change's manifest id while iterating the
+ * tracked-files map, so it stamps it here. syncFiles can then update/remove the
+ * right manifest entry in O(1) instead of re-loading the whole map and doing a
+ * linear `Object.values(...).find(f => f.source === change.source)` per change
+ * (which was O(changes × tracked)). `id` is optional so changes constructed
+ * elsewhere remain assignable; syncFiles falls back to the old lookup when it's
+ * absent.
+ */
+type TrackedFileChange = FileChange & { id?: string };
+
 const pathsResolveToSameLocation = async (sourcePath: string, destinationPath: string): Promise<boolean> => {
   try {
     const [resolvedSource, resolvedDestination] = await Promise.all([
@@ -74,12 +87,12 @@ const pathsResolveToSameLocation = async (sourcePath: string, destinationPath: s
   }
 };
 
-const detectChanges = async (tuckDir: string): Promise<FileChange[]> => {
+const detectChanges = async (tuckDir: string): Promise<TrackedFileChange[]> => {
   const files = await getAllTrackedFiles(tuckDir);
   const ignoredPaths = await loadTuckignore(tuckDir);
-  const changes: FileChange[] = [];
+  const changes: TrackedFileChange[] = [];
 
-  for (const [, file] of Object.entries(files)) {
+  for (const [id, file] of Object.entries(files)) {
     // Home-scoped sources are confined to $HOME; repo-scoped sources live under a
     // (possibly out-of-home) repo root, so they are validated by their repoRelative
     // safety in the manifest schema, not by validateSafeSourcePath.
@@ -113,6 +126,7 @@ const detectChanges = async (tuckDir: string): Promise<FileChange[]> => {
         status: 'deleted',
         source: file.source,
         destination: file.destination,
+        id,
       });
       continue;
     }
@@ -126,6 +140,7 @@ const detectChanges = async (tuckDir: string): Promise<FileChange[]> => {
           status: 'modified',
           source: file.source,
           destination: file.destination,
+          id,
         });
       }
     } catch {
@@ -134,6 +149,7 @@ const detectChanges = async (tuckDir: string): Promise<FileChange[]> => {
         status: 'modified',
         source: file.source,
         destination: file.destination,
+        id,
       });
     }
   }
@@ -324,16 +340,21 @@ const detectNewDotfiles = async (tuckDir: string): Promise<DetectedFile[]> => {
   // Get all detected dotfiles on the system
   const detected = await detectDotfiles();
 
+  // Build the "already tracked?" lookup ONCE (O(tracked)) instead of calling the
+  // O(N) getTrackedFileBySource per detected file (which was O(detected × tracked)),
+  // and load .tuckignore ONCE up front instead of re-reading it per detected file.
+  const sourceIndex = await buildSourceIndex(tuckDir);
+  const ignoredPaths = await loadTuckignore(tuckDir);
+
   // Filter out already-tracked files, ignored files, and excluded patterns
   const newFiles: DetectedFile[] = [];
 
   for (const file of detected) {
-    // Skip if already tracked
-    const tracked = await getTrackedFileBySource(tuckDir, file.path);
-    if (tracked) continue;
+    // Skip if already tracked (O(1) map lookup, same answer as getTrackedFileBySource).
+    if (sourceIndex.has(file.path)) continue;
 
-    // Skip if in .tuckignore
-    if (await isIgnored(tuckDir, file.path)) continue;
+    // Skip if in .tuckignore (same normalization as isIgnored, no per-file disk read).
+    if (isIgnoredInSet(ignoredPaths, file.path)) continue;
 
     newFiles.push(file);
   }
@@ -393,7 +414,7 @@ const generateCommitMessage = (result: SyncResult): string => {
 
 const syncFiles = async (
   tuckDir: string,
-  changes: FileChange[],
+  changes: TrackedFileChange[],
   options: SyncOptions
 ): Promise<SyncResult> => {
   const result: SyncResult = {
@@ -410,6 +431,17 @@ const syncFiles = async (
   // Run pre-sync hook
   await runPreSyncHook(tuckDir, hookOptions);
 
+  // Load the tracked-files map ONCE up front. The old loop re-read it per change
+  // (twice each: once to home-confine the source, once inside the modified/
+  // deleted branch to recover the file id), turning id recovery into an
+  // O(changes × tracked) linear scan. We index by source for O(1) lookups and
+  // prefer the id already stamped on the change by detectChanges.
+  const trackedFiles = await getAllTrackedFiles(tuckDir);
+  const bySource = new Map<string, { id: string; file: (typeof trackedFiles)[string] }>();
+  for (const [id, file] of Object.entries(trackedFiles)) {
+    bySource.set(file.source, { id, file });
+  }
+
   // Process each change
   for (const change of changes) {
     if (!change.destination) {
@@ -417,10 +449,13 @@ const syncFiles = async (
     }
     validateSafeManifestDestination(change.destination);
 
-    // Look up the tracked entry so we can resolve a repo-scoped live path and
-    // only home-confine genuine home-scoped sources.
-    const trackedFiles = await getAllTrackedFiles(tuckDir);
-    const trackedEntry = Object.values(trackedFiles).find((f) => f.source === change.source);
+    // Resolve the tracked entry + its id via the prebuilt index. Prefer the id
+    // carried on the change (set by detectChanges); fall back to the source
+    // lookup for changes constructed elsewhere.
+    const indexed = bySource.get(change.source);
+    const trackedEntry = indexed?.file;
+    const fileId = change.id ?? indexed?.id;
+
     if (trackedEntry?.scope !== 'repo') {
       validateSafeSourcePath(change.source);
     }
@@ -449,10 +484,8 @@ const syncFiles = async (
           await copyFileOrDir(sourcePath, destPath, { overwrite: true });
         }
 
-        // Update checksum in manifest
+        // Update checksum in manifest using the id resolved above.
         const newChecksum = await getFileChecksum(destPath);
-        const files = await getAllTrackedFiles(tuckDir);
-        const fileId = Object.entries(files).find(([, f]) => f.source === change.source)?.[0];
 
         if (fileId) {
           await updateFileInManifest(tuckDir, fileId, {
@@ -467,10 +500,7 @@ const syncFiles = async (
         // Delete the file from the tuck repository
         await deleteFileOrDir(destPath);
 
-        // Remove from manifest
-        const files = await getAllTrackedFiles(tuckDir);
-        const fileId = Object.entries(files).find(([, f]) => f.source === change.source)?.[0];
-
+        // Remove from manifest using the id resolved above.
         if (fileId) {
           await removeFileFromManifest(tuckDir, fileId);
         }

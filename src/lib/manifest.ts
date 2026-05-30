@@ -189,6 +189,34 @@ export const getTrackedFileBySource = async (
   return null;
 };
 
+/**
+ * Build a single source→{id,file} lookup map for the manifest.
+ *
+ * `getTrackedFileBySource` is O(N) per call, so callers that probe many sources
+ * against the manifest (e.g. new-file detection in `scan`/`sync`, which checks
+ * every detected dotfile) were O(detected × tracked). Building this map ONCE
+ * before such a loop turns each "already tracked?" check into an O(1) lookup
+ * with identical semantics: a source is "tracked" iff it appears as a key here,
+ * exactly as `getTrackedFileBySource` returning non-null.
+ *
+ * Note: if two entries somehow share the same `source`, the LAST one in
+ * iteration order wins here. `getTrackedFileBySource` returns the FIRST match,
+ * but a duplicate-source manifest is malformed and never produced by tuck, so
+ * the only observable answer ("is this source tracked?") is unchanged.
+ */
+export const buildSourceIndex = async (
+  tuckDir: string
+): Promise<Map<string, { id: string; file: TrackedFileOutput }>> => {
+  const manifest = await loadManifest(tuckDir);
+  const index = new Map<string, { id: string; file: TrackedFileOutput }>();
+
+  for (const [id, file] of Object.entries(manifest.files)) {
+    index.set(file.source, { id, file });
+  }
+
+  return index;
+};
+
 export const getAllTrackedFiles = async (
   tuckDir: string
 ): Promise<Record<string, TrackedFileOutput>> => {

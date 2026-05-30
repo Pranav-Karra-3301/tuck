@@ -5,6 +5,8 @@ const loadManifestMock = vi.fn();
 const getTrackedFileBySourceMock = vi.fn();
 const detectDotfilesMock = vi.fn();
 const isIgnoredMock = vi.fn();
+const buildSourceIndexMock = vi.fn();
+const loadTuckignoreMock = vi.fn();
 const shouldExcludeFromBinMock = vi.fn();
 const trackFilesWithProgressMock = vi.fn();
 const preparePathsForTrackingMock = vi.fn();
@@ -64,6 +66,7 @@ vi.mock('../../src/lib/paths.js', () => ({
 vi.mock('../../src/lib/manifest.js', () => ({
   loadManifest: loadManifestMock,
   getTrackedFileBySource: getTrackedFileBySourceMock,
+  buildSourceIndex: buildSourceIndexMock,
 }));
 
 vi.mock('../../src/lib/detect.js', () => ({
@@ -76,6 +79,8 @@ vi.mock('../../src/lib/detect.js', () => ({
 
 vi.mock('../../src/lib/tuckignore.js', () => ({
   isIgnored: isIgnoredMock,
+  loadTuckignore: loadTuckignoreMock,
+  isIgnoredInSet: (set: Set<string>, path: string) => set.has(path),
 }));
 
 vi.mock('../../src/lib/binary.js', () => ({
@@ -106,6 +111,8 @@ describe('scan command behavior', () => {
       },
     ]);
     isIgnoredMock.mockResolvedValue(false);
+    buildSourceIndexMock.mockResolvedValue(new Map());
+    loadTuckignoreMock.mockResolvedValue(new Set<string>());
     shouldExcludeFromBinMock.mockResolvedValue(false);
     trackFilesWithProgressMock.mockResolvedValue({
       succeeded: 1,

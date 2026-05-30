@@ -54,14 +54,92 @@ const evalCondition = (ctx: TemplateContext, expr: string): boolean => {
   return Boolean(v) && v !== 'false' && v !== '0';
 };
 
-const renderInline = (text: string, ctx: TemplateContext): string => {
-  // Handle {{#if …}}…{{else}}…{{/if}} blocks first (non-nested for safety).
-  text = text.replace(
-    /\{\{#if\s+([^}]+)\}\}([\s\S]*?)(?:\{\{else\}\}([\s\S]*?))?\{\{\/if\}\}/g,
-    (_, expr: string, ifBranch: string, elseBranch?: string) => {
-      return evalCondition(ctx, expr) ? ifBranch : elseBranch ?? '';
+/**
+ * Resolve {{#if …}}…{{else}}…{{/if}} blocks with correct nesting.
+ *
+ * The old single-pass regex was non-greedy and matched the FIRST {{/if}}, so a
+ * nested block (`{{#if a}}A{{#if b}}B{{/if}}C{{/if}}`) closed the OUTER block on
+ * the INNER {{/if}} — leaking `C{{/if}}` and dropping the inner condition. We
+ * stack-parse instead: each {{#if}} pushes a frame, the matching {{/if}} pops it
+ * and substitutes the chosen branch (with nested children already resolved). The
+ * matching is depth-balanced, so the correct {{/if}} closes each block.
+ */
+const renderInlineConditionals = (text: string, ctx: TemplateContext): string => {
+  const tokenRe = /\{\{#if\s+([^}]+)\}\}|\{\{else\}\}|\{\{\/if\}\}/g;
+
+  type Frame = {
+    expr: string;
+    /** Literal output accumulated so far for the active branch. */
+    out: string;
+    /** True once {{else}} has been seen for this frame. */
+    sawElse: boolean;
+    /** Captured if-branch text, set when {{else}} is reached. */
+    ifBranch: string;
+  };
+
+  const stack: Frame[] = [];
+  const newFrame = (expr: string): Frame => ({ expr, out: '', sawElse: false, ifBranch: '' });
+
+  // Root accumulator (text outside any conditional).
+  let root = '';
+  const append = (s: string): void => {
+    if (stack.length === 0) root += s;
+    else stack[stack.length - 1].out += s;
+  };
+
+  let lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = tokenRe.exec(text)) !== null) {
+    // Emit the literal text between the previous token and this one.
+    append(text.slice(lastIndex, m.index));
+    lastIndex = tokenRe.lastIndex;
+
+    const [matched, ifExpr] = m;
+    if (ifExpr !== undefined) {
+      stack.push(newFrame(ifExpr));
+    } else if (matched === '{{else}}') {
+      if (stack.length === 0) {
+        // Stray {{else}} with no open if — preserve verbatim.
+        append(matched);
+      } else {
+        const top = stack[stack.length - 1];
+        top.sawElse = true;
+        top.ifBranch = top.out;
+        top.out = '';
+      }
+    } else {
+      // {{/if}}
+      if (stack.length === 0) {
+        // Stray {{/if}} — preserve verbatim.
+        append(matched);
+      } else {
+        const frame = stack.pop()!;
+        const ifBranch = frame.sawElse ? frame.ifBranch : frame.out;
+        const elseBranch = frame.sawElse ? frame.out : '';
+        append(evalCondition(ctx, frame.expr) ? ifBranch : elseBranch);
+      }
     }
-  );
+  }
+
+  // Trailing literal text after the final token.
+  append(text.slice(lastIndex));
+
+  // Unbalanced {{#if}} with no closing {{/if}}: flush remaining frames as-is so
+  // we never silently drop content (preserve prior best-effort behavior).
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    const flushed = frame.sawElse
+      ? `{{#if ${frame.expr}}}${frame.ifBranch}{{else}}${frame.out}`
+      : `{{#if ${frame.expr}}}${frame.out}`;
+    append(flushed);
+  }
+
+  return root;
+};
+
+const renderInline = (text: string, ctx: TemplateContext): string => {
+  // Handle {{#if …}}…{{else}}…{{/if}} blocks first, with correct nesting.
+  text = renderInlineConditionals(text, ctx);
 
   // Then substitutions: {{var}} and {{var | default "x"}}
   text = text.replace(/\{\{\s*([^}|]+?)\s*(?:\|\s*default\s+"([^"]*)")?\s*\}\}/g, (_, key: string, def?: string) => {
@@ -77,7 +155,11 @@ const renderCommentMarkers = (text: string, ctx: TemplateContext): string => {
   // Comment char is anything before "tuck:" on the line.
   const lines = text.split('\n');
   const out: string[] = [];
-  type Frame = { keep: boolean; sawElse: boolean };
+  // `ifTaken` records whether THIS block's own condition (the `if` branch) was
+  // true, independent of the parent. On `else` we recompute keep from the
+  // parent's keep AND the negation of `ifTaken` — so a child branch can never
+  // resurrect output the parent suppressed.
+  type Frame = { keep: boolean; sawElse: boolean; ifTaken: boolean };
   const stack: Frame[] = [];
 
   const ifRe = /^\s*([#;/*]+)\s*tuck:if\s+(.+?)\s*$/;
@@ -89,14 +171,17 @@ const renderCommentMarkers = (text: string, ctx: TemplateContext): string => {
     if (ifM) {
       const cond = evalCondition(ctx, ifM[2]);
       const parentKeep = stack.length === 0 || stack[stack.length - 1].keep;
-      stack.push({ keep: parentKeep && cond, sawElse: false });
+      stack.push({ keep: parentKeep && cond, sawElse: false, ifTaken: cond });
       continue;
     }
     if (elseRe.test(line)) {
       if (stack.length > 0) {
         const top = stack[stack.length - 1];
         top.sawElse = true;
-        top.keep = !top.keep;
+        // A child's else-body must stay gated by the parent: keep the else body
+        // only when the parent kept this block AND the if branch was not taken.
+        const parentKeep = stack.length === 1 || stack[stack.length - 2].keep;
+        top.keep = parentKeep && !top.ifTaken;
       }
       continue;
     }

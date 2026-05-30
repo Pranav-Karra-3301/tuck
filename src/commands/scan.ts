@@ -1,13 +1,13 @@
 import { Command } from 'commander';
 import { prompts, logger, banner, colors as c } from '../ui/index.js';
 import { getTuckDir, collapsePath, expandPath } from '../lib/paths.js';
-import { loadManifest, getTrackedFileBySource } from '../lib/manifest.js';
+import { loadManifest, buildSourceIndex } from '../lib/manifest.js';
 import { detectDotfiles, DETECTION_CATEGORIES, DetectedFile } from '../lib/detect.js';
 import { NotInitializedError } from '../errors.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
 import { preparePathsForTracking } from '../lib/trackPipeline.js';
 import { shouldExcludeFromBin } from '../lib/binary.js';
-import { isIgnored } from '../lib/tuckignore.js';
+import { loadTuckignore, isIgnoredInSet } from '../lib/tuckignore.js';
 import { setJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 
 export interface ScanOptions {
@@ -266,14 +266,20 @@ export const runScan = async (options: ScanOptions): Promise<void> => {
     return;
   }
 
+  // Build the "already tracked?" lookup ONCE (O(tracked)) instead of calling the
+  // O(N) getTrackedFileBySource per detected file, and load .tuckignore ONCE up
+  // front instead of re-reading it per detected file inside isIgnored().
+  const sourceIndex = await buildSourceIndex(tuckDir);
+  const ignoredPaths = await loadTuckignore(tuckDir);
+
   // Check which files are already tracked
   const selectableFiles: SelectableFile[] = [];
 
   for (const file of detected) {
-    const tracked = await getTrackedFileBySource(tuckDir, file.path);
+    const tracked = sourceIndex.get(file.path) ?? null;
 
-    // Skip if in .tuckignore
-    if (await isIgnored(tuckDir, file.path)) {
+    // Skip if in .tuckignore (same normalization as isIgnored, no per-file disk read).
+    if (isIgnoredInSet(ignoredPaths, file.path)) {
       continue;
     }
 

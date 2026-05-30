@@ -13,7 +13,7 @@ import {
   collapsePath,
 } from '../lib/paths.js';
 import { saveConfig } from '../lib/config.js';
-import { createManifest } from '../lib/manifest.js';
+import { createManifest, clearManifestCache } from '../lib/manifest.js';
 import { loadManifestFile } from '../lib/manifestFile.js';
 import type { TuckManifest, RemoteConfig } from '../types.js';
 import {
@@ -1198,6 +1198,11 @@ const initFromRemote = async (tuckDir: string, remoteUrl: string): Promise<void>
   await withSpinner(`Cloning from ${remoteUrl}...`, async () => {
     await cloneRepo(remoteUrl, tuckDir);
   });
+
+  // The clone just wrote the manifest out-of-band. Drop any in-memory manifest
+  // cache so a later loadManifest in this same run (e.g. the restore step) reads
+  // the freshly-cloned manifest, never a stale cached one.
+  clearManifestCache();
 
   // Verify manifest exists
   if (!(await pathExists(getManifestPath(tuckDir)))) {

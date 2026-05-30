@@ -69,6 +69,9 @@ vi.mock('../../src/lib/config.js', () => ({
 
 vi.mock('../../src/lib/manifest.js', () => ({
   createManifest: createManifestMock,
+  // init.ts now drops the manifest cache after a clone; the command imports this
+  // binding, so the mock must provide it (a no-op here).
+  clearManifestCache: vi.fn(),
 }));
 
 vi.mock('../../src/lib/git.js', () => ({
