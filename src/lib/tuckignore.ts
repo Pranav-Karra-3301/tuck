@@ -100,16 +100,28 @@ export const addToTuckignore = async (tuckDir: string, path: string): Promise<vo
 };
 
 /**
+ * Check if a path is in a PRE-LOADED ignore set.
+ *
+ * This is the synchronous core of {@link isIgnored}: it performs the exact same
+ * path normalization (expand → collapse) and membership test, but against a Set
+ * the caller already loaded with {@link loadTuckignore}. Detection loops that
+ * probe many paths should `loadTuckignore` once and call this per path instead
+ * of calling {@link isIgnored} (which re-reads .tuckignore from disk every time).
+ */
+export const isIgnoredInSet = (ignoredPaths: Set<string>, path: string): boolean => {
+  // Normalize path for comparison
+  const expanded = expandPath(path);
+  const collapsed = collapsePath(expanded);
+
+  return ignoredPaths.has(collapsed);
+};
+
+/**
  * Check if a path is in .tuckignore
  */
 export const isIgnored = async (tuckDir: string, path: string): Promise<boolean> => {
   const ignoredPaths = await loadTuckignore(tuckDir);
-  
-  // Normalize path for comparison
-  const expanded = expandPath(path);
-  const collapsed = collapsePath(expanded);
-  
-  return ignoredPaths.has(collapsed);
+  return isIgnoredInSet(ignoredPaths, path);
 };
 
 /**

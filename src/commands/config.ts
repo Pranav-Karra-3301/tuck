@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { spawn } from 'child_process';
 import { prompts, logger, banner, colors as c } from '../ui/index.js';
 import { getTuckDir, getConfigPath, collapsePath } from '../lib/paths.js';
-import { loadConfig, saveConfig, resetConfig } from '../lib/config.js';
+import { loadConfig, saveConfig, resetConfig, clearConfigCache } from '../lib/config.js';
 import { loadManifest } from '../lib/manifest.js';
 import { upsertRemote } from '../lib/git.js';
 import { NotInitializedError, ConfigError } from '../errors.js';
@@ -215,7 +215,7 @@ const runConfigGet = async (key: string, options: ConfigGetOptions = {}): Promis
   }
 };
 
-const runConfigSet = async (
+export const runConfigSet = async (
   key: string,
   value: string,
   options: ConfigSetOptions = {}
@@ -241,6 +241,10 @@ const runConfigSet = async (
   setNestedValue(configObj, key, parsedValue);
 
   await saveConfig(config, tuckDir);
+  // saveConfig leaves the cache populated with the just-written value. Drop it so
+  // a later loadConfig re-reads disk and an out-of-band change isn't masked by a
+  // stale in-memory cache for the rest of this run.
+  clearConfigCache();
 
   if (isJsonMode()) {
     emitJsonOk({ key, value: parsedValue, updated: true });
@@ -581,6 +585,9 @@ export const runConfigRemote = async (): Promise<void> => {
   };
 
   await saveConfig(updatedConfig, tuckDir);
+  // Drop the post-write cache so any subsequent load re-reads disk (avoids a
+  // stale in-memory config masking an out-of-band change during this run).
+  clearConfigCache();
 
   // Track whether a remote URL was ACTUALLY configured so the final message
   // reflects reality (and never prints a false "Remote configured" success).
@@ -624,6 +631,7 @@ export const runConfigRemote = async (): Promise<void> => {
         ...updatedConfig.remote,
       };
       await saveConfig(updatedConfig, tuckDir);
+      clearConfigCache();
     }
   }
 

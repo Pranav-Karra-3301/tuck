@@ -14,7 +14,7 @@ import {
 import { copy, ensureDir } from 'fs-extra';
 import { join, dirname, basename, relative } from 'path';
 import { constants } from 'fs';
-import { FileNotFoundError, PermissionError } from '../errors.js';
+import { FileNotFoundError, PermissionError, TuckError } from '../errors.js';
 import { expandPath, pathExists, isDirectory, validateSafeDestinationPath } from './paths.js';
 import { allowedRoots } from './writeContext.js';
 import { IS_WINDOWS } from './platform.js';
@@ -153,28 +153,66 @@ export const getFileInfo = async (filepath: string): Promise<FileInfo> => {
   }
 };
 
-export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
-  const expandedPath = expandPath(dirpath);
-  const files: string[] = [];
+/**
+ * Result of a single recursive directory walk.
+ *
+ * `files` is the deterministically sorted list of tracked regular files (the
+ * exact same list `getDirectoryFiles` returns). `totalSize` is the summed byte
+ * size of those files, collected during the SAME walk so callers that need the
+ * size never have to traverse the tree a second time.
+ */
+export interface DirectoryTreeStats {
+  files: string[];
+  totalSize: number;
+}
 
-  // Skip common temporary/cache files and git repos that change frequently
-  const skipPatterns = [
-    '.DS_Store',
-    'Thumbs.db',
-    '.git', // Skip git directories to prevent nested repos
-    '.gitignore',
-    'node_modules',
-    '.cache',
-    '__pycache__',
-    '*.pyc',
-    '*.swp',
-    '*.tmp',
-    '.npmrc',
-    'package-lock.json',
-    'yarn.lock',
-    'pnpm-lock.yaml',
-  ];
+// Names that are always skipped when walking a tracked directory. Kept in a
+// single place so getDirectoryFiles and getDirectoryTreeStats can never drift.
+const DIRECTORY_SKIP_PATTERNS = [
+  '.DS_Store',
+  'Thumbs.db',
+  '.git', // Skip git directories to prevent nested repos
+  '.gitignore',
+  'node_modules',
+  '.cache',
+  '__pycache__',
+  '*.pyc',
+  '*.swp',
+  '*.tmp',
+  '.npmrc',
+  'package-lock.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+];
 
+const shouldSkipEntry = (name: string): boolean =>
+  DIRECTORY_SKIP_PATTERNS.some((pattern) => {
+    if (pattern.includes('*')) {
+      // Escape special regex characters (especially .) before replacing * with .*
+      const escapedPattern = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+      const regex = new RegExp('^' + escapedPattern + '$');
+      return regex.test(name);
+    }
+    return name === pattern;
+  });
+
+/**
+ * Single recursive walk shared by `getDirectoryFiles` and
+ * `getDirectoryTreeStats`. Pushes regular-file paths into `accFiles` and, when
+ * `collectSize` is true, adds each file's byte size to the returned running
+ * total. Sizes come from the same `lstat` used for symlink detection — since
+ * symlinks are skipped, every collected entry is a regular file whose `lstat`
+ * size equals its `stat` size, so the total is identical to the previous
+ * stat()-per-file approach.
+ *
+ * The file list is NOT sorted here; callers sort the fully-collected list so
+ * ordering matches the historical (sort-after-recurse) behavior exactly.
+ */
+const walkDirectory = async (
+  expandedPath: string,
+  accFiles: string[],
+  collectSize: boolean
+): Promise<number> => {
   let entries;
   try {
     entries = await readdir(expandedPath, { withFileTypes: true });
@@ -183,23 +221,15 @@ export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
     if (process.env.DEBUG) {
       console.warn(`[tuck] Warning: Could not read directory ${expandedPath}:`, error);
     }
-    return files;
+    return 0;
   }
+
+  let totalSize = 0;
 
   for (const entry of entries) {
     const entryPath = join(expandedPath, entry.name);
-    
-    const shouldSkip = skipPatterns.some(pattern => {
-      if (pattern.includes('*')) {
-        // Escape special regex characters (especially .) before replacing * with .*
-        const escapedPattern = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
-        const regex = new RegExp('^' + escapedPattern + '$');
-        return regex.test(entry.name);
-      }
-      return entry.name === pattern;
-    });
-    
-    if (shouldSkip) {
+
+    if (shouldSkipEntry(entry.name)) {
       continue;
     }
 
@@ -213,10 +243,13 @@ export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
       }
 
       if (entry.isDirectory()) {
-        const subFiles = await getDirectoryFiles(entryPath);
-        files.push(...subFiles);
+        totalSize += await walkDirectory(entryPath, accFiles, collectSize);
       } else if (entry.isFile()) {
-        files.push(entryPath);
+        accFiles.push(entryPath);
+        if (collectSize) {
+          // Same size stat() would report for a regular (non-symlink) file.
+          totalSize += lstats.size;
+        }
       }
     } catch (error) {
       // Skip entries we can't access (permission errors, etc.)
@@ -227,7 +260,30 @@ export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
     }
   }
 
+  return totalSize;
+};
+
+export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
+  const expandedPath = expandPath(dirpath);
+  const files: string[] = [];
+  await walkDirectory(expandedPath, files, false);
   return files.sort();
+};
+
+/**
+ * Walk a directory tree ONCE, returning both the (sorted) file list and the
+ * total byte size of those files. Use this instead of calling
+ * `getDirectoryFiles`/`getDirectoryFileCount` and then re-walking to stat each
+ * file when you need the size — it produces an identical file list and size
+ * while traversing the tree a single time.
+ */
+export const getDirectoryTreeStats = async (
+  dirpath: string
+): Promise<DirectoryTreeStats> => {
+  const expandedPath = expandPath(dirpath);
+  const files: string[] = [];
+  const totalSize = await walkDirectory(expandedPath, files, true);
+  return { files: files.sort(), totalSize };
 };
 
 export const getDirectoryFileCount = async (dirpath: string): Promise<number> => {
@@ -256,14 +312,30 @@ export const copyFileOrDir = async (
   await ensureDir(dirname(expandedDest));
 
   const sourceIsDir = await isDirectory(expandedSource);
+  const shouldOverwrite = options?.overwrite ?? true;
+
+  // When overwrite is disabled, never silently MERGE a source directory into an
+  // already-populated target directory: fs-extra's copy would happily union the
+  // two trees, leaving the caller unaware its config landed on top of someone
+  // else's. Fail clearly instead, mirroring the EEXIST guard COPYFILE_EXCL gives
+  // single files below. (We check before any directory is created or copied.)
+  if (sourceIsDir && !shouldOverwrite && (await pathExists(expandedDest))) {
+    throw new TuckError(
+      `Destination already exists: ${expandedDest}`,
+      'DESTINATION_EXISTS',
+      [
+        'Remove or rename the existing destination first',
+        'Pass overwrite to replace it (only if you intend to)',
+      ]
+    );
+  }
 
   try {
-    const shouldOverwrite = options?.overwrite ?? true;
-
     if (sourceIsDir) {
       // Copy directory but skip .git and other problematic files
-      await copy(expandedSource, expandedDest, { 
+      await copy(expandedSource, expandedDest, {
         overwrite: shouldOverwrite,
+        errorOnExist: !shouldOverwrite,
         filter: (src: string) => {
           const name = basename(src);
           // Skip .git directories, node_modules, and cache directories
@@ -271,14 +343,16 @@ export const copyFileOrDir = async (
           return !skipDirs.includes(name);
         }
       });
-      const fileCount = await getDirectoryFileCount(expandedDest);
-      const files = await getDirectoryFiles(expandedDest);
-      let totalSize = 0;
-      for (const file of files) {
-        const stats = await stat(file);
-        totalSize += stats.size;
-      }
-      return { source: expandedSource, destination: expandedDest, fileCount, totalSize };
+      // Single walk: collect the file list AND its total size in one traversal
+      // (was previously a getDirectoryFileCount + getDirectoryFiles + per-file
+      // stat — three passes over the same tree).
+      const { files, totalSize } = await getDirectoryTreeStats(expandedDest);
+      return {
+        source: expandedSource,
+        destination: expandedDest,
+        fileCount: files.length,
+        totalSize,
+      };
     } else {
       // Use COPYFILE_EXCL flag to prevent overwriting when overwrite is false
       // If overwrite is true (default), use mode 0 which allows overwriting
@@ -288,7 +362,19 @@ export const copyFileOrDir = async (
       return { source: expandedSource, destination: expandedDest, fileCount: 1, totalSize: stats.size };
     }
   } catch (error) {
-    throw new PermissionError(destination, 'write');
+    // Preserve the REAL failure cause. A blanket PermissionError hid whether the
+    // copy ran out of disk (ENOSPC), hit a missing path (ENOENT), or collided
+    // with an existing target (EEXIST) — all of which need different handling
+    // upstream. Only translate genuine permission failures into PermissionError;
+    // rethrow everything else with its original .code/.errno intact.
+    if (error instanceof TuckError) {
+      throw error;
+    }
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === 'EACCES' || code === 'EPERM' || code === undefined) {
+      throw new PermissionError(destination, 'write');
+    }
+    throw error;
   }
 };
 

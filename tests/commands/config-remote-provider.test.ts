@@ -53,6 +53,9 @@ vi.mock('../../src/lib/config.js', () => ({
   loadConfig: (...args: unknown[]) => loadConfigMock(...args),
   saveConfig: (...args: unknown[]) => saveConfigMock(...args),
   resetConfig: vi.fn(),
+  // config.ts now clears the config cache after each write; the command imports
+  // this binding, so the mock must provide it (a no-op here).
+  clearConfigCache: vi.fn(),
 }));
 
 vi.mock('../../src/lib/paths.js', () => ({

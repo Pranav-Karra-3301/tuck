@@ -26,6 +26,7 @@ import { smartMerge, isShellFile, generateMergePreview } from '../lib/merge.js';
 import { CATEGORIES } from '../constants.js';
 import { type TuckManifestOutput } from '../schemas/manifest.schema.js';
 import { loadManifestFile } from '../lib/manifestFile.js';
+import { clearManifestCache } from '../lib/manifest.js';
 import { findPlaceholders, restoreContent, restoreFiles as restoreSecrets, getAllSecrets, getSecretCount } from '../lib/secrets/index.js';
 import { createResolver } from '../lib/secretBackends/index.js';
 import { loadConfig } from '../lib/config.js';
@@ -867,6 +868,10 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
     return;
   }
 
+  // cloneSource just rewrote a repo out-of-band. Drop any in-memory manifest
+  // cache so the rest of this run reads fresh state, never a stale manifest.
+  clearManifestCache();
+
   try {
     // Read the manifest
     const manifest = await readClonedManifest(repoDir);
@@ -1059,6 +1064,10 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
   // Clone (or materialize a local source).
   logger.info(local ? 'Reading local source...' : 'Cloning repository...');
   const repoDir = await cloneSource(resolved);
+
+  // cloneSource just rewrote a repo out-of-band. Drop any in-memory manifest
+  // cache so the rest of this run reads fresh state, never a stale manifest.
+  clearManifestCache();
 
   try {
     // Read the manifest
