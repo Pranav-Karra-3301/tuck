@@ -159,4 +159,33 @@ describe('apply honors manifest permissions for non-ssh/gpg files', () => {
       expect(mode.toString(8)).toBe('600');
     }
   );
+
+  it('applies a tracked DIRECTORY entry as a tree (EISDIR regression)', async () => {
+    // apply's per-file loops read repoPath as text (for secret resolution / merge)
+    // which throws EISDIR on a directory — directories must be copied as a tree.
+    // Caught by live sandbox testing of `tuck apply` with a tracked ~/.config dir.
+    const localSrc = join(TEST_HOME, 'dotfiles-src');
+    const manifest = createMockManifest({
+      files: {
+        cfg: createMockTrackedFile({
+          source: '~/.config/app',
+          destination: 'files/config/app',
+          category: 'misc',
+        }),
+      },
+    });
+    vol.mkdirSync(join(localSrc, 'files', 'config', 'app'), { recursive: true });
+    vol.writeFileSync(join(localSrc, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
+    vol.writeFileSync(join(localSrc, 'files', 'config', 'app', 'settings.conf'), 'theme=dark\n');
+    vol.writeFileSync(join(localSrc, 'files', 'config', 'app', 'nested.conf'), 'x=1\n');
+
+    const { setJsonMode } = await import('../../src/lib/jsonOutput.js');
+    setJsonMode(false);
+
+    const { runApply } = await import('../../src/commands/apply.js');
+    await runApply(localSrc, { replace: true }); // must NOT throw EISDIR
+
+    expect(vol.existsSync(join(TEST_HOME, '.config', 'app', 'settings.conf'))).toBe(true);
+    expect(vol.readFileSync(join(TEST_HOME, '.config', 'app', 'nested.conf'), 'utf-8')).toBe('x=1\n');
+  });
 });
