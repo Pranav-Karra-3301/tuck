@@ -37,7 +37,12 @@ vi.mock('../../src/ui/index.js', () => ({
 import { runVerify } from '../../src/commands/verify.js';
 import { clearManifestCache } from '../../src/lib/manifest.js';
 import { clearConfigCache } from '../../src/lib/config.js';
-import { resetWriteContext } from '../../src/lib/writeContext.js';
+import {
+  resetWriteContext,
+  setWriteContext,
+  getWriteRoot,
+  isSandbox,
+} from '../../src/lib/writeContext.js';
 
 const TUCK = '/test-home/.tuck';
 const SANDBOX = '/test-home/sandbox';
@@ -126,6 +131,30 @@ describe('verify --root / --apply', () => {
     expect(resolve(change.target).startsWith(resolve(SANDBOX))).toBe(true);
     // The real live home file was never created by the preview.
     expect(vol.existsSync('/test-home/.zshrc')).toBe(false);
+  });
+
+  it('restores a prior global sandbox boundary after --apply (does not nuke it)', async () => {
+    // Simulate a global --root installed by the CLI preAction hook — the danger
+    // case is long-running (MCP) mode, where a blind reset would drop the global
+    // sandbox and let later commands write to the real home.
+    const globalRoot = '/test-home/global-sandbox';
+    setWriteContext({ root: globalRoot, isSandbox: true });
+
+    vol.writeFileSync(`${TUCK}/files/shell/zshrc`, 'export A=1\n');
+    writeManifestFiles({
+      zshrc: {
+        source: '~/.zshrc',
+        destination: 'files/shell/zshrc',
+        checksum: await checksum(`${TUCK}/files/shell/zshrc`),
+      },
+    });
+
+    // --apply with NO command-level --root → uses an internal temp sandbox, then
+    // must RESTORE the global boundary in its finally (not reset to null).
+    await runVerify({ json: true, apply: true });
+
+    expect(resolve(getWriteRoot())).toBe(resolve(globalRoot));
+    expect(isSandbox()).toBe(true);
   });
 
   it('classifies created / modified / unchanged correctly against the live target', async () => {

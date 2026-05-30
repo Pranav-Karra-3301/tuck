@@ -66,6 +66,26 @@ describe('LinuxKeystore.isAvailable probe', () => {
     const ks = new LinuxKeystore();
     expect(await ks.isAvailable()).toBe(false);
   });
+
+  it('accepts the systemd session-bus socket when DBUS_SESSION_BUS_ADDRESS is unset', async () => {
+    // A desktop/systemd session may not export DBUS_SESSION_BUS_ADDRESS into this
+    // process but still has a reachable bus at $XDG_RUNTIME_DIR/bus — an existing
+    // keyring user must NOT be silently downgraded to the file keystore.
+    setPlatform('linux');
+    delete process.env.DBUS_SESSION_BUS_ADDRESS;
+    const originalXdg = process.env.XDG_RUNTIME_DIR;
+    process.env.XDG_RUNTIME_DIR = '/run/user/1000';
+    const { vol } = await import('memfs');
+    vol.mkdirSync('/run/user/1000', { recursive: true });
+    vol.writeFileSync('/run/user/1000/bus', '');
+    try {
+      const ks = new LinuxKeystore();
+      expect(await ks.isAvailable()).toBe(true);
+    } finally {
+      if (originalXdg === undefined) delete process.env.XDG_RUNTIME_DIR;
+      else process.env.XDG_RUNTIME_DIR = originalXdg;
+    }
+  });
 });
 
 describe('WindowsKeystore.isAvailable', () => {

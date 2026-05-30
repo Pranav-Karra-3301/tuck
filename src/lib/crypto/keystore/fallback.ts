@@ -4,7 +4,18 @@
  */
 
 import { readFile, writeFile, chmod, rm } from 'fs/promises';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  chmodSync,
+  renameSync,
+  openSync,
+  writeSync,
+  closeSync,
+  constants as fsConstants,
+} from 'fs';
 import { dirname, join } from 'path';
 import { homedir, hostname, userInfo } from 'os';
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'crypto';
@@ -35,20 +46,50 @@ const readOrCreateInstallSecret = (): Buffer => {
     if (existing.length === INSTALL_SECRET_BYTES) {
       return existing;
     }
-    // Corrupt/short secret: fall through and regenerate. Rotating it only
-    // invalidates the local encrypted keystore (re-derivable on next store).
+    // Corrupt/short secret. Rotating it loses any data encrypted with it, so
+    // preserve the old value (best-effort) for manual recovery before replacing.
+    try {
+      renameSync(secretPath, `${secretPath}.corrupt`);
+    } catch {
+      // Couldn't move it aside; the exclusive create below will fail and we
+      // fall back to an overwrite as a last resort.
+    }
   }
 
-  const secret = randomBytes(INSTALL_SECRET_BYTES);
   mkdirSync(dirname(secretPath), { recursive: true });
-  writeFileSync(secretPath, secret);
-  // Restrict to owner only (best-effort on platforms without POSIX perms).
+  const secret = randomBytes(INSTALL_SECRET_BYTES);
+
+  // Atomic create-exclusive (mode 0600) so two processes starting at once can't
+  // each write a DIFFERENT secret and silently orphan one another's encrypted
+  // data. The loser of the race adopts the winner's secret instead.
   try {
-    chmodSync(secretPath, 0o600);
-  } catch {
-    // Ignore on platforms that don't support chmod (e.g. Windows).
+    const fd = openSync(
+      secretPath,
+      fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY,
+      0o600
+    );
+    try {
+      writeSync(fd, secret);
+    } finally {
+      closeSync(fd);
+    }
+    return secret;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+      const existing = readFileSync(secretPath);
+      if (existing.length === INSTALL_SECRET_BYTES) {
+        return existing;
+      }
+    }
+    // Last resort (e.g. a filesystem without O_EXCL semantics): best-effort write.
+    writeFileSync(secretPath, secret);
+    try {
+      chmodSync(secretPath, 0o600);
+    } catch {
+      // Ignore on platforms that don't support chmod (e.g. Windows).
+    }
+    return secret;
   }
-  return secret;
 };
 
 interface KeystoreData {

@@ -27,7 +27,12 @@ import { loadManifest } from '../lib/manifest.js';
 import { copyFileOrDir, getFileChecksum } from '../lib/files.js';
 import { NotInitializedError } from '../errors.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
-import { setWriteContext, resetWriteContext, resolveWriteTarget } from '../lib/writeContext.js';
+import {
+  setWriteContext,
+  snapshotWriteContext,
+  restoreWriteContext,
+  resolveWriteTarget,
+} from '../lib/writeContext.js';
 import { smartMerge, isShellFile, type MergeConflict } from '../lib/merge.js';
 import { prepareFilesToApply } from './apply.js';
 import {
@@ -225,6 +230,9 @@ const runVerifyApply = async (options: VerifyOptions): Promise<void> => {
   const usingTempSandbox = !options.root;
 
   // Confine ALL writes under the sandbox for the duration of the dry-apply.
+  // Snapshot first so the finally restores any PRIOR boundary (e.g. a global
+  // --root) instead of dropping it — critical in long-running (MCP) mode.
+  const prevContext = snapshotWriteContext();
   setWriteContext({ root: sandboxRoot, isSandbox: true });
   try {
     await ensureDir(sandboxRoot);
@@ -268,9 +276,10 @@ const runVerifyApply = async (options: VerifyOptions): Promise<void> => {
       process.exitCode = 1;
     }
   } finally {
-    // Reset the write boundary and always clean up the scratch sandbox. An
-    // explicit --root provided by the caller is left in place for inspection.
-    resetWriteContext();
+    // Restore the prior write boundary (not a blind reset → null) and always
+    // clean up the scratch sandbox. An explicit --root provided by the caller is
+    // left on disk for inspection.
+    restoreWriteContext(prevContext);
     if (usingTempSandbox) {
       try {
         const { rm } = await import('fs/promises');
@@ -296,6 +305,7 @@ export const runVerify = async (options: VerifyOptions): Promise<void> => {
   // dry home. The live comparison still reads the real home; only resolveWriteTarget
   // (used by --fix's repo writes stay inside the repo) routes through the sandbox.
   const rootForContext = options.root ? resolve(expandPath(options.root)) : undefined;
+  const prevContext = snapshotWriteContext();
   if (rootForContext) {
     setWriteContext({ root: rootForContext, isSandbox: true });
   }
@@ -358,8 +368,9 @@ export const runVerify = async (options: VerifyOptions): Promise<void> => {
       process.exitCode = 1;
     }
   } finally {
-    // Always lift the sandbox boundary we may have installed for --root.
-    if (rootForContext) resetWriteContext();
+    // Restore the prior boundary we may have overridden for --root (don't blind
+    // reset → null, which would drop a global sandbox in long-running mode).
+    if (rootForContext) restoreWriteContext(prevContext);
   }
 };
 

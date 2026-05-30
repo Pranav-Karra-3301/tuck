@@ -5,9 +5,25 @@
 
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
+import { existsSync } from 'fs';
+import { join } from 'path';
 import type { Keystore } from './types.js';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Whether a session D-Bus (required to reach the Secret Service) is reachable.
+ * Accepts either the exported address OR the well-known systemd user-session bus
+ * socket at `$XDG_RUNTIME_DIR/bus` — the latter handles desktop/systemd sessions
+ * that don't export DBUS_SESSION_BUS_ADDRESS into this process's env, so an
+ * existing keyring user isn't silently downgraded to the file keystore.
+ */
+function hasSessionBus(): boolean {
+  if (process.env.DBUS_SESSION_BUS_ADDRESS) return true;
+  const xdg = process.env.XDG_RUNTIME_DIR;
+  if (xdg && existsSync(join(xdg, 'bus'))) return true;
+  return false;
+}
 
 /**
  * Validate that an argument doesn't contain dangerous characters.
@@ -42,7 +58,7 @@ export class LinuxKeystore implements Keystore {
     // bare WSL, and many CI/container environments have `secret-tool` installed
     // but no running session bus, so a probe would hang or fail. Bail early so
     // the caller falls back to the encrypted file keystore.
-    if (!process.env.DBUS_SESSION_BUS_ADDRESS) {
+    if (!hasSessionBus()) {
       return false;
     }
 
