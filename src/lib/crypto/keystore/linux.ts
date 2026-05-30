@@ -38,10 +38,21 @@ export class LinuxKeystore implements Keystore {
   async isAvailable(): Promise<boolean> {
     if (process.platform !== 'linux') return false;
 
+    // A session D-Bus is required to reach the Secret Service. Headless servers,
+    // bare WSL, and many CI/container environments have `secret-tool` installed
+    // but no running session bus, so a probe would hang or fail. Bail early so
+    // the caller falls back to the encrypted file keystore.
+    if (!process.env.DBUS_SESSION_BUS_ADDRESS) {
+      return false;
+    }
+
     try {
-      await execFileAsync('which', ['secret-tool']);
+      // Confirm the binary exists. Bounded timeout so a wedged environment can't
+      // hang keystore selection.
+      await execFileAsync('which', ['secret-tool'], { timeout: 5000 });
       return true;
     } catch {
+      // On any failure the caller must fall back to the file keystore.
       return false;
     }
   }

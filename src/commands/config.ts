@@ -10,6 +10,14 @@ import type { TuckConfigOutput } from '../schemas/config.schema.js';
 import { setupProvider } from '../lib/providerSetup.js';
 import { describeProviderConfig, getProvider } from '../lib/providers/index.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
+import { IS_WINDOWS } from '../lib/platform.js';
+
+/**
+ * Resolve the editor to open config files with. Honors $EDITOR then $VISUAL,
+ * falling back to a sane platform default (Windows has no vim/vi out of the box).
+ */
+export const getDefaultEditor = (): string =>
+  process.env.EDITOR || process.env.VISUAL || (IS_WINDOWS ? 'notepad' : 'vim');
 
 interface ConfigGetOptions {
   json?: boolean;
@@ -264,7 +272,7 @@ const runConfigEdit = async (): Promise<void> => {
   const tuckDir = getTuckDir();
   const configPath = getConfigPath(tuckDir);
 
-  const editor = process.env.EDITOR || process.env.VISUAL || 'vim';
+  const editor = getDefaultEditor();
 
   logger.info(`Opening ${collapsePath(configPath)} in ${editor}...`);
 
@@ -500,7 +508,7 @@ const runInteractiveConfig = async (): Promise<void> => {
     { value: 'remote', label: 'Configure remote', hint: 'Set up GitHub, GitLab, or local mode' },
     { value: 'wizard', label: 'Run setup wizard', hint: 'Guided configuration' },
     { value: 'reset', label: 'Reset to defaults', hint: 'Restore default values' },
-    { value: 'open', label: 'Open in editor', hint: `Edit with ${process.env.EDITOR || 'vim'}` },
+    { value: 'open', label: 'Open in editor', hint: `Edit with ${getDefaultEditor()}` },
   ])) as string;
 
   console.log();

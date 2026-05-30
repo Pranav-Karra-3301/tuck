@@ -221,6 +221,60 @@ describe('add command behavior', () => {
     );
   });
 
+  it('runs the full prepare pipeline for --plan and reflects the detected category', async () => {
+    // detectCategory returns 'shell' from beforeEach; the plan must surface the
+    // detected category, not the (undefined) raw --category input.
+    const { addCommand } = await import('../../src/commands/add.js');
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    await addCommand.parseAsync(['~/.zshrc', '--json', '--plan'], { from: 'user' });
+
+    writeSpy.mockRestore();
+
+    const lines = writes.join('').trim().split('\n').filter(Boolean);
+    expect(lines.length).toBe(1);
+
+    const env = JSON.parse(lines[0]);
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck add');
+
+    // The plan runs the REAL pipeline: category detection + secret scan ran.
+    expect(detectCategoryMock).toHaveBeenCalled();
+    expect(scanForSecretsMock).toHaveBeenCalled();
+
+    // Plan entry mirrors a prepared entry (detected category 'shell'), not raw input.
+    expect(env.data.plan).toHaveLength(1);
+    expect(env.data.plan[0]).toMatchObject({
+      source: '~/.zshrc',
+      category: 'shell',
+      sensitive: false,
+    });
+
+    // --plan is dry: nothing is tracked.
+    expect(trackFilesWithProgressMock).not.toHaveBeenCalled();
+  });
+
+  it('does not write or scan a second time on --plan (dry run)', async () => {
+    const { addCommand } = await import('../../src/commands/add.js');
+
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await addCommand.parseAsync(['~/.zshrc', '--json', '--plan'], { from: 'user' });
+
+    writeSpy.mockRestore();
+
+    expect(trackFilesWithProgressMock).not.toHaveBeenCalled();
+  });
+
   it('passes custom --name through to tracking destination generation', async () => {
     const { addFilesFromPaths } = await import('../../src/commands/add.js');
     sanitizeFilenameMock.mockReturnValueOnce('custom-zshrc');

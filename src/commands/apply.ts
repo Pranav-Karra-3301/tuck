@@ -105,7 +105,7 @@ export interface ApplyOptions {
   repoRoot?: string;
 }
 
-interface ApplyFile {
+export interface ApplyFile {
   source: string;
   /** Absolute LIVE write target on this machine (home path or repo checkout path). */
   destination: string;
@@ -379,7 +379,7 @@ const registerKnownRepoRoots = async (manifest: TuckManifestOutput): Promise<voi
  * skipped — never guessed, never written to a wrong path — and reported back so
  * callers can surface it.
  */
-const prepareFilesToApply = async (
+export const prepareFilesToApply = async (
   repoDir: string,
   manifest: TuckManifestOutput,
   bundle?: string

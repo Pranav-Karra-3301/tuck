@@ -35,7 +35,7 @@ import {
   CONFIGURABLE_BACKEND_NAMES,
   type ConfiguredBackendName,
 } from '../lib/secretBackends/index.js';
-import { NotInitializedError } from '../errors.js';
+import { NotInitializedError, TuckError } from '../errors.js';
 import { getLog } from '../lib/git.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 
@@ -59,7 +59,13 @@ const isValidUrl = (value: string): boolean => {
 // List Command
 // ============================================================================
 
-const runSecretsList = async (): Promise<void> => {
+interface JsonOptions {
+  json?: boolean;
+}
+
+const runSecretsList = async (options: JsonOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets list');
+
   const tuckDir = getTuckDir();
 
   try {
@@ -69,6 +75,22 @@ const runSecretsList = async (): Promise<void> => {
   }
 
   const secrets = await listSecrets(tuckDir);
+
+  if (isJsonMode()) {
+    // SECURITY: listSecrets never returns raw values; emit only the redacted
+    // metadata (name, placeholder, description, source, timestamps).
+    emitJsonOk({
+      secrets: secrets.map((secret) => ({
+        name: secret.name,
+        placeholder: secret.placeholder,
+        ...(secret.description !== undefined ? { description: secret.description } : {}),
+        ...(secret.source !== undefined ? { source: secret.source } : {}),
+        addedAt: secret.addedAt,
+        ...(secret.lastUsed !== undefined ? { lastUsed: secret.lastUsed } : {}),
+      })),
+    });
+    return;
+  }
 
   if (secrets.length === 0) {
     logger.info('No secrets stored');
@@ -104,7 +126,14 @@ const runSecretsList = async (): Promise<void> => {
 // Set Command
 // ============================================================================
 
-const runSecretsSet = async (name: string): Promise<void> => {
+interface SecretsSetOptions {
+  json?: boolean;
+  yes?: boolean;
+}
+
+const runSecretsSet = async (name: string, options: SecretsSetOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets set');
+
   const tuckDir = getTuckDir();
 
   try {
@@ -116,22 +145,46 @@ const runSecretsSet = async (name: string): Promise<void> => {
   // Validate or normalize name
   if (!isValidSecretName(name)) {
     const normalized = normalizeSecretName(name);
-    logger.warning(`Secret name normalized to: ${normalized}`);
-    logger.dim('Secret names must be uppercase alphanumeric with underscores (e.g., API_KEY)');
+    if (!isJsonMode()) {
+      logger.warning(`Secret name normalized to: ${normalized}`);
+      logger.dim('Secret names must be uppercase alphanumeric with underscores (e.g., API_KEY)');
+    }
     name = normalized;
   }
 
-  // Security: Always prompt for secret value interactively
-  // Never accept via command-line to prevent exposure in shell history and process list
-  // Note: Cancellation or empty input is handled below by validating the returned value.
-  const secretValue = await prompts.password(`Enter value for ${name}:`);
+  // In non-interactive mode (--json/--yes) we cannot prompt. Accept the value
+  // from TUCK_SECRET_VALUE so it never lands in argv/shell history, mirroring
+  // the interactive password prompt's "no value on the command line" rule.
+  let secretValue: string;
+  if (isJsonMode() || options.yes) {
+    secretValue = process.env.TUCK_SECRET_VALUE ?? '';
+    if (!secretValue || secretValue.trim().length === 0) {
+      throw new TuckError(
+        'Secret value not provided',
+        'SECRET_VALUE_REQUIRED',
+        ['Set TUCK_SECRET_VALUE in the environment before running with --json/--yes']
+      );
+    }
+  } else {
+    // Security: Always prompt for secret value interactively
+    // Never accept via command-line to prevent exposure in shell history and process list
+    // Note: Cancellation or empty input is handled below by validating the returned value.
+    secretValue = await prompts.password(`Enter value for ${name}:`);
 
-  if (!secretValue || secretValue.trim().length === 0) {
-    logger.error('Secret value cannot be empty');
-    return;
+    if (!secretValue || secretValue.trim().length === 0) {
+      logger.error('Secret value cannot be empty');
+      return;
+    }
   }
 
   await setSecret(tuckDir, name, secretValue);
+
+  if (isJsonMode()) {
+    // SECURITY: never echo the value back; only confirm the name and outcome.
+    emitJsonOk({ name, set: true });
+    return;
+  }
+
   logger.success(`Secret '${name}' set`);
   console.log();
   logger.dim(`Use {{${name}}} as placeholder in your dotfiles`);
@@ -141,7 +194,9 @@ const runSecretsSet = async (name: string): Promise<void> => {
 // Unset Command
 // ============================================================================
 
-const runSecretsUnset = async (name: string): Promise<void> => {
+const runSecretsUnset = async (name: string, options: JsonOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets unset');
+
   const tuckDir = getTuckDir();
 
   try {
@@ -151,6 +206,11 @@ const runSecretsUnset = async (name: string): Promise<void> => {
   }
 
   const removed = await unsetSecret(tuckDir, name);
+
+  if (isJsonMode()) {
+    emitJsonOk({ name, unset: removed });
+    return;
+  }
 
   if (removed) {
     logger.success(`Secret '${name}' removed`);
@@ -164,7 +224,9 @@ const runSecretsUnset = async (name: string): Promise<void> => {
 // Path Command
 // ============================================================================
 
-const runSecretsPath = async (): Promise<void> => {
+const runSecretsPath = async (options: JsonOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets path');
+
   const tuckDir = getTuckDir();
 
   try {
@@ -173,7 +235,14 @@ const runSecretsPath = async (): Promise<void> => {
     throw new NotInitializedError();
   }
 
-  console.log(getSecretsPath(tuckDir));
+  const path = getSecretsPath(tuckDir);
+
+  if (isJsonMode()) {
+    emitJsonOk({ path });
+    return;
+  }
+
+  console.log(path);
 };
 
 // ============================================================================
@@ -880,21 +949,30 @@ export const secretsCommand = new Command('secrets')
   .addCommand(
     new Command('list')
       .description('List all stored secrets (values hidden)')
-      .action(runSecretsList)
+      .option('--json', 'Emit JSON envelope to stdout (values are never included)')
+      .action((options: JsonOptions) => runSecretsList(options))
   )
   .addCommand(
     new Command('set')
       .description('Set a secret value (prompts securely)')
       .argument('<name>', 'Secret name (e.g., GITHUB_TOKEN)')
-      .action(runSecretsSet)
+      .option('--json', 'Emit JSON envelope to stdout (value is never echoed)')
+      .option('-y, --yes', 'Non-interactive: read value from TUCK_SECRET_VALUE')
+      .action((name: string, options: SecretsSetOptions) => runSecretsSet(name, options))
   )
   .addCommand(
     new Command('unset')
       .description('Remove a secret')
       .argument('<name>', 'Secret name to remove')
-      .action(runSecretsUnset)
+      .option('--json', 'Emit JSON envelope to stdout')
+      .action((name: string, options: JsonOptions) => runSecretsUnset(name, options))
   )
-  .addCommand(new Command('path').description('Show path to secrets file').action(runSecretsPath))
+  .addCommand(
+    new Command('path')
+      .description('Show path to secrets file')
+      .option('--json', 'Emit JSON envelope to stdout')
+      .action((options: JsonOptions) => runSecretsPath(options))
+  )
   .addCommand(
     new Command('scan')
       .description('Scan files for secrets')

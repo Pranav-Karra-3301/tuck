@@ -4,7 +4,8 @@
  */
 
 import { readFile, writeFile, chmod, rm } from 'fs/promises';
-import { dirname } from 'path';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
+import { dirname, join } from 'path';
 import { homedir, hostname, userInfo } from 'os';
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'crypto';
 import { ensureDir, pathExists } from 'fs-extra';
@@ -12,6 +13,43 @@ import type { Keystore } from './types.js';
 import { getFallbackKeystorePath, getLegacyFallbackKeystorePath } from '../../state.js';
 
 const ALGORITHM = 'aes-256-gcm';
+const INSTALL_SECRET_BYTES = 32;
+
+/**
+ * Path to the per-install random secret. Lives under the user's tuck dir so it
+ * is created once per machine/install and reused thereafter.
+ */
+const getInstallSecretPath = (): string => join(homedir(), '.tuck', 'keystore.key');
+
+/**
+ * Read (or create on first run) the per-install random secret. Mixing this
+ * 32-byte random value into the key derivation means the fallback keystore file
+ * is no longer derivable from machine info alone — an attacker also needs the
+ * locally-stored, 0600 secret. Synchronous so it can feed the sync getMachineKey.
+ */
+const readOrCreateInstallSecret = (): Buffer => {
+  const secretPath = getInstallSecretPath();
+
+  if (existsSync(secretPath)) {
+    const existing = readFileSync(secretPath);
+    if (existing.length === INSTALL_SECRET_BYTES) {
+      return existing;
+    }
+    // Corrupt/short secret: fall through and regenerate. Rotating it only
+    // invalidates the local encrypted keystore (re-derivable on next store).
+  }
+
+  const secret = randomBytes(INSTALL_SECRET_BYTES);
+  mkdirSync(dirname(secretPath), { recursive: true });
+  writeFileSync(secretPath, secret);
+  // Restrict to owner only (best-effort on platforms without POSIX perms).
+  try {
+    chmodSync(secretPath, 0o600);
+  } catch {
+    // Ignore on platforms that don't support chmod (e.g. Windows).
+  }
+  return secret;
+};
 
 interface KeystoreData {
   entries: Record<string, Record<string, string>>;
@@ -82,7 +120,35 @@ export class FallbackKeystore implements Keystore {
       'tuck-keystore-v1', // Version string for key derivation
     ].join(':');
 
-    // Use SHA-256 to get consistent 32-byte key
+    // Mix in a per-install random 32-byte secret (persisted 0600 on first run)
+    // so the key isn't derivable from machine info alone. The HMAC keyed by the
+    // secret binds the deterministic factors to this specific install.
+    const installSecret = readOrCreateInstallSecret();
+
+    return createHash('sha256')
+      .update(installSecret)
+      .update(':')
+      .update(factors)
+      .digest();
+  }
+
+  /**
+   * The pre-install-secret key derivation (deterministic machine factors only).
+   * Kept so a keystore file written BEFORE the per-install secret was introduced
+   * stays decryptable across the upgrade; the data is transparently re-encrypted
+   * with the current key on the next saveData() (migration). Without this,
+   * upgrading would silently orphan a user's stored secrets / backup-encryption
+   * password — a data-loss regression.
+   */
+  private getLegacyMachineKey(): Buffer {
+    const factors = [
+      hostname(),
+      userInfo().username,
+      homedir(),
+      process.platform,
+      'tuck-keystore-v1',
+    ].join(':');
+
     return createHash('sha256').update(factors).digest();
   }
 
@@ -92,14 +158,27 @@ export class FallbackKeystore implements Keystore {
       return { entries: {}, version: 1 };
     }
 
+    let encrypted: Buffer;
     try {
-      const encrypted = await readFile(loadPath);
-      const decrypted = this.decrypt(encrypted);
-      return JSON.parse(decrypted.toString('utf-8'));
+      encrypted = await readFile(loadPath);
     } catch {
-      // Corrupted or unreadable, start fresh
+      // Unreadable, start fresh
       return { entries: {}, version: 1 };
     }
+
+    // Try the current key first, then the legacy (pre-install-secret) key so a
+    // keystore written before this upgrade stays readable. A subsequent
+    // saveData() re-encrypts the whole file with the current key (migration).
+    for (const key of [this.getMachineKey(), this.getLegacyMachineKey()]) {
+      try {
+        const decrypted = this.decrypt(encrypted, key);
+        return JSON.parse(decrypted.toString('utf-8')) as KeystoreData;
+      } catch {
+        // Wrong key (or corrupt) — try the next candidate.
+      }
+    }
+    // Corrupted or undecryptable with any known key, start fresh.
+    return { entries: {}, version: 1 };
   }
 
   private async saveData(data: KeystoreData): Promise<void> {
@@ -140,9 +219,7 @@ export class FallbackKeystore implements Keystore {
     return Buffer.concat([iv, authTag, ciphertext]);
   }
 
-  private decrypt(encrypted: Buffer): Buffer {
-    const key = this.getMachineKey();
-
+  private decrypt(encrypted: Buffer, key: Buffer = this.getMachineKey()): Buffer {
     const iv = encrypted.subarray(0, 12);
     const authTag = encrypted.subarray(12, 28);
     const ciphertext = encrypted.subarray(28);

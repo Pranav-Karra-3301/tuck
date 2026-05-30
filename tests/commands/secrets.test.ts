@@ -352,6 +352,155 @@ describe('secrets command', () => {
     expect(scanForSecretsMock).not.toHaveBeenCalled();
   });
 
+  const captureStdout = (): { writes: string[]; restore: () => void } => {
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+    return { writes, restore: () => writeSpy.mockRestore() };
+  };
+
+  const parseEnvelope = (writes: string[]) => {
+    const lines = writes.join('').trim().split('\n').filter(Boolean);
+    expect(lines.length).toBe(1);
+    return JSON.parse(lines[0]);
+  };
+
+  it('emits a redacted JSON envelope for secrets list without leaking secret values', async () => {
+    const SECRET_VALUE = 'super-secret-token-value-xyz';
+    listSecretsMock.mockResolvedValue([
+      {
+        name: 'GITHUB_TOKEN',
+        placeholder: '{{GITHUB_TOKEN}}',
+        description: 'GitHub PAT',
+        source: '~/.netrc',
+        addedAt: '2024-01-01T00:00:00.000Z',
+        lastUsed: '2024-02-01T00:00:00.000Z',
+      },
+    ]);
+
+    const { secretsCommand } = await import('../../src/commands/secrets.js');
+    const { writes, restore } = captureStdout();
+
+    await secretsCommand.parseAsync(['list', '--json'], { from: 'user' });
+
+    restore();
+    const env = parseEnvelope(writes);
+
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck secrets list');
+    expect(env.data.secrets).toEqual([
+      {
+        name: 'GITHUB_TOKEN',
+        placeholder: '{{GITHUB_TOKEN}}',
+        description: 'GitHub PAT',
+        source: '~/.netrc',
+        addedAt: '2024-01-01T00:00:00.000Z',
+        lastUsed: '2024-02-01T00:00:00.000Z',
+      },
+    ]);
+
+    // SECURITY: even though listSecrets never returns the raw value, assert the
+    // emitted envelope cannot contain a plaintext secret value.
+    expect(JSON.stringify(env)).not.toContain(SECRET_VALUE);
+  });
+
+  it('emits an empty redacted JSON envelope for secrets list when no secrets stored', async () => {
+    listSecretsMock.mockResolvedValue([]);
+    const { secretsCommand } = await import('../../src/commands/secrets.js');
+    const { writes, restore } = captureStdout();
+
+    await secretsCommand.parseAsync(['list', '--json'], { from: 'user' });
+
+    restore();
+    const env = parseEnvelope(writes);
+
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck secrets list');
+    expect(env.data.secrets).toEqual([]);
+    // Human-readable output is suppressed in JSON mode.
+    expect(loggerInfoMock).not.toHaveBeenCalled();
+    expect(loggerDimMock).not.toHaveBeenCalled();
+  });
+
+  it('emits a JSON envelope for secrets unset and never echoes a value', async () => {
+    unsetSecretMock.mockResolvedValue(true);
+    const { secretsCommand } = await import('../../src/commands/secrets.js');
+    const { writes, restore } = captureStdout();
+
+    await secretsCommand.parseAsync(['unset', 'GITHUB_TOKEN', '--json'], { from: 'user' });
+
+    restore();
+    const env = parseEnvelope(writes);
+
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck secrets unset');
+    expect(env.data).toEqual({ name: 'GITHUB_TOKEN', unset: true });
+    expect(loggerSuccessMock).not.toHaveBeenCalled();
+  });
+
+  it('reports unset:false in JSON when the secret was not found', async () => {
+    unsetSecretMock.mockResolvedValue(false);
+    const { secretsCommand } = await import('../../src/commands/secrets.js');
+    const { writes, restore } = captureStdout();
+
+    await secretsCommand.parseAsync(['unset', 'MISSING', '--json'], { from: 'user' });
+
+    restore();
+    const env = parseEnvelope(writes);
+
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck secrets unset');
+    expect(env.data).toEqual({ name: 'MISSING', unset: false });
+    expect(loggerWarningMock).not.toHaveBeenCalled();
+  });
+
+  it('emits a JSON envelope for secrets path', async () => {
+    getSecretsPathMock.mockReturnValue('/test-home/.tuck/secrets.local.json');
+    const { secretsCommand } = await import('../../src/commands/secrets.js');
+    const { writes, restore } = captureStdout();
+
+    await secretsCommand.parseAsync(['path', '--json'], { from: 'user' });
+
+    restore();
+    const env = parseEnvelope(writes);
+
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck secrets path');
+    expect(env.data).toEqual({ path: '/test-home/.tuck/secrets.local.json' });
+  });
+
+  it('emits a JSON envelope for secrets set and never echoes the value', async () => {
+    const SECRET_VALUE = 'the-actual-secret-value-123';
+    // In --json/--yes mode the value must be supplied via env, never echoed.
+    process.env.TUCK_SECRET_VALUE = SECRET_VALUE;
+    setSecretMock.mockResolvedValue(undefined);
+
+    const { secretsCommand } = await import('../../src/commands/secrets.js');
+    const { writes, restore } = captureStdout();
+
+    try {
+      await secretsCommand.parseAsync(['set', 'GITHUB_TOKEN', '--json', '--yes'], { from: 'user' });
+    } finally {
+      delete process.env.TUCK_SECRET_VALUE;
+    }
+
+    restore();
+    const env = parseEnvelope(writes);
+
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck secrets set');
+    expect(env.data).toEqual({ name: 'GITHUB_TOKEN', set: true });
+
+    // SECURITY: the plaintext value must never appear in the JSON envelope.
+    expect(JSON.stringify(env)).not.toContain(SECRET_VALUE);
+    // The value reaches the store but is never prompted for interactively.
+    expect(setSecretMock).toHaveBeenCalledWith('/test-home/.tuck', 'GITHUB_TOKEN', SECRET_VALUE);
+  });
+
   it('emits an all-zero redacted JSON summary (and no path leak) when no provided files exist', async () => {
     // Path that does not exist on disk -> existingPaths is empty.
     pathExistsMock.mockResolvedValue(false);
