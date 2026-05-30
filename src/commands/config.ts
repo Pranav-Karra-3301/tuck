@@ -4,7 +4,7 @@ import { prompts, logger, banner, colors as c } from '../ui/index.js';
 import { getTuckDir, getConfigPath, collapsePath } from '../lib/paths.js';
 import { loadConfig, saveConfig, resetConfig } from '../lib/config.js';
 import { loadManifest } from '../lib/manifest.js';
-import { addRemote, removeRemote, hasRemote } from '../lib/git.js';
+import { upsertRemote } from '../lib/git.js';
 import { NotInitializedError, ConfigError } from '../errors.js';
 import type { TuckConfigOutput } from '../schemas/config.schema.js';
 import { setupProvider } from '../lib/providerSetup.js';
@@ -582,22 +582,25 @@ export const runConfigRemote = async (): Promise<void> => {
 
   await saveConfig(updatedConfig, tuckDir);
 
-  // If a remote URL was provided, update git remote
+  // Track whether a remote URL was ACTUALLY configured so the final message
+  // reflects reality (and never prints a false "Remote configured" success).
+  let configuredRemoteUrl: string | null = result.remoteUrl ?? null;
+
+  // If a remote URL was provided, update the git remote.
   if (result.remoteUrl) {
     try {
-      // Check if origin already exists
-      if (await hasRemote(tuckDir)) {
-        // Remove existing remote
-        await removeRemote(tuckDir, 'origin');
-      }
-      // Add new remote
-      await addRemote(tuckDir, 'origin', result.remoteUrl);
+      // Idempotent upsert: set-url if origin exists, else add. This avoids the
+      // remove-then-add race (a transient state with NO origin) that the old
+      // code created when reconfiguring an existing repo.
+      await upsertRemote(tuckDir, 'origin', result.remoteUrl);
       prompts.log.success('Git remote updated');
     } catch (error) {
       prompts.log.warning(
         `Could not update git remote: ${error instanceof Error ? error.message : String(error)}`
       );
       prompts.log.info(`Manually add remote: git remote add origin ${result.remoteUrl}`);
+      // The remote wasn't actually wired up; don't claim it was.
+      configuredRemoteUrl = null;
     }
   }
 
@@ -606,19 +609,15 @@ export const runConfigRemote = async (): Promise<void> => {
   // helper that `tuck init` uses. This deduplicates the old ad-hoc
   // createRepo/getPreferredRepoUrl flow and ensures gitlab/custom go through
   // their own provider instead of a github-shaped path.
+  //
+  // The helper now UPSERTS `origin` itself (no pre-remove dance here), so a
+  // reconfiguration won't hit the remove-then-add race.
   if (result.mode !== 'local' && !result.remoteUrl) {
-    // Clear any pre-existing origin first so the shared helper's `addRemote`
-    // (which adds 'origin') succeeds when reconfiguring an existing repo.
-    if (await hasRemote(tuckDir)) {
-      await removeRemote(tuckDir, 'origin').catch(() => {
-        /* best effort: a missing/locked remote shouldn't block setup */
-      });
-    }
-
     const provider = getProvider(result.mode, result.config);
     const { remoteUrl } = await setupRemoteForProvider(provider, tuckDir);
 
     if (remoteUrl) {
+      configuredRemoteUrl = remoteUrl;
       // The shared helper already wired up `origin`; persist the config so the
       // remote selection survives across runs.
       updatedConfig.remote = {
@@ -629,7 +628,17 @@ export const runConfigRemote = async (): Promise<void> => {
   }
 
   console.log();
-  prompts.log.success(`Remote configured: ${describeProviderConfig(result.config)}`);
+  // Final message must mirror reality. For a remote-requiring provider, only
+  // claim success if a remote URL was genuinely configured; otherwise warn with
+  // an actionable next step instead of a silent false "Remote configured".
+  if (result.mode !== 'local' && !configuredRemoteUrl) {
+    prompts.log.warning(
+      `Provider set to ${describeProviderConfig(result.config)}, but no remote was configured — ` +
+        'run `tuck config remote` again or add one manually'
+    );
+  } else {
+    prompts.log.success(`Remote configured: ${describeProviderConfig(result.config)}`);
+  }
   prompts.outro('Done!');
 };
 

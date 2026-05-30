@@ -41,6 +41,12 @@ vi.mock('simple-git', () => {
   };
 });
 
+// cloneRepo shells out via child_process.execFile; mock it so its failure path
+// is driven without spawning a real git process. The trailing callback receives
+// an error to emulate a failed clone.
+const { execFileMock } = vi.hoisted(() => ({ execFileMock: vi.fn() }));
+vi.mock('child_process', () => ({ execFile: execFileMock }));
+
 // Import after mocking
 import {
   initRepo,
@@ -68,6 +74,12 @@ describe('git-errors', () => {
     vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });
     mockGitInstance = createErrorMockGit('Git operation failed');
     vi.clearAllMocks();
+    // execFile (used by cloneRepo) rejects via its node-style callback to
+    // emulate a failed `git clone` without spawning a real process.
+    execFileMock.mockImplementation((_cmd, _args, opts, cb) => {
+      const callback = typeof opts === 'function' ? opts : cb;
+      callback?.(new Error('Git operation failed'));
+    });
   });
 
   afterEach(() => {

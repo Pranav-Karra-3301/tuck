@@ -16,7 +16,7 @@
  */
 
 import { prompts } from '../ui/index.js';
-import { addRemote } from './git.js';
+import { upsertRemote } from './git.js';
 import type { GitProvider } from './providers/types.js';
 
 /** Result of configuring a remote for the chosen provider. */
@@ -52,14 +52,93 @@ const buildPlaceholderUrl = (
 };
 
 /**
+ * Safely probe whether the provider's CLI is both installed and authenticated.
+ *
+ * `isCliInstalled`/`isAuthenticated` may be absent on a partial provider or may
+ * throw (CLI invocation failure); any problem is treated as "not available" so
+ * we fall back to the manual flow rather than crashing the wizard.
+ */
+const cliAvailable = async (provider: GitProvider): Promise<boolean> => {
+  if (!provider.cliName) return false;
+  try {
+    const installed =
+      typeof provider.isCliInstalled === 'function'
+        ? await provider.isCliInstalled().catch(() => false)
+        : false;
+    if (!installed) return false;
+    const authed =
+      typeof provider.isAuthenticated === 'function'
+        ? await provider.isAuthenticated().catch(() => false)
+        : false;
+    return authed;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Provider-neutral auto-create: prompt to create a repository through the
+ * provider's own CLI (gh for GitHub, glab for GitLab — same code path), then
+ * upsert the resulting URL as `origin`.
+ *
+ * Returns the configured result on success, or `null` to signal the caller to
+ * fall through to the manual paste-URL flow (user declined, or createRepo /
+ * getPreferredRepoUrl failed — never throws).
+ */
+const tryAutoCreate = async (
+  provider: GitProvider,
+  tuckDir: string,
+  defaultRepoName: string
+): Promise<RemoteSetupResult | null> => {
+  const wantsAuto = await prompts.confirm(
+    `Create a ${provider.displayName} repository automatically?`,
+    true
+  );
+  if (!wantsAuto) return null;
+
+  const name = await prompts.text('Repository name:', {
+    placeholder: defaultRepoName,
+    defaultValue: defaultRepoName,
+    validate: (value: string) =>
+      value && value.trim() ? undefined : 'Repository name is required',
+  });
+  const repoName = (name && name.trim()) || defaultRepoName;
+
+  const isPrivate = await prompts.confirm('Make it private?', true);
+
+  try {
+    const repo = await provider.createRepo({
+      name: repoName,
+      isPrivate,
+      description: 'Dotfiles managed by tuck',
+    });
+    const url = await provider.getPreferredRepoUrl(repo);
+    await upsertRemote(tuckDir, 'origin', url);
+    prompts.log.success(`Created ${provider.displayName} repository`);
+    return { remoteUrl: url, pushed: false };
+  } catch (error) {
+    // Auto-create failed: warn and fall back to the manual flow (do not throw).
+    prompts.log.warning(
+      `Could not create repository automatically: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    return null;
+  }
+};
+
+/**
  * Set up a git remote for the given provider using the provider abstraction.
  *
  * Behavior by provider:
  * - `local` (or any provider where `requiresRemote === false`): no-op,
  *   returns `{ remoteUrl: null, pushed: false }`.
- * - `github` / `gitlab` / `custom`: shows the provider's setup instructions,
- *   asks whether the repo was created, then prompts for a URL validated by the
- *   provider's own `validateUrl` and wires it up as `origin`.
+ * - `github` / `gitlab`: if the provider's CLI is installed AND authenticated,
+ *   offers to create the repo automatically (provider-neutral — gh and glab use
+ *   the identical code path). On decline/failure, falls back to the manual flow.
+ * - `custom` / CLI-less / unauthenticated: shows the provider's setup
+ *   instructions, asks whether the repo was created, then prompts for a URL
+ *   validated by the provider's own `validateUrl` and wires it up as `origin`.
  *
  * Never assumes github.com and never calls GitHub-specific validation.
  */
@@ -74,6 +153,17 @@ export const setupRemoteForProvider = async (
   }
 
   const repoName = opts.repoName ?? 'dotfiles';
+
+  // Provider-neutral AUTO-CREATE: if the provider's CLI is installed and
+  // authenticated, offer to create the repo for the user. This gives GitLab
+  // (glab) the same first-class experience GitHub (gh) already had.
+  if (await cliAvailable(provider)) {
+    const auto = await tryAutoCreate(provider, tuckDir, repoName);
+    if (auto) {
+      return auto;
+    }
+    // Declined or failed → fall through to the manual flow below.
+  }
 
   console.log();
   prompts.note(provider.getSetupInstructions(), 'Repository Setup');
@@ -103,7 +193,9 @@ export const setupRemoteForProvider = async (
   }
 
   try {
-    await addRemote(tuckDir, 'origin', url);
+    // Upsert (set-url if origin exists, else add) so reconfiguring an existing
+    // repo doesn't hit the remove-then-add race.
+    await upsertRemote(tuckDir, 'origin', url);
     prompts.log.success('Remote added successfully');
     return { remoteUrl: url, pushed: false };
   } catch (error) {

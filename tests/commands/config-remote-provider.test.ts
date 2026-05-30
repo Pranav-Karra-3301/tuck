@@ -16,10 +16,18 @@ const setupRemoteForProviderMock = vi.fn();
 const setupProviderMock = vi.fn();
 const getProviderMock = vi.fn();
 const addRemoteMock = vi.fn();
+const upsertRemoteMock = vi.fn();
 const hasRemoteMock = vi.fn();
 const removeRemoteMock = vi.fn();
 const saveConfigMock = vi.fn();
 const loadConfigMock = vi.fn();
+
+// Hoisted so the ui mock factory can wire them up and tests can assert on the
+// final success/warning message that runConfigRemote prints.
+const { logSuccessMock, logWarningMock } = vi.hoisted(() => ({
+  logSuccessMock: vi.fn(),
+  logWarningMock: vi.fn(),
+}));
 
 vi.mock('../../src/lib/remoteSetup.js', () => ({
   setupRemoteForProvider: (...args: unknown[]) => setupRemoteForProviderMock(...args),
@@ -36,6 +44,7 @@ vi.mock('../../src/lib/providers/index.js', () => ({
 
 vi.mock('../../src/lib/git.js', () => ({
   addRemote: (...args: unknown[]) => addRemoteMock(...args),
+  upsertRemote: (...args: unknown[]) => upsertRemoteMock(...args),
   removeRemote: (...args: unknown[]) => removeRemoteMock(...args),
   hasRemote: (...args: unknown[]) => hasRemoteMock(...args),
 }));
@@ -67,7 +76,7 @@ vi.mock('../../src/ui/index.js', () => ({
     note: vi.fn(),
     cancel: vi.fn(),
     spinner: vi.fn(() => ({ start: vi.fn(), stop: vi.fn(), message: '' })),
-    log: { info: vi.fn(), success: vi.fn(), warning: vi.fn(), error: vi.fn() },
+    log: { info: vi.fn(), success: logSuccessMock, warning: logWarningMock, error: vi.fn() },
   },
   logger: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
   colors: {
@@ -85,6 +94,8 @@ describe('runConfigRemote dedup via setupRemoteForProvider', () => {
     vi.clearAllMocks();
     loadConfigMock.mockResolvedValue({ remote: { mode: 'local' } });
     hasRemoteMock.mockResolvedValue(false);
+    upsertRemoteMock.mockResolvedValue(undefined);
+    addRemoteMock.mockResolvedValue(undefined);
     saveConfigMock.mockResolvedValue(undefined);
   });
 
@@ -136,5 +147,58 @@ describe('runConfigRemote dedup via setupRemoteForProvider', () => {
 
     expect(setupRemoteForProviderMock).not.toHaveBeenCalled();
     expect(addRemoteMock).not.toHaveBeenCalled();
+    expect(upsertRemoteMock).not.toHaveBeenCalled();
+  });
+
+  it('upserts (never remove+add) when reconfiguring an existing origin with a returned URL', async () => {
+    const gitlabProvider = { mode: 'gitlab', displayName: 'GitLab', requiresRemote: true };
+    getProviderMock.mockReturnValue(gitlabProvider);
+
+    // setupProvider returns a concrete remoteUrl (the line-586 branch), AND an
+    // origin already exists — the old code did remove+add (a race window with no
+    // origin); the fix must upsert in place.
+    hasRemoteMock.mockResolvedValue(true);
+    const gitlabUrl = 'git@gitlab.com:me/dotfiles.git';
+    setupProviderMock.mockResolvedValue({
+      success: true,
+      mode: 'gitlab',
+      remoteUrl: gitlabUrl,
+      config: { mode: 'gitlab', username: 'me' },
+      provider: gitlabProvider,
+    });
+
+    const { runConfigRemote } = await import('../../src/commands/config.js');
+    await runConfigRemote();
+
+    // Reconfigure path upserts the new URL in place; no remove+add race.
+    expect(upsertRemoteMock).toHaveBeenCalledWith('/test-home/.tuck', 'origin', gitlabUrl);
+    expect(removeRemoteMock).not.toHaveBeenCalled();
+    // With a real remote configured, the helper should not be needed.
+    expect(setupRemoteForProviderMock).not.toHaveBeenCalled();
+  });
+
+  it('warns (does NOT claim success) when the helper configures no remote for a non-local provider', async () => {
+    const gitlabProvider = { mode: 'gitlab', displayName: 'GitLab', requiresRemote: true };
+    getProviderMock.mockReturnValue(gitlabProvider);
+
+    // setupProvider returns no remoteUrl → routes to the shared helper, which
+    // itself returns a NULL remoteUrl (user bailed / no repo created).
+    setupProviderMock.mockResolvedValue({
+      success: true,
+      mode: 'gitlab',
+      config: { mode: 'gitlab', username: 'me' },
+      provider: gitlabProvider,
+    });
+    setupRemoteForProviderMock.mockResolvedValue({ remoteUrl: null, pushed: false });
+
+    const { runConfigRemote } = await import('../../src/commands/config.js');
+    await runConfigRemote();
+
+    // The shared helper ran but configured nothing; the final message must be a
+    // warning, NOT a false "Remote configured" success.
+    expect(setupRemoteForProviderMock).toHaveBeenCalledWith(gitlabProvider, '/test-home/.tuck');
+    expect(logWarningMock).toHaveBeenCalled();
+    const successMessages = logSuccessMock.mock.calls.map((c) => String(c[0]));
+    expect(successMessages.some((m) => /remote configured/i.test(m))).toBe(false);
   });
 });

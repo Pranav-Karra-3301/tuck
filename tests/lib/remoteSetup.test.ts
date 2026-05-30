@@ -6,6 +6,11 @@
  * github.com and rejected every non-github URL. setupRemoteForProvider drives
  * the remote-setup step purely through the GitProvider interface so each
  * provider validates with ITS OWN validateUrl and builds ITS OWN example URL.
+ *
+ * It also offers a provider-neutral AUTO-CREATE path: when the provider has a
+ * CLI that is installed AND authenticated, it offers to create the repo
+ * automatically (GitHub via gh, GitLab via glab — same code path). When the CLI
+ * is absent/unauthed/declined/failed, it falls back to the manual paste-URL flow.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type {
@@ -19,12 +24,18 @@ import type {
 // ----------------------------------------------------------------------------
 
 const addRemoteMock = vi.fn();
+const upsertRemoteMock = vi.fn();
+const hasRemoteMock = vi.fn();
+const setRemoteUrlMock = vi.fn();
 const confirmMock = vi.fn();
 const textMock = vi.fn();
 const noteMock = vi.fn();
 
 vi.mock('../../src/lib/git.js', () => ({
   addRemote: (...args: unknown[]) => addRemoteMock(...args),
+  upsertRemote: (...args: unknown[]) => upsertRemoteMock(...args),
+  hasRemote: (...args: unknown[]) => hasRemoteMock(...args),
+  setRemoteUrl: (...args: unknown[]) => setRemoteUrlMock(...args),
 }));
 
 vi.mock('../../src/ui/index.js', () => ({
@@ -55,6 +66,10 @@ const githubValidatorSpy = vi.fn(() => 'Please enter a valid GitHub URL');
  * Build a minimal fake GitProvider for a given mode. Only the methods used by
  * setupRemoteForProvider are implemented; everything else throws so an
  * accidental call is loud.
+ *
+ * NOTE: defaults isCliInstalled/isAuthenticated to TRUE. To exercise the manual
+ * paste-URL flow, pass an override that forces one of them false (otherwise the
+ * auto-create path would be offered).
  */
 function makeProvider(mode: ProviderMode, overrides: Partial<GitProvider> = {}): GitProvider {
   const notImplemented = () => {
@@ -90,10 +105,21 @@ function makeProvider(mode: ProviderMode, overrides: Partial<GitProvider> = {}):
   return { ...base, ...overrides };
 }
 
+/** Force the manual paste-URL flow by making the CLI unavailable. */
+function manualProvider(mode: ProviderMode, overrides: Partial<GitProvider> = {}): GitProvider {
+  return makeProvider(mode, {
+    isCliInstalled: vi.fn(async () => false),
+    ...overrides,
+  });
+}
+
 describe('setupRemoteForProvider', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     githubValidatorSpy.mockClear();
+    upsertRemoteMock.mockResolvedValue(undefined);
+    addRemoteMock.mockResolvedValue(undefined);
+    hasRemoteMock.mockResolvedValue(false);
   });
 
   it('returns {remoteUrl:null, pushed:false} for the local provider without prompting', async () => {
@@ -105,12 +131,14 @@ describe('setupRemoteForProvider', () => {
     expect(result).toEqual({ remoteUrl: null, pushed: false });
     // Local mode must not touch git remotes or prompt for a URL.
     expect(addRemoteMock).not.toHaveBeenCalled();
+    expect(upsertRemoteMock).not.toHaveBeenCalled();
     expect(textMock).not.toHaveBeenCalled();
   });
 
   it('validates a GitLab URL with the gitlab provider validator (never the github validator)', async () => {
     const gitlabValidate = vi.fn((url: string) => /^git@gitlab\.com:/.test(url));
-    const gitlab = makeProvider('gitlab', { validateUrl: gitlabValidate });
+    // Force manual flow (CLI unavailable) so we reach the URL-paste validator.
+    const gitlab = manualProvider('gitlab', { validateUrl: gitlabValidate });
 
     confirmMock.mockResolvedValue(true); // "Have you created the repository?"
     const gitlabUrl = 'git@gitlab.com:user/dotfiles.git';
@@ -132,9 +160,9 @@ describe('setupRemoteForProvider', () => {
     expect(gitlabValidate).toHaveBeenCalled();
     expect(githubValidatorSpy).not.toHaveBeenCalled();
 
-    // Remote was added with the gitlab URL (NOT a github.com URL).
-    expect(addRemoteMock).toHaveBeenCalledWith('/test-home/.tuck', 'origin', gitlabUrl);
-    expect(addRemoteMock).not.toHaveBeenCalledWith(
+    // Remote was upserted with the gitlab URL (NOT a github.com URL).
+    expect(upsertRemoteMock).toHaveBeenCalledWith('/test-home/.tuck', 'origin', gitlabUrl);
+    expect(upsertRemoteMock).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
       expect.stringContaining('github.com')
@@ -145,7 +173,7 @@ describe('setupRemoteForProvider', () => {
   });
 
   it('shows the provider-specific setup instructions, not GitHub instructions', async () => {
-    const gitlab = makeProvider('gitlab');
+    const gitlab = manualProvider('gitlab');
     confirmMock.mockResolvedValue(true);
     textMock.mockResolvedValue('git@gitlab.com:user/dotfiles.git');
 
@@ -158,7 +186,7 @@ describe('setupRemoteForProvider', () => {
   });
 
   it('returns {remoteUrl:null, pushed:false} when the user has not created the repo', async () => {
-    const gitlab = makeProvider('gitlab');
+    const gitlab = manualProvider('gitlab');
     confirmMock.mockResolvedValue(false); // "Have you created the repository?" -> No
 
     const { setupRemoteForProvider } = await import('../../src/lib/remoteSetup.js');
@@ -166,10 +194,12 @@ describe('setupRemoteForProvider', () => {
 
     expect(result).toEqual({ remoteUrl: null, pushed: false });
     expect(addRemoteMock).not.toHaveBeenCalled();
+    expect(upsertRemoteMock).not.toHaveBeenCalled();
   });
 
   it('accepts any valid git URL for the custom provider via its own validateUrl', async () => {
     const customValidate = vi.fn(() => true);
+    // custom.cliName is null so the manual flow is taken automatically.
     const custom = makeProvider('custom', {
       validateUrl: customValidate,
       // custom buildRepoUrl throws (matches real CustomProvider); the impl must
@@ -186,7 +216,105 @@ describe('setupRemoteForProvider', () => {
     const { setupRemoteForProvider } = await import('../../src/lib/remoteSetup.js');
     const result = await setupRemoteForProvider(custom, '/test-home/.tuck');
 
-    expect(addRemoteMock).toHaveBeenCalledWith('/test-home/.tuck', 'origin', customUrl);
+    expect(upsertRemoteMock).toHaveBeenCalledWith('/test-home/.tuck', 'origin', customUrl);
     expect(result.remoteUrl).toBe(customUrl);
+  });
+
+  it('auto-creates a GitLab repository via the provider CLI (no manual URL prompt)', async () => {
+    const createdRepo: ProviderRepo = {
+      name: 'dotfiles',
+      fullName: 'me/dotfiles',
+      url: 'https://gitlab.com/me/dotfiles',
+      sshUrl: 'git@gitlab.com:me/dotfiles.git',
+      httpsUrl: 'https://gitlab.com/me/dotfiles.git',
+      isPrivate: true,
+    };
+
+    const createRepo = vi.fn(async () => createdRepo);
+    const getPreferredRepoUrl = vi.fn(async (r: ProviderRepo) => r.sshUrl);
+
+    const gitlab = makeProvider('gitlab', {
+      isCliInstalled: vi.fn(async () => true),
+      isAuthenticated: vi.fn(async () => true),
+      createRepo,
+      getPreferredRepoUrl,
+    });
+
+    // confirm() is called for: "Create automatically?" -> yes, "Private?" -> yes
+    confirmMock.mockResolvedValue(true);
+    // text() is the repo-name prompt (NOT a manual URL prompt).
+    textMock.mockResolvedValue('dotfiles');
+
+    const { setupRemoteForProvider } = await import('../../src/lib/remoteSetup.js');
+    const result = await setupRemoteForProvider(gitlab, '/test-home/.tuck');
+
+    // Repo was created through the provider and the remote upserted with its URL.
+    expect(createRepo).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'dotfiles', isPrivate: true })
+    );
+    expect(getPreferredRepoUrl).toHaveBeenCalledWith(createdRepo);
+    expect(upsertRemoteMock).toHaveBeenCalledWith(
+      '/test-home/.tuck',
+      'origin',
+      'git@gitlab.com:me/dotfiles.git'
+    );
+
+    // The manual paste-URL prompt must NOT have been used.
+    const textCalls = textMock.mock.calls;
+    const promptedForUrl = textCalls.some(([msg]) =>
+      String(msg).toLowerCase().includes('url')
+    );
+    expect(promptedForUrl).toBe(false);
+
+    expect(result).toEqual({
+      remoteUrl: 'git@gitlab.com:me/dotfiles.git',
+      pushed: false,
+    });
+  });
+
+  it('falls back to the manual flow when auto-create fails', async () => {
+    const createRepo = vi.fn(async () => {
+      throw new Error('glab boom');
+    });
+
+    const gitlab = makeProvider('gitlab', {
+      isCliInstalled: vi.fn(async () => true),
+      isAuthenticated: vi.fn(async () => true),
+      createRepo,
+    });
+
+    // confirm: auto-create? yes, private? yes, then "created the repo?" yes
+    confirmMock.mockResolvedValue(true);
+    const manualUrl = 'git@gitlab.com:me/dotfiles.git';
+    // First text() = repo name; second text() = manual URL paste.
+    textMock
+      .mockResolvedValueOnce('dotfiles')
+      .mockResolvedValueOnce(manualUrl);
+
+    const { setupRemoteForProvider } = await import('../../src/lib/remoteSetup.js');
+    const result = await setupRemoteForProvider(gitlab, '/test-home/.tuck');
+
+    expect(createRepo).toHaveBeenCalled();
+    // After the failure, the manual flow upserts the pasted URL.
+    expect(upsertRemoteMock).toHaveBeenCalledWith('/test-home/.tuck', 'origin', manualUrl);
+    expect(result.remoteUrl).toBe(manualUrl);
+  });
+
+  it('does not offer auto-create when the CLI is unauthenticated', async () => {
+    const createRepo = vi.fn();
+    const gitlab = makeProvider('gitlab', {
+      isCliInstalled: vi.fn(async () => true),
+      isAuthenticated: vi.fn(async () => false),
+      createRepo,
+    });
+
+    confirmMock.mockResolvedValue(true); // "Have you created the repository?"
+    textMock.mockResolvedValue('git@gitlab.com:me/dotfiles.git');
+
+    const { setupRemoteForProvider } = await import('../../src/lib/remoteSetup.js');
+    await setupRemoteForProvider(gitlab, '/test-home/.tuck');
+
+    // createRepo must never run for an unauthenticated CLI.
+    expect(createRepo).not.toHaveBeenCalled();
   });
 });

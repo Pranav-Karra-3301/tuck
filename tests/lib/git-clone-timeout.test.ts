@@ -2,10 +2,11 @@
  * cloneRepo timeout / maxBuffer guard tests.
  *
  * A hung or hostile remote must not let `tuck init` / `tuck apply` hang forever,
- * so cloneRepo configures the simple-git instance with a bounded timeout and a
- * maxBuffer limit (mirroring CustomProvider.cloneRepo). These tests assert the
- * git client is created with those guards wired up — the simple-git factory is
- * fully mocked so no real git process is ever spawned.
+ * and must not let a huge remote buffer unbounded output into memory. simple-git
+ * v3 does NOT forward `maxBuffer` to the child process, so cloneRepo shells out
+ * to git via Node's `execFile` directly (mirroring CustomProvider.cloneRepo),
+ * passing a bounded `timeout` and a `maxBuffer` limit. These tests fully mock
+ * `child_process.execFile` so no real git process is ever spawned.
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -13,57 +14,77 @@ import { GIT_OPERATION_TIMEOUTS } from '../../src/lib/validation.js';
 
 // Hoisted so the vi.mock factory (which is itself hoisted to the top of the
 // file) can safely reference these without a TDZ error.
-const { cloneFn, simpleGitFactory } = vi.hoisted(() => {
-  const cloneFn = vi.fn();
-  const mockGitInstance = { clone: cloneFn };
-  // Capture the options the factory is constructed with.
-  const simpleGitFactory = vi.fn(() => mockGitInstance);
-  return { cloneFn, simpleGitFactory };
+const { execFileMock } = vi.hoisted(() => {
+  return { execFileMock: vi.fn() };
 });
 
-vi.mock('simple-git', () => ({
-  default: simpleGitFactory,
-  simpleGit: simpleGitFactory,
+// Mock child_process.execFile. promisify(execFile) calls execFile with a
+// trailing node-style callback; emulate that so the promisified form resolves
+// or rejects based on what the test configures.
+vi.mock('child_process', () => ({
+  execFile: execFileMock,
 }));
 
 import { cloneRepo } from '../../src/lib/git.js';
 
+/**
+ * Configure execFileMock so the promisified wrapper resolves successfully.
+ */
+const resolveExecFile = () => {
+  execFileMock.mockImplementation((_cmd, _args, _opts, cb) => {
+    const callback = typeof _opts === 'function' ? _opts : cb;
+    callback?.(null, { stdout: '', stderr: '' });
+  });
+};
+
 describe('cloneRepo timeout/maxBuffer guard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    cloneFn.mockResolvedValue(undefined);
+    resolveExecFile();
   });
 
-  it('creates the git client with a bounded clone timeout', async () => {
+  it('invokes git clone via execFile with a bounded clone timeout', async () => {
     await cloneRepo('https://github.com/user/repo.git', '/test-home/cloned');
 
-    expect(simpleGitFactory).toHaveBeenCalledTimes(1);
-    const config = simpleGitFactory.mock.calls[0][0] as {
-      timeout?: { block?: number };
-    };
-    expect(config).toBeDefined();
-    expect(config.timeout?.block).toBe(GIT_OPERATION_TIMEOUTS.CLONE);
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+    const [cmd, args, opts] = execFileMock.mock.calls[0] as [
+      string,
+      string[],
+      { timeout?: number; maxBuffer?: number },
+    ];
+    expect(cmd).toBe('git');
+    expect(args).toEqual(['clone', 'https://github.com/user/repo.git', '/test-home/cloned']);
+    expect(opts.timeout).toBe(GIT_OPERATION_TIMEOUTS.CLONE);
   });
 
-  it('creates the git client with a maxBuffer limit', async () => {
+  it('invokes git clone via execFile with a maxBuffer limit', async () => {
     await cloneRepo('https://github.com/user/repo.git', '/test-home/cloned');
 
-    const config = simpleGitFactory.mock.calls[0][0] as { maxBuffer?: number };
-    expect(typeof config.maxBuffer).toBe('number');
-    expect(config.maxBuffer).toBeGreaterThan(0);
+    const [, , opts] = execFileMock.mock.calls[0] as [
+      string,
+      string[],
+      { maxBuffer?: number },
+    ];
+    expect(typeof opts.maxBuffer).toBe('number');
+    expect(opts.maxBuffer).toBeGreaterThan(0);
   });
 
   it('clones the requested url into the target directory', async () => {
     await cloneRepo('https://github.com/user/repo.git', '/test-home/cloned');
 
-    expect(cloneFn).toHaveBeenCalledWith(
+    const [, args] = execFileMock.mock.calls[0] as [string, string[]];
+    expect(args).toEqual([
+      'clone',
       'https://github.com/user/repo.git',
-      '/test-home/cloned'
-    );
+      '/test-home/cloned',
+    ]);
   });
 
   it('wraps clone failures in a GitError', async () => {
-    cloneFn.mockRejectedValueOnce(new Error('boom'));
+    execFileMock.mockImplementation((_cmd, _args, _opts, cb) => {
+      const callback = typeof _opts === 'function' ? _opts : cb;
+      callback?.(new Error('boom'));
+    });
 
     await expect(
       cloneRepo('https://github.com/user/repo.git', '/test-home/cloned')
