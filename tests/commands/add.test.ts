@@ -221,6 +221,18 @@ describe('add command behavior', () => {
     );
   });
 
+  it('passes --template and --encrypt through to tracking', async () => {
+    const { addFilesFromPaths } = await import('../../src/commands/add.js');
+
+    await addFilesFromPaths(['~/.zshrc'], { force: true, template: true, encrypt: true });
+
+    expect(trackFilesWithProgressMock).toHaveBeenCalledWith(
+      [{ path: '~/.zshrc', category: 'shell' }],
+      '/test-home/.tuck',
+      expect.objectContaining({ template: true, encrypt: true })
+    );
+  });
+
   it('runs the full prepare pipeline for --plan and reflects the detected category', async () => {
     // detectCategory returns 'shell' from beforeEach; the plan must surface the
     // detected category, not the (undefined) raw --category input.

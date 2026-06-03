@@ -17,6 +17,10 @@ import { dirname, join } from 'path';
 import type { FileStrategy } from '../types.js';
 import { toPosixPath } from './platform.js';
 import { bindRepo } from './repoScope.js';
+import { readFile, writeFile } from 'fs/promises';
+import { encryptFileContent } from './crypto/fileEncryption.js';
+import { keystorePassphrase } from './materialize.js';
+import { EncryptionError } from '../errors.js';
 
 export interface FileToTrack {
   path: string;
@@ -56,16 +60,11 @@ export interface FileTrackingOptions {
    */
   strategy?: FileStrategy;
 
-  // TODO: Encryption and templating are planned for a future version
-  // /**
-  //  * Encrypt files
-  //  */
-  // encrypt?: boolean;
-  //
-  // /**
-  //  * Treat as template
-  //  */
-  // template?: boolean;
+  /** Encrypt the file at rest in the repo using the keystore passphrase (decrypted on apply). */
+  encrypt?: boolean;
+
+  /** Mark the file as a template — stored verbatim, rendered on apply/restore. */
+  template?: boolean;
 
   /**
    * Delay between file operations in milliseconds
@@ -140,9 +139,8 @@ export const trackFilesWithProgress = async (
   const {
     showCategory = true,
     strategy: customStrategy,
-    // TODO: Encryption and templating are planned for a future version
-    // encrypt = false,
-    // template = false,
+    encrypt = false,
+    template = false,
     actionVerb = 'Tracking',
     onProgress,
   } = options;
@@ -155,6 +153,15 @@ export const trackFilesWithProgress = async (
 
   const config = await loadConfig(tuckDir);
   const strategy: FileStrategy = customStrategy || config.files.strategy || 'copy';
+
+  // Encrypted/template files are COPY-ONLY: they are decrypted/rendered into place
+  // on apply, never symlinked (a symlink would expose ciphertext or the raw {{ }}
+  // source at the live path). Reject the combination up front with a clear message.
+  if ((encrypt || template) && strategy === 'symlink') {
+    throw new Error(
+      'The symlink strategy cannot be combined with --encrypt/--template: these files are copied (and decrypted/rendered on apply), not linked.'
+    );
+  }
   const total = files.length;
   const errors: Array<{ path: string; error: Error }> = [];
   const sensitiveFiles: string[] = [];
@@ -257,6 +264,14 @@ export const trackFilesWithProgress = async (
           // caller records it and the user is never told this silently "worked".
           throw symlinkError;
         }
+      } else if (encrypt) {
+        // Encrypt at rest: store TCKE1 ciphertext in the repo (decrypted on apply).
+        const passphrase = await keystorePassphrase();
+        if (!passphrase) {
+          throw new EncryptionError('No encryption password set. Run `tuck encryption setup` first.');
+        }
+        const plaintext = await readFile(expandedPath);
+        await writeFile(destination, await encryptFileContent(plaintext, passphrase));
       } else {
         // Default: copy file into the repository (from the absolute live path).
         await copyFileOrDir(expandedPath, destination, { overwrite: true });
@@ -277,9 +292,8 @@ export const trackFilesWithProgress = async (
         category,
         // Repo scope is copy-only regardless of the configured global strategy.
         strategy: isRepo ? 'copy' : strategy,
-        // TODO: Encryption and templating are planned for a future version
-        encrypted: false,
-        template: false,
+        encrypted: encrypt,
+        template,
         permissions: info.permissions,
         added: now,
         modified: now,

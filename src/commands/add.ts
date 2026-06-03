@@ -73,6 +73,8 @@ const addFiles = async (
     showCategory: true,
     // Repo scope is always copy; --symlink is rejected upstream for repo adds.
     strategy: options.symlink ? 'symlink' : undefined,
+    encrypt: options.encrypt,
+    template: options.template,
     actionVerb: 'Tracking',
   });
 };
@@ -301,6 +303,8 @@ export const addCommand = new Command('add')
   .option('-c, --category <name>', 'Category to organize under')
   .option('-n, --name <name>', 'Custom name for the file in manifest')
   .option('--symlink', 'Copy into tuck repo, then replace source path with a symlink')
+  .option('--template', 'Mark as a template: rendered on apply (sync will not capture live edits)')
+  .option('--encrypt', 'Encrypt the file at rest in the repo (decrypted on apply; needs an encryption password)')
   .option(
     '--repo [dir]',
     'Track as repo-scoped (file lives in a git repo; auto-detects the root from the path when no dir is given)'
