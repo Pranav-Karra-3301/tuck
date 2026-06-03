@@ -3,6 +3,7 @@ import { vol } from 'memfs';
 import { join } from 'path';
 import { createMockManifest, createMockTrackedFile } from '../utils/factories.js';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
+import { encryptFileContent } from '../../src/lib/crypto/fileEncryption.js';
 
 const cloneRepoMock = vi.fn();
 const createPreApplySnapshotMock = vi.fn();
@@ -102,6 +103,12 @@ vi.mock('../../src/lib/config.js', () => ({
       secretBackend: 'local',
     },
   }),
+}));
+
+vi.mock('../../src/lib/crypto/keystore/index.js', () => ({
+  getKeystore: vi.fn(async () => ({ retrieve: vi.fn(async () => 'pw') })),
+  TUCK_SERVICE: 'tuck-dotfiles',
+  TUCK_ACCOUNT: 'backup-encryption',
 }));
 
 vi.mock('../../src/lib/platform.js', () => ({
@@ -214,6 +221,53 @@ describe('apply command behavior', () => {
     if (clonedDir) {
       expect(vol.existsSync(clonedDir)).toBe(false);
     }
+  });
+
+  it('renders a template file on apply (P0-1)', async () => {
+    cloneSetup = (dir: string) => {
+      const manifest = createMockManifest({
+        files: {
+          tmpl: createMockTrackedFile({
+            source: '~/.zshrc',
+            destination: 'files/shell/zshrc',
+            template: true,
+          }),
+        },
+      });
+      vol.mkdirSync(join(dir, 'files', 'shell'), { recursive: true });
+      vol.writeFileSync(join(dir, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
+      vol.writeFileSync(join(dir, 'files', 'shell', 'zshrc'), 'os={{os}}');
+    };
+
+    const { runApply } = await import('../../src/commands/apply.js');
+    await runApply('user/repo', { replace: true });
+
+    // The {{os}} placeholder is rendered with the machine's platform, not copied verbatim.
+    expect(vol.readFileSync(join(TEST_HOME, '.zshrc'), 'utf-8')).toBe(`os=${process.platform}`);
+  });
+
+  it('decrypts an encrypted file on apply (P0-2)', async () => {
+    const ciphertext = await encryptFileContent(Buffer.from('SECRET=1'), 'pw');
+    cloneSetup = (dir: string) => {
+      const manifest = createMockManifest({
+        files: {
+          enc: createMockTrackedFile({
+            source: '~/.netrc',
+            destination: 'files/shell/netrc',
+            encrypted: true,
+          }),
+        },
+      });
+      vol.mkdirSync(join(dir, 'files', 'shell'), { recursive: true });
+      vol.writeFileSync(join(dir, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
+      vol.writeFileSync(join(dir, 'files', 'shell', 'netrc'), ciphertext);
+    };
+
+    const { runApply } = await import('../../src/commands/apply.js');
+    await runApply('user/repo', { replace: true });
+
+    // The TCKE1 ciphertext is decrypted to plaintext on disk (not shipped as ciphertext).
+    expect(vol.readFileSync(join(TEST_HOME, '.netrc'), 'utf-8')).toBe('SECRET=1');
   });
 
   it('throws when cloned repository has no tuck manifest', async () => {

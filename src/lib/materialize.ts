@@ -81,7 +81,13 @@ export const keystorePassphrase = async (): Promise<string | null> => {
  * `config.templates.variables`. Built once per command, not per file.
  */
 export const buildMaterializeCtx = async (tuckDir: string): Promise<TemplateContext> => {
-  const { loadConfig } = await import('./config.js');
-  const config = await loadConfig(tuckDir);
-  return defaultTemplateContext(config.templates?.variables ?? {});
+  // Resilient: a missing/corrupt config must not break apply/restore — fall back
+  // to the built-in machine variables (os/arch/hostname/…) only.
+  try {
+    const { loadConfig } = await import('./config.js');
+    const config = await loadConfig(tuckDir);
+    return defaultTemplateContext(config?.templates?.variables ?? {});
+  } catch {
+    return defaultTemplateContext({});
+  }
 };

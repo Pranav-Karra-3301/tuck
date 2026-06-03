@@ -31,9 +31,10 @@ import { findPlaceholders, restoreContent, restoreFiles as restoreSecrets, getAl
 import { createResolver } from '../lib/secretBackends/index.js';
 import { loadConfig } from '../lib/config.js';
 import { IS_WINDOWS } from '../lib/platform.js';
-import { RepositoryNotFoundError } from '../errors.js';
+import { RepositoryNotFoundError, MaterializeError } from '../errors.js';
 import { getProvider, type ProviderMode, type RemoteConfig as ProviderRemoteConfig } from '../lib/providers/index.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
+import { materializeForLive, keystorePassphrase, buildMaterializeCtx } from '../lib/materialize.js';
 
 // Track if Windows permission warning has been shown this session
 let windowsPermissionWarningShown = false;
@@ -143,6 +144,10 @@ export interface ApplyFile {
   repoTarget?: RepoWriteTarget;
   /** Recorded octal permissions (e.g. "755"), reapplied to the written file. */
   permissions?: string;
+  /** Render the repo source as a template before writing to the live system. */
+  template: boolean;
+  /** Decrypt the repo source (TCKE1) before writing to the live system. */
+  encrypted: boolean;
 }
 
 interface ApplyResult {
@@ -551,6 +556,8 @@ export const prepareFilesToApply = async (
       repoPath: repoFilePath,
       repoTarget,
       permissions: file.permissions,
+      template: file.template,
+      encrypted: file.encrypted,
     });
   }
 
@@ -610,6 +617,8 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
 
   // Get tuck directory for secret resolution
   const tuckDir = getTuckDir();
+  // Template context (built-in vars + config.templates.variables), built once per apply.
+  const ctx = await buildMaterializeCtx(tuckDir);
 
   for (const file of files) {
     // Directory entries are copied as a tree; readFile / secret-resolution /
@@ -619,7 +628,23 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
       result.appliedCount++;
       continue;
     }
-    let fileContent = await readFile(file.repoPath, 'utf-8');
+    let fileContent: string;
+    try {
+      const rawBytes = await readFile(file.repoPath);
+      fileContent = await materializeForLive(rawBytes, file, ctx, { getPassphrase: keystorePassphrase });
+    } catch (err) {
+      // A failed / absent-passphrase decryption must NEVER write ciphertext or
+      // partial output to the live system: skip this file loudly, keep the rest.
+      if (err instanceof MaterializeError) {
+        logger.warning(err.message);
+        result.filesWithPlaceholders.push({
+          path: collapsePath(file.destination),
+          placeholders: ['<materialize-failed>'],
+        });
+        continue;
+      }
+      throw err;
+    }
 
     // Resolve placeholders using configured backend (1Password, Bitwarden, pass, or local)
     const secretsResult = await resolveFileSecrets(fileContent, tuckDir);
@@ -691,6 +716,8 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
 
   // Get tuck directory for secret resolution
   const tuckDir = getTuckDir();
+  // Template context (built-in vars + config.templates.variables), built once per apply.
+  const ctx = await buildMaterializeCtx(tuckDir);
 
   for (const file of files) {
     // Directory entries are copied as a tree; readFile / secret-resolution /
@@ -700,7 +727,23 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
       result.appliedCount++;
       continue;
     }
-    let fileContent = await readFile(file.repoPath, 'utf-8');
+    let fileContent: string;
+    try {
+      const rawBytes = await readFile(file.repoPath);
+      fileContent = await materializeForLive(rawBytes, file, ctx, { getPassphrase: keystorePassphrase });
+    } catch (err) {
+      // A failed / absent-passphrase decryption must NEVER write ciphertext or
+      // partial output to the live system: skip this file loudly, keep the rest.
+      if (err instanceof MaterializeError) {
+        logger.warning(err.message);
+        result.filesWithPlaceholders.push({
+          path: collapsePath(file.destination),
+          placeholders: ['<materialize-failed>'],
+        });
+        continue;
+      }
+      throw err;
+    }
 
     // Resolve placeholders using configured backend (1Password, Bitwarden, pass, or local)
     const secretsResult = await resolveFileSecrets(fileContent, tuckDir);
