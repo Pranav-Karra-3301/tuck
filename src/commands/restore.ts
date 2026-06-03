@@ -1,7 +1,7 @@
 import { Command } from 'commander';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { colors as c } from '../ui/theme.js';
-import { chmod, stat } from 'fs/promises';
+import { chmod, stat, readFile, writeFile } from 'fs/promises';
 import { prompts, logger, withSpinner } from '../ui/index.js';
 import {
   getTuckDir,
@@ -23,9 +23,11 @@ import {
 } from '../lib/repoScope.js';
 import { loadConfig } from '../lib/config.js';
 import { copyFileOrDir, createSymlink, setFilePermissions } from '../lib/files.js';
+import { ensureDir } from 'fs-extra';
+import { materializeForLive, keystorePassphrase, buildMaterializeCtx } from '../lib/materialize.js';
 import { createBackup } from '../lib/backup.js';
 import { runPreRestoreHook, runPostRestoreHook, type HookOptions } from '../lib/hooks.js';
-import { NotInitializedError, FileNotFoundError, TuckError } from '../errors.js';
+import { NotInitializedError, FileNotFoundError, TuckError, MaterializeError } from '../errors.js';
 import { CATEGORIES } from '../constants.js';
 import type { RestoreOptions } from '../types.js';
 import { setJsonMode, isJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
@@ -98,6 +100,10 @@ interface FileToRestore {
   repoRelative?: string;
   /** Recorded octal permissions (e.g. "755"), reapplied to the restored file. */
   permissions?: string;
+  /** Render the repo source as a template before writing to the live system. */
+  template: boolean;
+  /** Decrypt the repo source (TCKE1) before writing to the live system. */
+  encrypted: boolean;
 }
 
 interface RestoreResult {
@@ -149,6 +155,8 @@ const prepareFilesToRestore = async (
         repoKey: tracked.file.repoKey,
         repoRelative: tracked.file.repoRelative,
         permissions: tracked.file.permissions,
+        template: tracked.file.template,
+        encrypted: tracked.file.encrypted,
       });
     }
   } else {
@@ -172,6 +180,8 @@ const prepareFilesToRestore = async (
         repoKey: file.repoKey,
         repoRelative: file.repoRelative,
         permissions: file.permissions,
+        template: file.template,
+        encrypted: file.encrypted,
       });
     }
   }
@@ -186,6 +196,8 @@ const restoreFilesInternal = async (
 ): Promise<RestoreResult> => {
   const config = await loadConfig(tuckDir);
   const useSymlink = options.symlink || config.files.strategy === 'symlink';
+  // Template context (built-in vars + config.templates.variables), built once per restore.
+  const ctx = await buildMaterializeCtx(tuckDir);
   const shouldBackup = options.backup ?? config.files.backupOnRestore;
 
   // Prepare hook options
@@ -274,10 +286,36 @@ const restoreFilesInternal = async (
       });
     }
 
+    // Pre-materialize template/encrypted files (decrypt/render) BEFORE any write,
+    // so a failed / absent-passphrase decryption skips this file and never ships
+    // ciphertext or partial output. Directories are never template/encrypted.
+    let materialized: string | null = null;
+    if (!useSymlink && (file.template || file.encrypted)) {
+      try {
+        const isDir = (await stat(file.destination)).isDirectory();
+        if (!isDir) {
+          const raw = await readFile(file.destination);
+          materialized = await materializeForLive(raw, file, ctx, { getPassphrase: keystorePassphrase });
+        }
+      } catch (err) {
+        if (err instanceof MaterializeError) {
+          logger.warning(err.message);
+          if (isJsonMode()) addJsonWarning(err.message);
+          skipped.push(file.source);
+          continue;
+        }
+        throw err;
+      }
+    }
+
     // Restore file
     await withSpinner(`Restoring ${file.source}...`, async () => {
       if (useSymlink) {
         await createSymlink(file.destination, targetPath, { overwrite: true });
+      } else if (materialized !== null) {
+        // Decrypted/rendered content written directly (not a raw repo copy).
+        await ensureDir(dirname(targetPath));
+        await writeFile(targetPath, materialized, 'utf-8');
       } else {
         await copyFileOrDir(file.destination, targetPath, { overwrite: true });
       }

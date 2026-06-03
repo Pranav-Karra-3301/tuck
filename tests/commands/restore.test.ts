@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { join } from 'path';
+import { vol } from 'memfs';
 import { NotInitializedError } from '../../src/errors.js';
+import { encryptFileContent } from '../../src/lib/crypto/fileEncryption.js';
 
 const loadManifestMock = vi.fn();
 const getAllTrackedFilesMock = vi.fn();
@@ -92,6 +94,12 @@ vi.mock('../../src/lib/secrets/index.js', () => ({
   getSecretCount: getSecretCountMock,
 }));
 
+vi.mock('../../src/lib/crypto/keystore/index.js', () => ({
+  getKeystore: vi.fn(async () => ({ retrieve: vi.fn(async () => 'pw') })),
+  TUCK_SERVICE: 'tuck-dotfiles',
+  TUCK_ACCOUNT: 'backup-encryption',
+}));
+
 describe('restore command behavior', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -144,6 +152,50 @@ describe('restore command behavior', () => {
       '/test-home/.tuck',
       'restore source'
     );
+  });
+
+  it('renders a template file on restore (P0-1)', async () => {
+    vol.reset();
+    vol.mkdirSync('/test-home/.tuck/files/shell', { recursive: true });
+    vol.writeFileSync('/test-home/.tuck/files/shell/zshrc', 'os={{os}}');
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: {
+        source: '~/.zshrc',
+        destination: 'files/shell/zshrc',
+        category: 'shell',
+        template: true,
+        encrypted: false,
+      },
+    });
+
+    const { runRestore } = await import('../../src/commands/restore.js');
+    await runRestore({ all: true, noHooks: true, noSecrets: true });
+
+    // {{os}} is rendered with the machine platform; written directly, not raw-copied.
+    expect(vol.readFileSync('/test-home/.zshrc', 'utf-8')).toBe(`os=${process.platform}`);
+    expect(copyFileOrDirMock).not.toHaveBeenCalled();
+  });
+
+  it('decrypts an encrypted file on restore (P0-2)', async () => {
+    vol.reset();
+    const ciphertext = await encryptFileContent(Buffer.from('SECRET=1'), 'pw');
+    vol.mkdirSync('/test-home/.tuck/files/shell', { recursive: true });
+    vol.writeFileSync('/test-home/.tuck/files/shell/netrc', ciphertext);
+    getAllTrackedFilesMock.mockResolvedValue({
+      netrc: {
+        source: '~/.netrc',
+        destination: 'files/shell/netrc',
+        category: 'shell',
+        template: false,
+        encrypted: true,
+      },
+    });
+
+    const { runRestore } = await import('../../src/commands/restore.js');
+    await runRestore({ all: true, noHooks: true, noSecrets: true });
+
+    // TCKE1 ciphertext is decrypted to plaintext on disk, never written as ciphertext.
+    expect(vol.readFileSync('/test-home/.netrc', 'utf-8')).toBe('SECRET=1');
   });
 
   it('surfaces skipped-file warnings in the JSON envelope.warnings', async () => {
