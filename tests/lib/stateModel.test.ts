@@ -7,10 +7,18 @@
  * recorded checksum — and classifies the drift. classifyFileState is the pure
  * core of that comparison.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { vol } from 'memfs';
 import { classifyFileState, computeStateModel } from '../../src/lib/stateModel.js';
 import { clearManifestCache } from '../../src/lib/manifest.js';
+import { encryptFileContent } from '../../src/lib/crypto/fileEncryption.js';
+
+const retrieveMock = vi.fn();
+vi.mock('../../src/lib/crypto/keystore/index.js', () => ({
+  getKeystore: vi.fn(async () => ({ retrieve: retrieveMock })),
+  TUCK_SERVICE: 'tuck-dotfiles',
+  TUCK_ACCOUNT: 'backup-encryption',
+}));
 
 describe('classifyFileState', () => {
   it('ok when live == repo == manifest', () => {
@@ -79,6 +87,58 @@ describe('computeStateModel', () => {
     expect(model).toHaveLength(1);
     expect(model[0].state).toBe('ok');
     expect(model[0].source).toBe('~/.zshrc');
+  });
+
+  const ts = '2026-01-01T00:00:00.000Z';
+  const writeManifest = (entry: Record<string, unknown>): void => {
+    vol.writeFileSync(
+      `${TUCK}/.tuckmanifest.json`,
+      JSON.stringify({ version: '1', created: ts, updated: ts, files: { f: entry }, bundles: {} })
+    );
+  };
+
+  it('reports ok for a correctly-applied template file (no false drift)', async () => {
+    vol.writeFileSync('/test-home/.zshrc', `os=${process.platform}`);
+    vol.writeFileSync(`${TUCK}/files/shell/zshrc`, 'os={{os}}');
+    const { getFileChecksum } = await import('../../src/lib/files.js');
+    const repoChecksum = await getFileChecksum(`${TUCK}/files/shell/zshrc`);
+    writeManifest({
+      source: '~/.zshrc', destination: 'files/shell/zshrc', category: 'shell',
+      strategy: 'copy', template: true, encrypted: false, checksum: repoChecksum, added: ts, modified: ts,
+    });
+
+    const model = await computeStateModel(TUCK);
+    expect(model[0].state).toBe('ok');
+  });
+
+  it('reports drift-local for a hand-edited template live file (needs apply)', async () => {
+    vol.writeFileSync('/test-home/.zshrc', 'HAND EDITED');
+    vol.writeFileSync(`${TUCK}/files/shell/zshrc`, 'os={{os}}');
+    const { getFileChecksum } = await import('../../src/lib/files.js');
+    const repoChecksum = await getFileChecksum(`${TUCK}/files/shell/zshrc`);
+    writeManifest({
+      source: '~/.zshrc', destination: 'files/shell/zshrc', category: 'shell',
+      strategy: 'copy', template: true, encrypted: false, checksum: repoChecksum, added: ts, modified: ts,
+    });
+
+    const model = await computeStateModel(TUCK);
+    expect(model[0].state).toBe('drift-local');
+  });
+
+  it('degrades to ok for an encrypted file when the keystore is locked', async () => {
+    retrieveMock.mockResolvedValue(null); // locked / no passphrase available
+    const ciphertext = await encryptFileContent(Buffer.from('SECRET=1'), 'pw');
+    vol.writeFileSync('/test-home/.netrc', 'SECRET=1');
+    vol.writeFileSync(`${TUCK}/files/shell/netrc`, ciphertext);
+    const { getFileChecksum } = await import('../../src/lib/files.js');
+    const repoChecksum = await getFileChecksum(`${TUCK}/files/shell/netrc`);
+    writeManifest({
+      source: '~/.netrc', destination: 'files/shell/netrc', category: 'shell',
+      strategy: 'copy', template: false, encrypted: true, checksum: repoChecksum, added: ts, modified: ts,
+    });
+
+    const model = await computeStateModel(TUCK);
+    expect(model[0].state).toBe('ok');
   });
 
   it('reports drift-local when the live file was edited', async () => {
