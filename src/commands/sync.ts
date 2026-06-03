@@ -101,6 +101,19 @@ const detectChanges = async (tuckDir: string): Promise<TrackedFileChange[]> => {
     }
     validateSafeManifestDestination(file.destination);
 
+    // Template/encrypted files are ONE-DIRECTIONAL: the repo holds the SOURCE
+    // (template text / ciphertext) and the live file is a derived artifact
+    // (rendered / decrypted). Capturing the live file back into the repo would
+    // destroy the template source or write plaintext secrets — so sync NEVER
+    // captures these. Update them by editing the repo source and running
+    // `tuck apply`. (`tuck status` reports their real drift via the state model.)
+    if (file.template || file.encrypted) {
+      logger.debug?.(
+        `sync: skipping one-directional ${file.template ? 'template' : 'encrypted'} file ${file.source}`
+      );
+      continue;
+    }
+
     // Skip if in .tuckignore
     if (ignoredPaths.has(file.source)) {
       continue;

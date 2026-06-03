@@ -214,6 +214,42 @@ describe('sync command behavior', () => {
     expect(copyFileOrDirMock).not.toHaveBeenCalled();
   });
 
+  it('does not capture template/encrypted files live->repo (no clobber/leak)', async () => {
+    // Both files' live copies differ from the recorded checksum — they WOULD be
+    // captured as 'modified' if they were not one-directional.
+    getAllTrackedFilesMock.mockResolvedValue({
+      gitconfig: {
+        source: '~/.gitconfig',
+        destination: 'files/git/gitconfig',
+        checksum: 'old',
+        template: true,
+        encrypted: false,
+      },
+      netrc: {
+        source: '~/.netrc',
+        destination: 'files/shell/netrc',
+        checksum: 'old',
+        template: false,
+        encrypted: true,
+      },
+    });
+    getFileChecksumMock.mockResolvedValue('new');
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+
+    await runSyncCommand('sync: should-skip', {
+      noCommit: true,
+      noHooks: true,
+      scan: false,
+      pull: false,
+    });
+
+    // The template source is never overwritten; no plaintext is written for the
+    // encrypted file; nothing is detected as a change.
+    expect(copyFileOrDirMock).not.toHaveBeenCalled();
+    expect(updateFileInManifestMock).not.toHaveBeenCalled();
+    expect(loggerInfoMock).toHaveBeenCalledWith('No changes detected');
+  });
+
   it('syncs modified files and updates manifest when changes exist', async () => {
     getAllTrackedFilesMock.mockResolvedValue({
       zshrc: {
