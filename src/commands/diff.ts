@@ -25,7 +25,7 @@ import { isIgnored } from '../lib/tuckignore.js';
 import type { DiffOptions } from '../types.js';
 import { readFile } from 'fs/promises';
 
-interface FileDiff {
+export interface FileDiff {
   source: string;
   destination: string;
   hasChanges: boolean;
@@ -45,7 +45,7 @@ const isBinary = async (path: string): Promise<boolean> => {
   return await isBinaryExecutable(path);
 };
 
-const getFileDiff = async (tuckDir: string, source: string): Promise<FileDiff | null> => {
+export const getFileDiff = async (tuckDir: string, source: string): Promise<FileDiff | null> => {
   const tracked = await getTrackedFileBySource(tuckDir, source);
   if (!tracked) {
     throw new FileNotFoundError(`Not tracked: ${source}`);
