@@ -24,6 +24,7 @@ const commitMock = vi.fn();
 const hasRemoteMock = vi.fn();
 const pushMock = vi.fn();
 const loggerInfoMock = vi.fn();
+const getStatusMock = vi.fn();
 
 vi.mock('../../src/ui/index.js', () => ({
   prompts: {
@@ -93,7 +94,7 @@ vi.mock('../../src/lib/repoScope.js', () => ({
 vi.mock('../../src/lib/git.js', () => ({
   stageAll: stageAllMock,
   commit: commitMock,
-  getStatus: vi.fn().mockResolvedValue({ behind: 0 }),
+  getStatus: getStatusMock,
   push: pushMock,
   hasRemote: hasRemoteMock,
   fetch: vi.fn(),
@@ -180,6 +181,9 @@ describe('sync command behavior', () => {
     getFileChecksumMock.mockResolvedValue('new-checksum');
     hasRemoteMock.mockResolvedValue(false);
     commitMock.mockResolvedValue('abc123def456');
+    // Default: a clean working tree (no uncommitted changes). Tests that need a
+    // dirty tree (e.g. the initial-add commit) override hasChanges per-test.
+    getStatusMock.mockResolvedValue({ behind: 0, hasChanges: false });
     checkLocalModeMock.mockResolvedValue(false);
     validateSafeSourcePathMock.mockImplementation(() => {});
     validateSafeManifestDestinationMock.mockImplementation(() => {});
@@ -272,6 +276,36 @@ describe('sync command behavior', () => {
     );
     expect(stageAllMock).not.toHaveBeenCalled();
     expect(commitMock).not.toHaveBeenCalled();
+  });
+
+  it('commits pending repo changes even when no tracked file drifted (the initial add)', async () => {
+    // No tracked-file DRIFT (live == repo) ...
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: { source: '~/.zshrc', destination: 'files/shell/zshrc', checksum: 'same' },
+    });
+    getFileChecksumMock.mockResolvedValue('same'); // ⇒ detectChanges() is empty
+    // ... but the working tree HAS uncommitted changes (what `tuck add` leaves).
+    getStatusMock.mockResolvedValue({
+      behind: 0,
+      hasChanges: true,
+      staged: [],
+      modified: [],
+      untracked: ['files/shell/zshrc', '.tuckmanifest.json'],
+    });
+    commitMock.mockResolvedValue('deadbeefcafe');
+
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+    await runSyncCommand(undefined, {
+      json: true,
+      noHooks: true,
+      scan: false,
+      pull: false,
+      push: false,
+    } as never);
+
+    // The initial add must be committed, not reported as a no-op.
+    expect(stageAllMock).toHaveBeenCalledTimes(1);
+    expect(commitMock).toHaveBeenCalledTimes(1);
   });
 
   it('does not push in local-only mode even when a git remote exists', async () => {

@@ -47,9 +47,9 @@ describe('e2e: init → add → sync → apply round-trip', () => {
 
     const sync = await runCli(['sync', '--json', '--no-push'], { home: src, env });
     expect(sync.code).toBe(0);
-    // NOTE: `apply` reads the repo WORKING TREE, so clean-machine re-materialization
-    // does not require a git commit. Sync's commit-on-initial-add behavior is a
-    // separate axis — see the it.todo below (a real gap this harness surfaced).
+    const syncData = parseEnvelope(sync.stdout).data as { commitHash: string | null; noop: boolean };
+    expect(syncData.commitHash).toBeTruthy(); // the initial add is committed (not a noop)
+    expect(syncData.noop).toBe(false);
 
     // Clean machine: apply FROM the machine-1 repo dir (a local dir source ⇒ no network).
     const dst = await makeHome();
@@ -61,12 +61,6 @@ describe('e2e: init → add → sync → apply round-trip', () => {
     // The load-bearing assertion: the file re-materialized into the new HOME.
     expect(await readHomeFile(dst, '.zshrc')).toBe('export EDITOR=vim\n');
   });
-
-  // Finding surfaced by this harness: after `tuck add`, `tuck sync` reports
-  // noop:true while ~/.tuck still has the new files UNCOMMITTED — so `tuck push`
-  // would push nothing for the initial add. Sync's no-op is keyed on tracked-file
-  // drift (live-vs-repo), not on the git working-tree state. Track the fix here.
-  it.todo('sync should commit the initial add (currently reports noop with uncommitted ~/.tuck files)');
 
   it('apply is idempotent — a second apply changes nothing on disk (non-shell file)', async () => {
     if (!(await hasGit())) return;
