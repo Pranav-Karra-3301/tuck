@@ -101,6 +101,19 @@ const detectChanges = async (tuckDir: string): Promise<TrackedFileChange[]> => {
     }
     validateSafeManifestDestination(file.destination);
 
+    // Template/encrypted files are ONE-DIRECTIONAL: the repo holds the SOURCE
+    // (template text / ciphertext) and the live file is a derived artifact
+    // (rendered / decrypted). Capturing the live file back into the repo would
+    // destroy the template source or write plaintext secrets — so sync NEVER
+    // captures these. Update them by editing the repo source and running
+    // `tuck apply`. (`tuck status` reports their real drift via the state model.)
+    if (file.template || file.encrypted) {
+      logger.debug?.(
+        `sync: skipping one-directional ${file.template ? 'template' : 'encrypted'} file ${file.source}`
+      );
+      continue;
+    }
+
     // Skip if in .tuckignore
     if (ignoredPaths.has(file.source)) {
       continue;
@@ -1100,12 +1113,47 @@ export const runSyncCommand = async (
   if (options.json || options.yes) {
     const changes = await detectChanges(tuckDir);
     if (changes.length === 0) {
+      // No tracked-file DRIFT — but the working tree may still hold uncommitted
+      // changes: the INITIAL `tuck add` (which copies into ~/.tuck without
+      // committing), a prior `pull`, or manual repo edits. Commit those instead
+      // of falsely reporting a no-op — otherwise the initial add is never
+      // committed and a later `tuck push` would push nothing. Mirrors the
+      // interactive path's gitStatus.hasChanges handling (runInteractiveSync).
+      // (Files reach the repo via `tuck add`, which already secret-scans them.)
+      const gitStatus = await getStatus(tuckDir);
+      if (!gitStatus.hasChanges) {
+        if (options.json) {
+          // Idempotent: nothing to do is a no-op, not a failure. Agents key on
+          // `noop` to tell "nothing changed" from "synced".
+          emitJsonOk({ modified: [], deleted: [], commitHash: null, noop: true });
+        } else {
+          logger.info('No changes detected');
+        }
+        return;
+      }
+      await stageAll(tuckDir);
+      const commitHash = await commit(tuckDir, messageArg || options.message || 'Update dotfiles');
+      let pushError: string | undefined;
+      if (options.push !== false && !(await checkLocalMode(tuckDir)) && (await hasRemote(tuckDir))) {
+        const config = await loadConfig(tuckDir);
+        assertRemoteAvailable(config.remote, 'push');
+        try {
+          await push(tuckDir);
+        } catch (err) {
+          if (!options.json) throw err;
+          pushError = err instanceof Error ? err.message : String(err);
+        }
+      }
       if (options.json) {
-        // Idempotent: re-running sync with nothing to do is a no-op, not a
-        // failure. Agents key on `noop` to tell "nothing changed" from "synced".
-        emitJsonOk({ modified: [], deleted: [], commitHash: null, noop: true });
+        emitJsonOk({
+          modified: [],
+          deleted: [],
+          commitHash,
+          noop: false,
+          ...(pushError ? { pushError } : {}),
+        });
       } else {
-        logger.info('No changes detected');
+        logger.success(`Committed pending repository changes: ${commitHash.slice(0, 7)}`);
       }
       return;
     }

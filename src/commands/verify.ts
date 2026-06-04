@@ -133,7 +133,7 @@ const fixMissingRepo = async (tuckDir: string, entries: FileStateEntry[]): Promi
  *   the content that WOULD be written (reusing `getFileChecksum`, not a private
  *   hash). The live read uses the REAL home; the write stays in the sandbox.
  */
-const dryApplyIntoSandbox = async (
+export const dryApplyIntoSandbox = async (
   tuckDir: string,
   bundle?: string
 ): Promise<DryApplyResult> => {

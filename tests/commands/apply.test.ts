@@ -3,6 +3,7 @@ import { vol } from 'memfs';
 import { join } from 'path';
 import { createMockManifest, createMockTrackedFile } from '../utils/factories.js';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
+import { encryptFileContent } from '../../src/lib/crypto/fileEncryption.js';
 
 const cloneRepoMock = vi.fn();
 const createPreApplySnapshotMock = vi.fn();
@@ -11,6 +12,7 @@ const restoreContentMock = vi.fn();
 const restoreSecretsMock = vi.fn();
 const getAllSecretsMock = vi.fn();
 const getSecretCountMock = vi.fn();
+const retrieveMock = vi.fn();
 
 const loggerInfoMock = vi.fn();
 const loggerSuccessMock = vi.fn();
@@ -104,6 +106,12 @@ vi.mock('../../src/lib/config.js', () => ({
   }),
 }));
 
+vi.mock('../../src/lib/crypto/keystore/index.js', () => ({
+  getKeystore: vi.fn(async () => ({ retrieve: retrieveMock })),
+  TUCK_SERVICE: 'tuck-dotfiles',
+  TUCK_ACCOUNT: 'backup-encryption',
+}));
+
 vi.mock('../../src/lib/platform.js', () => ({
   IS_WINDOWS: false,
 }));
@@ -135,6 +143,7 @@ describe('apply command behavior', () => {
     getAllSecretsMock.mockResolvedValue({});
     getSecretCountMock.mockResolvedValue(0);
     createPreApplySnapshotMock.mockResolvedValue({ id: 'snapshot-test' });
+    retrieveMock.mockResolvedValue('pw'); // default: keystore has the encryption password
   });
 
   afterEach(() => {
@@ -214,6 +223,76 @@ describe('apply command behavior', () => {
     if (clonedDir) {
       expect(vol.existsSync(clonedDir)).toBe(false);
     }
+  });
+
+  it('renders a template file on apply (P0-1)', async () => {
+    cloneSetup = (dir: string) => {
+      const manifest = createMockManifest({
+        files: {
+          tmpl: createMockTrackedFile({
+            source: '~/.zshrc',
+            destination: 'files/shell/zshrc',
+            template: true,
+          }),
+        },
+      });
+      vol.mkdirSync(join(dir, 'files', 'shell'), { recursive: true });
+      vol.writeFileSync(join(dir, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
+      vol.writeFileSync(join(dir, 'files', 'shell', 'zshrc'), 'os={{os}}');
+    };
+
+    const { runApply } = await import('../../src/commands/apply.js');
+    await runApply('user/repo', { replace: true });
+
+    // The {{os}} placeholder is rendered with the machine's platform, not copied verbatim.
+    expect(vol.readFileSync(join(TEST_HOME, '.zshrc'), 'utf-8')).toBe(`os=${process.platform}`);
+  });
+
+  it('decrypts an encrypted file on apply (P0-2)', async () => {
+    const ciphertext = await encryptFileContent(Buffer.from('SECRET=1'), 'pw');
+    cloneSetup = (dir: string) => {
+      const manifest = createMockManifest({
+        files: {
+          enc: createMockTrackedFile({
+            source: '~/.netrc',
+            destination: 'files/shell/netrc',
+            encrypted: true,
+          }),
+        },
+      });
+      vol.mkdirSync(join(dir, 'files', 'shell'), { recursive: true });
+      vol.writeFileSync(join(dir, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
+      vol.writeFileSync(join(dir, 'files', 'shell', 'netrc'), ciphertext);
+    };
+
+    const { runApply } = await import('../../src/commands/apply.js');
+    await runApply('user/repo', { replace: true });
+
+    // The TCKE1 ciphertext is decrypted to plaintext on disk (not shipped as ciphertext).
+    expect(vol.readFileSync(join(TEST_HOME, '.netrc'), 'utf-8')).toBe('SECRET=1');
+  });
+
+  it('skips an undecryptable file without misreporting it as a secret placeholder', async () => {
+    retrieveMock.mockResolvedValue(null); // no passphrase ⇒ MaterializeError on the encrypted file
+    cloneSetup = (dir: string) => {
+      const manifest = createMockManifest({
+        files: {
+          enc: createMockTrackedFile({ source: '~/.netrc', destination: 'files/shell/netrc', encrypted: true }),
+        },
+      });
+      vol.mkdirSync(join(dir, 'files', 'shell'), { recursive: true });
+      vol.writeFileSync(join(dir, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
+      vol.writeFileSync(join(dir, 'files', 'shell', 'netrc'), 'cannot-decrypt-without-passphrase');
+    };
+
+    const { runApply } = await import('../../src/commands/apply.js');
+    await runApply('user/repo', { replace: true });
+
+    // Never written (no ciphertext/partial on disk) ...
+    expect(vol.existsSync(join(TEST_HOME, '.netrc'))).toBe(false);
+    // ... and NOT misreported as an unresolved placeholder ⇒ no spurious local-secret
+    // restore (tryRestoreSecretsFromLocalStore only runs when filesWithPlaceholders > 0).
+    expect(getAllSecretsMock).not.toHaveBeenCalled();
   });
 
   it('throws when cloned repository has no tuck manifest', async () => {

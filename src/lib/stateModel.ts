@@ -14,11 +14,14 @@
  */
 
 import { join } from 'path';
-import { stat } from 'fs/promises';
+import { stat, readFile } from 'fs/promises';
+import { createHash } from 'node:crypto';
 import { pathExists } from './paths.js';
 import { getFileChecksum } from './files.js';
 import { getAllTrackedFiles } from './manifest.js';
 import { resolveLiveTarget } from './repoScope.js';
+import { materializeForLive, keystorePassphrase, buildMaterializeCtx } from './materialize.js';
+import type { TemplateContext } from './template.js';
 import type { TrackedFileOutput } from '../schemas/manifest.schema.js';
 
 export type FileState =
@@ -101,44 +104,80 @@ const computeLiveChecksum = async (
 export const computeFileState = async (
   tuckDir: string,
   id: string,
-  file: TrackedFileOutput
+  file: TrackedFileOutput,
+  ctx?: TemplateContext
 ): Promise<FileStateEntry> => {
   const repoAbs = join(tuckDir, file.destination);
   const repoChecksum = (await pathExists(repoAbs)) ? await getFileChecksum(repoAbs) : null;
 
   // Resolve the LIVE location (home: expandPath; repo: bound root or null).
   const sourceAbs = await resolveLiveTarget(file);
-  if (sourceAbs === null) {
-    // Repo-scoped file whose repo is not bound on this machine — cannot compare.
-    return {
-      id,
-      source: file.source,
-      destination: file.destination,
-      state: 'unknown-repo',
-      liveChecksum: null,
-      repoChecksum,
-      manifestChecksum: file.checksum,
-    };
-  }
 
-  const liveChecksum = await computeLiveChecksum(sourceAbs, file);
-
-  return {
+  const entry = (
+    state: FileState,
+    liveChecksum: string | null,
+    repoChk: string | null
+  ): FileStateEntry => ({
     id,
     source: file.source,
     destination: file.destination,
-    state: classifyFileState(liveChecksum, repoChecksum, file.checksum),
+    state,
     liveChecksum,
-    repoChecksum,
+    repoChecksum: repoChk,
     manifestChecksum: file.checksum,
-  };
+  });
+
+  if (sourceAbs === null) {
+    // Repo-scoped file whose repo is not bound on this machine — cannot compare.
+    return entry('unknown-repo', null, repoChecksum);
+  }
+
+  // Materialized files (template/encrypted): the LIVE form is materialize(repo),
+  // not the raw repo bytes. Hash the live file DIRECTLY (the mtime+size
+  // short-circuit would wrongly return the recorded REPO checksum for an
+  // encrypted file's plaintext live copy) and compare against materialize(repo).
+  // DIRECTORIES are never materialized (readFile would EISDIR, then the catch
+  // would mask real drift as `ok`); a template/encrypted DIR falls through to the
+  // normal directory-checksum comparison below.
+  const repoIsDir = repoChecksum !== null && (await stat(repoAbs)).isDirectory();
+  if ((file.template || file.encrypted) && !repoIsDir) {
+    const liveChecksum = (await pathExists(sourceAbs)) ? await getFileChecksum(sourceAbs) : null;
+    if (liveChecksum === null && repoChecksum === null) return entry('missing-both', liveChecksum, repoChecksum);
+    if (liveChecksum === null) return entry('missing-live', liveChecksum, repoChecksum);
+    if (repoChecksum === null) return entry('missing-repo', liveChecksum, repoChecksum);
+    try {
+      const useCtx = ctx ?? (await buildMaterializeCtx(tuckDir));
+      const raw = await readFile(repoAbs);
+      const expected = await materializeForLive(raw, file, useCtx, { getPassphrase: keystorePassphrase });
+      const expectedChecksum = createHash('sha256').update(Buffer.from(expected, 'utf8')).digest('hex');
+      // live ≠ materialize(repo) → stale/edited (remedy: `tuck apply`, since sync
+      // skips these files). Otherwise raw repo vs manifest distinguishes drift-repo.
+      const state: FileState =
+        liveChecksum !== expectedChecksum
+          ? 'drift-local'
+          : repoChecksum !== file.checksum
+            ? 'drift-repo'
+            : 'ok';
+      return entry(state, liveChecksum, repoChecksum);
+    } catch {
+      // Locked keystore / undecryptable repo file: can't compute the expected live
+      // form — degrade to ok-by-presence rather than failing status/verify offline.
+      return entry('ok', liveChecksum, repoChecksum);
+    }
+  }
+
+  const liveChecksum = await computeLiveChecksum(sourceAbs, file);
+  return entry(classifyFileState(liveChecksum, repoChecksum, file.checksum), liveChecksum, repoChecksum);
 };
 
 /** Compute the state of every tracked file in the manifest. */
 export const computeStateModel = async (tuckDir: string): Promise<FileStateEntry[]> => {
   const files = await getAllTrackedFiles(tuckDir);
+  // Build the template context ONCE (built-in vars + config.templates.variables)
+  // and reuse it across every materialized-file comparison.
+  const ctx = await buildMaterializeCtx(tuckDir);
   return Promise.all(
-    Object.entries(files).map(([id, file]) => computeFileState(tuckDir, id, file))
+    Object.entries(files).map(([id, file]) => computeFileState(tuckDir, id, file, ctx))
   );
 };
 

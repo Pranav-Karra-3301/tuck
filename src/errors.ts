@@ -185,6 +185,15 @@ export class DecryptionError extends TuckError {
   }
 }
 
+export class MaterializeError extends TuckError {
+  constructor(source: string, reason: string) {
+    super(`Cannot materialize ${source}: ${reason}`, 'MATERIALIZE_FAILED', [
+      'Check the encryption password (run `tuck encryption setup`)',
+      'Verify the repo file is not corrupted or truncated',
+    ]);
+  }
+}
+
 export class SecretsDetectedError extends TuckError {
   constructor(count: number, files: string[]) {
     const fileList =

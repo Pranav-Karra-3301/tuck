@@ -12,6 +12,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { dispatch, createServerState } from '../../src/commands/mcp.js';
 import { VERSION } from '../../src/constants.js';
+import { snapshotWriteContext } from '../../src/lib/writeContext.js';
+import { vol } from 'memfs';
+import { tmpdir } from 'os';
 
 // Keep the real classifier/listing behaviour (other tests depend on it) but
 // replace the single state-mutating entry point so write-gate tests can run
@@ -24,11 +27,65 @@ vi.mock('../../src/commands/context.js', async () => {
   return { ...actual, addContextFile: addContextFileMock };
 });
 
+// Library-boundary mocks for the new read tools: the tool HANDLERS run their real
+// projection/redaction logic over controlled inputs (so the redaction test is
+// meaningful), while the underlying fs/scan/state work is stubbed.
+const loadManifestMock = vi.hoisted(() => vi.fn());
+const getAllTrackedFilesMock = vi.hoisted(() => vi.fn());
+const computeStateModelMock = vi.hoisted(() => vi.fn());
+const scanForSecretsMock = vi.hoisted(() => vi.fn());
+const getFileDiffMock = vi.hoisted(() => vi.fn());
+const detectDotfilesMock = vi.hoisted(() => vi.fn());
+const dryApplyMock = vi.hoisted(() => vi.fn());
+const resolveLiveTargetMock = vi.hoisted(() => vi.fn());
+
+vi.mock('../../src/lib/manifest.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/manifest.js')>('../../src/lib/manifest.js');
+  return { ...actual, loadManifest: loadManifestMock, getAllTrackedFiles: getAllTrackedFilesMock };
+});
+vi.mock('../../src/lib/stateModel.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/stateModel.js')>('../../src/lib/stateModel.js');
+  return { ...actual, computeStateModel: computeStateModelMock }; // keep summarizeStateModel real
+});
+vi.mock('../../src/lib/secrets/index.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/secrets/index.js')>('../../src/lib/secrets/index.js');
+  return { ...actual, scanForSecrets: scanForSecretsMock };
+});
+vi.mock('../../src/commands/diff.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/commands/diff.js')>('../../src/commands/diff.js');
+  return { ...actual, getFileDiff: getFileDiffMock };
+});
+vi.mock('../../src/lib/detect.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/detect.js')>('../../src/lib/detect.js');
+  return { ...actual, detectDotfiles: detectDotfilesMock };
+});
+vi.mock('../../src/commands/verify.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/commands/verify.js')>('../../src/commands/verify.js');
+  return { ...actual, dryApplyIntoSandbox: dryApplyMock }; // keep hasDrift real
+});
+vi.mock('../../src/lib/repoScope.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/repoScope.js')>('../../src/lib/repoScope.js');
+  return { ...actual, resolveLiveTarget: resolveLiveTargetMock };
+});
+
 let state: ReturnType<typeof createServerState>;
 beforeEach(() => {
   state = createServerState();
   delete process.env.TUCK_MCP_ALLOW_WRITE;
   addContextFileMock.mockReset();
+  loadManifestMock.mockReset().mockResolvedValue({ files: {} });
+  getAllTrackedFilesMock.mockReset().mockResolvedValue({});
+  computeStateModelMock.mockReset().mockResolvedValue([]);
+  scanForSecretsMock.mockReset();
+  getFileDiffMock.mockReset();
+  detectDotfilesMock.mockReset().mockResolvedValue([]);
+  dryApplyMock.mockReset();
+  // Default: home-scoped files resolve like expandPath; repo-scoped tests override.
+  resolveLiveTargetMock.mockReset();
+  resolveLiveTargetMock.mockImplementation(async (f: { source: string }) => f.source.replace(/^~\//, '/test-home/'));
+  // apply_plan mkdtemp's under os.tmpdir(); the global setup resets memfs each
+  // test, so recreate the temp root (real-path under the memfs vfs) here.
+  vol.mkdirSync(tmpdir(), { recursive: true });
 });
 afterEach(() => {
   delete process.env.TUCK_MCP_ALLOW_WRITE;
@@ -135,6 +192,11 @@ describe('mcp dispatch', () => {
         'context_list',
         'context_add',
         'classify_agent_file',
+        'verify',
+        'diff',
+        'scan_untracked',
+        'secrets_status',
+        'apply_plan',
       ])
     );
     // Each advertised tool carries its declared schema and description.
@@ -221,5 +283,149 @@ describe('mcp dispatch', () => {
     expect(addContextFileMock).toHaveBeenCalledTimes(1);
     const r = (resp as { result: { isError: boolean } }).result;
     expect(r.isError).toBe(false);
+  });
+
+  // ── widened read tools (P0-3) ──
+
+  const callTool = async (id: number, name: string, args: Record<string, unknown> = {}) =>
+    dispatch({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }, state);
+  const okPayload = (resp: unknown): { isError: boolean; text: string } => {
+    const r = (resp as { result: { isError: boolean; content: { text: string }[] } }).result;
+    return { isError: r.isError, text: r.content[0].text };
+  };
+
+  it('verify tool reports a summary and a drift boolean (never exits the process)', async () => {
+    await init();
+    computeStateModelMock.mockResolvedValueOnce([
+      { id: 'a', source: '~/.zshrc', destination: 'files/shell/zshrc', state: 'drift-local', liveChecksum: 'x', repoChecksum: 'y', manifestChecksum: 'y' },
+    ]);
+    const { isError, text } = okPayload(await callTool(30, 'verify'));
+    expect(isError).toBe(false);
+    const payload = JSON.parse(text);
+    expect(payload.drift).toBe(true);
+    expect(payload.summary.total).toBe(1);
+    expect(payload.files[0]).toEqual({ source: '~/.zshrc', state: 'drift-local' });
+  });
+
+  it('diff tool returns changed files as metadata only (content elided)', async () => {
+    await init();
+    getAllTrackedFilesMock.mockResolvedValueOnce({
+      z: { source: '~/.zshrc', destination: 'files/shell/zshrc', category: 'shell' },
+    });
+    getFileDiffMock.mockResolvedValueOnce({
+      source: '~/.zshrc', destination: 'files/shell/zshrc', hasChanges: true,
+      systemSize: 10, repoSize: 8, systemContent: 'SECRET_LINE', repoContent: 'x',
+    });
+    const { isError, text } = okPayload(await callTool(31, 'diff'));
+    expect(isError).toBe(false);
+    const payload = JSON.parse(text);
+    expect(payload.count).toBe(1);
+    expect(payload.files[0].source).toBe('~/.zshrc');
+    expect(text).not.toContain('SECRET_LINE'); // contents are not exposed
+  });
+
+  it('diff tool rejects a non-array `paths` argument (B2 optional type-check)', async () => {
+    await init();
+    const { isError, text } = okPayload(await callTool(32, 'diff', { paths: 'x' }));
+    expect(isError).toBe(true);
+    expect(text).toMatch(/paths.*array/i);
+  });
+
+  it('scan_untracked returns detected minus tracked', async () => {
+    await init();
+    getAllTrackedFilesMock.mockResolvedValueOnce({
+      z: { source: '~/.zshrc', destination: 'd', category: 'shell' },
+    });
+    detectDotfilesMock.mockResolvedValueOnce([
+      { path: '~/.zshrc', category: 'shell', sensitive: false },
+      { path: '~/.gitconfig', category: 'git', sensitive: false },
+    ]);
+    const { text } = okPayload(await callTool(33, 'scan_untracked'));
+    const payload = JSON.parse(text);
+    expect(payload.count).toBe(1);
+    expect(payload.files[0].path).toBe('~/.gitconfig');
+  });
+
+  it('secrets_status NEVER returns raw values, context, or placeholders (redaction gate)', async () => {
+    await init();
+    getAllTrackedFilesMock.mockResolvedValueOnce({ e: { source: '~/.env', destination: 'd', category: 'env' } });
+    scanForSecretsMock.mockResolvedValueOnce({
+      totalFiles: 1, scannedFiles: 1, skippedFiles: 0, filesWithSecrets: 1, totalSecrets: 1,
+      bySeverity: { critical: 1, high: 0, medium: 0, low: 0 },
+      results: [{
+        path: '/home/u/.env', collapsedPath: '~/.env', hasSecrets: true,
+        criticalCount: 1, highCount: 0, mediumCount: 0, lowCount: 0, skipped: false,
+        matches: [{
+          patternId: 'aws', patternName: 'AWS Key', severity: 'critical',
+          value: 'AKIAIOSFODNN7EXAMPLE', redactedValue: '[REDACTED]', line: 3, column: 5,
+          context: 'key=AKIAIOSFODNN7EXAMPLE', placeholder: '{{AWS}}',
+        }],
+      }],
+    });
+    const { isError, text } = okPayload(await callTool(34, 'secrets_status'));
+    expect(isError).toBe(false);
+    expect(text).not.toContain('AKIAIOSFODNN7EXAMPLE'); // raw value
+    expect(text).not.toContain('key=AKIAIOSFODNN7EXAMPLE'); // context
+    expect(text).not.toContain('{{AWS}}'); // placeholder
+    expect(text).toContain('[REDACTED]');
+    const m = JSON.parse(text).files[0].matches[0];
+    expect(m).not.toHaveProperty('value');
+    expect(m).not.toHaveProperty('context');
+    expect(m).not.toHaveProperty('placeholder');
+    expect(m.redactedValue).toBe('[REDACTED]');
+  });
+
+  it('secrets_status resolves repo-scoped files via resolveLiveTarget (not expandPath)', async () => {
+    await init();
+    getAllTrackedFilesMock.mockResolvedValueOnce({
+      r: {
+        source: 'repokey:cfg/app.conf',
+        destination: 'context/repo/x',
+        category: 'misc',
+        scope: 'repo',
+        repoKey: 'repokey',
+        repoRelative: 'cfg/app.conf',
+      },
+    });
+    resolveLiveTargetMock.mockResolvedValueOnce('/Users/me/projects/app/cfg/app.conf');
+    scanForSecretsMock.mockResolvedValueOnce({
+      totalFiles: 1, scannedFiles: 1, skippedFiles: 0, filesWithSecrets: 0, totalSecrets: 0,
+      bySeverity: { critical: 0, high: 0, medium: 0, low: 0 }, results: [],
+    });
+    await callTool(38, 'secrets_status');
+    // Scanned via the RESOLVED live path — never expandPath('repokey:cfg/app.conf').
+    expect(scanForSecretsMock).toHaveBeenCalledWith(['/Users/me/projects/app/cfg/app.conf'], expect.any(String));
+  });
+
+  it('apply_plan returns a created/modified/unchanged summary WITHOUT the write gate', async () => {
+    await init(); // TUCK_MCP_ALLOW_WRITE unset (dry-run is read-only from the host)
+    dryApplyMock.mockResolvedValueOnce({
+      changes: [{ target: '/sandbox/.zshrc', status: 'created', bytesBefore: 0, bytesAfter: 10 }],
+      conflicts: [], wouldEscapeRoot: [],
+    });
+    const { isError, text } = okPayload(await callTool(35, 'apply_plan'));
+    expect(isError).toBe(false);
+    expect(JSON.parse(text).summary.created).toBe(1);
+  });
+
+  it('apply_plan restores the prior write context even when the dry-apply throws', async () => {
+    await init();
+    const before = snapshotWriteContext();
+    dryApplyMock.mockRejectedValueOnce(new Error('prepare blew up'));
+    const { isError } = okPayload(await callTool(36, 'apply_plan'));
+    expect(isError).toBe(true); // surfaced as a tool error
+    expect(snapshotWriteContext()).toEqual(before); // sandbox boundary not leaked
+  });
+
+  it('annotates write-gated tools in tools/list with writeGated + readOnlyHint', async () => {
+    await init();
+    const resp = await dispatch({ jsonrpc: '2.0', id: 37, method: 'tools/list' }, state);
+    const list = (resp as { result: { tools: Array<{ name: string; writeGated?: boolean; annotations?: { readOnlyHint?: boolean } }> } }).result.tools;
+    const ctxAdd = list.find((t) => t.name === 'context_add')!;
+    const verify = list.find((t) => t.name === 'verify')!;
+    expect(ctxAdd.writeGated).toBe(true);
+    expect(ctxAdd.annotations?.readOnlyHint).toBe(false);
+    expect(verify.writeGated).toBe(false);
+    expect(verify.annotations?.readOnlyHint).toBe(true);
   });
 });

@@ -22,6 +22,10 @@ export default defineConfig({
         lines: 40,
       },
     },
+    // e2e tests spawn the real built binary against a real temp HOME; they run
+    // under vitest.e2e.config.ts (no memfs setup) and must NOT be picked up by
+    // the default memfs run.
+    exclude: ['**/node_modules/**', '**/dist/**', 'tests/e2e/**'],
     testTimeout: 10000,
     mockReset: true,
     restoreMocks: true,
