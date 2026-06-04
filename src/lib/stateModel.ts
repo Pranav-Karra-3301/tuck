@@ -136,7 +136,11 @@ export const computeFileState = async (
   // not the raw repo bytes. Hash the live file DIRECTLY (the mtime+size
   // short-circuit would wrongly return the recorded REPO checksum for an
   // encrypted file's plaintext live copy) and compare against materialize(repo).
-  if (file.template || file.encrypted) {
+  // DIRECTORIES are never materialized (readFile would EISDIR, then the catch
+  // would mask real drift as `ok`); a template/encrypted DIR falls through to the
+  // normal directory-checksum comparison below.
+  const repoIsDir = repoChecksum !== null && (await stat(repoAbs)).isDirectory();
+  if ((file.template || file.encrypted) && !repoIsDir) {
     const liveChecksum = (await pathExists(sourceAbs)) ? await getFileChecksum(sourceAbs) : null;
     if (liveChecksum === null && repoChecksum === null) return entry('missing-both', liveChecksum, repoChecksum);
     if (liveChecksum === null) return entry('missing-live', liveChecksum, repoChecksum);

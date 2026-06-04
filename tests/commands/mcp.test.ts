@@ -37,6 +37,7 @@ const scanForSecretsMock = vi.hoisted(() => vi.fn());
 const getFileDiffMock = vi.hoisted(() => vi.fn());
 const detectDotfilesMock = vi.hoisted(() => vi.fn());
 const dryApplyMock = vi.hoisted(() => vi.fn());
+const resolveLiveTargetMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/lib/manifest.js', async () => {
   const actual = await vi.importActual<typeof import('../../src/lib/manifest.js')>('../../src/lib/manifest.js');
@@ -62,6 +63,10 @@ vi.mock('../../src/commands/verify.js', async () => {
   const actual = await vi.importActual<typeof import('../../src/commands/verify.js')>('../../src/commands/verify.js');
   return { ...actual, dryApplyIntoSandbox: dryApplyMock }; // keep hasDrift real
 });
+vi.mock('../../src/lib/repoScope.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/repoScope.js')>('../../src/lib/repoScope.js');
+  return { ...actual, resolveLiveTarget: resolveLiveTargetMock };
+});
 
 let state: ReturnType<typeof createServerState>;
 beforeEach(() => {
@@ -75,6 +80,9 @@ beforeEach(() => {
   getFileDiffMock.mockReset();
   detectDotfilesMock.mockReset().mockResolvedValue([]);
   dryApplyMock.mockReset();
+  // Default: home-scoped files resolve like expandPath; repo-scoped tests override.
+  resolveLiveTargetMock.mockReset();
+  resolveLiveTargetMock.mockImplementation(async (f: { source: string }) => f.source.replace(/^~\//, '/test-home/'));
   // apply_plan mkdtemp's under os.tmpdir(); the global setup resets memfs each
   // test, so recreate the temp root (real-path under the memfs vfs) here.
   vol.mkdirSync(tmpdir(), { recursive: true });
@@ -365,6 +373,28 @@ describe('mcp dispatch', () => {
     expect(m).not.toHaveProperty('context');
     expect(m).not.toHaveProperty('placeholder');
     expect(m.redactedValue).toBe('[REDACTED]');
+  });
+
+  it('secrets_status resolves repo-scoped files via resolveLiveTarget (not expandPath)', async () => {
+    await init();
+    getAllTrackedFilesMock.mockResolvedValueOnce({
+      r: {
+        source: 'repokey:cfg/app.conf',
+        destination: 'context/repo/x',
+        category: 'misc',
+        scope: 'repo',
+        repoKey: 'repokey',
+        repoRelative: 'cfg/app.conf',
+      },
+    });
+    resolveLiveTargetMock.mockResolvedValueOnce('/Users/me/projects/app/cfg/app.conf');
+    scanForSecretsMock.mockResolvedValueOnce({
+      totalFiles: 1, scannedFiles: 1, skippedFiles: 0, filesWithSecrets: 0, totalSecrets: 0,
+      bySeverity: { critical: 0, high: 0, medium: 0, low: 0 }, results: [],
+    });
+    await callTool(38, 'secrets_status');
+    // Scanned via the RESOLVED live path — never expandPath('repokey:cfg/app.conf').
+    expect(scanForSecretsMock).toHaveBeenCalledWith(['/Users/me/projects/app/cfg/app.conf'], expect.any(String));
   });
 
   it('apply_plan returns a created/modified/unchanged summary WITHOUT the write gate', async () => {

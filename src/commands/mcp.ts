@@ -14,7 +14,7 @@
 
 import { Command } from 'commander';
 import { createInterface } from 'readline';
-import { getTuckDir, expandPath, collapsePath } from '../lib/paths.js';
+import { getTuckDir, collapsePath } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import {
   addContextFile,
@@ -30,7 +30,8 @@ import { hasDrift, dryApplyIntoSandbox } from './verify.js';
 import { getFileDiff } from './diff.js';
 import { scanForSecrets } from '../lib/secrets/index.js';
 import { snapshotWriteContext, setWriteContext, restoreWriteContext } from '../lib/writeContext.js';
-import { join } from 'path';
+import { resolveLiveTarget } from '../lib/repoScope.js';
+import { join, relative } from 'path';
 
 /** Max accepted stdin line length (1 MiB) — guards against memory abuse. */
 const MAX_LINE_BYTES = 1024 * 1024;
@@ -253,7 +254,12 @@ const tools: ToolDef[] = [
       const tuckDir = getTuckDir();
       await loadManifest(tuckDir);
       const all = await getAllTrackedFiles(tuckDir);
-      const paths = Object.values(all).map((f) => expandPath(f.source));
+      // Resolve each tracked file to its real LIVE path. expandPath would
+      // mis-resolve repo-scoped sources (a stable "key:rel" identity, not a home
+      // path) and silently skip them; resolveLiveTarget returns null for repos not
+      // bound on this machine, which we drop.
+      const resolved = await Promise.all(Object.values(all).map((f) => resolveLiveTarget(f)));
+      const paths = resolved.filter((p): p is string => p !== null);
       const summary = await scanForSecrets(paths, tuckDir);
       return {
         filesWithSecrets: summary.filesWithSecrets,
@@ -312,7 +318,9 @@ const tools: ToolDef[] = [
             wouldEscapeRoot: res.wouldEscapeRoot.length,
           },
           changes: res.changes.map((c) => ({
-            target: collapsePath(c.target),
+            // Sandbox-relative target — the sandbox root is under the OS temp dir,
+            // so collapsePath wouldn't shorten it (it would leak the host temp path).
+            target: c.target.startsWith(sandboxRoot) ? relative(sandboxRoot, c.target) || '.' : collapsePath(c.target),
             status: c.status,
             bytesBefore: c.bytesBefore,
             bytesAfter: c.bytesAfter,

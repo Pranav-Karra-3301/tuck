@@ -141,6 +141,22 @@ describe('computeStateModel', () => {
     expect(model[0].state).toBe('ok');
   });
 
+  it('reports drift for a template DIRECTORY (no false ok via the materialize catch)', async () => {
+    vol.mkdirSync(`${TUCK}/files/x`, { recursive: true });
+    vol.writeFileSync(`${TUCK}/files/x/a`, 'repo\n');
+    vol.mkdirSync('/test-home/x', { recursive: true });
+    vol.writeFileSync('/test-home/x/a', 'LIVE DIFFERENT\n'); // live dir differs from repo dir
+    const { getFileChecksum } = await import('../../src/lib/files.js');
+    const repoChecksum = await getFileChecksum(`${TUCK}/files/x`);
+    writeManifest({
+      source: '~/x', destination: 'files/x', category: 'misc',
+      strategy: 'copy', template: true, encrypted: false, checksum: repoChecksum, added: ts, modified: ts,
+    });
+
+    const model = await computeStateModel(TUCK);
+    expect(model[0].state).toBe('drift-local');
+  });
+
   it('reports drift-local when the live file was edited', async () => {
     vol.writeFileSync('/test-home/.zshrc', 'EDITED\n');
     vol.writeFileSync(`${TUCK}/files/shell/zshrc`, 'original\n');

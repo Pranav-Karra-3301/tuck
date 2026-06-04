@@ -33,7 +33,7 @@ import { loadConfig } from '../lib/config.js';
 import { IS_WINDOWS } from '../lib/platform.js';
 import { RepositoryNotFoundError, MaterializeError } from '../errors.js';
 import { getProvider, type ProviderMode, type RemoteConfig as ProviderRemoteConfig } from '../lib/providers/index.js';
-import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
+import { setJsonMode, isJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
 import { materializeForLive, keystorePassphrase, buildMaterializeCtx } from '../lib/materialize.js';
 
 // Track if Windows permission warning has been shown this session
@@ -636,11 +636,12 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
       // A failed / absent-passphrase decryption must NEVER write ciphertext or
       // partial output to the live system: skip this file loudly, keep the rest.
       if (err instanceof MaterializeError) {
+        // Skip the file loudly and write NOTHING. This is NOT an unresolved secret
+        // placeholder — pushing it into filesWithPlaceholders would misreport it
+        // (as "unresolved placeholder, run tuck secrets set") AND trigger a
+        // spurious local-secret restore against a file we never wrote.
         logger.warning(err.message);
-        result.filesWithPlaceholders.push({
-          path: collapsePath(file.destination),
-          placeholders: ['<materialize-failed>'],
-        });
+        if (isJsonMode()) addJsonWarning(err.message);
         continue;
       }
       throw err;
@@ -735,11 +736,12 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
       // A failed / absent-passphrase decryption must NEVER write ciphertext or
       // partial output to the live system: skip this file loudly, keep the rest.
       if (err instanceof MaterializeError) {
+        // Skip the file loudly and write NOTHING. This is NOT an unresolved secret
+        // placeholder — pushing it into filesWithPlaceholders would misreport it
+        // (as "unresolved placeholder, run tuck secrets set") AND trigger a
+        // spurious local-secret restore against a file we never wrote.
         logger.warning(err.message);
-        result.filesWithPlaceholders.push({
-          path: collapsePath(file.destination),
-          placeholders: ['<materialize-failed>'],
-        });
+        if (isJsonMode()) addJsonWarning(err.message);
         continue;
       }
       throw err;

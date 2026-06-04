@@ -286,11 +286,17 @@ const restoreFilesInternal = async (
       });
     }
 
+    // Template/encrypted files are COPY-ONLY: they must be decrypted/rendered into
+    // place, never SYMLINKED — a symlink would expose raw TCKE1 ciphertext or the
+    // {{ }} template source at the live path. Force copy+materialize for them even
+    // when the symlink strategy is otherwise in effect (--symlink / config).
+    const linkThisFile = useSymlink && !file.template && !file.encrypted;
+
     // Pre-materialize template/encrypted files (decrypt/render) BEFORE any write,
     // so a failed / absent-passphrase decryption skips this file and never ships
-    // ciphertext or partial output. Directories are never template/encrypted.
+    // ciphertext or partial output. Directories fall through to a verbatim copy.
     let materialized: string | null = null;
-    if (!useSymlink && (file.template || file.encrypted)) {
+    if (file.template || file.encrypted) {
       try {
         const isDir = (await stat(file.destination)).isDirectory();
         if (!isDir) {
@@ -310,7 +316,7 @@ const restoreFilesInternal = async (
 
     // Restore file
     await withSpinner(`Restoring ${file.source}...`, async () => {
-      if (useSymlink) {
+      if (linkThisFile) {
         await createSymlink(file.destination, targetPath, { overwrite: true });
       } else if (materialized !== null) {
         // Decrypted/rendered content written directly (not a raw repo copy).
@@ -324,7 +330,7 @@ const restoreFilesInternal = async (
       // and a 0600 file is not left world-readable. Symlinks have no own mode,
       // so only copies are adjusted. The SSH/GPG fixups below still run and act
       // as a stricter safety floor for those directories.
-      if (file.permissions && !useSymlink) {
+      if (file.permissions && !linkThisFile) {
         try {
           await setFilePermissions(targetPath, file.permissions);
         } catch {

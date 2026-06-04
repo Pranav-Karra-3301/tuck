@@ -198,6 +198,29 @@ describe('restore command behavior', () => {
     expect(vol.readFileSync('/test-home/.netrc', 'utf-8')).toBe('SECRET=1');
   });
 
+  it('force-copies+materializes template/encrypted files under symlink strategy (never symlinks raw source)', async () => {
+    vol.reset();
+    vol.mkdirSync('/test-home/.tuck/files/shell', { recursive: true });
+    vol.writeFileSync('/test-home/.tuck/files/shell/zshrc', 'os={{os}}');
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: {
+        source: '~/.zshrc',
+        destination: 'files/shell/zshrc',
+        category: 'shell',
+        template: true,
+        encrypted: false,
+      },
+    });
+
+    const { runRestore } = await import('../../src/commands/restore.js');
+    // useSymlink via --symlink — a template file must STILL be rendered into place,
+    // NOT symlinked (a symlink would expose the raw {{ }} source / ciphertext).
+    await runRestore({ all: true, symlink: true, noHooks: true, noSecrets: true });
+
+    expect(vol.readFileSync('/test-home/.zshrc', 'utf-8')).toBe(`os=${process.platform}`);
+    expect(createSymlinkMock).not.toHaveBeenCalled();
+  });
+
   it('surfaces skipped-file warnings in the JSON envelope.warnings', async () => {
     // A tracked file whose repository copy is missing on disk triggers the
     // "Source not found in repository" skip path. In JSON mode that human
