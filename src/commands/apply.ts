@@ -137,9 +137,41 @@ export const assertRealTargetWithinRoots = async (
     existing = parent;
   }
 
-  // Resolve `existing` to its real on-disk location, following symlinks. realpath
-  // throws on a dangling symlink; fall back to readlink + the real parent so a
-  // broken-but-escaping link is still detected.
+  // This guard exists to catch symlink REDIRECTION: a repo/manifest that plants a
+  // symlinked segment so a lexically-in-bounds write follows the link and escapes
+  // the allowed roots. A write can only be redirected if some EXISTING component
+  // of its path is a symlink — a not-yet-created component cannot redirect
+  // anything. So scan the existing ancestors: if none is a symlink, no redirection
+  // is possible and the earlier lexical validators (validateSafeDestinationPath /
+  // repo-scope checks) are authoritative — allow the write. Detecting a symlink
+  // via lstat().isSymbolicLink() is reliable across real filesystems and the
+  // memfs-backed tests, unlike reconciling realpath() string forms (which diverge
+  // by separator/drive under memfs on Windows and caused out-of-home repo and
+  // sandbox writes to false-positive).
+  let symlinkedSegment = false;
+  let probe = existing;
+  let reachedRoot = false;
+  while (!reachedRoot) {
+    try {
+      if ((await lstat(probe)).isSymbolicLink()) {
+        symlinkedSegment = true;
+        break;
+      }
+    } catch {
+      // Non-existent/unreadable component: it cannot be a redirecting symlink.
+    }
+    const parent = dirname(probe);
+    if (parent === probe) reachedRoot = true; // reached the filesystem root
+    else probe = parent;
+  }
+  if (!symlinkedSegment) {
+    return;
+  }
+
+  // A symlinked segment is present — resolve `existing` to its real on-disk
+  // location, following symlinks, and confirm the real destination still lands
+  // inside an allowed root. realpath throws on a dangling symlink; fall back to
+  // readlink + the real parent so a broken-but-escaping link is still detected.
   let realExisting: string;
   try {
     realExisting = await realpath(existing);
@@ -154,12 +186,9 @@ export const assertRealTargetWithinRoots = async (
   }
   const realTarget = tail.length > 0 ? join(realExisting, ...tail) : realExisting;
 
-  // Normalize a path for cross-platform comparison. realpath()/lstat() and
-  // node:path (sep/join) can disagree on separators — and under the memfs-backed
-  // tests on Windows realpath returns POSIX-style, drive-stripped paths while
-  // join()/resolve() use "\" and a drive — so a raw string compare is unreliable.
-  // Unify separators, and on Windows lowercase (NTFS is case-insensitive) and
-  // drop a leading drive letter.
+  // Normalize both sides the SAME way before comparing: realpath()/lstat() and
+  // node:path (sep/join) can disagree on separators, and lowercase on Windows
+  // (NTFS is case-insensitive) with the leading drive letter dropped.
   const canonical = (p: string): string => {
     let unified = p.replace(/\\/g, '/');
     if (IS_WINDOWS) {
@@ -167,18 +196,6 @@ export const assertRealTargetWithinRoots = async (
     }
     return unified;
   };
-
-  // The purpose of this guard is to catch symlink REDIRECTION: a repo/manifest
-  // that plants a symlinked segment so a lexically-in-bounds write follows the
-  // link and escapes. If resolving the deepest existing ancestor did NOT move it
-  // (real path canonically equals the lexical path), no link redirected the
-  // write and the earlier lexical validators (validateSafeDestinationPath /
-  // repo-scope checks) are authoritative — allow it. This also avoids false
-  // positives from filesystem-abstraction path-form quirks on out-of-home repo
-  // and sandbox writes, which have no symlink in play.
-  if (canonical(realExisting) === canonical(existing)) {
-    return;
-  }
 
   const realRoots = await Promise.all(
     roots.map(async (r) => {
