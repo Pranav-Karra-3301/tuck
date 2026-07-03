@@ -56,6 +56,44 @@ const SHELL_FILE_PATTERNS = [
  */
 const POWERSHELL_EXTENSIONS = ['.ps1', '.psm1', '.psd1'];
 
+/**
+ * Banner that {@link smartMerge} writes above the re-appended local blocks.
+ * Kept as constants so the writer (smartMerge) and the stripper
+ * ({@link stripPreservedBanner}) can never drift apart. The title line contains
+ * the substring `# LOCAL`, so it would self-match as a preserve marker on the
+ * next merge — {@link smartMerge} strips this banner from the local content
+ * before scanning to keep merges idempotent.
+ */
+const PRESERVED_BANNER_SEP = '# ============================================';
+const PRESERVED_BANNER_TITLE = '# LOCAL CUSTOMIZATIONS (preserved by tuck)';
+
+/**
+ * Remove any previously-written "LOCAL CUSTOMIZATIONS (preserved by tuck)"
+ * banner (the exact 3-line SEP/TITLE/SEP block, plus one trailing blank line)
+ * from content. Only the exact tuck-generated banner is removed; the preserved
+ * blocks it introduced are left in place so they are re-detected and preserved
+ * once, making repeated merges idempotent.
+ */
+const stripPreservedBanner = (content: string): string => {
+  const lines = content.split('\n');
+  const result: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    if (
+      lines[i].trim() === PRESERVED_BANNER_SEP &&
+      lines[i + 1]?.trim() === PRESERVED_BANNER_TITLE &&
+      lines[i + 2]?.trim() === PRESERVED_BANNER_SEP
+    ) {
+      i += 2; // Skip all three banner lines.
+      if (lines[i + 1]?.trim() === '') i += 1; // Skip one trailing blank line.
+      continue;
+    }
+    result.push(lines[i]);
+  }
+
+  return result.join('\n');
+};
+
 export interface MergeBlock {
   type: 'preserved' | 'incoming' | 'local';
   content: string;
@@ -191,8 +229,10 @@ export const findPreservedBlocks = (content: string): MergeBlock[] => {
     const line = lines[i];
     const trimmedLine = line.trim();
 
-    // Check if this line has a preserve marker
-    const marker = PRESERVE_MARKERS.find((m) => trimmedLine.includes(m));
+    // Check if this line STARTS with a preserve marker. Anchoring at the start
+    // (rather than a loose substring match) prevents ordinary comments that
+    // merely mention a marker word mid-line from being treated as block starts.
+    const marker = PRESERVE_MARKERS.find((m) => trimmedLine.startsWith(m));
 
     if (marker) {
       // Save previous block if exists
@@ -276,7 +316,10 @@ export const smartMerge = async (
     };
   }
 
-  const localContent = await readFile(expandedPath, 'utf-8');
+  const rawLocalContent = await readFile(expandedPath, 'utf-8');
+  // Strip any banner a previous merge appended so its `# LOCAL CUSTOMIZATIONS`
+  // title can't self-match as a preserve marker and duplicate on every apply.
+  const localContent = stripPreservedBanner(rawLocalContent);
 
   // Find blocks to preserve from local content
   const preservedBlocks = findPreservedBlocks(localContent);
@@ -322,9 +365,9 @@ export const smartMerge = async (
   // Append preserved blocks at the end
   if (preservedBlocks.length > 0) {
     mergedContent += '\n\n';
-    mergedContent += '# ============================================\n';
-    mergedContent += '# LOCAL CUSTOMIZATIONS (preserved by tuck)\n';
-    mergedContent += '# ============================================\n\n';
+    mergedContent += `${PRESERVED_BANNER_SEP}\n`;
+    mergedContent += `${PRESERVED_BANNER_TITLE}\n`;
+    mergedContent += `${PRESERVED_BANNER_SEP}\n\n`;
 
     for (const block of preservedBlocks) {
       mergedContent += block.content + '\n\n';
@@ -352,7 +395,7 @@ export const generateMergePreview = async (
     return `New file will be created:\n${incomingContent.slice(0, 500)}${incomingContent.length > 500 ? '...' : ''}`;
   }
 
-  const localContent = await readFile(expandedPath, 'utf-8');
+  const localContent = stripPreservedBanner(await readFile(expandedPath, 'utf-8'));
   const preservedBlocks = findPreservedBlocks(localContent);
   const localExports = parseExports(localContent);
   const incomingExports = parseExports(incomingContent);

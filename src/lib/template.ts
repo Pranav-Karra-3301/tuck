@@ -12,9 +12,12 @@
  *
  * Comment-marker style for files without `{{ }}`:
  *
- *   # tuck:if os=darwin
+ *   # tuck:if os == "darwin"
  *   alias ls="ls -G"
  *   # tuck:endif
+ *
+ * The comparison literal may be quoted (`os == "darwin"`) or a bare
+ * single-word literal (`os == darwin` or `os = darwin`).
  *
  * Both styles share the same context map.
  *
@@ -23,10 +26,29 @@
  * explicit critique of chezmoi's storage-time rendering.
  */
 
+import { isJsonMode, addJsonWarning } from './jsonOutput.js';
+
 export interface TemplateContext {
   /** Free-form variables: os, arch, hostname, profile, user, home, etc. */
   [key: string]: string | number | boolean | undefined;
 }
+
+/**
+ * Surface a malformed `{{#if}}` / `# tuck:if` condition. In `--json` mode the
+ * warning rides along in the response envelope (via {@link addJsonWarning}) so
+ * stdout still carries exactly one JSON object; otherwise it goes to stderr —
+ * never stdout — so it can't corrupt the rendered file or a JSON stream. This
+ * module stays free of the UI/logger layer so it can be imported by low-level
+ * code without pulling in terminal styling.
+ */
+const warnUnrecognizedCondition = (expr: string): void => {
+  const msg = `Unrecognized template condition "${expr}" — guarded block was dropped`;
+  if (isJsonMode()) {
+    addJsonWarning(msg);
+  } else {
+    process.stderr.write(`tuck: ${msg}\n`);
+  }
+};
 
 const lookup = (ctx: TemplateContext, key: string): string => {
   // Support env.X by special-casing the env namespace at lookup time.
@@ -38,18 +60,41 @@ const lookup = (ctx: TemplateContext, key: string): string => {
   return v == null ? '' : String(v);
 };
 
+/** Bare variable / env reference, e.g. `os`, `profile.work`, `env.CI`. */
+const VAR_NAME_RE = /^[A-Za-z_][\w.]*$/;
+
 const evalCondition = (ctx: TemplateContext, expr: string): boolean => {
-  // Supports: VAR, VAR == "literal", VAR != "literal", env.X, !VAR
+  // Supports: VAR, !VAR, env.X, and comparisons VAR ==|!= <literal> where the
+  // literal is either double-quoted (`VAR == "x"`) or a bare single word
+  // (`VAR == x`, `VAR = x`). The bare/single-`=` forms exist because tuck's own
+  // docs use `os=darwin`; without them the guarded block was silently dropped.
   const trimmed = expr.trim();
   if (trimmed.startsWith('!')) {
     return !evalCondition(ctx, trimmed.slice(1));
   }
-  const eq = trimmed.match(/^(.+?)\s*(==|!=)\s*"([^"]*)"$/);
-  if (eq) {
-    const [, k, op, lit] = eq;
+
+  const eqQuoted = trimmed.match(/^(.+?)\s*(==|!=)\s*"([^"]*)"$/);
+  if (eqQuoted) {
+    const [, k, op, lit] = eqQuoted;
     const v = lookup(ctx, k.trim());
     return op === '==' ? v === lit : v !== lit;
   }
+
+  const eqBare = trimmed.match(/^(.+?)\s*(==|!=|=)\s*([^"'\s]+)$/);
+  if (eqBare) {
+    const [, k, op, lit] = eqBare;
+    const v = lookup(ctx, k.trim());
+    return op === '!=' ? v !== lit : v === lit;
+  }
+
+  // Neither a comparison nor a plausible variable reference: this is almost
+  // certainly a malformed condition. Evaluating it as false-truthiness would
+  // silently drop the guarded block, so surface it instead of failing quietly.
+  if (!VAR_NAME_RE.test(trimmed)) {
+    warnUnrecognizedCondition(trimmed);
+    return false;
+  }
+
   const v = lookup(ctx, trimmed);
   return Boolean(v) && v !== 'false' && v !== '0';
 };

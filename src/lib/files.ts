@@ -13,7 +13,7 @@ import {
 } from 'fs/promises';
 import { copy, ensureDir } from 'fs-extra';
 import { join, dirname, basename, relative } from 'path';
-import { constants } from 'fs';
+import { constants, lstatSync } from 'fs';
 import { FileNotFoundError, PermissionError, TuckError } from '../errors.js';
 import { expandPath, pathExists, isDirectory, validateSafeDestinationPath } from './paths.js';
 import { allowedRoots } from './writeContext.js';
@@ -315,10 +315,63 @@ export const getDirectoryFileCount = async (dirpath: string): Promise<number> =>
   return files.length;
 };
 
+/**
+ * Convert a single glob pattern (as used in detect.ts pattern `exclude` lists,
+ * e.g. "logs", "cache", "projects/[globstar]/*.jsonl", "[globstar]/*.db") into
+ * an anchored RegExp matched against a POSIX relative path. A globstar ("**")
+ * matches across path separators (including zero segments); a single "*"
+ * matches within one segment only.
+ */
+const excludeGlobToRegExp = (glob: string): RegExp => {
+  const g = glob.replace(/\\/g, '/').replace(/\/+$/, '');
+  let re = '';
+  for (let i = 0; i < g.length; i++) {
+    const ch = g[i];
+    if (ch === '*') {
+      if (g[i + 1] === '*') {
+        i++;
+        if (g[i + 1] === '/') {
+          i++;
+          re += '(?:.*/)?';
+        } else {
+          re += '.*';
+        }
+      } else {
+        re += '[^/]*';
+      }
+    } else if ('.+^${}()|[]\\?'.includes(ch)) {
+      re += '\\' + ch;
+    } else {
+      re += ch;
+    }
+  }
+  return new RegExp('^' + re + '$');
+};
+
+/**
+ * True when a POSIX relative path should be excluded from a directory copy by
+ * any of the given patterns. A bare name (no slash, no wildcard) matches that
+ * name at ANY depth (so `logs` skips a `logs/` subdirectory wherever it sits);
+ * patterns with separators/wildcards are matched against the full relative path.
+ */
+export const matchesExcludePattern = (relPosix: string, patterns: string[]): boolean => {
+  if (!relPosix) return false;
+  for (const raw of patterns) {
+    const pat = raw.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (!pat) continue;
+    if (!pat.includes('/') && !pat.includes('*')) {
+      if (relPosix.split('/').includes(pat)) return true;
+      continue;
+    }
+    if (excludeGlobToRegExp(pat).test(relPosix)) return true;
+  }
+  return false;
+};
+
 export const copyFileOrDir = async (
   source: string,
   destination: string,
-  options?: { overwrite?: boolean }
+  options?: { overwrite?: boolean; exclude?: string[] }
 ): Promise<CopyResult> => {
   const expandedSource = expandPath(source);
   const expandedDest = expandPath(destination);
@@ -356,15 +409,40 @@ export const copyFileOrDir = async (
 
   try {
     if (sourceIsDir) {
+      const excludePatterns = options?.exclude ?? [];
       // Copy directory but skip .git and other problematic files
       await copy(expandedSource, expandedDest, {
         overwrite: shouldOverwrite,
         errorOnExist: !shouldOverwrite,
         filter: (src: string) => {
           const name = basename(src);
-          // Skip .git directories, node_modules, and cache directories
-          const skipDirs = ['.git', 'node_modules', '.cache', '__pycache__', '.DS_Store'];
-          return !skipDirs.includes(name);
+          // Use the SAME skip predicate as the directory walk that computes
+          // checksums (shouldSkipEntry / DIRECTORY_SKIP_PATTERNS), so the copied
+          // repo tree exactly matches the checksummed tree. Otherwise a copied
+          // nested .gitignore could silently exclude sibling tracked files from
+          // commits, and edits to skipped names (e.g. .npmrc) would never
+          // register as drift yet get reverted by apply/restore.
+          if (shouldSkipEntry(name)) return false;
+          // SECURITY (symlink TOCTOU): never recreate an in-tree symlink onto the
+          // live system. A committed symlink — especially one whose target
+          // escapes $HOME — would be planted verbatim, and a subsequent write
+          // through it could escape confinement. Copy file/dir CONTENT, never
+          // link topology. Sync stat only: fs-extra treats a Promise-returning
+          // filter as always-true, so an async check would silently no-op.
+          try {
+            if (lstatSync(src).isSymbolicLink()) return false;
+          } catch {
+            // Undeterminable → fall through; the apply write-path guard
+            // (assertRealTargetWithinRoots) is the authoritative confinement.
+          }
+          // Honor pattern-declared excludes (e.g. ~/.claude excludes
+          // projects/**/*.jsonl transcripts, caches) so ephemeral/sensitive
+          // content is never copied into the repo.
+          if (excludePatterns.length > 0) {
+            const rel = relative(expandedSource, src).split('\\').join('/');
+            if (matchesExcludePattern(rel, excludePatterns)) return false;
+          }
+          return true;
         }
       });
       // Single walk: collect the file list AND its total size in one traversal

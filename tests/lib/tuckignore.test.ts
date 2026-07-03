@@ -171,6 +171,25 @@ describe('tuckignore', () => {
       const ignored = await loadTuckignore(TEST_TUCK_DIR);
       expect(ignored.has('~/.secret')).toBe(true);
     });
+
+    it('should keep entries on separate lines when the existing file lacks a trailing newline', async () => {
+      const ignorePath = join(TEST_TUCK_DIR, '.tuckignore');
+      // A hand-edited file whose last line has no trailing newline.
+      vol.writeFileSync(ignorePath, '~/bin/large-binary');
+
+      await addToTuckignore(TEST_TUCK_DIR, '~/.docker/config.json');
+
+      const content = vol.readFileSync(ignorePath, 'utf-8') as string;
+      // The two paths must NOT be concatenated onto one line.
+      expect(content).not.toContain('~/bin/large-binary~/.docker/config.json');
+      expect(content.split('\n')).toContain('~/bin/large-binary');
+      expect(content.split('\n')).toContain('~/.docker/config.json');
+
+      // Both entries must be loadable (the whole point — they stay ignored).
+      const ignored = await loadTuckignore(TEST_TUCK_DIR);
+      expect(ignored.has('~/bin/large-binary')).toBe(true);
+      expect(ignored.has('~/.docker/config.json')).toBe(true);
+    });
   });
 
   // ============================================================================

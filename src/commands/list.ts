@@ -123,6 +123,13 @@ const runList = async (options: ListOptions): Promise<void> => {
   if (options.category) {
     groups = groups.filter((g) => g.name === options.category);
     if (groups.length === 0) {
+      // In --json mode the contract is "exactly one JSON envelope on stdout" —
+      // emit an empty (but valid) envelope instead of a human-readable warning
+      // so machine consumers can still JSON.parse the output.
+      if (options.json) {
+        printJson(groups);
+        return;
+      }
       logger.warning(`No files found in category: ${options.category}`);
       return;
     }

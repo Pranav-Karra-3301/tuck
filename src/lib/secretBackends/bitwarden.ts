@@ -156,17 +156,20 @@ export class BitwardenBackend implements SecretBackend {
 
     const env = this.getEnv();
 
+    // The path can include a field specifier: "item-name/field-name". The field
+    // part must be split off BEFORE the lookup — `bw get item` searches by item
+    // name, so passing the whole "item-name/field-name" as the item argument
+    // would never match a real item and always resolve to null.
+    const pathParts = ref.backendPath.split('/');
+    const itemName = pathParts[0];
+    const fieldName = pathParts.length > 1 ? pathParts.slice(1).join('/') : null;
+
     try {
       // Get the item by name or ID. The `--` end-of-options separator ensures
-      // the user-controlled backendPath is treated as a positional argument and
+      // the user-controlled item name is treated as a positional argument and
       // never reinterpreted as a flag (matches op/pass).
-      const { stdout } = await execFileAsync('bw', ['get', 'item', '--', ref.backendPath], { env });
+      const { stdout } = await execFileAsync('bw', ['get', 'item', '--', itemName], { env });
       const item = JSON.parse(stdout) as BitwardenItem;
-
-      // Determine which field to return
-      // Path can include field specifier: "item-name/field-name"
-      const pathParts = ref.backendPath.split('/');
-      const fieldName = pathParts.length > 1 ? pathParts.slice(1).join('/') : null;
 
       if (fieldName) {
         // Look for custom field first

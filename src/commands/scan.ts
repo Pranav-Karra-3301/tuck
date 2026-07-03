@@ -8,7 +8,7 @@ import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js
 import { preparePathsForTracking } from '../lib/trackPipeline.js';
 import { shouldExcludeFromBin } from '../lib/binary.js';
 import { loadTuckignore, isIgnoredInSet } from '../lib/tuckignore.js';
-import { setJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
+import { setJsonMode, emitJsonOk, isJsonMode, addJsonWarning } from '../lib/jsonOutput.js';
 
 export interface ScanOptions {
   all?: boolean;
@@ -226,10 +226,26 @@ const addFilesWithProgress = async (
     return 0;
   }
 
-  const filesToTrack: FileToTrack[] = prepared.map((file) => ({
-    path: file.source,
-    category: file.category,
-  }));
+  // Carry each detected pattern's `exclude` list into tracking, keyed by the
+  // collapsed source path, so directory patterns (e.g. ~/.claude) don't copy
+  // their excluded transcripts/caches into the repo. The dead-metadata excludes
+  // were previously dropped entirely by the {path, category}-only mapping.
+  const excludeBySource = new Map<string, string[]>();
+  for (const file of selected) {
+    if (file.exclude && file.exclude.length > 0) {
+      excludeBySource.set(collapsePath(file.path), file.exclude);
+      excludeBySource.set(file.path, file.exclude);
+    }
+  }
+
+  const filesToTrack: FileToTrack[] = prepared.map((file) => {
+    const exclude = excludeBySource.get(file.source) ?? excludeBySource.get(collapsePath(file.source));
+    return {
+      path: file.source,
+      category: file.category,
+      ...(exclude ? { exclude } : {}),
+    };
+  });
 
   // Use the shared tracking utility
   const result = await trackFilesWithProgress(filesToTrack, tuckDir, {
@@ -246,6 +262,12 @@ const addFilesWithProgress = async (
 export const runScan = async (options: ScanOptions): Promise<void> => {
   const tuckDir = getTuckDir();
 
+  // Enter JSON mode up front so every downstream side effect (spinner, logger,
+  // early returns) is suppressed/re-routed and stdout carries ONLY the single
+  // JSON envelope. The index.ts preAction hook already sets this in production;
+  // setting it here too makes the direct/programmatic call path correct.
+  if (options.json) setJsonMode(true, 'tuck scan');
+
   // Check if tuck is initialized
   try {
     await loadManifest(tuckDir);
@@ -253,15 +275,20 @@ export const runScan = async (options: ScanOptions): Promise<void> => {
     throw new NotInitializedError();
   }
 
-  // Detect dotfiles
-  const spinner = prompts.spinner();
-  spinner.start('Scanning for dotfiles...');
+  // Detect dotfiles. Skip the clack spinner in JSON mode — its ANSI frames would
+  // land on stdout ahead of the envelope and break JSON.parse for consumers.
+  const spinner = isJsonMode() ? null : prompts.spinner();
+  spinner?.start('Scanning for dotfiles...');
 
   const detected = await detectDotfiles();
 
-  spinner.stop(`Found ${detected.length} dotfiles on this system`);
+  spinner?.stop(`Found ${detected.length} dotfiles on this system`);
 
   if (detected.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ files: [] }, 'tuck scan');
+      return;
+    }
     logger.warning('No common dotfiles detected on this system');
     return;
   }
@@ -300,6 +327,11 @@ export const runScan = async (options: ScanOptions): Promise<void> => {
   if (options.category) {
     filesToShow = selectableFiles.filter((f) => f.category === options.category);
     if (filesToShow.length === 0) {
+      if (isJsonMode()) {
+        addJsonWarning(`No dotfiles found in category: ${options.category}`);
+        emitJsonOk({ files: [] }, 'tuck scan');
+        return;
+      }
       logger.warning(`No dotfiles found in category: ${options.category}`);
       logger.info('Available categories:');
       for (const [key, config] of Object.entries(DETECTION_CATEGORIES)) {
@@ -309,9 +341,8 @@ export const runScan = async (options: ScanOptions): Promise<void> => {
     }
   }
 
-  // JSON output
-  if (options.json) {
-    setJsonMode(true, 'tuck scan');
+  // JSON output — mode was already entered at the top of runScan.
+  if (isJsonMode()) {
     emitJsonOk({ files: filesToShow }, 'tuck scan');
     return;
   }

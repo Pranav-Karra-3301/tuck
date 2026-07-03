@@ -192,8 +192,12 @@ export const restoreContent = (
     const fullPlaceholder = match[0];
 
     if (placeholderName in secrets) {
-      // Replace this placeholder with actual value
-      restoredContent = restoredContent.replaceAll(fullPlaceholder, secrets[placeholderName]);
+      // Replace this placeholder with the actual value. Use a replacer FUNCTION
+      // (not the string form) so `$`-sequences in the secret ($&, $$, $`, $<n>)
+      // are inserted literally instead of being interpreted as replacement
+      // patterns, which would silently corrupt the restored credential.
+      const value = secrets[placeholderName];
+      restoredContent = restoredContent.replaceAll(fullPlaceholder, () => value);
       restored++;
     } else if (!seenUnresolved.has(placeholderName)) {
       // Track unresolved placeholders

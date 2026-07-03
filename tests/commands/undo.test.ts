@@ -139,4 +139,56 @@ describe('undo command', () => {
     expect(loggerErrorMock).toHaveBeenCalledWith('Snapshot not found: missing-snapshot');
     expect(listSnapshotsMock).toHaveBeenCalled();
   });
+
+  it('should emit a JSON envelope and skip the confirm prompt for --latest --json', async () => {
+    getLatestSnapshotMock.mockResolvedValue({
+      id: '2026-03-18-120000',
+      reason: 'apply',
+      machine: 'test-machine',
+      files: [{ originalPath: '~/.zshrc', existed: true }],
+    });
+    restoreSnapshotMock.mockResolvedValue(['~/.zshrc']);
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const { undoCommand } = await import('../../src/commands/undo.js');
+    await undoCommand.parseAsync(['--latest', '--json'], { from: 'user' });
+
+    writeSpy.mockRestore();
+
+    // Exactly one JSON object, and the restore ran without a TTY prompt.
+    expect(promptsConfirmMock).not.toHaveBeenCalled();
+    expect(restoreSnapshotMock).toHaveBeenCalledWith('2026-03-18-120000');
+    const env = JSON.parse(writes.join('').trim());
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck undo');
+    expect(env.data.restored).toEqual(['~/.zshrc']);
+  });
+
+  it('should emit a JSON envelope and skip the confirm prompt for --delete --json', async () => {
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const { undoCommand } = await import('../../src/commands/undo.js');
+    await undoCommand.parseAsync(['--delete', '2026-03-18-120000', '--json'], { from: 'user' });
+
+    writeSpy.mockRestore();
+
+    expect(promptsConfirmMock).not.toHaveBeenCalled();
+    expect(deleteSnapshotMock).toHaveBeenCalledWith('2026-03-18-120000');
+    const env = JSON.parse(writes.join('').trim());
+    expect(env.ok).toBe(true);
+    expect(env.data.deleted).toBe('2026-03-18-120000');
+  });
 });

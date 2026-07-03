@@ -151,6 +151,11 @@ vi.mock('../../src/lib/audit.js', () => ({
   logForceSecretBypass: vi.fn(),
 }));
 
+const createSnapshotMock = vi.fn();
+vi.mock('../../src/lib/timemachine.js', () => ({
+  createSnapshot: createSnapshotMock,
+}));
+
 const checkLocalModeMock = vi.fn();
 vi.mock('../../src/lib/remoteChecks.js', () => ({
   checkLocalMode: checkLocalModeMock,
@@ -684,5 +689,116 @@ describe('sync command behavior', () => {
       runSyncCommand('sync: unsafe manifest', { noCommit: true, noHooks: true, scan: false, pull: false })
     ).rejects.toThrow('Unsafe manifest destination detected');
     expect(copyFileOrDirMock).not.toHaveBeenCalled();
+  });
+
+  it('mirrors a modified tracked directory by clearing the repo copy before copying', async () => {
+    // A deletion inside a tracked directory must propagate to the repo. fs-extra
+    // copy only MERGES, so syncFiles must wipe the destination tree first.
+    getAllTrackedFilesMock.mockResolvedValue({
+      nvim: { source: '~/.config/nvim', destination: 'files/editors/nvim', checksum: 'old' },
+    });
+    getFileChecksumMock.mockResolvedValue('new'); // dir drifted → modified
+
+    const paths = await import('../../src/lib/paths.js');
+    vi.mocked(paths.isDirectory).mockResolvedValue(true);
+
+    try {
+      const { runSyncCommand } = await import('../../src/commands/sync.js');
+      await runSyncCommand('sync: dir mirror', {
+        noCommit: true,
+        noHooks: true,
+        scan: false,
+        pull: false,
+      });
+
+      const destPath = join('/test-home/.tuck', 'files', 'editors', 'nvim');
+      // The repo copy is cleared, then the live tree is copied fresh — an exact
+      // mirror, so files deleted from the source vanish from the repo too.
+      expect(deleteFileOrDirMock).toHaveBeenCalledWith(destPath);
+      expect(copyFileOrDirMock).toHaveBeenCalledWith('/test-home/.config/nvim', destPath, {
+        overwrite: true,
+      });
+      expect(deleteFileOrDirMock.mock.invocationCallOrder[0]).toBeLessThan(
+        copyFileOrDirMock.mock.invocationCallOrder[0]
+      );
+    } finally {
+      // Restore the shared default so later tests see a non-directory source.
+      vi.mocked(paths.isDirectory).mockResolvedValue(false);
+    }
+  });
+
+  it('snapshots the repo copy before deleting a vanished tracked file', async () => {
+    // The live source is gone; the repo copy may be the only surviving copy (an
+    // uncommitted initial add), so it must be snapshotted BEFORE deletion.
+    getAllTrackedFilesMock.mockResolvedValue({
+      foorc: { source: '~/.foorc', destination: 'files/misc/foorc', checksum: 'old' },
+    });
+    pathExistsMock.mockResolvedValue(false); // live source missing → 'deleted'
+
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+    await runSyncCommand('sync: delete', {
+      noCommit: true,
+      noHooks: true,
+      scan: false,
+      pull: false,
+    });
+
+    const destPath = join('/test-home/.tuck', 'files', 'misc', 'foorc');
+    expect(createSnapshotMock).toHaveBeenCalledTimes(1);
+    expect(createSnapshotMock.mock.calls[0][0]).toEqual([destPath]);
+    expect(deleteFileOrDirMock).toHaveBeenCalledWith(destPath);
+    // The recoverable snapshot must be taken before the unrecoverable delete.
+    expect(createSnapshotMock.mock.invocationCallOrder[0]).toBeLessThan(
+      deleteFileOrDirMock.mock.invocationCallOrder[0]
+    );
+  });
+
+  it('excludes a repo-scoped change from the sync when the user picks the secret "ignore" action', async () => {
+    // A repo-scoped tracked file drifts with a new secret. The interactive
+    // 'ignore' action must key .tuckignore on the change SOURCE (the stable
+    // `<repoKey>:<repoRelative>` identity that detectChanges consults) and splice
+    // the change out — expandPath(source) never equals the resolved live path, so
+    // the old matching leaked the secret into the commit.
+    getAllTrackedFilesMock.mockResolvedValue({
+      envfile: {
+        source: 'myrepo:.env',
+        destination: 'files/repos/myrepo/.env',
+        checksum: 'old',
+        scope: 'repo',
+        repoKey: 'myrepo',
+        repoRelative: '.env',
+      },
+    });
+    const liveEnvPath = '/work/myrepo/.env';
+    resolveLiveTargetMock.mockResolvedValue(liveEnvPath);
+    getFileChecksumMock.mockResolvedValue('new'); // drifted → modified
+
+    const secrets = await import('../../src/lib/secrets/index.js');
+    vi.mocked(secrets.isSecretScanningEnabled).mockResolvedValue(true);
+    vi.mocked(secrets.scanForSecrets).mockResolvedValue({
+      totalSecrets: 1,
+      results: [{ path: liveEnvPath, hasSecrets: true, matches: [] }],
+    } as unknown as Awaited<ReturnType<typeof secrets.scanForSecrets>>);
+
+    const ui = await import('../../src/ui/index.js');
+    vi.mocked(ui.prompts.select).mockResolvedValue('ignore' as never);
+
+    const tuckignore = await import('../../src/lib/tuckignore.js');
+
+    try {
+      const { runSyncCommand } = await import('../../src/commands/sync.js');
+      // No message / json / yes ⇒ the interactive flow (scanAndHandleSecrets).
+      await runSyncCommand(undefined, { noHooks: true, scan: false, pull: false } as never);
+
+      expect(vi.mocked(tuckignore.addToTuckignore)).toHaveBeenCalledWith(
+        '/test-home/.tuck',
+        'myrepo:.env'
+      );
+      // The secret-bearing change was spliced out, so it is never copied/committed.
+      expect(copyFileOrDirMock).not.toHaveBeenCalled();
+      expect(commitMock).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(ui.prompts.select).mockResolvedValue('abort' as never);
+    }
   });
 });

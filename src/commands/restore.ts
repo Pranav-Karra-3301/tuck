@@ -14,7 +14,7 @@ import {
   validateSafeRepoSourcePath,
 } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles, getTrackedFileBySource } from '../lib/manifest.js';
-import { resolveWriteTarget, setKnownRepoRoots } from '../lib/writeContext.js';
+import { resolveWriteTarget, setKnownRepoRoots, isSandbox } from '../lib/writeContext.js';
 import {
   resolveLiveTarget,
   resolveRepoRoot,
@@ -279,8 +279,14 @@ const restoreFilesInternal = async (
       continue;
     }
 
-    // Create backup if needed
-    if (shouldBackup && file.existsAtTarget) {
+    // Create backup if needed. Gate on the ACTUAL write target's existence
+    // (targetPath), not file.existsAtTarget — the latter is computed against the
+    // REAL home, but in sandbox (--root) mode targetPath is the rebased sandbox
+    // path, so a missing sandbox file would make createBackup throw and abort the
+    // whole restore. Skip backups entirely under --root: the sandbox is a
+    // throwaway dry home and createBackup would otherwise write into the real
+    // home's backup dir.
+    if (shouldBackup && !isSandbox() && (await pathExists(targetPath))) {
       await withSpinner(`Backing up ${file.source}...`, async () => {
         await createBackup(targetPath, config.files.backupDir, tuckDir);
       });
@@ -436,11 +442,15 @@ const runInteractiveRestore = async (tuckDir: string, options: RestoreOptions = 
     return;
   }
 
-  // Restore
+  // Restore. Carry the ORIGINAL options through so flags the user set on the
+  // command line (--dry-run, --no-hooks, --trust-hooks, --repo-root) are honored
+  // in the interactive path too — the interactive picker only chooses the file
+  // set, the symlink strategy, and forces a backup. Without the spread a
+  // `tuck restore --dry-run` on a TTY would silently perform a REAL restore.
   const result = await restoreFilesInternal(tuckDir, selectedFiles, {
+    ...options,
     symlink: useSymlink as boolean,
     backup: true,
-    noSecrets: options.noSecrets,
   });
 
   console.log();
@@ -501,16 +511,28 @@ export const runRestore = async (options: RestoreOptions): Promise<void> => {
     const files = await prepareFilesToRestore(tuckDir, undefined);
 
     if (files.length === 0) {
-      logger.warning('No files to restore');
+      // In JSON mode the caller owns the envelope; never write loose stdout.
+      if (!isJsonMode()) logger.warning('No files to restore');
       return;
     }
 
     // Restore files with progress
     const result = await restoreFilesInternal(tuckDir, files, options);
 
-    logger.blank();
-    displaySecretSummary(result);
-    logger.success(`Restored ${result.restoredCount} file${result.restoredCount !== 1 ? 's' : ''}`);
+    // runRestore is called from other commands' JSON paths (e.g. `tuck pull
+    // --json --restore`). Human output here would corrupt the single-JSON-object
+    // contract, so route it into the shared warnings buffer instead of stdout.
+    if (isJsonMode()) {
+      for (const placeholder of result.unresolvedPlaceholders) {
+        addJsonWarning(`Unresolved placeholder: {{${placeholder}}}`);
+      }
+    } else {
+      logger.blank();
+      displaySecretSummary(result);
+      logger.success(
+        `Restored ${result.restoredCount} file${result.restoredCount !== 1 ? 's' : ''}`
+      );
+    }
   } else {
     await runInteractiveRestore(tuckDir, options);
   }

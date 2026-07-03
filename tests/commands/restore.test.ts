@@ -154,6 +154,34 @@ describe('restore command behavior', () => {
     );
   });
 
+  it('writes no human logger output when runRestore runs in JSON mode (pull --json --restore)', async () => {
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: {
+        source: '~/.zshrc',
+        destination: 'files/shell/zshrc',
+        category: 'shell',
+      },
+    });
+
+    const { setJsonMode, __resetJsonEmitState } = await import('../../src/lib/jsonOutput.js');
+    const { logger } = await import('../../src/ui/index.js');
+    const { runRestore } = await import('../../src/commands/restore.js');
+
+    setJsonMode(true, 'tuck pull');
+    try {
+      await runRestore({ all: true, noHooks: true, noSecrets: true });
+    } finally {
+      setJsonMode(false);
+      __resetJsonEmitState();
+    }
+
+    // runRestore is invoked from pull's single-JSON-object path; its own
+    // success/blank/warning lines would corrupt that stdout contract.
+    expect(logger.success).not.toHaveBeenCalled();
+    expect(logger.blank).not.toHaveBeenCalled();
+    expect(logger.warning).not.toHaveBeenCalled();
+  });
+
   it('renders a template file on restore (P0-1)', async () => {
     vol.reset();
     vol.mkdirSync('/test-home/.tuck/files/shell', { recursive: true });
@@ -281,5 +309,47 @@ describe('restore command behavior', () => {
       'Unsafe manifest destination detected'
     );
     expect(copyFileOrDirMock).not.toHaveBeenCalled();
+  });
+
+  it('should not write any files when --dry-run is set in the interactive path', async () => {
+    // Interactive restore (no paths, no --all, no --yes/--json) previously dropped
+    // --dry-run and performed a REAL restore. It must now honor dryRun and write
+    // nothing.
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: { source: '~/.zshrc', destination: 'files/shell/zshrc', category: 'shell' },
+    });
+
+    const ui = await import('../../src/ui/index.js');
+    vi.mocked(ui.prompts.multiselect).mockResolvedValue(['zshrc'] as never);
+    vi.mocked(ui.prompts.select).mockResolvedValue(false as never); // copy strategy
+    vi.mocked(ui.prompts.confirm).mockResolvedValue(true as never);
+
+    const { runRestoreCommand } = await import('../../src/commands/restore.js');
+    await runRestoreCommand([], { dryRun: true } as never);
+
+    expect(copyFileOrDirMock).not.toHaveBeenCalled();
+    expect(createSymlinkMock).not.toHaveBeenCalled();
+    expect(createBackupMock).not.toHaveBeenCalled();
+  });
+
+  it('should carry --no-hooks through the interactive path', async () => {
+    // The interactive restore rebuilt a fresh options object that dropped noHooks;
+    // it must now pass the original options (skipHooks) through to the hook runner.
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: { source: '~/.zshrc', destination: 'files/shell/zshrc', category: 'shell' },
+    });
+
+    const ui = await import('../../src/ui/index.js');
+    vi.mocked(ui.prompts.multiselect).mockResolvedValue(['zshrc'] as never);
+    vi.mocked(ui.prompts.select).mockResolvedValue(false as never);
+    vi.mocked(ui.prompts.confirm).mockResolvedValue(true as never);
+
+    const { runRestoreCommand } = await import('../../src/commands/restore.js');
+    await runRestoreCommand([], { noHooks: true, noSecrets: true } as never);
+
+    expect(runPreRestoreHookMock).toHaveBeenCalledWith(
+      '/test-home/.tuck',
+      expect.objectContaining({ skipHooks: true })
+    );
   });
 });

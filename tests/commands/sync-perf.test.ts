@@ -72,6 +72,7 @@ vi.mock('../../src/lib/paths.js', () => ({
   expandPath: vi.fn((p: string) => p.replace(/^~\//, '/test-home/')),
   pathExists: pathExistsMock,
   collapsePath: vi.fn((p: string) => p),
+  isDirectory: vi.fn().mockResolvedValue(false),
   validateSafeSourcePath: vi.fn(),
   validateSafeManifestDestination: vi.fn(),
   validatePathWithinRoot: vi.fn(),

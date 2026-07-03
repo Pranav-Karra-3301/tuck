@@ -141,11 +141,12 @@ describe('mergeConflicts', () => {
 
     expect(conflicts).toHaveLength(1);
     expect(conflicts[0].path).toBe('conflict.txt');
-    // After git's "rebase onto origin/main" the topology flips: HEAD is the
-    // remote tip, so stage 2 ("ours") is "remote change" and stage 3
-    // ("theirs") is the local change being replayed.
-    expect(conflicts[0].ours).toBe('remote change\n');
-    expect(conflicts[0].theirs).toBe('local change\n');
+    // tuck sync pulls with --rebase, which swaps git's internal stages (stage 2
+    // is the remote tip, stage 3 the replayed local commit). detectConflicts
+    // normalizes back to user-facing semantics, so `ours` must be the LOCAL edit
+    // and `theirs` the REMOTE edit — picking "Keep local" must keep local.
+    expect(conflicts[0].ours).toBe('local change\n');
+    expect(conflicts[0].theirs).toBe('remote change\n');
     // `base` may or may not be present depending on the git version and the
     // shape of the conflict; when present it must reflect the shared ancestor.
     if (conflicts[0].base !== undefined) {
@@ -223,6 +224,153 @@ describe('mergeConflicts', () => {
 
     // After abort, HEAD is back to the local commit (i.e. "local change\n").
     const content = await fs.readFile(join(local, 'conflict.txt'), 'utf-8');
+    expect(content).toBe('local change\n');
+  });
+
+  it('keeps the LOCAL edit when resolving "ours" under a rebase (no side inversion)', async () => {
+    if (!(await hasGit())) return;
+
+    const { local } = await buildConflictingRepos(workDir);
+    const [conflict] = await detectConflicts(local);
+
+    // Picking "Keep local (ours)" must materialize the local edit, never the
+    // remote one. This pins the rebase ours/theirs inversion regression.
+    await applyResolution(local, { path: conflict.path, choice: 'ours' });
+    await continueRebase(local);
+
+    const content = await fs.readFile(join(local, 'conflict.txt'), 'utf-8');
+    expect(content).toBe('local change\n');
+  });
+
+  it('resolves a modify/delete conflict by removing the file when the deleted side is kept', async () => {
+    if (!(await hasGit())) return;
+
+    const upstream = join(workDir, 'md-upstream.git');
+    const seed = join(workDir, 'md-seed');
+    const local = join(workDir, 'md-local');
+
+    await fs.mkdir(upstream, { recursive: true });
+    await simpleGit().cwd(upstream).init(true);
+
+    await fs.mkdir(seed, { recursive: true });
+    const seedGit = simpleGit(seed);
+    await seedGit.init();
+    await seedGit.addConfig('user.email', 'seed@tuck.test');
+    await seedGit.addConfig('user.name', 'Seed');
+    await seedGit.addConfig('commit.gpgsign', 'false');
+    await seedGit.addConfig('core.autocrlf', 'false');
+    await seedGit.addConfig('core.eol', 'lf');
+    await fs.writeFile(join(seed, 'f.txt'), 'base line\n', 'utf-8');
+    await seedGit.add('f.txt');
+    await seedGit.commit('base');
+    await seedGit.addRemote('origin', upstream);
+    await seedGit.raw(['branch', '-M', 'main']);
+    await seedGit.push(['-u', 'origin', 'main']);
+
+    // Local clone: delete the file.
+    await simpleGit().clone(upstream, local);
+    const localGit = simpleGit(local);
+    await localGit.addConfig('user.email', 'local@tuck.test');
+    await localGit.addConfig('user.name', 'Local');
+    await localGit.addConfig('commit.gpgsign', 'false');
+    await localGit.addConfig('core.autocrlf', 'false');
+    await localGit.addConfig('core.eol', 'lf');
+    // Ensure the working tree actually reflects origin/main (a freshly-init'd
+    // bare repo's HEAD may not track our pushed branch on every git version).
+    await localGit.reset(['--hard', 'origin/main']);
+    await fs.rm(join(local, 'f.txt'));
+    await localGit.add('f.txt');
+    await localGit.commit('local delete');
+
+    // Remote: modify the same file, then push.
+    await fs.writeFile(join(seed, 'f.txt'), 'remote change\n', 'utf-8');
+    await seedGit.add('f.txt');
+    await seedGit.commit('remote modify');
+    await seedGit.push();
+
+    await localGit.fetch('origin');
+    try {
+      await localGit.pull('origin', 'main', { '--rebase': null });
+    } catch {
+      // Expected — modify/delete conflict.
+    }
+
+    const [conflict] = await detectConflicts(local);
+    expect(conflict.path).toBe('f.txt');
+    // From the user's perspective the LOCAL side deleted the file.
+    expect(conflict.oursDeleted).toBe(true);
+    expect(conflict.theirsDeleted).toBe(false);
+
+    // Keeping local (the deletion) must not throw and must remove the file.
+    await applyResolution(local, { path: conflict.path, choice: 'ours' });
+    await continueRebase(local);
+
+    expect((await detectConflicts(local))).toHaveLength(0);
+    await expect(fs.access(join(local, 'f.txt'))).rejects.toBeTruthy();
+  });
+
+  it('detects and resolves a conflict on a unicode (C-quoted) filename', async () => {
+    if (!(await hasGit())) return;
+
+    const fileName = 'résumé.txt';
+    const upstream = join(workDir, 'uni-upstream.git');
+    const seed = join(workDir, 'uni-seed');
+    const local = join(workDir, 'uni-local');
+
+    await fs.mkdir(upstream, { recursive: true });
+    await simpleGit().cwd(upstream).init(true);
+
+    await fs.mkdir(seed, { recursive: true });
+    const seedGit = simpleGit(seed);
+    await seedGit.init();
+    await seedGit.addConfig('user.email', 'seed@tuck.test');
+    await seedGit.addConfig('user.name', 'Seed');
+    await seedGit.addConfig('commit.gpgsign', 'false');
+    await seedGit.addConfig('core.autocrlf', 'false');
+    await seedGit.addConfig('core.eol', 'lf');
+    await fs.writeFile(join(seed, fileName), 'base line\n', 'utf-8');
+    await seedGit.add(fileName);
+    await seedGit.commit('base');
+    await seedGit.addRemote('origin', upstream);
+    await seedGit.raw(['branch', '-M', 'main']);
+    await seedGit.push(['-u', 'origin', 'main']);
+
+    await simpleGit().clone(upstream, local);
+    const localGit = simpleGit(local);
+    await localGit.addConfig('user.email', 'local@tuck.test');
+    await localGit.addConfig('user.name', 'Local');
+    await localGit.addConfig('commit.gpgsign', 'false');
+    await localGit.addConfig('core.autocrlf', 'false');
+    await localGit.addConfig('core.eol', 'lf');
+    await fs.writeFile(join(local, fileName), 'local change\n', 'utf-8');
+    await localGit.add(fileName);
+    await localGit.commit('local change');
+
+    await fs.writeFile(join(seed, fileName), 'remote change\n', 'utf-8');
+    await seedGit.add(fileName);
+    await seedGit.commit('remote change');
+    await seedGit.push();
+
+    await localGit.fetch('origin');
+    try {
+      await localGit.pull('origin', 'main', { '--rebase': null });
+    } catch {
+      // Expected.
+    }
+
+    const conflicts = await detectConflicts(local);
+    expect(conflicts).toHaveLength(1);
+    // The C-quoted porcelain path must be decoded back to the real filename.
+    expect(conflicts[0].path).toBe(fileName);
+    expect(conflicts[0].ours).toBe('local change\n');
+    expect(conflicts[0].theirs).toBe('remote change\n');
+    expect(conflicts[0].oursDeleted).toBe(false);
+    expect(conflicts[0].theirsDeleted).toBe(false);
+
+    // And the decoded path must be a valid pathspec for resolution.
+    await applyResolution(local, { path: conflicts[0].path, choice: 'ours' });
+    await continueRebase(local);
+    const content = await fs.readFile(join(local, fileName), 'utf-8');
     expect(content).toBe('local change\n');
   });
 

@@ -89,6 +89,10 @@ const restoreFromSnapshot = async (snapshotId: string, options: UndoOptions): Pr
   const snapshot = await getSnapshot(snapshotId);
 
   if (!snapshot) {
+    if (isJsonMode()) {
+      emitJsonOk({ snapshotId, found: false, restored: [] });
+      return;
+    }
     logger.error(`Snapshot not found: ${snapshotId}`);
     const snapshots = await listSnapshots();
     if (snapshots.length > 0) {
@@ -103,11 +107,16 @@ const restoreFromSnapshot = async (snapshotId: string, options: UndoOptions): Pr
     return;
   }
 
-  // Show snapshot details
-  showSnapshotDetails(snapshot);
+  // Human-only snapshot details (raw stdout — must be suppressed in JSON mode so
+  // the envelope stays the only object on stdout).
+  if (!isJsonMode()) {
+    showSnapshotDetails(snapshot);
+  }
 
-  // Confirm unless --force or dry-run
-  if (!options.force && !options.dryRun) {
+  // Confirm unless --force, --dry-run, or JSON mode. JSON mode is a
+  // non-interactive automation contract: prompting would throw on non-TTY stdin,
+  // so --json implies "skip confirmation" exactly like --force.
+  if (!options.force && !options.dryRun && !isJsonMode()) {
     const backedUpCount = snapshot.files.filter((f) => f.existed).length;
     const confirmed = await prompts.confirm(
       `Restore ${backedUpCount} file(s) from this snapshot?`,
@@ -122,6 +131,15 @@ const restoreFromSnapshot = async (snapshotId: string, options: UndoOptions): Pr
 
   // Dry run
   if (options.dryRun) {
+    if (isJsonMode()) {
+      emitJsonOk({
+        snapshotId,
+        dryRun: true,
+        wouldRestore: snapshot.files.filter((f) => f.existed).map((f) => collapsePath(f.originalPath)),
+        wouldRemove: snapshot.files.filter((f) => !f.existed).map((f) => collapsePath(f.originalPath)),
+      });
+      return;
+    }
     logger.heading('Dry run - would restore:');
     for (const file of snapshot.files) {
       if (file.existed) {
@@ -134,8 +152,13 @@ const restoreFromSnapshot = async (snapshotId: string, options: UndoOptions): Pr
   }
 
   // Restore
-  logger.info('Restoring files...');
+  if (!isJsonMode()) logger.info('Restoring files...');
   const restoredFiles = await restoreSnapshot(snapshotId);
+
+  if (isJsonMode()) {
+    emitJsonOk({ snapshotId, restored: restoredFiles.map((f) => collapsePath(f)) });
+    return;
+  }
 
   logger.blank();
   logger.success(`Restored ${restoredFiles.length} file(s)`);
@@ -156,18 +179,30 @@ const restoreSingleFile = async (
   const snapshot = await getSnapshot(snapshotId);
 
   if (!snapshot) {
+    if (isJsonMode()) {
+      emitJsonOk({ snapshotId, file: filePath, found: false, restored: false });
+      return;
+    }
     logger.error(`Snapshot not found: ${snapshotId}`);
     return;
   }
 
   // Dry run
   if (options.dryRun) {
+    if (isJsonMode()) {
+      emitJsonOk({ snapshotId, file: filePath, dryRun: true });
+      return;
+    }
     logger.info(`Would restore ${filePath} from snapshot ${snapshotId}`);
     return;
   }
 
   // Restore the file
   await restoreFileFromSnapshot(snapshotId, filePath);
+  if (isJsonMode()) {
+    emitJsonOk({ snapshotId, file: filePath, restored: true });
+    return;
+  }
   logger.success(`Restored ${filePath}`);
 };
 
@@ -178,12 +213,17 @@ const removeSnapshot = async (snapshotId: string, options: UndoOptions): Promise
   const snapshot = await getSnapshot(snapshotId);
 
   if (!snapshot) {
+    if (isJsonMode()) {
+      emitJsonOk({ deleted: null, found: false, snapshotId });
+      return;
+    }
     logger.error(`Snapshot not found: ${snapshotId}`);
     return;
   }
 
-  // Confirm unless --force
-  if (!options.force) {
+  // Confirm unless --force or JSON mode. JSON is a non-interactive contract, so
+  // --json implies "skip confirmation" (prompting would throw on non-TTY stdin).
+  if (!options.force && !isJsonMode()) {
     showSnapshotDetails(snapshot);
     const confirmed = await prompts.confirm('Delete this snapshot permanently?', false);
 
@@ -194,6 +234,10 @@ const removeSnapshot = async (snapshotId: string, options: UndoOptions): Promise
   }
 
   await deleteSnapshot(snapshotId);
+  if (isJsonMode()) {
+    emitJsonOk({ deleted: snapshotId });
+    return;
+  }
   logger.success(`Deleted snapshot: ${snapshotId}`);
 };
 
@@ -294,6 +338,10 @@ const runUndo = async (snapshotId: string | undefined, options: UndoOptions): Pr
   if (options.latest) {
     const latest = await getLatestSnapshot();
     if (!latest) {
+      if (isJsonMode()) {
+        emitJsonOk({ found: false, restored: [] });
+        return;
+      }
       logger.warning('No backup snapshots available');
       return;
     }
@@ -318,6 +366,13 @@ const runUndo = async (snapshotId: string | undefined, options: UndoOptions): Pr
 
   if (options.file) {
     logger.error('The --file option requires a snapshot ID or --latest');
+    return;
+  }
+
+  // No arguments in JSON mode: interactive selection can't run non-interactively.
+  // Emit an explicit envelope instead of falling into a prompt that would throw.
+  if (isJsonMode()) {
+    emitJsonOk({ restored: [], hint: 'specify a snapshot id, --latest, --list, or --delete <id>' });
     return;
   }
 

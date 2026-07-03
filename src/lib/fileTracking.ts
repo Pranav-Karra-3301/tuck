@@ -21,6 +21,7 @@ import { readFile, writeFile } from 'fs/promises';
 import { encryptFileContent } from './crypto/fileEncryption.js';
 import { keystorePassphrase } from './materialize.js';
 import { EncryptionError } from '../errors.js';
+import { isJsonMode } from './jsonOutput.js';
 
 export interface FileToTrack {
   path: string;
@@ -28,6 +29,13 @@ export interface FileToTrack {
   name?: string;
   /** Bundle to assign the tracked file to. Defaults to "default". */
   bundle?: string;
+  /**
+   * Glob patterns (relative to a tracked DIRECTORY) to exclude from the copy
+   * into the repo — carried from a detection pattern's `exclude` list so
+   * ephemeral/sensitive subpaths (e.g. ~/.claude's conversation transcripts and
+   * caches) never land in the repo. Ignored for single-file tracking.
+   */
+  exclude?: string[];
   /**
    * Repo-scoped tracking metadata. When `scope === 'repo'` the file lives inside
    * a git repo whose absolute path differs per machine; it is stored by stable
@@ -173,10 +181,17 @@ export const trackFilesWithProgress = async (
     trackedDestinations.set(toPosixPath(existingFile.destination), existingFile.source);
   }
 
-  console.log();
-  console.log(chalk.bold.cyan(`${actionVerb} ${total} ${total === 1 ? 'file' : 'files'}...`));
-  console.log(chalk.dim('─'.repeat(50)));
-  console.log();
+  // In --json mode stdout must carry exactly one JSON envelope (emitted by the
+  // caller), so every human-readable line here is suppressed. The ora spinner
+  // writes to stderr and is left alone.
+  const quiet = isJsonMode();
+
+  if (!quiet) {
+    console.log();
+    console.log(chalk.bold.cyan(`${actionVerb} ${total} ${total === 1 ? 'file' : 'files'}...`));
+    console.log(chalk.dim('─'.repeat(50)));
+    console.log();
+  }
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
@@ -274,7 +289,12 @@ export const trackFilesWithProgress = async (
         await writeFile(destination, await encryptFileContent(plaintext, passphrase));
       } else {
         // Default: copy file into the repository (from the absolute live path).
-        await copyFileOrDir(expandedPath, destination, { overwrite: true });
+        // Pattern-declared excludes keep ephemeral/sensitive subpaths out of the
+        // repo when tracking a directory (no-op for single files).
+        await copyFileOrDir(expandedPath, destination, {
+          overwrite: true,
+          ...(file.exclude && file.exclude.length > 0 ? { exclude: file.exclude } : {}),
+        });
       }
 
       // Get file info
@@ -318,8 +338,10 @@ export const trackFilesWithProgress = async (
       }
 
       spinner.stop();
-      const categoryStr = showCategory ? chalk.dim(` ${icon} ${category}`) : '';
-      console.log(`  ${chalk.green('✓')} ${indexStr} ${sourcePath}${categoryStr}`);
+      if (!quiet) {
+        const categoryStr = showCategory ? chalk.dim(` ${icon} ${category}`) : '';
+        console.log(`  ${chalk.green('✓')} ${indexStr} ${sourcePath}${categoryStr}`);
+      }
 
       // Track sensitive files for warning at the end
       if (isSensitiveFile(sourcePath)) {
@@ -343,33 +365,37 @@ export const trackFilesWithProgress = async (
       spinner.stop();
       const errorObj = error instanceof Error ? error : new Error(String(error));
       errors.push({ path: file.path, error: errorObj });
-      console.log(`  ${chalk.red('✗')} ${indexStr} ${collapsePath(file.path)} ${chalk.red('- failed')}`);
+      if (!quiet) {
+        console.log(`  ${chalk.red('✗')} ${indexStr} ${collapsePath(file.path)} ${chalk.red('- failed')}`);
+      }
     }
   }
 
-  // Show summary
-  console.log();
-  if (succeeded > 0) {
-    console.log(chalk.green('✓'), chalk.bold(`Tracked ${succeeded} ${succeeded === 1 ? 'file' : 'files'} successfully`));
-  }
-
-  // Show accumulated errors if any
-  if (errors.length > 0) {
+  // Show summary (suppressed in --json mode)
+  if (!quiet) {
     console.log();
-    console.log(chalk.red('✗'), chalk.bold(`Failed to track ${errors.length} ${errors.length === 1 ? 'file' : 'files'}:`));
-    for (const { path, error } of errors) {
-      console.log(chalk.dim(`   • ${collapsePath(path)}: ${error.message}`));
+    if (succeeded > 0) {
+      console.log(chalk.green('✓'), chalk.bold(`Tracked ${succeeded} ${succeeded === 1 ? 'file' : 'files'} successfully`));
     }
-  }
 
-  // Warn about sensitive files at the end (not inline to avoid clutter)
-  if (sensitiveFiles.length > 0) {
-    console.log();
-    console.log(chalk.yellow('⚠'), chalk.yellow('Warning: Some files may contain sensitive data:'));
-    for (const path of sensitiveFiles) {
-      console.log(chalk.dim(`   • ${collapsePath(path)}`));
+    // Show accumulated errors if any
+    if (errors.length > 0) {
+      console.log();
+      console.log(chalk.red('✗'), chalk.bold(`Failed to track ${errors.length} ${errors.length === 1 ? 'file' : 'files'}:`));
+      for (const { path, error } of errors) {
+        console.log(chalk.dim(`   • ${collapsePath(path)}: ${error.message}`));
+      }
     }
-    console.log(chalk.dim('  Make sure your repository is private!'));
+
+    // Warn about sensitive files at the end (not inline to avoid clutter)
+    if (sensitiveFiles.length > 0) {
+      console.log();
+      console.log(chalk.yellow('⚠'), chalk.yellow('Warning: Some files may contain sensitive data:'));
+      for (const path of sensitiveFiles) {
+        console.log(chalk.dim(`   • ${collapsePath(path)}`));
+      }
+      console.log(chalk.dim('  Make sure your repository is private!'));
+    }
   }
 
   return {

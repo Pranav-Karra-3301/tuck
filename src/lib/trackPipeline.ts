@@ -15,7 +15,7 @@ import {
 import { findGitRoot, deriveRepoKey } from './repoScope.js';
 import { toPosixPath } from './platform.js';
 import { isFileTracked } from './manifest.js';
-import { checkFileSizeThreshold, formatFileSize, getDirectoryFileCount } from './files.js';
+import { checkFileSizeThreshold, formatFileSize, getDirectoryFileCount, getDirectoryFiles } from './files.js';
 import { shouldExcludeFromBin } from './binary.js';
 import { addToTuckignore, isIgnored } from './tuckignore.js';
 import {
@@ -26,6 +26,7 @@ import {
   SecretsDetectedError,
 } from '../errors.js';
 import { logForceSecretBypass } from './audit.js';
+import { isJsonMode } from './jsonOutput.js';
 import {
   getSecretsPath,
   isSecretScanningEnabled,
@@ -245,10 +246,30 @@ const applySecretPolicy = async (
     return files;
   }
 
-  // Repo-scoped entries carry a stable `<repoKey>:<repoRelative>` source, so we
-  // must scan the live absolute path instead of expanding the identity string.
-  const filePaths = files.map((f) => f.liveSource ?? expandPath(f.source));
-  const summary = await scanForSecrets(filePaths, tuckDir);
+  // Resolve each candidate to its LIVE path (repo-scoped entries carry a stable
+  // `<repoKey>:<repoRelative>` source, so we must scan the live absolute path,
+  // not the expanded identity string). DIRECTORY candidates must be expanded to
+  // their contained files: the scanner skips a directory path outright
+  // (skipReason 'Is a directory'), so without this a directory holding a
+  // credentials file would pass the secret gate completely unscanned. We keep a
+  // reverse map from each scanned file back to its owning candidate so the
+  // ignore action can act on the right candidate regardless of scope.
+  const scanPaths: string[] = [];
+  const ownerByScanPath = new Map<string, PreparedTrackFile>();
+  for (const file of files) {
+    const live = file.liveSource ?? expandPath(file.source);
+    if (await isDirectory(live)) {
+      for (const inner of await getDirectoryFiles(live)) {
+        scanPaths.push(inner);
+        if (!ownerByScanPath.has(inner)) ownerByScanPath.set(inner, file);
+      }
+    } else {
+      scanPaths.push(live);
+      ownerByScanPath.set(live, file);
+    }
+  }
+
+  const summary = await scanForSecrets(scanPaths, tuckDir);
 
   if (summary.filesWithSecrets === 0) {
     return files;
@@ -306,17 +327,28 @@ const applySecretPolicy = async (
   }
 
   if (action === 'ignore') {
-    const filesWithSecrets = new Set(summary.results.map((result) => result.collapsedPath));
-
-    for (const file of files) {
-      const normalizedSource = collapsePath(file.source);
-      if (filesWithSecrets.has(normalizedSource)) {
-        await addToTuckignore(tuckDir, file.source);
-        logger.success(`Added ${normalizedSource} to .tuckignore`);
-      }
+    // Map each secret-bearing scan result back to its OWNING candidate via the
+    // reverse map. Matching on collapsePath(file.source) is wrong for repo files
+    // (source is the `<repoKey>:<repoRelative>` identity, never a live path) and
+    // for directory candidates (the secret lives in an inner file, not the dir),
+    // so those files silently escaped the filter and were tracked anyway.
+    const owners = new Set<PreparedTrackFile>();
+    for (const result of summary.results) {
+      if (!result.hasSecrets) continue;
+      const owner = ownerByScanPath.get(result.path);
+      if (owner) owners.add(owner);
     }
 
-    const remaining = files.filter((file) => !filesWithSecrets.has(collapsePath(file.source)));
+    for (const file of owners) {
+      // Home files are ignored by their home-relative identity; repo files have
+      // no home-relative form, so record their collapsed live path instead.
+      const ignoreKey =
+        file.scope === 'repo' ? collapsePath(file.liveSource ?? file.source) : file.source;
+      await addToTuckignore(tuckDir, ignoreKey);
+      logger.success(`Added ${ignoreKey} to .tuckignore`);
+    }
+
+    const remaining = files.filter((file) => !owners.has(file));
     if (remaining.length === 0) {
       logger.info('No files remaining to track');
     }
@@ -400,17 +432,20 @@ export const preparePathsForTracking = async (
     }
 
     if (!repoMeta && (await isIgnored(tuckDir, trackingId))) {
-      logger.info(`Skipping ${trackingId} (in .tuckignore)`);
+      // Suppressed in --json mode so stdout stays a single JSON envelope.
+      if (!isJsonMode()) logger.info(`Skipping ${trackingId} (in .tuckignore)`);
       continue;
     }
 
     if (await shouldExcludeFromBin(expandedPath)) {
       const sizeCheck = await checkFileSizeThreshold(expandedPath);
-      logger.info(
-        `Skipping binary executable: ${trackingId}` +
-          `${sizeCheck.size > 0 ? ` (${formatFileSize(sizeCheck.size)})` : ''}` +
-          ' - Add to .tuckignore to customize'
-      );
+      if (!isJsonMode()) {
+        logger.info(
+          `Skipping binary executable: ${trackingId}` +
+            `${sizeCheck.size > 0 ? ` (${formatFileSize(sizeCheck.size)})` : ''}` +
+            ' - Add to .tuckignore to customize'
+        );
+      }
       continue;
     }
 

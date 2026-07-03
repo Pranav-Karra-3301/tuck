@@ -96,6 +96,33 @@ describe('doctor checks', () => {
     );
   });
 
+  it('passes manifest path-safety for a valid repo-scoped entry (not home-confined)', async () => {
+    await initTestTuck();
+
+    // A legitimately repo-scoped entry: source is a `<repoKey>:<repoRelative>`
+    // KEY, and the file lives under a repo root that may be OUTSIDE $HOME. The
+    // old check fed the key to validateSafeSourcePath (home-confinement), which
+    // FAILed valid manifests depending on the invoker's cwd.
+    const manifest = createMockManifest({
+      files: {
+        eslint: createMockTrackedFile({
+          source: 'myrepo-a1b2c3d4:src/index.ts',
+          destination: 'files/repos/myrepo-a1b2c3d4/src/index.ts',
+          scope: 'repo',
+          repoKey: 'myrepo-a1b2c3d4',
+          repoRelative: 'src/index.ts',
+        }),
+      },
+    });
+    vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
+    clearManifestCache();
+
+    const report = await runDoctorChecks({ category: 'manifest' });
+    const check = report.checks.find((item) => item.id === 'manifest.path-safety');
+
+    expect(check?.status).toBe('pass');
+  });
+
   it('returns strict warning exit code when warnings are present without failures', async () => {
     await initTestTuck({
       config: {
@@ -166,6 +193,22 @@ describe('doctor checks', () => {
   it('fails when reserved unsupported config keys are in use', async () => {
     await initTestTuck({
       config: {
+        encryption: {
+          enabled: true,
+        },
+      },
+    });
+
+    const report = await runDoctorChecks({ category: 'security' });
+    const check = report.checks.find((item) => item.id === 'security.unsupported-config');
+
+    expect(check?.status).toBe('fail');
+    expect(check?.details).toContain('encryption.enabled');
+  });
+
+  it('passes when templates.variables is set because templating has shipped', async () => {
+    await initTestTuck({
+      config: {
         templates: {
           enabled: true,
           variables: {
@@ -178,7 +221,9 @@ describe('doctor checks', () => {
     const report = await runDoctorChecks({ category: 'security' });
     const check = report.checks.find((item) => item.id === 'security.unsupported-config');
 
-    expect(check?.status).toBe('fail');
-    expect(check?.details).toContain('templates.enabled');
+    // templates.enabled / templates.variables are wired (rendered on
+    // apply/restore), so they must NOT trip the unsupported-config health gate.
+    expect(check?.status).toBe('pass');
+    expect(check?.details ?? '').not.toContain('templates');
   });
 });

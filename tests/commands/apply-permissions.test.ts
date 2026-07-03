@@ -18,6 +18,7 @@ import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
 
 const findPlaceholdersMock = vi.fn();
 const restoreContentMock = vi.fn();
+const createPreApplySnapshotMock = vi.fn();
 
 vi.mock('../../src/ui/index.js', () => ({
   banner: vi.fn(),
@@ -59,7 +60,7 @@ vi.mock('../../src/lib/github.js', () => ({
   repoExists: vi.fn().mockResolvedValue(false),
 }));
 vi.mock('../../src/lib/timemachine.js', () => ({
-  createPreApplySnapshot: vi.fn().mockResolvedValue({ id: 'snapshot-test' }),
+  createPreApplySnapshot: createPreApplySnapshotMock,
 }));
 vi.mock('../../src/lib/merge.js', () => ({
   smartMerge: vi.fn(async (_destination: string, content: string) => ({
@@ -95,6 +96,9 @@ describe('apply honors manifest permissions for non-ssh/gpg files', () => {
       restoredContent: content,
       unresolved: [],
     }));
+    // apply now snapshots every destination (so undo can remove newly-created
+    // files); re-establish the mock's resolved value cleared by mockReset.
+    createPreApplySnapshotMock.mockResolvedValue({ id: 'snapshot-test' });
   });
   afterEach(() => vol.reset());
 

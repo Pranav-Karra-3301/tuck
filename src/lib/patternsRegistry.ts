@@ -1,4 +1,5 @@
 import { readFile, readdir, stat } from 'fs/promises';
+import { existsSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { expandPath, pathExists } from './paths.js';
@@ -50,16 +51,19 @@ export const resetPatternsCache = (): void => {
   cache = null;
 };
 
-const bundledPatternsDir = (): string => {
-  // Resolve to <pkg>/templates/patterns — works from src/ and dist/ alike.
-  // Mirrors the strategy used by `src/commands/preset.ts` for templates/presets.
+export const bundledPatternsDir = (): string => {
+  // Resolve to <pkg>/templates/patterns. The layout differs between dev
+  // (src/lib → ../../templates) and the published, tsup-bundled build
+  // (dist → ../templates), so probe each candidate and return the first that
+  // exists. Blindly returning candidates[0] silently dropped ALL bundled
+  // detection patterns in every npm install (it resolved outside the package).
   const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
     resolve(here, '../../templates/patterns'),
     resolve(here, '../templates/patterns'),
     resolve(here, '../../../templates/patterns'),
   ];
-  return candidates[0]!;
+  return candidates.find((dir) => existsSync(dir)) ?? candidates[0]!;
 };
 
 const userPatternsDir = (): string => {

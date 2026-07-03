@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import {
   loadPatterns,
   resetPatternsCache,
+  bundledPatternsDir,
 } from '../../src/lib/patternsRegistry.js';
 import { TEST_HOME } from '../setup.js';
 
@@ -14,6 +15,15 @@ const bundledDir = resolve(
   dirname(fileURLToPath(import.meta.url)),
   // tests/lib -> tests -> repo root
   '../../templates/patterns'
+);
+
+// The SECOND resolution candidate — <repoRoot>/src/templates/patterns — which is
+// what the published, tsup-bundled build actually resolves to (dist → ../templates).
+// candidates[0] resolves OUTSIDE the package there, so returning it blindly made
+// the whole bundled pattern set unreachable.
+const secondCandidateDir = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../src/templates/patterns'
 );
 
 const seedBundledShellFile = (): void => {
@@ -199,6 +209,45 @@ describe('patternsRegistry', () => {
       resetPatternsCache();
       const patterns = await loadPatterns();
       expect(patterns).toEqual([]);
+    });
+
+    it('loads bundled patterns from a later candidate when the first does not exist', async () => {
+      // Seed ONLY the second candidate (the published-build layout). The first
+      // candidate is absent, so blindly returning candidates[0] would load
+      // nothing — the bug this fix addresses.
+      vol.mkdirSync(secondCandidateDir, { recursive: true });
+      vol.writeFileSync(
+        `${secondCandidateDir}/shell.json`,
+        JSON.stringify({
+          category: 'shell',
+          patterns: [
+            {
+              pattern: '~/.zshrc',
+              category: 'shell',
+              description: 'Zsh interactive shell config',
+              isDirectory: false,
+              exclude: [],
+            },
+          ],
+        })
+      );
+      resetPatternsCache();
+
+      const patterns = await loadPatterns();
+      expect(patterns.find((p) => p.path === '~/.zshrc')).toBeDefined();
+    });
+  });
+
+  describe('bundledPatternsDir', () => {
+    it('returns the first candidate that exists instead of always candidates[0]', () => {
+      // candidates[0] (repoRoot/templates/patterns) does not exist in memfs;
+      // seed candidates[1] and expect it to be chosen.
+      vol.mkdirSync(secondCandidateDir, { recursive: true });
+      expect(bundledPatternsDir()).toBe(secondCandidateDir);
+    });
+
+    it('falls back to the first candidate when none exist', () => {
+      expect(bundledPatternsDir()).toBe(bundledDir);
     });
   });
 });

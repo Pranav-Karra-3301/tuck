@@ -33,6 +33,21 @@ describe('paths', () => {
         expect(expandPath('/usr/local/bin')).toBe('/usr/local/bin');
       }
     });
+
+    it('should expand a bare ~ to the home directory', () => {
+      // Regression: bare '~' (the value collapsePath(home) produces) fell
+      // through to resolve('~') and yielded '<cwd>/~', so a collapsed
+      // home-root value never round-tripped back to home.
+      expect(expandPath('~').replace(/\\/g, '/')).toBe(TEST_HOME);
+    });
+
+    it('should expand a bare $HOME to the home directory', () => {
+      expect(expandPath('$HOME').replace(/\\/g, '/')).toBe(TEST_HOME);
+    });
+
+    it('should round-trip collapsePath(home) back to home', () => {
+      expect(expandPath(collapsePath(TEST_HOME)).replace(/\\/g, '/')).toBe(TEST_HOME);
+    });
   });
 
   describe('collapsePath', () => {
@@ -49,6 +64,18 @@ describe('paths', () => {
       if (process.platform !== 'win32') {
         expect(collapsePath('/usr/local/bin')).toBe('/usr/local/bin');
       }
+    });
+
+    it('should not collapse a sibling directory that only shares the home prefix', () => {
+      // Regression: startsWith without a separator boundary collapsed
+      // '/test-homework/.zshrc' (home is '/test-home') to a corrupted
+      // '~work/.zshrc'. It must stay unchanged.
+      const sibling = `${TEST_HOME}work/.zshrc`;
+      expect(collapsePath(sibling)).toBe(sibling);
+    });
+
+    it('should collapse the home directory itself to ~', () => {
+      expect(collapsePath(TEST_HOME)).toBe('~');
     });
   });
 

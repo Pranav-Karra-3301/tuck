@@ -50,6 +50,17 @@ export const loadConfig = async (tuckDir?: string): Promise<TuckConfigOutput> =>
         ...result.data.files,
         backupDir: result.data.files?.backupDir || BACKUP_DIR,
       },
+      // Deep-merge nested config objects so a config file that omits or only
+      // partially specifies these keys keeps the documented defaults for the
+      // sibling fields (e.g. security.minSeverity, remote.mode) rather than
+      // having them replaced with undefined by a shallow spread.
+      hooks: { ...defaultConfig.hooks, ...result.data.hooks },
+      templates: { ...defaultConfig.templates, ...result.data.templates },
+      encryption: { ...defaultConfig.encryption, ...result.data.encryption },
+      ui: { ...defaultConfig.ui, ...result.data.ui },
+      categories: { ...defaultConfig.categories, ...result.data.categories },
+      security: { ...defaultConfig.security, ...result.data.security },
+      remote: { ...defaultConfig.remote, ...result.data.remote },
     };
     cachedTuckDir = dir;
 
@@ -100,6 +111,18 @@ export const saveConfig = async (
     ui: {
       ...existing.ui,
       ...config.ui,
+    },
+    categories: {
+      ...existing.categories,
+      ...config.categories,
+    },
+    security: {
+      ...existing.security,
+      ...config.security,
+    },
+    remote: {
+      ...existing.remote,
+      ...config.remote,
     },
   };
 

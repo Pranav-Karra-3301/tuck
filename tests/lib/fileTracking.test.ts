@@ -5,6 +5,7 @@ import { trackFilesWithProgress } from '../../src/lib/fileTracking.js';
 import { clearManifestCache, getTrackedFileBySource, loadManifest } from '../../src/lib/manifest.js';
 import { initTestTuck, createTestDotfile, TEST_TUCK_DIR } from '../utils/testHelpers.js';
 import { isEncryptedFile, decryptFileContent } from '../../src/lib/crypto/fileEncryption.js';
+import { setJsonMode } from '../../src/lib/jsonOutput.js';
 
 const retrieveMock = vi.fn();
 vi.mock('../../src/lib/crypto/keystore/index.js', () => ({
@@ -58,6 +59,34 @@ describe('fileTracking symlink strategy', () => {
     expect(vol.readFileSync(repoPath, 'utf-8')).toBe('export TRACKING_TEST=2');
 
     logSpy.mockRestore();
+  });
+
+  it('writes nothing to stdout in --json mode (single-envelope contract)', async () => {
+    setJsonMode(true, 'tuck add');
+    await initTestTuck();
+    createTestDotfile('.zshrc', 'export X=1');
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const result = await trackFilesWithProgress(
+      [{ path: '~/.zshrc', category: 'shell' }],
+      TEST_TUCK_DIR,
+      { showCategory: true, delayBetween: 0 }
+    );
+
+    writeSpy.mockRestore();
+    setJsonMode(false);
+
+    // Tracking still succeeds, but the banner/per-file/summary lines (which used
+    // to precede the JSON envelope and break JSON.parse(stdout)) are suppressed.
+    expect(result.succeeded).toBe(1);
+    expect(writes.join('')).toBe('');
   });
 
   it('encrypts the file at rest when encrypt is set (encrypted:true, TCKE1 ciphertext)', async () => {

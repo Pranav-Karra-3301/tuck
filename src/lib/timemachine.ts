@@ -1,6 +1,7 @@
 import { join, dirname, relative, resolve, sep } from 'path';
 import { readdir, readFile, rename, rm, stat } from 'fs/promises';
 import { copy, ensureDir, pathExists } from 'fs-extra';
+import { createHash } from 'crypto';
 import { homedir } from 'os';
 import { expandPath, pathExists as checkPathExists } from './paths.js';
 import { atomicWriteFile } from './files.js';
@@ -65,6 +66,13 @@ const getSnapshotRoots = (): string[] => {
  * e.g., ~/.zshrc -> .zshrc
  * e.g., ~/.config/nvim -> .config/nvim
  * e.g., ~/.foo.bar -> .foo.bar (distinct from ~/.foo-bar -> .foo-bar)
+ *
+ * Paths OUTSIDE $HOME are legitimate (a repo-scoped file lives in a checkout that
+ * may be outside home). They are stored under a reserved `_external/<hash>/`
+ * subtree keyed by a hash of the absolute path — the live restore target is kept
+ * separately as `originalPath`, so this storage path only needs to be unique and
+ * safe within the snapshot. Throwing here would let one out-of-home file abort an
+ * entire apply's pre-apply snapshot.
  */
 const toBackupPath = (originalPath: string): string => {
   const expandedOriginal = expandPath(originalPath);
@@ -74,7 +82,9 @@ const toBackupPath = (originalPath: string): string => {
   const isWithinHome =
     resolvedOriginal === homePath || resolvedOriginal.startsWith(homePath + sep);
   if (!isWithinHome) {
-    throw new BackupError(`Cannot snapshot path outside home directory: ${originalPath}`);
+    const hash = createHash('sha256').update(resolvedOriginal).digest('hex').slice(0, 16);
+    const base = (resolvedOriginal.split(/[\\/]/).pop() || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
+    return `_external/${hash}/${base}`;
   }
 
   const relativePath = relative(homePath, resolvedOriginal);
@@ -290,7 +300,7 @@ export const restoreSnapshot = async (snapshotId: string): Promise<string[]> => 
 
   if (!snapshot) {
     throw new BackupError(`Snapshot not found: ${snapshotId}`, [
-      'Run `tuck restore --list` to see available snapshots',
+      'Run `tuck undo --list` to see available snapshots',
     ]);
   }
 
@@ -417,6 +427,15 @@ export const restoreFileFromSnapshot = async (
     ]);
   }
 
+  // Safety: capture the CURRENT state of this path BEFORE mutating it, so this
+  // single-file undo is itself reversible — mirrors restoreSnapshot. Without it,
+  // a `--file` undo where the snapshot recorded the path as not-existed would rm
+  // the current file/directory with no recovery path.
+  const preRestore = await createSnapshot(
+    [file.originalPath],
+    `Pre-undo backup before restoring ${file.originalPath} from snapshot ${snapshotId}`
+  );
+
   if (!file.existed) {
     // File didn't exist before, delete it if it exists now
     if (await checkPathExists(file.originalPath)) {
@@ -429,8 +448,22 @@ export const restoreFileFromSnapshot = async (
     throw new BackupError(`Backup file is missing: ${file.backupPath}`);
   }
 
+  // Stage the copy alongside the destination, then rename it into place. A rename
+  // is atomic, so a mid-copy failure can never leave a half-written file at the
+  // live path. On any failure, roll the path back to its pre-undo state.
   await ensureDir(dirname(file.originalPath));
-  await copy(file.backupPath, file.originalPath, { overwrite: true, preserveTimestamps: true });
+  const stagingPath = `${file.originalPath}.tuck-undo-${process.pid}-${Date.now()}.tmp`;
+  try {
+    await copy(file.backupPath, stagingPath, { overwrite: true, preserveTimestamps: true });
+    if (await checkPathExists(file.originalPath)) {
+      await rm(file.originalPath, { recursive: true });
+    }
+    await rename(stagingPath, file.originalPath);
+  } catch (error) {
+    await rm(stagingPath, { recursive: true, force: true }).catch(() => {});
+    await rollbackToSnapshot(preRestore);
+    throw error;
+  }
   return true;
 };
 

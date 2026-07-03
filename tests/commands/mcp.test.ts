@@ -118,6 +118,23 @@ describe('mcp dispatch', () => {
     expect((resp as { error?: { code: number } }).error?.code).toBe(-32601);
   });
 
+  it('returns an isError tool result (not a throw) when `arguments` is not an object', async () => {
+    await init();
+    // `validateArgs` uses `key in args` / Object.entries(args), which throw on a
+    // string/number/array. Without coercion this rejected the serve chain and
+    // crashed the whole server; it must degrade to a tool error instead.
+    for (const bad of ['foo', 42, ['a'], true]) {
+      const resp = await dispatch(
+        { jsonrpc: '2.0', id: 20, method: 'tools/call', params: { name: 'status', arguments: bad } },
+        state
+      );
+      expect((resp as { error?: unknown }).error).toBeUndefined();
+      const r = (resp as { result: { isError: boolean; content: { text: string }[] } }).result;
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toMatch(/arguments.*must be an object/i);
+    }
+  });
+
   it('validates required arguments (missing path) as an isError tool result', async () => {
     await init();
     const resp = await dispatch(

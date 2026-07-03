@@ -59,6 +59,7 @@ vi.mock('../../src/lib/git.js', () => ({ cloneRepo: cloneRepoMock }));
 
 const findPlaceholdersMock = vi.fn(() => [] as string[]);
 const restoreContentMock = vi.fn((content: string) => ({ restoredContent: content, unresolved: [] }));
+const createPreApplySnapshotMock = vi.fn();
 
 vi.mock('../../src/lib/github.js', () => ({
   isGhInstalled: vi.fn().mockResolvedValue(false),
@@ -68,7 +69,7 @@ vi.mock('../../src/lib/github.js', () => ({
 }));
 
 vi.mock('../../src/lib/timemachine.js', () => ({
-  createPreApplySnapshot: vi.fn().mockResolvedValue({ id: 'snapshot-test' }),
+  createPreApplySnapshot: createPreApplySnapshotMock,
 }));
 
 vi.mock('../../src/lib/merge.js', () => ({
@@ -101,6 +102,7 @@ describe('apply clears the manifest cache after clone', () => {
       restoredContent: content,
       unresolved: [],
     }));
+    createPreApplySnapshotMock.mockResolvedValue({ id: 'snapshot-test' });
     vol.reset();
     vol.mkdirSync(TEST_HOME, { recursive: true });
     vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });

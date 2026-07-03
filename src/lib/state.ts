@@ -6,6 +6,12 @@ import { expandPath, getTuckDir, pathExists } from './paths.js';
 const LEGACY_SNAPSHOTS_DIRNAME = 'backups';
 const LEGACY_AUDIT_LOG_FILENAME = 'audit.log';
 const LEGACY_FALLBACK_KEYSTORE_FILENAME = '.tuck-keystore.enc';
+// Older versions wrote the fallback keystore's per-install secret in-repo as
+// ~/.tuck/keystore.key. It is migrated out of the repo on first use, but block
+// and gitignore it so it can never be staged/committed on existing installs
+// before migration runs. `.corrupt` is the move-aside copy of a bad secret.
+const LEGACY_FALLBACK_INSTALL_SECRET_FILENAME = 'keystore.key';
+const LEGACY_FALLBACK_INSTALL_SECRET_CORRUPT_FILENAME = 'keystore.key.corrupt';
 
 export const LOCAL_SECRETS_FILENAME = 'secrets.local.json';
 
@@ -14,6 +20,8 @@ export const REPO_RUNTIME_GITIGNORE_PATTERNS = [
   `${LEGACY_SNAPSHOTS_DIRNAME}/`,
   LEGACY_AUDIT_LOG_FILENAME,
   LEGACY_FALLBACK_KEYSTORE_FILENAME,
+  LEGACY_FALLBACK_INSTALL_SECRET_FILENAME,
+  LEGACY_FALLBACK_INSTALL_SECRET_CORRUPT_FILENAME,
 ] as const;
 
 export const REPO_STAGE_BLOCKLIST = new Set<string>([
@@ -22,6 +30,8 @@ export const REPO_STAGE_BLOCKLIST = new Set<string>([
   LEGACY_SNAPSHOTS_DIRNAME,
   LEGACY_AUDIT_LOG_FILENAME,
   LEGACY_FALLBACK_KEYSTORE_FILENAME,
+  LEGACY_FALLBACK_INSTALL_SECRET_FILENAME,
+  LEGACY_FALLBACK_INSTALL_SECRET_CORRUPT_FILENAME,
 ]);
 
 const getBaseStateHome = (): string => {

@@ -1,6 +1,6 @@
 import { Command } from 'commander';
-import { join, dirname } from 'path';
-import { readFile, writeFile, rm, chmod, stat } from 'fs/promises';
+import { join, dirname, basename, resolve, sep, isAbsolute } from 'path';
+import { readFile, writeFile, rm, chmod, stat, realpath, lstat, readlink } from 'fs/promises';
 import { ensureDir, pathExists as fsPathExists, copy } from 'fs-extra';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -16,7 +16,7 @@ import {
   validateSafeRepoSourcePath,
   getTuckDir,
 } from '../lib/paths.js';
-import { resolveWriteTarget, setKnownRepoRoots, type RepoWriteTarget } from '../lib/writeContext.js';
+import { resolveWriteTarget, setKnownRepoRoots, allowedRoots, type RepoWriteTarget } from '../lib/writeContext.js';
 import { setFilePermissions, copyFileOrDir } from '../lib/files.js';
 import { resolveLiveTarget, resolveRepoRoot, bindRepo } from '../lib/repoScope.js';
 import { cloneRepo } from '../lib/git.js';
@@ -95,6 +95,97 @@ const applyRecordedPermissions = async (
 };
 
 /**
+ * Defense against symlink TOCTOU during apply.
+ *
+ * Every other destination check in the apply path is purely LEXICAL (string
+ * validation of the intended path) and never resolves symlinks. A malicious repo
+ * can plant a symlinked path segment on the live tree (e.g. a directory entry
+ * that recreates `~/.config/app -> /etc`), after which a later write to a
+ * lexically-in-home path would follow that link and escape $HOME. Before every
+ * write we resolve the REAL path of the deepest existing ancestor of the target
+ * (following any symlinks, including the target itself when it already exists as
+ * a link) and assert the real destination still lands inside an allowed root —
+ * refusing to write THROUGH a symlinked segment. Throwing here aborts the write
+ * before any bytes or parent directories are created outside the sandbox/home.
+ */
+export const assertRealTargetWithinRoots = async (
+  writeTarget: string,
+  roots: string[]
+): Promise<void> => {
+  const resolved = resolve(writeTarget);
+
+  // Existence via lstat, NOT access(): a DANGLING symlink (target missing) still
+  // "exists" as a link and must be resolved — otherwise `writeFile` would create
+  // its target at the escaped location. access() follows the link and reports
+  // "missing", hiding the escape.
+  const linkExists = async (p: string): Promise<boolean> => {
+    try {
+      await lstat(p);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // Walk up to the deepest ancestor that exists (as a file, dir, or symlink).
+  let existing = resolved;
+  const tail: string[] = [];
+  while (!(await linkExists(existing))) {
+    tail.unshift(basename(existing));
+    const parent = dirname(existing);
+    if (parent === existing) break; // reached the filesystem root
+    existing = parent;
+  }
+
+  // Resolve `existing` to its real on-disk location, following symlinks. realpath
+  // throws on a dangling symlink; fall back to readlink + the real parent so a
+  // broken-but-escaping link is still detected.
+  let realExisting: string;
+  try {
+    realExisting = await realpath(existing);
+  } catch {
+    const linkTarget = await readlink(existing).catch(() => null);
+    const realParent = await realpath(dirname(existing)).catch(() => resolve(dirname(existing)));
+    realExisting = linkTarget
+      ? isAbsolute(linkTarget)
+        ? resolve(linkTarget)
+        : resolve(realParent, linkTarget)
+      : join(realParent, basename(existing));
+  }
+  const realTarget = tail.length > 0 ? join(realExisting, ...tail) : realExisting;
+
+  const realRoots = await Promise.all(
+    roots.map(async (r) => {
+      try {
+        return await realpath(r);
+      } catch {
+        return resolve(r);
+      }
+    })
+  );
+
+  const contained = realRoots.some(
+    (root) => realTarget === root || realTarget.startsWith(root + sep)
+  );
+  if (!contained) {
+    throw new Error(
+      `Refusing to write through a symlinked path: ${collapsePath(writeTarget)} ` +
+        `resolves to ${realTarget}, outside the allowed roots`
+    );
+  }
+};
+
+/**
+ * Resolve-symlink guard + ensure the parent directory exists, in that order:
+ * the containment check MUST run before ensureDir so we never materialize
+ * directories under an escaped (symlinked) location.
+ */
+const prepareWriteTarget = async (writeTarget: string): Promise<void> => {
+  await assertRealTargetWithinRoots(writeTarget, allowedRoots());
+  await ensureDir(dirname(writeTarget));
+};
+
+/**
  * Apply a tracked DIRECTORY entry by copying the whole tree into place.
  *
  * The per-file apply loops read `repoPath` as text (for secret resolution /
@@ -109,11 +200,49 @@ const applyDirectoryEntry = async (file: ApplyFile, dryRun: boolean): Promise<vo
     return;
   }
   const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
-  await ensureDir(dirname(writeTarget));
+  await prepareWriteTarget(writeTarget);
   await copyFileOrDir(file.repoPath, writeTarget, { overwrite: true });
   await applyRecordedPermissions(writeTarget, file.permissions);
   await fixSecurePermissions(writeTarget);
   logger.file(exists ? 'modify' : 'add', `${collapsePath(file.destination)} (directory)`);
+};
+
+/**
+ * True when the buffer is valid UTF-8. Used to detect binary files so they are
+ * copied verbatim rather than pushed through the text pipeline
+ * (materialize/secret-resolution/merge), whose `bytes.toString('utf8')` would
+ * replace invalid sequences with U+FFFD and silently corrupt the file.
+ */
+export const isValidUtf8 = (buf: Buffer): boolean => {
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(buf);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Apply a tracked BINARY (non-UTF-8) file by copying its repo bytes verbatim.
+ *
+ * Binary files are trackable as single entries (e.g. a font, a *.db, a keyring),
+ * and template/secret/merge processing is text-only. Copying the bytes preserves
+ * them exactly; routing them through the string pipeline would corrupt them.
+ * Only reached for non-template, non-encrypted files (those are always text once
+ * materialized).
+ */
+const applyBinaryEntry = async (file: ApplyFile, dryRun: boolean): Promise<void> => {
+  const exists = await pathExists(file.destination);
+  if (dryRun) {
+    logger.file(exists ? 'modify' : 'add', collapsePath(file.destination));
+    return;
+  }
+  const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
+  await prepareWriteTarget(writeTarget);
+  await copyFileOrDir(file.repoPath, writeTarget, { overwrite: true });
+  await applyRecordedPermissions(writeTarget, file.permissions);
+  await fixSecurePermissions(writeTarget);
+  logger.file(exists ? 'modify' : 'add', collapsePath(file.destination));
 };
 
 export interface ApplyOptions {
@@ -153,8 +282,16 @@ export interface ApplyFile {
 interface ApplyResult {
   appliedCount: number;
   filesWithPlaceholders: Array<{
+    /** Display path (collapsed live destination) for warnings. */
     path: string;
     placeholders: string[];
+    /**
+     * The ACTUAL file apply wrote (resolveWriteTarget output). Local-store secret
+     * restoration must target this file — under --root it is the sandbox copy, not
+     * the operator's real ~ path (`path`). Using `path` would read/rewrite the real
+     * home file, escaping the sandbox.
+     */
+    writeTarget: string;
   }>;
   /** repo-scoped sources skipped because their repo is unbound on this machine. */
   skippedUnboundRepos: string[];
@@ -465,14 +602,21 @@ const registerKnownRepoRoots = async (manifest: TuckManifestOutput): Promise<voi
  * LIVE checkout location on this machine; an unbound repo (no local checkout) is
  * skipped — never guessed, never written to a wrong path — and reported back so
  * callers can surface it.
+ *
+ * Unsafe manifest entries (traversal source/destination, out-of-repo path) are
+ * collected into `unsafe` and RETURNED rather than logged here: this function
+ * runs inside the MCP `apply_plan` tool where stdout is the JSON-RPC transport,
+ * so a stray `logger.warning` would corrupt the protocol stream. Each caller
+ * decides how to surface them (human logger vs addJsonWarning vs silent).
  */
 export const prepareFilesToApply = async (
   repoDir: string,
   manifest: TuckManifestOutput,
   bundle?: string
-): Promise<{ files: ApplyFile[]; skipped: string[] }> => {
+): Promise<{ files: ApplyFile[]; skipped: string[]; unsafe: string[] }> => {
   const files: ApplyFile[] = [];
   const skipped: string[] = [];
+  const unsafe: string[] = [];
 
   for (const [_id, file] of Object.entries(manifest.files)) {
     // Scope to a single bundle when requested. Treat missing/legacy bundle
@@ -511,7 +655,7 @@ export const prepareFilesToApply = async (
       }
       validateSafeManifestDestination(file.destination);
     } catch {
-      logger.warning(`Skipping unsafe manifest entry: ${file.source}`);
+      unsafe.push(`Skipping unsafe manifest entry: ${file.source}`);
       continue;
     }
 
@@ -520,7 +664,7 @@ export const prepareFilesToApply = async (
     try {
       validatePathWithinRoot(repoFilePath, repoDir, 'repository file');
     } catch {
-      logger.warning(`Skipping unsafe repository path from manifest: ${file.destination}`);
+      unsafe.push(`Skipping unsafe repository path from manifest: ${file.destination}`);
       continue;
     }
 
@@ -561,7 +705,7 @@ export const prepareFilesToApply = async (
     });
   }
 
-  return { files, skipped };
+  return { files, skipped, unsafe };
 };
 
 /**
@@ -628,9 +772,19 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
       result.appliedCount++;
       continue;
     }
+    const rawBytes = await readFile(file.repoPath);
+
+    // Binary (non-UTF-8) files that are neither templated nor encrypted must be
+    // copied byte-for-byte — the text pipeline below would UTF-8 round-trip them
+    // and replace invalid sequences with U+FFFD, silently corrupting the file.
+    if (!file.template && !file.encrypted && !isValidUtf8(rawBytes)) {
+      await applyBinaryEntry(file, dryRun);
+      result.appliedCount++;
+      continue;
+    }
+
     let fileContent: string;
     try {
-      const rawBytes = await readFile(file.repoPath);
       fileContent = await materializeForLive(rawBytes, file, ctx, { getPassphrase: keystorePassphrase });
     } catch (err) {
       // A failed / absent-passphrase decryption must NEVER write ciphertext or
@@ -651,11 +805,14 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
     const secretsResult = await resolveFileSecrets(fileContent, tuckDir);
     fileContent = secretsResult.content;
 
-    // Track only unresolved placeholders
+    // Track only unresolved placeholders. Record the resolved write target so a
+    // later local-store secret restore rewrites the file apply ACTUALLY wrote
+    // (the sandbox copy under --root), never the operator's real ~ path.
     if (secretsResult.unresolved.length > 0) {
       result.filesWithPlaceholders.push({
         path: collapsePath(file.destination),
         placeholders: secretsResult.unresolved,
+        writeTarget: resolveWriteTarget(file.destination, file.repoTarget),
       });
     }
 
@@ -672,7 +829,7 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
         // Confine the write under --root (no-op when not sandboxed). Repo files
         // route through their repo descriptor so the target is the local checkout.
         const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
-        await ensureDir(dirname(writeTarget));
+        await prepareWriteTarget(writeTarget);
         await writeFile(writeTarget, mergeResult.content, 'utf-8');
         await applyRecordedPermissions(writeTarget, file.permissions);
         logger.file('merge', collapsePath(file.destination));
@@ -689,7 +846,7 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
         const fileExists = await pathExists(file.destination);
         const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
         // Write file content directly instead of copying (to preserve resolved secrets)
-        await ensureDir(dirname(writeTarget));
+        await prepareWriteTarget(writeTarget);
         await writeFile(writeTarget, fileContent, 'utf-8');
         // Reapply recorded permissions first (so a 0755 script lands executable),
         // then the SSH/GPG fixup enforces its stricter floor for those dirs.
@@ -728,9 +885,19 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
       result.appliedCount++;
       continue;
     }
+    const rawBytes = await readFile(file.repoPath);
+
+    // Binary (non-UTF-8) files that are neither templated nor encrypted must be
+    // copied byte-for-byte — the text pipeline below would UTF-8 round-trip them
+    // and replace invalid sequences with U+FFFD, silently corrupting the file.
+    if (!file.template && !file.encrypted && !isValidUtf8(rawBytes)) {
+      await applyBinaryEntry(file, dryRun);
+      result.appliedCount++;
+      continue;
+    }
+
     let fileContent: string;
     try {
-      const rawBytes = await readFile(file.repoPath);
       fileContent = await materializeForLive(rawBytes, file, ctx, { getPassphrase: keystorePassphrase });
     } catch (err) {
       // A failed / absent-passphrase decryption must NEVER write ciphertext or
@@ -751,11 +918,14 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
     const secretsResult = await resolveFileSecrets(fileContent, tuckDir);
     fileContent = secretsResult.content;
 
-    // Track only unresolved placeholders
+    // Track only unresolved placeholders. Record the resolved write target so a
+    // later local-store secret restore rewrites the file apply ACTUALLY wrote
+    // (the sandbox copy under --root), never the operator's real ~ path.
     if (secretsResult.unresolved.length > 0) {
       result.filesWithPlaceholders.push({
         path: collapsePath(file.destination),
         placeholders: secretsResult.unresolved,
+        writeTarget: resolveWriteTarget(file.destination, file.repoTarget),
       });
     }
 
@@ -769,7 +939,7 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
       const fileExists = await pathExists(file.destination);
       const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
       // Write file content directly instead of copying (to preserve resolved secrets)
-      await ensureDir(dirname(writeTarget));
+      await prepareWriteTarget(writeTarget);
       await writeFile(writeTarget, fileContent, 'utf-8');
       // Reapply recorded permissions first (so a 0755 script lands executable),
       // then the SSH/GPG fixup enforces its stricter floor for those dirs.
@@ -894,8 +1064,11 @@ const tryRestoreSecretsFromLocalStore = async (
       }
     }
 
-    // Restore secrets in the applied files
-    const pathsToRestore = filesWithPlaceholders.map(f => expandPath(f.path));
+    // Restore secrets in the files apply ACTUALLY wrote. Use the recorded write
+    // target (already absolute and sandbox-confined under --root), never
+    // expandPath(f.path) — that would resolve the operator's REAL ~ file and
+    // rewrite it with plaintext secrets, escaping the sandbox.
+    const pathsToRestore = filesWithPlaceholders.map(f => f.writeTarget);
     const result = await restoreSecrets(pathsToRestore, tuckDir);
 
     if (interactive && result.totalRestored > 0) {
@@ -973,7 +1146,13 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
     await registerKnownRepoRoots(manifest);
 
     // Prepare files to apply
-    const { files, skipped } = await prepareFilesToApply(repoDir, manifest, options.bundle);
+    const { files, skipped, unsafe } = await prepareFilesToApply(repoDir, manifest, options.bundle);
+
+    // Surface unsafe/skipped manifest entries here (prepareFilesToApply no longer
+    // logs them itself, so it stays silent when reused by the MCP apply_plan tool).
+    for (const msg of unsafe) {
+      prompts.log.warning(msg);
+    }
 
     if (skipped.length > 0) {
       prompts.log.warning(
@@ -1065,19 +1244,17 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
       }
     }
 
-    // Create Time Machine backup before applying
-    // Note: We need to properly await async checks - Array.filter doesn't await promises
-    const existingPaths = [];
-    for (const file of files) {
-      if (await pathExists(file.destination)) {
-        existingPaths.push(file.destination);
-      }
-    }
+    // Create Time Machine backup before applying. Snapshot EVERY destination,
+    // not just the ones that already exist: createSnapshot records missing paths
+    // as existed:false, and restoreSnapshot (undo) deletes those on rollback — so
+    // a `tuck undo` after this apply also removes files this apply newly created,
+    // returning the system to its true pre-apply state.
+    const snapshotPaths = files.map((f) => f.destination);
 
-    if (existingPaths.length > 0 && !options.dryRun) {
+    if (snapshotPaths.length > 0 && !options.dryRun) {
       const spinner = prompts.spinner();
       spinner.start('Creating backup snapshot...');
-      const snapshot = await createPreApplySnapshot(existingPaths, repoId);
+      const snapshot = await createPreApplySnapshot(snapshotPaths, repoId);
       spinner.stop(`Backup created: ${snapshot.id}`);
       console.log();
     }
@@ -1116,7 +1293,7 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
     if (!options.dryRun) {
       console.log();
       prompts.note(
-        'To undo this apply, run:\n  tuck restore --latest\n\nTo see all backups:\n  tuck restore --list',
+        'To undo this apply, run:\n  tuck undo --latest\n\nTo see all backups:\n  tuck undo --list',
         'Undo'
       );
     }
@@ -1167,7 +1344,15 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
     await registerKnownRepoRoots(manifest);
 
     // Prepare files to apply
-    const { files, skipped } = await prepareFilesToApply(repoDir, manifest, options.bundle);
+    const { files, skipped, unsafe } = await prepareFilesToApply(repoDir, manifest, options.bundle);
+
+    // Surface unsafe manifest entries: into the JSON envelope in --json mode, or
+    // as a human warning otherwise (logger is JSON-gated, so it never corrupts
+    // the envelope). prepareFilesToApply intentionally stays silent itself.
+    for (const msg of unsafe) {
+      if (isJsonMode()) addJsonWarning(msg);
+      else logger.warning(msg);
+    }
 
     if (files.length === 0) {
       if (isJsonMode()) {
@@ -1187,19 +1372,17 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
     // Determine strategy
     const strategy = options.replace ? 'replace' : 'merge';
 
-    // Create backup if not dry run
+    // Create backup if not dry run. Snapshot EVERY destination (not just existing
+    // ones) so `tuck undo` can also delete files this apply newly created —
+    // createSnapshot records missing paths as existed:false and restoreSnapshot
+    // removes them on undo.
     if (!options.dryRun) {
-      const existingPaths = [];
-      for (const file of files) {
-        if (await pathExists(file.destination)) {
-          existingPaths.push(file.destination);
-        }
-      }
+      const snapshotPaths = files.map((f) => f.destination);
 
-      if (existingPaths.length > 0) {
-        logger.info('Creating backup snapshot...');
-        const snapshot = await createPreApplySnapshot(existingPaths, source);
-        logger.success(`Backup created: ${snapshot.id}`);
+      if (snapshotPaths.length > 0) {
+        if (!isJsonMode()) logger.info('Creating backup snapshot...');
+        const snapshot = await createPreApplySnapshot(snapshotPaths, source);
+        if (!isJsonMode()) logger.success(`Backup created: ${snapshot.id}`);
       }
     }
 
@@ -1258,7 +1441,7 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
     }
 
     if (!options.dryRun) {
-      logger.info('To undo: tuck restore --latest');
+      logger.info('To undo: tuck undo --latest');
     }
   } finally {
     // Clean up temp directory

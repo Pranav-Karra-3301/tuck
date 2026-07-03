@@ -97,7 +97,7 @@ node dist/index.js status --verbose
 ```
 tuck/
 ├── src/
-│   ├── commands/        # CLI command implementations
+│   ├── commands/        # CLI command implementations (one file per command)
 │   │   ├── init.ts      # tuck init
 │   │   ├── add.ts       # tuck add <path>
 │   │   ├── remove.ts    # tuck remove <path>
@@ -108,24 +108,56 @@ tuck/
 │   │   ├── status.ts    # tuck status
 │   │   ├── list.ts      # tuck list
 │   │   ├── diff.ts      # tuck diff
-│   │   └── config.ts    # tuck config
-│   ├── lib/             # Core library modules
+│   │   ├── config.ts    # tuck config
+│   │   ├── apply.ts     # tuck apply
+│   │   ├── undo.ts      # tuck undo
+│   │   ├── scan.ts      # tuck scan
+│   │   ├── secrets.ts   # tuck secrets
+│   │   ├── encryption.ts # tuck encryption
+│   │   ├── doctor.ts    # tuck doctor
+│   │   ├── verify.ts    # tuck verify
+│   │   ├── bundle.ts    # tuck bundle
+│   │   ├── context.ts   # tuck context
+│   │   ├── mcp.ts       # tuck mcp
+│   │   ├── preset.ts    # tuck preset
+│   │   └── repo.ts      # tuck repo
+│   ├── lib/             # Core library modules (~38 files)
 │   │   ├── paths.ts     # Path utilities
 │   │   ├── config.ts    # Configuration management
 │   │   ├── manifest.ts  # File tracking manifest
 │   │   ├── git.ts       # Git operations wrapper
 │   │   ├── files.ts     # File system operations
+│   │   ├── detect.ts    # Dotfile detection
 │   │   ├── backup.ts    # Backup functionality
-│   │   └── hooks.ts     # Pre/post lifecycle hooks
+│   │   ├── timemachine.ts # Snapshot/time-machine backups
+│   │   ├── merge.ts     # Smart merging (shell/PowerShell)
+│   │   ├── materialize.ts # Materialize templates/encrypted files
+│   │   ├── template.ts  # Template rendering
+│   │   ├── platform.ts  # Cross-platform (incl. Windows) helpers
+│   │   ├── state.ts     # Platform state dir (audit log, snapshots)
+│   │   ├── validation.ts # Input validation utilities
+│   │   ├── hooks.ts     # Pre/post lifecycle hooks
+│   │   ├── ...          # (audit, doctor, jsonOutput, repoScope, etc.)
+│   │   ├── crypto/      # At-rest encryption (AES-256-GCM) + keystore/
+│   │   ├── providers/   # Git provider implementations
+│   │   ├── secretBackends/ # 1Password/Bitwarden/pass/local backends
+│   │   └── secrets/     # Secret detection, redaction, storage
 │   ├── ui/              # Terminal UI components
 │   │   ├── banner.ts    # ASCII art and boxes
 │   │   ├── logger.ts    # Styled logging
 │   │   ├── prompts.ts   # Interactive prompts
 │   │   ├── spinner.ts   # Loading spinners
+│   │   ├── progress.ts  # Progress indicators
+│   │   ├── merge.ts     # Merge-conflict UI
+│   │   ├── theme.ts     # UI theme definitions
 │   │   └── table.ts     # Table formatting
 │   ├── schemas/         # Zod validation schemas
 │   │   ├── config.schema.ts
-│   │   └── manifest.schema.ts
+│   │   ├── manifest.schema.ts
+│   │   ├── secrets.schema.ts
+│   │   ├── repos.schema.ts
+│   │   ├── secretMappings.schema.ts
+│   │   └── snapshot.schema.ts
 │   ├── constants.ts     # Application constants
 │   ├── types.ts         # TypeScript type definitions
 │   ├── errors.ts        # Custom error classes
@@ -145,10 +177,10 @@ tuck/
 
 ### Workflow
 
-1. **Sync with development**
+1. **Sync with main**
    ```bash
-   git checkout development
-   git pull origin development
+   git checkout main
+   git pull origin main
    ```
 
 2. **Create a feature branch**
@@ -181,7 +213,7 @@ tuck/
    ```bash
    git push -u origin feat/your-feature-name
    ```
-   Open your PR against `development`.
+   Open your PR against `main`.
 
 ---
 
@@ -397,10 +429,10 @@ git commit -m "feat(sync): add progress indicator for large syncs"
 
 ### Before Submitting
 
-1. **Sync with development** to avoid conflicts
+1. **Sync with main** to avoid conflicts
    ```bash
    git fetch origin
-   git rebase origin/development
+   git rebase origin/main
    ```
 
 2. **Run all checks**
@@ -432,12 +464,11 @@ Brief description of what this PR does.
 
 ### Review Process
 
-1. Create your PR against `development`
+1. Create your PR against `main`
 2. Wait for required CI checks to pass (mandatory for merges to `main`)
 3. Request review from maintainers
 4. Address feedback if any
-5. Once approved, your PR will be merged into `development`
-6. Maintainers merge `development` into `main` for releases; merging to `main` requires all checks/actions to be green
+5. Once approved, your PR will be merged into `main`; merging to `main` requires all checks/actions to be green
 
 ---
 
@@ -445,7 +476,7 @@ Brief description of what this PR does.
 
 Releases are fully automated via semantic-release:
 
-1. **Merges to main** (typically from `development`) trigger the release workflow
+1. **Merges to main** trigger the release workflow
 2. **Commit messages** determine version bump
 3. **CHANGELOG.md** is automatically updated
 4. **npm package** is published

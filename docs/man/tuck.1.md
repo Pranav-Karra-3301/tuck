@@ -12,8 +12,27 @@ tuck is a modern dotfiles manager that provides a beautiful CLI for managing you
 ## COMMANDS
 * **init**: Initialize tuck
 * **add**: Track new dotfiles
-* **apply**: Apply dotfiles to the current system
-* **sync**: Synchronize dotfiles across machines
+* **remove**: Stop tracking dotfiles
+* **sync**: Sync all dotfile changes (pull, detect, scan, track, commit, push)
+* **push**: Push changes to remote
+* **pull**: Pull changes from remote
+* **restore**: Restore dotfiles to the system
+* **status**: Show current tracking status
+* **list**: List all tracked files
+* **diff**: Show differences between system and repository
+* **config**: Manage tuck configuration
+* **apply**: Apply dotfiles from a repository to this machine
+* **undo**: Restore files from a Time Machine backup snapshot
+* **scan**: Scan the system for dotfiles and select which to track
+* **secrets**: Manage local secrets for placeholder replacement
+* **encryption**: Manage backup encryption (AES-256-GCM, password-based)
+* **doctor**: Run repository health and safety diagnostics
+* **verify**: Verify that the live system, repo, and manifest agree
+* **bundle**: Manage bundles — logical groups of tracked files
+* **context**: Track AI agent configs across home and per-repo scopes
+* **mcp**: Model Context Protocol server — expose tuck to AI agents
+* **preset**: Apply or publish curated bundles of dotfiles & agent configs
+* **repo**: Manage machine-local repo bindings (repoKey → absolute root)
 
 ## OPTIONS
 * **-h, --help**: Show help

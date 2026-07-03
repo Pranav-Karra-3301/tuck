@@ -24,6 +24,7 @@ const configuredCloneRepoMock = vi.fn();
 const ghCloneRepoMock = vi.fn();
 const isGhInstalledMock = vi.fn().mockResolvedValue(false);
 const loadConfigMock = vi.fn();
+const createPreApplySnapshotMock = vi.fn();
 
 const loggerSuccessMock = vi.fn();
 const loggerInfoMock = vi.fn();
@@ -96,7 +97,7 @@ vi.mock('../../src/lib/providers/index.js', () => ({
 }));
 
 vi.mock('../../src/lib/timemachine.js', () => ({
-  createPreApplySnapshot: vi.fn().mockResolvedValue({ id: 'snap' }),
+  createPreApplySnapshot: createPreApplySnapshotMock,
 }));
 
 vi.mock('../../src/lib/merge.js', () => ({
@@ -151,6 +152,7 @@ describe('apply provider-neutral source resolution', () => {
     // Configured provider is gitlab — bare owner/repo must route through it.
     loadConfigMock.mockResolvedValue({ remote: { mode: 'gitlab' }, security: { secretBackend: 'local' } });
     configuredBuildRepoUrlMock.mockReturnValue('https://gitlab.com/team/dotfiles.git');
+    createPreApplySnapshotMock.mockResolvedValue({ id: 'snap' });
 
     const { setJsonMode } = await import('../../src/lib/jsonOutput.js');
     setJsonMode(false);

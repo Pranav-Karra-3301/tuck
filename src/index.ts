@@ -28,7 +28,7 @@ import { customHelp, miniBanner } from './ui/banner.js';
 import { getTuckDir, pathExists } from './lib/paths.js';
 import { loadManifest } from './lib/manifest.js';
 import { getStatus } from './lib/git.js';
-import { setJsonMode } from './lib/jsonOutput.js';
+import { setJsonMode, isJsonMode, emitJsonOk } from './lib/jsonOutput.js';
 import { buildCommandPath } from './lib/commandPath.js';
 import { setWriteContext } from './lib/writeContext.js';
 import { expandPath as expandTuckPath } from './lib/paths.js';
@@ -112,6 +112,10 @@ const runDefaultAction = async (): Promise<void> => {
 
   // Check if tuck is initialized
   if (!(await pathExists(tuckDir))) {
+    if (isJsonMode()) {
+      emitJsonOk({ initialized: false, trackedCount: 0, pendingChanges: 0, ahead: 0 }, 'tuck');
+      return;
+    }
     miniBanner();
     console.log(chalk.bold('Get started with tuck:\n'));
     console.log(chalk.cyan('  tuck init') + chalk.dim('   - Set up tuck and create a GitHub repo'));
@@ -128,6 +132,15 @@ const runDefaultAction = async (): Promise<void> => {
     const manifest = await loadManifest(tuckDir);
     const trackedCount = Object.keys(manifest.files).length;
     const gitStatus = await getStatus(tuckDir);
+    const pendingChanges = gitStatus.modified.length + gitStatus.staged.length;
+
+    if (isJsonMode()) {
+      emitJsonOk(
+        { initialized: true, trackedCount, pendingChanges, ahead: gitStatus.ahead },
+        'tuck'
+      );
+      return;
+    }
 
     miniBanner();
     console.log(chalk.bold('Status:\n'));
@@ -136,7 +149,6 @@ const runDefaultAction = async (): Promise<void> => {
     console.log(`  Tracked files: ${chalk.cyan(trackedCount.toString())}`);
 
     // Show git status
-    const pendingChanges = gitStatus.modified.length + gitStatus.staged.length;
     if (pendingChanges > 0) {
       console.log(`  Pending changes: ${chalk.yellow(pendingChanges.toString())}`);
     } else {
@@ -170,6 +182,13 @@ const runDefaultAction = async (): Promise<void> => {
 
     console.log();
   } catch {
+    if (isJsonMode()) {
+      emitJsonOk(
+        { initialized: true, corrupted: true, trackedCount: 0, pendingChanges: 0, ahead: 0 },
+        'tuck'
+      );
+      return;
+    }
     // Manifest load failed, treat as not initialized
     miniBanner();
     console.log(chalk.yellow('Tuck directory exists but may be corrupted.'));
@@ -178,10 +197,34 @@ const runDefaultAction = async (): Promise<void> => {
   }
 };
 
-// Check if no command provided
-const hasCommand = process.argv
-  .slice(2)
-  .some((arg) => !arg.startsWith('-') && arg !== '--help' && arg !== '-h');
+// Apply the global --root / TUCK_TARGET_ROOT sandbox for the no-subcommand path,
+// which never reaches the preAction hook (that only fires for a command action).
+// Reads the option value from argv so `tuck --root <dir>` confines writes even
+// when just showing the dashboard. Mirrors the preAction hook's root logic.
+const applyGlobalRootFromArgv = (): void => {
+  const argv = process.argv.slice(2);
+  let rootOpt: string | undefined;
+  const idx = argv.indexOf('--root');
+  if (idx !== -1 && argv[idx + 1]) rootOpt = argv[idx + 1];
+  const eq = argv.find((a) => a.startsWith('--root='));
+  if (eq) rootOpt = eq.slice('--root='.length);
+  rootOpt = rootOpt ?? process.env.TUCK_TARGET_ROOT;
+  if (rootOpt && rootOpt.trim()) {
+    const root = resolvePath(expandTuckPath(rootOpt.trim()));
+    setWriteContext({ root, isSandbox: root !== resolvePath(homedir()) });
+  }
+};
+
+// A bare invocation is one with NO registered subcommand token. Matching against
+// the actual command names/aliases (instead of "any non-dash arg") means a
+// global option VALUE like `--root /dir` is no longer mistaken for a command —
+// which previously forced parseAsync and printed help + exit 1.
+const knownCommandTokens = new Set<string>();
+for (const cmd of program.commands) {
+  knownCommandTokens.add(cmd.name());
+  for (const alias of cmd.aliases()) knownCommandTokens.add(alias);
+}
+const hasCommand = process.argv.slice(2).some((arg) => knownCommandTokens.has(arg));
 
 // Global error handling
 process.on('uncaughtException', handleError);
@@ -196,16 +239,24 @@ const isHelpOrVersion =
   process.argv.includes('--version') ||
   process.argv.includes('-v');
 
+// `tuck mcp ...` is an agent-facing transport (stdio JSON-RPC): the update-check
+// banner/prompt would corrupt the stream and its readline could consume the
+// first request line, so skip it here just like --json.
+const isMcpCommand = process.argv.slice(2).includes('mcp');
+
 // Main execution
 const main = async (): Promise<void> => {
-  // Check for updates (skipped for help/version and JSON/agent mode — the
+  // Check for updates (skipped for help/version, MCP, and JSON/agent mode — the
   // update banner is human-only and would corrupt structured output).
-  if (!isHelpOrVersion && !process.argv.includes('--json')) {
+  if (!isHelpOrVersion && !isMcpCommand && !process.argv.includes('--json')) {
     await checkForUpdates();
   }
 
-  // Parse and execute
+  // No subcommand → the status dashboard. Handle it directly (not via parseAsync)
+  // so an undeclared root --json is not an "unknown option" error: JSON mode is
+  // already set by the early argv check above, and runDefaultAction honors it.
   if (!hasCommand && !isHelpOrVersion) {
+    applyGlobalRootFromArgv();
     await runDefaultAction();
   } else {
     await program.parseAsync(process.argv);

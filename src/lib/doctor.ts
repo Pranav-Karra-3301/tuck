@@ -1,6 +1,6 @@
 import { readFile } from 'fs/promises';
 import { homedir } from 'os';
-import { join } from 'path';
+import { isAbsolute, join } from 'path';
 import type { TuckConfigOutput } from '../schemas/config.schema.js';
 import type { TuckManifestOutput } from '../schemas/manifest.schema.js';
 import { loadConfig } from './config.js';
@@ -336,11 +336,30 @@ const checkManifestPathSafety: DoctorCheck = {
 
     const violations: string[] = [];
     for (const [id, file] of Object.entries(context.manifest.files)) {
-      try {
-        validateSafeSourcePath(file.source);
-      } catch (error) {
-        violations.push(`${id}: unsafe source ${file.source} (${error instanceof Error ? error.message : String(error)})`);
-        continue;
+      if (file.scope === 'repo') {
+        // Repo-scoped entries are identified by (repoKey, repoRelative) and live
+        // under a repo root that may be OUTSIDE $HOME, so home-confinement does
+        // not apply. Validate that repoRelative is a safe relative path instead
+        // (matches manifest.schema's own repoRelative guard); the source is a
+        // `<repoKey>:<repoRelative>` key, not a filesystem path.
+        const repoRelative = file.repoRelative ?? '';
+        const norm = repoRelative.replace(/\\/g, '/');
+        if (
+          repoRelative === '' ||
+          isAbsolute(repoRelative) ||
+          /^[A-Za-z]:[\\/]/.test(repoRelative) ||
+          norm.split('/').includes('..')
+        ) {
+          violations.push(`${id}: unsafe repo-relative path ${repoRelative || '(missing)'}`);
+          continue;
+        }
+      } else {
+        try {
+          validateSafeSourcePath(file.source);
+        } catch (error) {
+          violations.push(`${id}: unsafe source ${file.source} (${error instanceof Error ? error.message : String(error)})`);
+          continue;
+        }
       }
 
       try {
@@ -730,12 +749,10 @@ const checkUnsupportedReservedConfig: DoctorCheck = {
 
     const unsupportedKeys: string[] = [];
 
-    if (context.config.templates?.enabled) {
-      unsupportedKeys.push('templates.enabled');
-    }
-    if (Object.keys(context.config.templates?.variables || {}).length > 0) {
-      unsupportedKeys.push('templates.variables');
-    }
+    // NOTE: templates.enabled / templates.variables are intentionally NOT flagged
+    // here. Templating shipped: `tuck add --template` renders on apply/restore
+    // and `config.templates.variables` is consumed by buildMaterializeCtx, so a
+    // non-empty variables map is a working config, not a health failure.
     if (context.config.encryption?.enabled) {
       unsupportedKeys.push('encryption.enabled');
     }
@@ -764,7 +781,7 @@ const checkUnsupportedReservedConfig: DoctorCheck = {
       status: 'fail',
       message: `Detected ${unsupportedKeys.length} reserved config key${unsupportedKeys.length === 1 ? '' : 's'} that are not wired yet`,
       details: unsupportedKeys.join(', '),
-      fix: 'Remove unsupported templating and tracked-file encryption settings until those features ship end-to-end',
+      fix: 'Remove unsupported tracked-file encryption settings until those features ship end-to-end',
     };
   },
 };
