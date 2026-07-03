@@ -96,7 +96,10 @@ export const runHook = async (
 
   // SECURITY: hooks execute arbitrary shell from the (possibly untrusted)
   // config. Decide how to proceed based on trust + interactivity.
-  const nonInteractive = isJsonMode() || !process.stdout.isTTY;
+  // Include stdin: the trust prompt reads from stdin, so a non-TTY stdin
+  // (e.g. `tuck sync < /dev/null`) must take the skip path, not attempt a
+  // prompt that ensureInteractive() would throw on and abort the command.
+  const nonInteractive = isJsonMode() || !process.stdout.isTTY || !process.stdin.isTTY;
   const decision = decideHookExecution({
     skipHooks: options?.skipHooks,
     hasCommand: true,
