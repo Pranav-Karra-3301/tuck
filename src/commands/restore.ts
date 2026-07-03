@@ -501,16 +501,28 @@ export const runRestore = async (options: RestoreOptions): Promise<void> => {
     const files = await prepareFilesToRestore(tuckDir, undefined);
 
     if (files.length === 0) {
-      logger.warning('No files to restore');
+      // In JSON mode the caller owns the envelope; never write loose stdout.
+      if (!isJsonMode()) logger.warning('No files to restore');
       return;
     }
 
     // Restore files with progress
     const result = await restoreFilesInternal(tuckDir, files, options);
 
-    logger.blank();
-    displaySecretSummary(result);
-    logger.success(`Restored ${result.restoredCount} file${result.restoredCount !== 1 ? 's' : ''}`);
+    // runRestore is called from other commands' JSON paths (e.g. `tuck pull
+    // --json --restore`). Human output here would corrupt the single-JSON-object
+    // contract, so route it into the shared warnings buffer instead of stdout.
+    if (isJsonMode()) {
+      for (const placeholder of result.unresolvedPlaceholders) {
+        addJsonWarning(`Unresolved placeholder: {{${placeholder}}}`);
+      }
+    } else {
+      logger.blank();
+      displaySecretSummary(result);
+      logger.success(
+        `Restored ${result.restoredCount} file${result.restoredCount !== 1 ? 's' : ''}`
+      );
+    }
   } else {
     await runInteractiveRestore(tuckDir, options);
   }
