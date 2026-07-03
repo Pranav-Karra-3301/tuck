@@ -32,13 +32,12 @@ import {
   getRecentAuditEntries,
   hasRecentDangerousOperations,
 } from '../../src/lib/audit.js';
-import path from 'path';
+import { getAuditLogPath } from '../../src/lib/state.js';
 
 describe('Audit Logging', () => {
   beforeEach(() => {
     vol.reset();
     vol.mkdirSync(TEST_HOME, { recursive: true });
-    vol.mkdirSync(path.join(TEST_HOME, '.tuck'), { recursive: true });
   });
 
   afterEach(() => {
@@ -50,7 +49,7 @@ describe('Audit Logging', () => {
     it('should create audit log file if it does not exist', async () => {
       await logAuditEntry('FORCE_PUSH', 'tuck push --force', 'Test push');
 
-      const logPath = path.join(TEST_HOME, '.tuck', 'audit.log');
+      const logPath = getAuditLogPath();
       expect(vol.existsSync(logPath)).toBe(true);
     });
 
@@ -58,7 +57,7 @@ describe('Audit Logging', () => {
       await logAuditEntry('FORCE_PUSH', 'tuck push --force', 'First push');
       await logAuditEntry('FORCE_SECRET_BYPASS', 'tuck add --force', 'Second action');
 
-      const logPath = path.join(TEST_HOME, '.tuck', 'audit.log');
+      const logPath = getAuditLogPath();
       const content = vol.readFileSync(logPath, 'utf-8') as string;
       const lines = content.trim().split('\n');
 

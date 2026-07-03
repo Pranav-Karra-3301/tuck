@@ -2,6 +2,7 @@ import { homedir } from 'os';
 import { join, basename, dirname, relative, isAbsolute, resolve, sep, posix } from 'path';
 import { stat, lstat, access } from 'fs/promises';
 import { constants } from 'fs';
+import { createHash } from 'crypto';
 import {
   DEFAULT_TUCK_DIR,
   FILES_DIR,
@@ -17,6 +18,9 @@ export const expandPath = (path: string): string => {
     path = expandWindowsEnvVars(path);
   }
 
+  if (path === '~' || path === '$HOME') {
+    return homedir();
+  }
   if (path.startsWith('~/')) {
     return join(homedir(), path.slice(2));
   }
@@ -33,7 +37,9 @@ export const collapsePath = (path: string): string => {
   const normalizedPath = path.replace(/\\/g, '/');
   const normalizedHome = home.replace(/\\/g, '/');
 
-  if (normalizedPath.startsWith(normalizedHome)) {
+  // Require an exact match or a separator boundary so sibling directories
+  // like '/home/alicework' are not collapsed against home '/home/alice'.
+  if (normalizedPath === normalizedHome || normalizedPath.startsWith(normalizedHome + '/')) {
     // After slicing, the remainder is already normalized to forward slashes
     const remainder = normalizedPath.slice(normalizedHome.length);
     return '~' + remainder;
@@ -235,9 +241,11 @@ export const getRelativePath = (from: string, to: string): string => {
 export const isPathWithinHome = (path: string): boolean => {
   const home = homedir();
 
-  // Detect Windows-style absolute paths on all platforms
-  // This catches cross-platform attacks in manifests
-  if (/^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\\\')) {
+  // On non-Windows platforms, drive-letter/UNC paths are a cross-platform
+  // attack signature in manifests. On Windows they are the normal form of
+  // every real path (home itself is e.g. C:\Users\name), so gate this out
+  // there and fall through to the resolve()+boundary comparison below.
+  if (!IS_WINDOWS && (/^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\\\'))) {
     return false;
   }
 
@@ -257,8 +265,14 @@ export const isPathWithinHome = (path: string): boolean => {
   }
 
   const expandedPath = expandPath(path);
-  const normalizedPath = resolve(expandedPath);
-  const normalizedHome = resolve(home);
+  let normalizedPath = resolve(expandedPath);
+  let normalizedHome = resolve(home);
+
+  // NTFS is case-insensitive, so compare case-insensitively on Windows.
+  if (IS_WINDOWS) {
+    normalizedPath = normalizedPath.toLowerCase();
+    normalizedHome = normalizedHome.toLowerCase();
+  }
 
   // Check if the normalized path starts with the home directory
   // Use path.sep for cross-platform compatibility (/ on POSIX, \ on Windows)
@@ -270,8 +284,21 @@ export const isPathWithinHome = (path: string): boolean => {
  * Throws an error if the path is unsafe (path traversal attempt).
  */
 export const validateSafeSourcePath = (source: string): void => {
-  // Reject absolute paths that don't start with home-relative prefixes
-  if (isAbsolute(source) && !source.startsWith(homedir())) {
+  // Reject absolute paths that don't start with home-relative prefixes.
+  // Require a separator boundary so siblings like '/home/alicework' are not
+  // treated as inside home '/home/alice'. `source` may arrive in POSIX form
+  // (forward slashes) even on Windows — e.g. from expandPath of a "~/..." path
+  // against a POSIX-mocked homedir — so normalize separators (and case on
+  // case-insensitive Windows) before the boundary check rather than pinning to
+  // the platform `sep`, which would never match a forward-slash source there.
+  const home = homedir();
+  const normalizeBoundary = (p: string): string => {
+    const unified = p.replace(/\\/g, '/');
+    return IS_WINDOWS ? unified.toLowerCase() : unified;
+  };
+  const normSource = normalizeBoundary(source);
+  const normHome = normalizeBoundary(home);
+  if (isAbsolute(source) && normSource !== normHome && !normSource.startsWith(normHome + '/')) {
     throw new Error(
       `Unsafe path detected: ${source} - absolute paths outside home directory are not allowed`
     );
@@ -348,6 +375,41 @@ export const validateSafeManifestDestination = (destination: string): void => {
 };
 
 /**
+ * Validate a repo-scoped file's live target. Repo files live under a repo root
+ * that may be OUTSIDE $HOME, so home-confinement (validateSafeSourcePath) does
+ * not apply; instead the file must stay within its (bound) repo root. The
+ * `repoRelative` must be a safe relative path (no absolute, no `..`).
+ */
+export const validateSafeRepoSourcePath = (repoRoot: string, repoRelative: string): void => {
+  const norm = repoRelative.replace(/\\/g, '/');
+  if (
+    isAbsolute(repoRelative) ||
+    /^[A-Za-z]:[\\/]/.test(repoRelative) ||
+    norm.split('/').includes('..')
+  ) {
+    throw new Error(`Unsafe repo-relative path detected: ${repoRelative}`);
+  }
+  const root = resolve(expandPath(repoRoot));
+  validatePathWithinRoot(join(root, norm), root, 'repo-scoped source');
+};
+
+/**
+ * Build the in-repo destination for a repo-scoped file's tracked copy,
+ * namespaced under `files/repos/<repoKey>/...`. The result is a safe relative
+ * manifest path (validated by validateSafeManifestDestination).
+ */
+export const getRepoScopedDestination = (repoKey: string, repoRelative: string): string => {
+  const norm = repoRelative.replace(/\\/g, '/');
+  if (isAbsolute(repoRelative) || norm.split('/').includes('..')) {
+    throw new Error(`Unsafe repoRelative path detected: ${repoRelative}`);
+  }
+  const keySlug = repoKey.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const dest = posix.join(FILES_DIR, 'repos', keySlug, norm);
+  validateSafeManifestDestination(dest);
+  return dest;
+};
+
+/**
  * Resolve a manifest destination to an absolute repository path safely.
  * Ensures the destination is a valid manifest path and cannot escape the tuck root.
  */
@@ -398,10 +460,46 @@ export const generateFileId = (source: string): string => {
   // 3. Replace . with -
   // 4. Strip all remaining unsafe characters (keep only a-z, A-Z, 0-9, _, -)
   // 5. Remove leading - if present
-  return normalized
+  const readable = normalized
     .replace(/^~\//, '')
     .replace(/\//g, '_')
     .replace(/\./g, '-')
     .replace(/[^a-zA-Z0-9_-]/g, '')
     .replace(/^-/, '');
+
+  // INJECTIVITY: the readable form strips the leading dot off a home-root entry,
+  // so `~/.foo` and `~/foo` both collapsed to `foo` (a misleading "already
+  // tracked"). Dotfiles are the overwhelmingly common — and the
+  // historically-stable — case, so they keep their exact readable id. The rarer
+  // NON-dotfile home-root entry (e.g. `~/foo`, whose first segment has no `.`)
+  // is the one that aliases onto a dotfile id, so disambiguate THAT side with a
+  // short, deterministic suffix derived from the full collapsed path.
+  const homeRelative = normalized.replace(/^~\//, '');
+  const firstSegment = homeRelative.split('/')[0] ?? '';
+  const isHomeRootDotfile = firstSegment.startsWith('.');
+  if (!isHomeRootDotfile && readable) {
+    return `${readable}_${shortPathHash(normalized)}`;
+  }
+
+  return readable;
+};
+
+/**
+ * Short, deterministic hash of a collapsed path, used to disambiguate file ids
+ * whose readable form would otherwise collide.
+ */
+const shortPathHash = (value: string): string =>
+  createHash('sha256').update(value).digest('hex').slice(0, 8);
+
+/**
+ * Detect a case-insensitive collision between two repository destinations.
+ *
+ * On macOS/Windows filesystems are case-insensitive, so `files/misc/config` and
+ * `files/misc/Config` resolve to ONE physical file — tracking both would
+ * silently clobber. Callers use this to disambiguate or reject before writing.
+ * Separator differences are normalized so the comparison is purely on case.
+ */
+export const destinationsCollideCaseInsensitively = (a: string, b: string): boolean => {
+  const norm = (d: string): string => d.replace(/\\/g, '/').toLowerCase();
+  return norm(a) === norm(b);
 };

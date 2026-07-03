@@ -1,0 +1,13 @@
+# starship init — managed by tuck (preset: starship)
+# Source from your ~/.zshrc:  source ~/.config/tuck/starship.zsh
+
+if command -v starship >/dev/null 2>&1; then
+  eval "$(starship init zsh)"
+else
+  echo "starship not found — install with: brew install starship" >&2
+fi
+
+# tuck:if os=darwin
+# macOS: ensure brew is on PATH so starship resolves on fresh shells
+export PATH="/opt/homebrew/bin:$PATH"
+# tuck:endif

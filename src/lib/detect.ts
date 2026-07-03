@@ -1,7 +1,9 @@
 import { join, basename, isAbsolute } from 'path';
 import { readdir, stat } from 'fs/promises';
+import type { Stats } from 'fs';
 import { pathExists, expandPath, collapsePath } from './paths.js';
 import { IS_WINDOWS, IS_MACOS, IS_LINUX } from './platform.js';
+import { loadPatterns, type DotfilePattern } from './patternsRegistry.js';
 
 export interface DetectedFile {
   path: string;
@@ -51,6 +53,11 @@ export const DETECTION_CATEGORIES: Record<string, DetectionCategory> = {
     icon: '%',
     description: 'Command-line tool configurations',
   },
+  agents: {
+    name: 'AI & Agents',
+    icon: '&',
+    description: 'Agentic coding tools, prompts, hooks, and MCP manifests',
+  },
   languages: {
     name: 'Languages',
     icon: '@',
@@ -89,16 +96,16 @@ export const DETECTION_CATEGORIES: Record<string, DetectionCategory> = {
 };
 
 /**
- * Comprehensive list of dotfiles to detect
+ * Comprehensive list of dotfiles to detect.
+ *
+ * As of v1.8 this list is also mirrored as JSON under `templates/patterns/`
+ * and loaded via `patternsRegistry.loadPatterns()` so users can override
+ * individual entries from `~/.tuck/patterns/*.json`. This in-code copy is
+ * retained as a hardcoded fallback for dev builds where the JSON registry
+ * isn't packaged, and is exported for any external consumers that want a
+ * synchronous view of the built-in patterns.
  */
-const DOTFILE_PATTERNS: Array<{
-  path: string;
-  category: string;
-  description: string;
-  sensitive?: boolean;
-  exclude?: string[];
-  platform?: 'darwin' | 'linux' | 'win32' | 'all';
-}> = [
+export const DOTFILE_PATTERNS: DotfilePattern[] = [
   // ==================== SHELL CONFIGURATION ====================
   // Bash
   { path: '~/.bashrc', category: 'shell', description: 'Bash interactive shell config' },
@@ -244,6 +251,74 @@ const DOTFILE_PATTERNS: Array<{
   { path: '~/.ackrc', category: 'cli', description: 'ack search config' },
   { path: '~/.agignore', category: 'cli', description: 'silver searcher ignore' },
   { path: '~/.editorconfig', category: 'cli', description: 'EditorConfig' },
+
+  // ==================== AI & AGENTIC CODING TOOLS ====================
+  { path: '~/.codex/config.toml', category: 'agents', description: 'Codex CLI configuration' },
+  {
+    path: '~/.codex/skills',
+    category: 'agents',
+    description: 'Codex skills',
+    exclude: ['runs', 'sessions', 'logs'],
+  },
+  {
+    path: '~/.codex/automations',
+    category: 'agents',
+    description: 'Codex automations',
+    exclude: ['**/*.db', 'runs', 'sessions'],
+  },
+  {
+    path: '~/.claude',
+    category: 'agents',
+    description: 'Claude Code config home',
+    exclude: ['projects/**/*.jsonl', 'logs', 'cache', 'todos', 'statsig', 'shell-snapshots'],
+  },
+  { path: '~/.claude/CLAUDE.md', category: 'agents', description: 'Claude Code global instructions' },
+  { path: '~/.claude/settings.json', category: 'agents', description: 'Claude Code settings' },
+  { path: '~/.claude/keybindings.json', category: 'agents', description: 'Claude Code keybindings' },
+  {
+    path: '~/.claude/commands',
+    category: 'agents',
+    description: 'Claude Code slash commands',
+  },
+  {
+    path: '~/.claude/hooks',
+    category: 'agents',
+    description: 'Claude Code hooks',
+  },
+  {
+    path: '~/.claude/projects',
+    category: 'agents',
+    description: 'Claude Code project memory',
+  },
+  {
+    path: '~/.cursor',
+    category: 'agents',
+    description: 'Cursor editor config home',
+  },
+  { path: '~/.cursorrules', category: 'agents', description: 'Cursor rules (user-level)' },
+  { path: '~/.aider.conf.yml', category: 'agents', description: 'Aider configuration' },
+  {
+    path: '~/.aider.input.history',
+    category: 'agents',
+    description: 'Aider input history (may contain prompts)',
+    sensitive: true,
+  },
+  {
+    path: '~/.config/aider',
+    category: 'agents',
+    description: 'Aider configuration directory',
+  },
+  {
+    path: '~/.config/openclaw',
+    category: 'agents',
+    description: 'OpenClaw configuration',
+  },
+  { path: '~/.mcp.json', category: 'agents', description: 'Global MCP server manifest' },
+  {
+    path: '~/.config/mcp',
+    category: 'agents',
+    description: 'MCP server manifests',
+  },
 
   // ==================== LANGUAGES & PACKAGE MANAGERS ====================
   // Node.js
@@ -785,26 +860,23 @@ const shouldIncludeForPlatform = (item: { platform?: string }): boolean => {
 };
 
 /**
- * Get file/directory size
+ * Stat a path once, following symlinks (mirrors the historical behavior of the
+ * old getSize()/isDirectory() helpers which both used stat(), not lstat()).
+ *
+ * Returns null when the path does not exist or cannot be stat'd. A successful
+ * stat doubles as the existence check that the loop previously made with a
+ * separate pathExists()/access() call — so existing files now cost ONE syscall
+ * instead of three (access + stat + stat) while producing identical results:
+ *   - isDirectory  ← stats.isDirectory()
+ *   - size         ← stats.size
+ *   - "exists"     ← stat succeeded (a broken symlink fails stat just like it
+ *                     failed the old access(F_OK) check)
  */
-const getSize = async (path: string): Promise<number | undefined> => {
+const statPath = async (path: string): Promise<Stats | null> => {
   try {
-    const stats = await stat(path);
-    return stats.size;
+    return await stat(path);
   } catch {
-    return undefined;
-  }
-};
-
-/**
- * Check if path is a directory
- */
-const isDirectory = async (path: string): Promise<boolean> => {
-  try {
-    const stats = await stat(path);
-    return stats.isDirectory();
-  } catch {
-    return false;
+    return null;
   }
 };
 
@@ -819,30 +891,50 @@ export const detectDotfiles = async (options?: {
   const detected: DetectedFile[] = [];
   const includeExcluded = options?.includeExcluded ?? false;
 
-  for (const pattern of DOTFILE_PATTERNS) {
-    // Skip if not for current platform
-    if (!shouldIncludeForPlatform(pattern)) continue;
+  // Prefer the on-disk pattern registry (bundled JSON + user overrides).
+  // Fall back to the in-code DOTFILE_PATTERNS if the registry is empty,
+  // which can happen in dev builds where templates/ isn't co-located.
+  let patterns: DotfilePattern[];
+  try {
+    const loaded = await loadPatterns();
+    patterns = loaded.length > 0 ? loaded : DOTFILE_PATTERNS;
+  } catch {
+    patterns = DOTFILE_PATTERNS;
+  }
 
-    // Skip if matches exclusion patterns (unless explicitly including)
-    if (!includeExcluded && shouldExcludeFile(pattern.path)) continue;
+  // Pre-filter to the patterns we actually need to probe (platform + exclusion
+  // rules are pure/synchronous), then run the single-stat probes concurrently.
+  // The candidate array preserves the original pattern order so the resulting
+  // `detected` list is byte-identical to the old serial loop.
+  const candidates = patterns.filter((pattern) => {
+    if (!shouldIncludeForPlatform(pattern)) return false;
+    if (!includeExcluded && shouldExcludeFile(pattern.path)) return false;
+    return true;
+  });
 
-    const fullPath = expandPath(pattern.path);
+  const probes = await Promise.all(
+    candidates.map(async (pattern) => {
+      const fullPath = expandPath(pattern.path);
+      const stats = await statPath(fullPath);
+      return { pattern, stats };
+    })
+  );
 
-    if (await pathExists(fullPath)) {
-      const isDir = await isDirectory(fullPath);
-      const size = await getSize(fullPath);
+  for (const { pattern, stats } of probes) {
+    // A null stat means the path didn't exist (or couldn't be stat'd) — the
+    // same condition the old `pathExists` guard skipped on.
+    if (stats === null) continue;
 
-      detected.push({
-        path: pattern.path,
-        name: basename(pattern.path),
-        category: pattern.category,
-        description: pattern.description,
-        isDirectory: isDir,
-        size,
-        sensitive: pattern.sensitive,
-        exclude: pattern.exclude,
-      });
-    }
+    detected.push({
+      path: pattern.path,
+      name: basename(pattern.path),
+      category: pattern.category,
+      description: pattern.description,
+      isDirectory: stats.isDirectory(),
+      size: stats.size,
+      sensitive: pattern.sensitive,
+      exclude: pattern.exclude,
+    });
   }
 
   return detected;

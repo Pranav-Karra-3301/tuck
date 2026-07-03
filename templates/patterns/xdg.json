@@ -1,0 +1,106 @@
+{
+  "$schema": "https://tuck.sh/schemas/patterns-v1.json",
+  "category": "xdg",
+  "patterns": [
+    {
+      "pattern": "~/.config/fontconfig",
+      "category": "xdg",
+      "description": "Font configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/gtk-3.0",
+      "category": "xdg",
+      "description": "GTK3 settings",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/gtk-4.0",
+      "category": "xdg",
+      "description": "GTK4 settings",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/qt5ct",
+      "category": "xdg",
+      "description": "Qt5 settings",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/mimeapps.list",
+      "category": "xdg",
+      "description": "Default applications",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/user-dirs.dirs",
+      "category": "xdg",
+      "description": "XDG user directories",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/autostart",
+      "category": "xdg",
+      "description": "Autostart applications",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/environment.d",
+      "category": "xdg",
+      "description": "Environment variables",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/systemd/user",
+      "category": "xdg",
+      "description": "User systemd services",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.config/dunst",
+      "category": "xdg",
+      "description": "Dunst notifications",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.config/rofi",
+      "category": "xdg",
+      "description": "Rofi launcher",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.config/wofi",
+      "category": "xdg",
+      "description": "Wofi launcher",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    }
+  ]
+}

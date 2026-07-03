@@ -9,18 +9,52 @@ import {
   detectCategory,
 } from './paths.js';
 import { addFileToManifest, loadManifest } from './manifest.js';
-import { copyFileOrDir, createSymlink, deleteFileOrDir, getFileChecksum, getFileInfo } from './files.js';
+import { copyFileOrDir, createSymlink, getFileChecksum, getFileInfo, getSourceStatCache } from './files.js';
 import { loadConfig } from './config.js';
 import { CATEGORIES } from '../constants.js';
 import { ensureDir } from 'fs-extra';
-import { dirname } from 'path';
+import { dirname, join } from 'path';
 import type { FileStrategy } from '../types.js';
 import { toPosixPath } from './platform.js';
+import { bindRepo } from './repoScope.js';
+import { readFile, writeFile } from 'fs/promises';
+import { encryptFileContent } from './crypto/fileEncryption.js';
+import { keystorePassphrase } from './materialize.js';
+import { EncryptionError } from '../errors.js';
+import { isJsonMode } from './jsonOutput.js';
 
 export interface FileToTrack {
   path: string;
   category?: string;
   name?: string;
+  /** Bundle to assign the tracked file to. Defaults to "default". */
+  bundle?: string;
+  /**
+   * Glob patterns (relative to a tracked DIRECTORY) to exclude from the copy
+   * into the repo — carried from a detection pattern's `exclude` list so
+   * ephemeral/sensitive subpaths (e.g. ~/.claude's conversation transcripts and
+   * caches) never land in the repo. Ignored for single-file tracking.
+   */
+  exclude?: string[];
+  /**
+   * Repo-scoped tracking metadata. When `scope === 'repo'` the file lives inside
+   * a git repo whose absolute path differs per machine; it is stored by stable
+   * (repoKey, repoRelative) and the precomputed repo-scoped `destination`/`source`
+   * are used verbatim instead of being derived from a home-relative path.
+   */
+  scope?: 'home' | 'repo';
+  /** Stable cross-machine repo identity (repo scope only). */
+  repoKey?: string;
+  /** POSIX path relative to the repo root (repo scope only). */
+  repoRelative?: string;
+  /** Absolute repo root on THIS machine (repo scope only). */
+  repoRoot?: string;
+  /** Canonicalized remote URL, recorded in the binding when known. */
+  remoteUrl?: string;
+  /** Manifest source identity to store verbatim (repo scope only). */
+  source?: string;
+  /** Relative manifest destination to store verbatim (repo scope only). */
+  destination?: string;
 }
 
 export interface FileTrackingOptions {
@@ -34,16 +68,11 @@ export interface FileTrackingOptions {
    */
   strategy?: FileStrategy;
 
-  // TODO: Encryption and templating are planned for a future version
-  // /**
-  //  * Encrypt files
-  //  */
-  // encrypt?: boolean;
-  //
-  // /**
-  //  * Treat as template
-  //  */
-  // template?: boolean;
+  /** Encrypt the file at rest in the repo using the keystore passphrase (decrypted on apply). */
+  encrypt?: boolean;
+
+  /** Mark the file as a template — stored verbatim, rendered on apply/restore. */
+  template?: boolean;
 
   /**
    * Delay between file operations in milliseconds
@@ -118,9 +147,8 @@ export const trackFilesWithProgress = async (
   const {
     showCategory = true,
     strategy: customStrategy,
-    // TODO: Encryption and templating are planned for a future version
-    // encrypt = false,
-    // template = false,
+    encrypt = false,
+    template = false,
     actionVerb = 'Tracking',
     onProgress,
   } = options;
@@ -133,6 +161,15 @@ export const trackFilesWithProgress = async (
 
   const config = await loadConfig(tuckDir);
   const strategy: FileStrategy = customStrategy || config.files.strategy || 'copy';
+
+  // Encrypted/template files are COPY-ONLY: they are decrypted/rendered into place
+  // on apply, never symlinked (a symlink would expose ciphertext or the raw {{ }}
+  // source at the live path). Reject the combination up front with a clear message.
+  if ((encrypt || template) && strategy === 'symlink') {
+    throw new Error(
+      'The symlink strategy cannot be combined with --encrypt/--template: these files are copied (and decrypted/rendered on apply), not linked.'
+    );
+  }
   const total = files.length;
   const errors: Array<{ path: string; error: Error }> = [];
   const sensitiveFiles: string[] = [];
@@ -144,20 +181,34 @@ export const trackFilesWithProgress = async (
     trackedDestinations.set(toPosixPath(existingFile.destination), existingFile.source);
   }
 
-  console.log();
-  console.log(chalk.bold.cyan(`${actionVerb} ${total} ${total === 1 ? 'file' : 'files'}...`));
-  console.log(chalk.dim('─'.repeat(50)));
-  console.log();
+  // In --json mode stdout must carry exactly one JSON envelope (emitted by the
+  // caller), so every human-readable line here is suppressed. The ora spinner
+  // writes to stderr and is left alone.
+  const quiet = isJsonMode();
+
+  if (!quiet) {
+    console.log();
+    console.log(chalk.bold.cyan(`${actionVerb} ${total} ${total === 1 ? 'file' : 'files'}...`));
+    console.log(chalk.dim('─'.repeat(50)));
+    console.log();
+  }
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
+    const isRepo = file.scope === 'repo';
     const expandedPath = expandPath(file.path);
     const indexStr = chalk.dim(`[${i + 1}/${total}]`);
     const category = file.category || detectCategory(expandedPath);
     const categoryInfo = CATEGORIES[category];
     const icon = categoryInfo?.icon || '○';
-    const sourcePath = collapsePath(file.path);
-    const relativeDestination = getRelativeDestinationFromSource(category, expandedPath, file.name);
+    // Repo-scoped files store a stable `<repoKey>:<repoRelative>` source and a
+    // precomputed, namespaced destination; home-scoped files derive both from
+    // the home-relative path.
+    const sourcePath = isRepo ? (file.source ?? file.path) : collapsePath(file.path);
+    const relativeDestination =
+      isRepo && file.destination
+        ? file.destination
+        : getRelativeDestinationFromSource(category, expandedPath, file.name);
     const normalizedDestination = toPosixPath(relativeDestination);
     const existingSource = trackedDestinations.get(normalizedDestination);
 
@@ -176,29 +227,74 @@ export const trackFilesWithProgress = async (
         );
       }
 
-      // Get destination path
-      const destination = getDestinationPathFromSource(tuckDir, category, expandedPath, file.name);
+      // Get destination path (absolute, inside the tuck repo).
+      const destination = isRepo && file.destination
+        ? join(tuckDir, file.destination)
+        : getDestinationPathFromSource(tuckDir, category, expandedPath, file.name);
 
-      // Ensure category directory exists
+      // Ensure destination directory exists
       await ensureDir(dirname(destination));
 
-      // Copy or symlink based on strategy
-      if (strategy === 'symlink') {
-        // Symlink strategy keeps the repository as source of truth:
-        // 1) copy source into repo, 2) replace source with symlink to repo.
+      // Capture the LIVE source's stat BEFORE the copy/symlink, so the recorded
+      // mtime+size correspond to the content we are about to hash. If the file
+      // were edited mid-track, the live file then diverges from this stat and the
+      // next status re-hashes (rather than trusting a now-stale checksum). Empty
+      // (no fields) for directories — they are never short-circuited.
+      const statCache = await getSourceStatCache(expandedPath);
+
+      // Copy or symlink based on strategy. Repo-scoped tracking is copy-only:
+      // the live file stays put inside its repo checkout (never symlinked).
+      if (strategy === 'symlink' && !isRepo) {
+        // Symlink strategy keeps the repository as source of truth. Order is
+        // safety-critical:
+        //   1) Copy source into the repo FIRST so a durable copy exists before
+        //      we touch the user's original at all.
+        //   2) Only then replace the source with a symlink to the repo copy.
+        // The original is never removed by us until the durable repo copy is in
+        // place — createSymlink performs the replacement against that durable
+        // copy, so if it fails we can always restore from the repo.
         await copyFileOrDir(expandedPath, destination, { overwrite: true });
 
         try {
           await createSymlink(destination, expandedPath, { overwrite: true });
-        } catch (error) {
-          // Best effort rollback so users keep a working source file if symlinking fails.
-          await deleteFileOrDir(expandedPath).catch(() => undefined);
-          await copyFileOrDir(destination, expandedPath, { overwrite: true }).catch(() => undefined);
-          throw error;
+        } catch (symlinkError) {
+          // The symlink failed. createSymlink's overwrite step may have already
+          // removed the user's original source, so restore it from the durable
+          // repo copy. NEVER swallow errors here: if the restore ALSO fails the
+          // user could be left without their file, and they must be told loudly.
+          try {
+            await copyFileOrDir(destination, expandedPath, { overwrite: true });
+          } catch (restoreError) {
+            const symlinkMsg =
+              symlinkError instanceof Error ? symlinkError.message : String(symlinkError);
+            const restoreMsg =
+              restoreError instanceof Error ? restoreError.message : String(restoreError);
+            throw new Error(
+              `Failed to create symlink for ${collapsePath(file.path)} (${symlinkMsg}) ` +
+                `and restoring the original from the repository copy also failed (${restoreMsg}). ` +
+                `A durable copy may remain at ${destination}.`
+            );
+          }
+          // Restore succeeded: surface the original symlink failure so the
+          // caller records it and the user is never told this silently "worked".
+          throw symlinkError;
         }
+      } else if (encrypt) {
+        // Encrypt at rest: store TCKE1 ciphertext in the repo (decrypted on apply).
+        const passphrase = await keystorePassphrase();
+        if (!passphrase) {
+          throw new EncryptionError('No encryption password set. Run `tuck encryption setup` first.');
+        }
+        const plaintext = await readFile(expandedPath);
+        await writeFile(destination, await encryptFileContent(plaintext, passphrase));
       } else {
-        // Default: copy file into the repository
-        await copyFileOrDir(expandedPath, destination, { overwrite: true });
+        // Default: copy file into the repository (from the absolute live path).
+        // Pattern-declared excludes keep ephemeral/sensitive subpaths out of the
+        // repo when tracking a directory (no-op for single files).
+        await copyFileOrDir(expandedPath, destination, {
+          overwrite: true,
+          ...(file.exclude && file.exclude.length > 0 ? { exclude: file.exclude } : {}),
+        });
       }
 
       // Get file info
@@ -206,27 +302,46 @@ export const trackFilesWithProgress = async (
       const info = await getFileInfo(expandedPath);
       const now = new Date().toISOString();
 
-      // Generate unique ID
-      const id = generateFileId(file.path);
+      // Generate unique ID (from the stable identity for repo files).
+      const id = generateFileId(sourcePath);
 
       // Add to manifest
       await addFileToManifest(tuckDir, id, {
         source: sourcePath,
         destination: relativeDestination,
         category,
-        strategy,
-        // TODO: Encryption and templating are planned for a future version
-        encrypted: false,
-        template: false,
+        // Repo scope is copy-only regardless of the configured global strategy.
+        strategy: isRepo ? 'copy' : strategy,
+        encrypted: encrypt,
+        template,
         permissions: info.permissions,
         added: now,
         modified: now,
         checksum,
+        ...statCache,
+        bundle: file.bundle ?? 'default',
+        ...(isRepo
+          ? {
+              scope: 'repo' as const,
+              repoKey: file.repoKey,
+              repoRelative: file.repoRelative,
+            }
+          : {}),
       });
 
+      // Bind the repo on THIS machine so the stable key resolves to the live
+      // root for later sync/restore. Idempotent upsert.
+      if (isRepo && file.repoKey && file.repoRoot) {
+        await bindRepo(file.repoKey, file.repoRoot, {
+          ...(file.remoteUrl ? { remoteUrl: file.remoteUrl } : {}),
+        });
+      }
+
       spinner.stop();
-      const categoryStr = showCategory ? chalk.dim(` ${icon} ${category}`) : '';
-      console.log(`  ${chalk.green('✓')} ${indexStr} ${sourcePath}${categoryStr}`);
+      if (!quiet) {
+        const categoryStr = showCategory ? chalk.dim(` ${icon} ${category}`) : '';
+        console.log(`  ${chalk.green('✓')} ${indexStr} ${sourcePath}${categoryStr}`);
+      }
 
       // Track sensitive files for warning at the end
       if (isSensitiveFile(sourcePath)) {
@@ -250,33 +365,37 @@ export const trackFilesWithProgress = async (
       spinner.stop();
       const errorObj = error instanceof Error ? error : new Error(String(error));
       errors.push({ path: file.path, error: errorObj });
-      console.log(`  ${chalk.red('✗')} ${indexStr} ${collapsePath(file.path)} ${chalk.red('- failed')}`);
+      if (!quiet) {
+        console.log(`  ${chalk.red('✗')} ${indexStr} ${collapsePath(file.path)} ${chalk.red('- failed')}`);
+      }
     }
   }
 
-  // Show summary
-  console.log();
-  if (succeeded > 0) {
-    console.log(chalk.green('✓'), chalk.bold(`Tracked ${succeeded} ${succeeded === 1 ? 'file' : 'files'} successfully`));
-  }
-
-  // Show accumulated errors if any
-  if (errors.length > 0) {
+  // Show summary (suppressed in --json mode)
+  if (!quiet) {
     console.log();
-    console.log(chalk.red('✗'), chalk.bold(`Failed to track ${errors.length} ${errors.length === 1 ? 'file' : 'files'}:`));
-    for (const { path, error } of errors) {
-      console.log(chalk.dim(`   • ${collapsePath(path)}: ${error.message}`));
+    if (succeeded > 0) {
+      console.log(chalk.green('✓'), chalk.bold(`Tracked ${succeeded} ${succeeded === 1 ? 'file' : 'files'} successfully`));
     }
-  }
 
-  // Warn about sensitive files at the end (not inline to avoid clutter)
-  if (sensitiveFiles.length > 0) {
-    console.log();
-    console.log(chalk.yellow('⚠'), chalk.yellow('Warning: Some files may contain sensitive data:'));
-    for (const path of sensitiveFiles) {
-      console.log(chalk.dim(`   • ${collapsePath(path)}`));
+    // Show accumulated errors if any
+    if (errors.length > 0) {
+      console.log();
+      console.log(chalk.red('✗'), chalk.bold(`Failed to track ${errors.length} ${errors.length === 1 ? 'file' : 'files'}:`));
+      for (const { path, error } of errors) {
+        console.log(chalk.dim(`   • ${collapsePath(path)}: ${error.message}`));
+      }
     }
-    console.log(chalk.dim('  Make sure your repository is private!'));
+
+    // Warn about sensitive files at the end (not inline to avoid clutter)
+    if (sensitiveFiles.length > 0) {
+      console.log();
+      console.log(chalk.yellow('⚠'), chalk.yellow('Warning: Some files may contain sensitive data:'));
+      for (const path of sensitiveFiles) {
+        console.log(chalk.dim(`   • ${collapsePath(path)}`));
+      }
+      console.log(chalk.dim('  Make sure your repository is private!'));
+    }
   }
 
   return {

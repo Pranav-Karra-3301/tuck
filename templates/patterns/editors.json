@@ -1,0 +1,232 @@
+{
+  "$schema": "https://tuck.sh/schemas/patterns-v1.json",
+  "category": "editors",
+  "patterns": [
+    {
+      "pattern": "~/.vimrc",
+      "category": "editors",
+      "description": "Vim configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.vim",
+      "category": "editors",
+      "description": "Vim directory",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [
+        "plugged",
+        "bundle",
+        ".netrwhist"
+      ]
+    },
+    {
+      "pattern": "~/.config/nvim",
+      "category": "editors",
+      "description": "Neovim configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.ideavimrc",
+      "category": "editors",
+      "description": "IdeaVim (JetBrains) config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.emacs",
+      "category": "editors",
+      "description": "Emacs configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.emacs.d/init.el",
+      "category": "editors",
+      "description": "Emacs init file",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.doom.d",
+      "category": "editors",
+      "description": "Doom Emacs config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.spacemacs",
+      "category": "editors",
+      "description": "Spacemacs config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/Code/User/settings.json",
+      "category": "editors",
+      "description": "VS Code settings",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.config/Code/User/keybindings.json",
+      "category": "editors",
+      "description": "VS Code keybindings",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.config/Code/User/snippets",
+      "category": "editors",
+      "description": "VS Code snippets",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/Library/Application Support/Code/User/settings.json",
+      "category": "editors",
+      "description": "VS Code settings",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "darwin"
+    },
+    {
+      "pattern": "~/Library/Application Support/Code/User/keybindings.json",
+      "category": "editors",
+      "description": "VS Code keybindings",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "darwin"
+    },
+    {
+      "pattern": "~/Library/Application Support/Code/User/snippets",
+      "category": "editors",
+      "description": "VS Code snippets",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "darwin"
+    },
+    {
+      "pattern": "~/.config/Cursor/User/settings.json",
+      "category": "editors",
+      "description": "Cursor settings",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/Library/Application Support/Cursor/User/settings.json",
+      "category": "editors",
+      "description": "Cursor settings",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "darwin"
+    },
+    {
+      "pattern": "~/.nanorc",
+      "category": "editors",
+      "description": "Nano configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/micro",
+      "category": "editors",
+      "description": "Micro editor config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/helix",
+      "category": "editors",
+      "description": "Helix editor config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.sublime-text/Packages/User",
+      "category": "editors",
+      "description": "Sublime Text settings",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "%APPDATA%/Code/User/settings.json",
+      "category": "editors",
+      "description": "VS Code settings",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    },
+    {
+      "pattern": "%APPDATA%/Code/User/keybindings.json",
+      "category": "editors",
+      "description": "VS Code keybindings",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    },
+    {
+      "pattern": "%APPDATA%/Code/User/snippets",
+      "category": "editors",
+      "description": "VS Code snippets",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    },
+    {
+      "pattern": "%APPDATA%/Cursor/User/settings.json",
+      "category": "editors",
+      "description": "Cursor settings",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    },
+    {
+      "pattern": "%APPDATA%/Cursor/User/keybindings.json",
+      "category": "editors",
+      "description": "Cursor keybindings",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    },
+    {
+      "pattern": "%LOCALAPPDATA%/nvim",
+      "category": "editors",
+      "description": "Neovim configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    }
+  ]
+}

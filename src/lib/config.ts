@@ -1,8 +1,9 @@
-import { readFile, writeFile } from 'fs/promises';
+import { readFile } from 'fs/promises';
 import { dirname } from 'path';
 import { cosmiconfig } from 'cosmiconfig';
 import { tuckConfigSchema, defaultConfig, type TuckConfigOutput } from '../schemas/config.schema.js';
 import { getConfigPath, pathExists, getTuckDir } from './paths.js';
+import { atomicWriteFile } from './files.js';
 import { ConfigError } from '../errors.js';
 import { BACKUP_DIR } from '../constants.js';
 
@@ -49,6 +50,17 @@ export const loadConfig = async (tuckDir?: string): Promise<TuckConfigOutput> =>
         ...result.data.files,
         backupDir: result.data.files?.backupDir || BACKUP_DIR,
       },
+      // Deep-merge nested config objects so a config file that omits or only
+      // partially specifies these keys keeps the documented defaults for the
+      // sibling fields (e.g. security.minSeverity, remote.mode) rather than
+      // having them replaced with undefined by a shallow spread.
+      hooks: { ...defaultConfig.hooks, ...result.data.hooks },
+      templates: { ...defaultConfig.templates, ...result.data.templates },
+      encryption: { ...defaultConfig.encryption, ...result.data.encryption },
+      ui: { ...defaultConfig.ui, ...result.data.ui },
+      categories: { ...defaultConfig.categories, ...result.data.categories },
+      security: { ...defaultConfig.security, ...result.data.security },
+      remote: { ...defaultConfig.remote, ...result.data.remote },
     };
     cachedTuckDir = dir;
 
@@ -100,6 +112,18 @@ export const saveConfig = async (
       ...existing.ui,
       ...config.ui,
     },
+    categories: {
+      ...existing.categories,
+      ...config.categories,
+    },
+    security: {
+      ...existing.security,
+      ...config.security,
+    },
+    remote: {
+      ...existing.remote,
+      ...config.remote,
+    },
   };
 
   // Validate before saving
@@ -109,7 +133,7 @@ export const saveConfig = async (
   }
 
   try {
-    await writeFile(configPath, JSON.stringify(result.data, null, 2) + '\n', 'utf-8');
+    await atomicWriteFile(configPath, JSON.stringify(result.data, null, 2) + '\n');
     // Update cache
     cachedConfig = result.data;
     cachedTuckDir = dir;
@@ -141,7 +165,7 @@ export const resetConfig = async (tuckDir?: string): Promise<void> => {
   const resetTo = { ...defaultConfig, repository: { ...defaultConfig.repository, path: dir } };
 
   try {
-    await writeFile(configPath, JSON.stringify(resetTo, null, 2) + '\n', 'utf-8');
+    await atomicWriteFile(configPath, JSON.stringify(resetTo, null, 2) + '\n');
     cachedConfig = resetTo;
     cachedTuckDir = dir;
   } catch (error) {

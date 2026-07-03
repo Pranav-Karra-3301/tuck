@@ -8,6 +8,7 @@ import {
   type DoctorReport,
 } from '../lib/doctor.js';
 import type { DoctorOptions } from '../types.js';
+import { setJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 
 const isDoctorCategory = (value: string): value is DoctorCategory => {
   return (DOCTOR_CATEGORIES as readonly string[]).includes(value);
@@ -51,7 +52,8 @@ export const runDoctor = async (options: DoctorOptions = {}): Promise<DoctorRepo
   });
 
   if (options.json) {
-    console.log(JSON.stringify(report, null, 2));
+    setJsonMode(true, 'tuck doctor');
+    emitJsonOk(report, 'tuck doctor');
   } else {
     printHumanReport(report);
   }

@@ -1,0 +1,31 @@
+# modern-cli aliases & initializers — managed by tuck (preset: modern-cli)
+# Source from your ~/.zshrc:  source ~/.config/tuck/modern-cli.zsh
+# Rendered for {{user | default "you"}} on {{os | default "unknown"}}/{{arch | default ""}}
+
+# --- Replacements --------------------------------------------------------
+alias ls='eza'
+alias ll='eza -lah --git'
+alias tree='eza --tree'
+alias cat='bat --paging=never'
+alias grep='rg'
+alias find='fd'
+
+# --- zoxide (smarter cd) -------------------------------------------------
+if command -v zoxide >/dev/null 2>&1; then
+  eval "$(zoxide init zsh)"
+  alias cd='z'
+fi
+
+# --- fzf -----------------------------------------------------------------
+if command -v fzf >/dev/null 2>&1; then
+  # Key bindings + completion (installed by `brew install fzf` + setup script)
+  [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+  export FZF_DEFAULT_OPTS='--height 40% --layout=reverse --border'
+  # Use fd for fzf when available
+  command -v fd >/dev/null 2>&1 && export FZF_DEFAULT_COMMAND='fd --type f --hidden --follow --exclude .git'
+fi
+
+# tuck:if os=darwin
+# macOS: ensure brew shims are on PATH for these tools
+export PATH="/opt/homebrew/bin:$PATH"
+# tuck:endif

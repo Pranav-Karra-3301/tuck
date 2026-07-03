@@ -1,0 +1,30 @@
+{
+  "$schema": "https://tuck.sh/schemas/patterns-v1.json",
+  "category": "scripts",
+  "patterns": [
+    {
+      "pattern": "~/.local/bin",
+      "category": "scripts",
+      "description": "Local scripts and binaries",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/bin",
+      "category": "scripts",
+      "description": "User bin directory",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.scripts",
+      "category": "scripts",
+      "description": "Custom scripts",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    }
+  ]
+}

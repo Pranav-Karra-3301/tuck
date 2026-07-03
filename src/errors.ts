@@ -1,6 +1,14 @@
 import chalk from 'chalk';
+import { isJsonMode, emitJsonErr, getCurrentCommand, type JsonError } from './lib/jsonOutput.js';
 
 export class TuckError extends Error {
+  /**
+   * Process exit code that should be returned when this error is the cause of
+   * a CLI failure. Defaults to 1; subclasses may override with a more specific
+   * code (e.g. NOT_INITIALIZED = 2) so agents can disambiguate.
+   */
+  public exitCode = 1;
+
   constructor(
     message: string,
     public code: string,
@@ -9,6 +17,23 @@ export class TuckError extends Error {
     super(message);
     this.name = 'TuckError';
   }
+
+  /**
+   * Stable JSON projection. Order of fields is intentional for diffability of
+   * agent-consumed output.
+   */
+  toJSON(): JsonError {
+    const json: JsonError = {
+      code: this.code,
+      message: this.message,
+      exit_code: this.exitCode,
+    };
+    if (this.suggestions && this.suggestions.length > 0) {
+      json.hint = this.suggestions[0];
+      json.suggestions = this.suggestions;
+    }
+    return json;
+  }
 }
 
 export class NotInitializedError extends TuckError {
@@ -16,6 +41,7 @@ export class NotInitializedError extends TuckError {
     super('Tuck is not initialized in this system', 'NOT_INITIALIZED', [
       'Run `tuck init` to get started',
     ]);
+    this.exitCode = 2;
   }
 }
 
@@ -58,6 +84,28 @@ export class FileAlreadyTrackedError extends TuckError {
 export class GitError extends TuckError {
   constructor(message: string, gitError?: string) {
     super(`Git operation failed: ${message}`, 'GIT_ERROR', gitError ? [gitError] : undefined);
+  }
+}
+
+export class MergeConflictsError extends TuckError {
+  /** Paths (repo-relative) that are currently conflicted. */
+  public readonly conflicts: string[];
+
+  constructor(conflicts: string[]) {
+    const sample = conflicts.slice(0, 3).join(', ');
+    const summary = conflicts.length > 3 ? `${sample} and ${conflicts.length - 3} more` : sample;
+    super(
+      `Pull produced ${conflicts.length} merge conflict${conflicts.length === 1 ? '' : 's'}: ${summary}`,
+      'MERGE_CONFLICTS',
+      [
+        'Run `tuck sync` in an interactive terminal to resolve conflicts',
+        'Inspect the repo manually with `git status` to see the conflicting files',
+        'Use `git rebase --abort` (or `git merge --abort`) to back out of the in-progress pull',
+      ]
+    );
+    this.conflicts = conflicts;
+    // Use a dedicated exit code so agents can branch on it.
+    this.exitCode = 3;
   }
 }
 
@@ -134,6 +182,15 @@ export class DecryptionError extends TuckError {
         'The encrypted data may be corrupted',
       ]
     );
+  }
+}
+
+export class MaterializeError extends TuckError {
+  constructor(source: string, reason: string) {
+    super(`Cannot materialize ${source}: ${reason}`, 'MATERIALIZE_FAILED', [
+      'Check the encryption password (run `tuck encryption setup`)',
+      'Verify the repo file is not corrupted or truncated',
+    ]);
   }
 }
 
@@ -342,16 +399,31 @@ export class KeystoreError extends TuckError {
 
 export const handleError = (error: unknown): never => {
   if (error instanceof TuckError) {
+    if (isJsonMode()) {
+      emitJsonErr(error.toJSON(), getCurrentCommand());
+      process.exit(error.exitCode);
+    }
     console.error(chalk.red('x'), error.message);
     if (error.suggestions && error.suggestions.length > 0) {
       console.error();
       console.error(chalk.dim('Suggestions:'));
       error.suggestions.forEach((s) => console.error(chalk.dim(`  → ${s}`)));
     }
-    process.exit(1);
+    process.exit(error.exitCode);
   }
 
   if (error instanceof Error) {
+    if (isJsonMode()) {
+      emitJsonErr(
+        {
+          code: 'UNEXPECTED_ERROR',
+          message: error.message,
+          exit_code: 1,
+        },
+        getCurrentCommand()
+      );
+      process.exit(1);
+    }
     console.error(chalk.red('x'), 'An unexpected error occurred:', error.message);
     if (process.env.DEBUG) {
       console.error(error.stack);
@@ -359,6 +431,17 @@ export const handleError = (error: unknown): never => {
     process.exit(1);
   }
 
+  if (isJsonMode()) {
+    emitJsonErr(
+      {
+        code: 'UNKNOWN_ERROR',
+        message: 'An unknown error occurred',
+        exit_code: 1,
+      },
+      getCurrentCommand()
+    );
+    process.exit(1);
+  }
   console.error(chalk.red('x'), 'An unknown error occurred');
   process.exit(1);
 };

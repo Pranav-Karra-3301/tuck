@@ -100,7 +100,7 @@ export const securityConfigSchema = z
     // ========== Password Manager Backend Configuration ==========
 
     /** Which backend to use for secret resolution */
-    secretBackend: backendNameSchema.default('local'),
+    secretBackend: backendNameSchema.default('auto'),
 
     /** Backend-specific configuration */
     backends: backendsConfigSchema.optional(),

@@ -6,6 +6,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { vol } from 'memfs';
+import { join } from 'path';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
 
 // Create mock git object that throws errors
@@ -40,6 +41,12 @@ vi.mock('simple-git', () => {
   };
 });
 
+// cloneRepo shells out via child_process.execFile; mock it so its failure path
+// is driven without spawning a real git process. The trailing callback receives
+// an error to emulate a failed clone.
+const { execFileMock } = vi.hoisted(() => ({ execFileMock: vi.fn() }));
+vi.mock('child_process', () => ({ execFile: execFileMock }));
+
 // Import after mocking
 import {
   initRepo,
@@ -67,6 +74,12 @@ describe('git-errors', () => {
     vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });
     mockGitInstance = createErrorMockGit('Git operation failed');
     vi.clearAllMocks();
+    // execFile (used by cloneRepo) rejects via its node-style callback to
+    // emulate a failed `git clone` without spawning a real process.
+    execFileMock.mockImplementation((_cmd, _args, opts, cb) => {
+      const callback = typeof opts === 'function' ? opts : cb;
+      callback?.(new Error('Git operation failed'));
+    });
   });
 
   afterEach(() => {
@@ -184,6 +197,7 @@ describe('git-errors', () => {
   describe('stageAll errors', () => {
     it('should throw GitError when staging all fails', async () => {
       mockGitInstance = createErrorMockGit('not a git repository');
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'README.md'), '# test');
 
       await expect(stageAll(TEST_TUCK_DIR)).rejects.toThrow('Failed to stage all files');
     });

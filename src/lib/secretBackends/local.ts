@@ -2,7 +2,7 @@
  * Local secret backend for tuck
  *
  * Uses the local secrets.local.json file to store and retrieve secrets.
- * This is the default backend and requires no external dependencies.
+ * This is the fallback backend and requires no external dependencies.
  */
 
 import type { SecretBackend, SecretReference, SecretInfo } from './types.js';
@@ -74,6 +74,7 @@ export class LocalBackend implements SecretBackend {
     return `Local Backend Setup
 ─────────────────────
 The local backend stores secrets in ~/.tuck/secrets.local.json (gitignored).
+Use it as an explicit fallback when you cannot rely on an external password manager.
 
 To add a secret:
   tuck secrets set MY_SECRET

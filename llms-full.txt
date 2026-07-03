@@ -2,10 +2,10 @@
 
 > A modern, beautiful dotfiles manager CLI built with TypeScript
 
-Version: 1.2.1
+Version: 1.9.0
 Package: @prnv/tuck
 License: MIT
-Platforms: macOS, Linux
+Platforms: macOS, Linux, Windows
 Runtime: Node.js 18+
 
 ## Table of Contents
@@ -37,7 +37,7 @@ tuck is a command-line tool for managing dotfiles across machines. It's a specia
 
 - A CLI tool for managing dotfiles across machines
 - A git repository manager specialized for configuration files
-- A cross-platform tool (macOS, Linux)
+- A cross-platform tool (macOS, Linux, Windows)
 - A beautiful, modern terminal experience
 
 ### What tuck is NOT
@@ -118,9 +118,17 @@ tuck add <paths...> [options]
 |--------|-------------|
 | `-c, --category <name>` | File category (shell/git/editors/terminal/ssh/misc) |
 | `-n, --name <name>` | Custom name for the file |
-| `--symlink` | Use symlink instead of copy |
-| `--encrypt` | Encrypt file (requires GPG setup) |
-| `--template` | Treat as template file |
+| `--symlink` | Copy into the repo, then replace the source with a symlink |
+| `--template` | Mark as a template: rendered on apply (sync won't capture live edits) |
+| `--encrypt` | Encrypt the file at rest (AES-256-GCM; decrypted on apply; needs an encryption password) |
+| `--repo [dir]` | Track as repo-scoped (auto-detects the repo root when no dir is given) |
+| `--repo-key <key>` | Explicit stable repo identity (advanced) |
+| `-f, --force` | Skip secret scanning (not recommended) |
+| `-b, --bundle <name>` | Bundle to assign the file to (defaults to "default") |
+| `--json` | Emit JSON envelope to stdout (non-interactive) |
+| `-y, --yes` | Auto-confirm prompts (use with `--json` for full automation) |
+| `--plan` | Print the planned tracking operation as JSON and exit |
+| `--dry-run` | Print the planned tracking operation as text and exit |
 
 **Features:**
 - Auto-detects file categories based on patterns
@@ -160,8 +168,10 @@ tuck remove [paths...] [options]
 **Options:**
 | Option | Description |
 |--------|-------------|
-| `--delete` | Also delete from repository |
-| `--keep-original` | Keep the original file on system |
+| `--delete` | Also delete from the tuck repository |
+| `--keep-original` | Don't restore symlinks back to regular files |
+| `--json` | Emit JSON envelope to stdout (suppresses interactive UI) |
+| `-y, --yes` | Auto-confirm prompts (required with `--json` for the interactive picker) |
 
 **Examples:**
 ```bash
@@ -184,12 +194,17 @@ tuck sync [message] [options]
 | Option | Description |
 |--------|-------------|
 | `-m, --message <msg>` | Commit message |
-| `-a, --all` | Include all changes |
-| `--no-commit` | Skip commit step |
-| `--no-push` | Skip push step |
-| `--amend` | Amend previous commit |
+| `--no-commit` | Stage changes but don't commit |
+| `--no-push` | Commit but don't push to remote |
+| `--no-pull` | Don't pull from remote first |
+| `--no-scan` | Don't scan for new dotfiles |
 | `--no-hooks` | Skip pre/post-sync hooks |
 | `--trust-hooks` | Run hooks without confirmation |
+| `-f, --force` | Skip secret scanning (not recommended) |
+| `--json` | Emit JSON envelope; non-interactive (errors on conflict) |
+| `-y, --yes` | Auto-confirm prompts (use with `--json` for full automation) |
+| `--plan` | Compute and emit the planned changes without executing |
+| `--dry-run` | Same as `--plan` but prints human text |
 
 **Features:**
 - Detects changes by comparing checksums
@@ -202,7 +217,7 @@ tuck sync [message] [options]
 tuck sync                                   # Auto-message, auto-push
 tuck sync "Update zsh aliases"              # Custom message
 tuck sync --no-push                         # Commit only
-tuck sync -a -m "Full update"               # All changes
+tuck sync -m "Full update"                  # Custom message
 ```
 
 ---
@@ -242,6 +257,8 @@ tuck pull [options]
 |--------|-------------|
 | `--rebase` | Rebase instead of merge |
 | `--restore` | Run restore after pull |
+| `--json` | Emit JSON envelope to stdout |
+| `-y, --yes` | Auto-confirm prompts (non-interactive merge pull) |
 
 **Examples:**
 ```bash
@@ -270,6 +287,11 @@ tuck restore [paths...] [options]
 | `--dry-run` | Preview without making changes |
 | `--no-hooks` | Skip pre/post-restore hooks |
 | `--trust-hooks` | Run hooks without confirmation |
+| `--no-secrets` | Skip restoring secrets (keep placeholders as-is) |
+| `--repo-root <dir>` | Bind an as-yet-unknown repo-scoped repo to this dir before restoring |
+| `--json` | Emit JSON envelope to stdout (suppresses interactive UI) |
+| `-y, --yes` | Auto-confirm prompts (required with `--json` for full automation) |
+| `--plan` | Print the operation plan and exit without restoring |
 
 **Features:**
 - Creates backups of existing files before restore
@@ -356,6 +378,10 @@ tuck diff [paths...] [options]
 |--------|-------------|
 | `--staged` | Show git staged diff |
 | `--stat` | Show summary only |
+| `--category <category>` | Filter by file category (shell, git, editors, terminal, ssh, misc) |
+| `--name-only` | Show only changed file names |
+| `--exit-code` | Return exit code 1 if differences are found |
+| `--json` | Emit JSON envelope to stdout (suppresses interactive UI) |
 
 **Examples:**
 ```bash
@@ -382,6 +408,7 @@ tuck config <subcommand> [args]
 | `list` | Show all configuration |
 | `edit` | Open in $EDITOR |
 | `reset` | Reset to defaults |
+| `remote` | Configure the remote provider (GitHub/GitLab/custom/local) |
 
 **Examples:**
 ```bash
@@ -410,7 +437,7 @@ tuck scan [options]
 | `-q, --quick` | Quick mode (fewer locations) |
 | `--json` | JSON output |
 
-**Detection Categories (11):**
+**Detection Categories (14):**
 | Category | Examples |
 |----------|----------|
 | shell | .zshrc, .bashrc, .profile |
@@ -424,6 +451,9 @@ tuck scan [options]
 | xdg | .config/* |
 | desktop | .xinitrc |
 | scripts | ~/bin, ~/.local/bin |
+| agents | AI tool configs (e.g. CLAUDE.md, AGENTS.md, editor AI configs) |
+| macos | macOS-specific config |
+| misc | Everything else |
 
 **Examples:**
 ```bash
@@ -456,6 +486,9 @@ tuck apply <source> [options]
 | `--dry-run` | Preview without changes |
 | `-f, --force` | Skip confirmations |
 | `-y, --yes` | Accept defaults |
+| `-b, --bundle <name>` | Only apply files in the named bundle |
+| `--repo-root <dir>` | Bind an as-yet-unlinked repo to this checkout before applying repo-scoped files |
+| `--json` | Emit JSON envelope to stdout |
 
 **Features:**
 - Auto-discovers GitHub dotfiles repos via gh CLI
@@ -487,9 +520,10 @@ tuck undo [snapshot-id] [options]
 | `-l, --list` | List all snapshots |
 | `--latest` | Use most recent snapshot |
 | `--file <path>` | Restore specific file |
-| `--delete` | Delete snapshot |
+| `--delete <id>` | Delete a specific snapshot (id is the option's own argument) |
 | `-f, --force` | Skip confirmations |
 | `--dry-run` | Preview without changes |
+| `--json` | Emit JSON envelope to stdout (suppresses interactive UI) |
 
 **Examples:**
 ```bash
@@ -497,8 +531,186 @@ tuck undo --list                            # List snapshots
 tuck undo --latest                          # Restore latest
 tuck undo abc123                            # Specific snapshot
 tuck undo --file ~/.zshrc                   # Single file
-tuck undo abc123 --delete                   # Delete snapshot
+tuck undo --delete abc123                   # Delete a snapshot
 ```
+
+---
+
+### secrets — Manage Local Secrets
+
+Manage local secrets used for `{{PLACEHOLDER}}` replacement, and connect to
+external secret managers.
+
+```bash
+tuck secrets <subcommand> [args]
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List all stored secrets (values hidden) |
+| `set <name>` | Set a secret value (prompts securely) |
+| `unset <name>` | Remove a secret |
+| `path` | Show path to the secrets file |
+| `scan [paths...]` | Scan files for secrets |
+| `scan-history` | Scan git history for leaked secrets |
+| `backend` | Manage secret backends (1Password, Bitwarden, pass) |
+| `map <name>` | Map a placeholder to a backend path |
+| `mappings` | List all secret mappings |
+| `test` | Test backend connectivity |
+
+---
+
+### encryption — Manage Backup Encryption
+
+Manage at-rest encryption (AES-256-GCM with PBKDF2/scrypt key derivation,
+password-based — no GPG). Top-level `--json` emits a JSON envelope.
+
+```bash
+tuck encryption <subcommand> [args]
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `status` | Show encryption status |
+| `setup` | Set up backup encryption |
+| `enable` | Enable backup encryption |
+| `disable` | Disable backup encryption |
+| `rotate` | Change the encryption password |
+| `encrypt-file <file>` | Encrypt a single file (AES-256-GCM, PBKDF2) |
+| `decrypt-file <file>` | Decrypt a file produced by `encrypt-file` |
+
+**`encrypt-file` options:** `-o, --out <path>` (default `<file>.enc`),
+`--no-keep` (remove the plaintext after encrypting), `--json`.
+
+---
+
+### doctor — Health Diagnostics
+
+Run repository health and safety diagnostics.
+
+```bash
+tuck doctor [options]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--json` | Output as JSON |
+| `--strict` | Exit non-zero on warnings |
+| `-c, --category <category>` | Run only one category (env\|repo\|manifest\|security\|hooks\|sandboxing) |
+
+---
+
+### verify — Verify System / Repo / Manifest Agree
+
+Verify that the live system, the repo, and the manifest agree. Useful as a CI
+gate.
+
+```bash
+tuck verify [options]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--json` | Emit JSON envelope to stdout |
+| `--exit-code` | Exit non-zero if anything has drifted (CI gate) |
+| `--fix` | Re-copy missing repo copies from the live file (safe fixes only) |
+| `--root <dir>` | Confine write/preview targets under this directory (sandbox) |
+| `--apply` | Dry-apply diff: preview created/modified/unchanged, conflicts, escapes |
+| `-b, --bundle <name>` | Scope `--apply` to a single bundle |
+
+---
+
+### bundle — Manage Bundles
+
+Manage bundles — logical groups of tracked files.
+
+```bash
+tuck bundle <subcommand> [args]
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List bundles and their file counts |
+| `create <name>` | Register a new empty bundle |
+| `rm <name>` | Remove a bundle (files reassigned to "default" by default) |
+| `assign <bundle> <path-or-id>` | Move a tracked file into a bundle |
+
+---
+
+### context — Track AI Agent Configs
+
+Track AI agent configs (e.g. CLAUDE.md, AGENTS.md) across home and per-repo
+scopes.
+
+```bash
+tuck context <subcommand> [args]
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `add <path>` | Track an agent config file (auto-detects home vs repo scope) |
+| `list` | List tracked agent configs |
+| `scan` | Detect agent configs in $HOME and the current repo without tracking |
+| `sync` | Sync tracked agent configs from disk into the tuck repo |
+| `apply <ref>` | Apply someone else's agent context (user/repo or local path) |
+
+---
+
+### mcp — Model Context Protocol Server
+
+Expose tuck to AI agents over the Model Context Protocol.
+
+```bash
+tuck mcp <subcommand>
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `serve` | Start an MCP server over stdio |
+| `tools` | List the MCP tools this server exposes (for debugging) |
+
+---
+
+### preset — Curated Bundles
+
+Apply or publish curated bundles of dotfiles & agent configs.
+
+```bash
+tuck preset <subcommand> [args]
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List bundled presets |
+| `show <name>` | Show a preset's contents |
+| `apply <name>` | Apply a preset to the current system |
+| `publish <dir>` | Validate and prepare a preset for distribution |
+
+---
+
+### repo — Machine-Local Repo Bindings
+
+Manage machine-local repo bindings (repoKey → absolute root) used by
+repo-scoped tracking.
+
+```bash
+tuck repo <subcommand> [args]
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `link <repoKey> <path>` | Bind a repoKey to a git repository on this machine |
+| `list` | List all repo bindings on this machine |
+| `unlink <repoKey>` | Remove a repo binding from this machine |
 
 ---
 
@@ -584,27 +796,37 @@ Configuration is stored in `~/.tuck/.tuckrc.json`.
 
 ### Manifest Structure
 
+`files` is an object keyed by file id (not an array), and each entry follows
+`trackedFileSchema`:
+
 ```json
 {
-  "version": "1.0",
-  "createdAt": "2024-01-15T10:00:00Z",
-  "updatedAt": "2024-01-15T12:00:00Z",
+  "version": "1.0.0",
+  "created": "2024-01-15T10:00:00Z",
+  "updated": "2024-01-15T12:00:00Z",
   "machine": "hostname",
-  "files": [
-    {
-      "id": "uuid",
+  "files": {
+    "<file-id>": {
       "source": "~/.zshrc",
       "destination": "files/shell/zshrc",
       "category": "shell",
+      "strategy": "copy",
+      "encrypted": false,
+      "template": false,
       "checksum": "sha256:...",
-      "addedAt": "2024-01-15T10:00:00Z",
-      "modifiedAt": "2024-01-15T12:00:00Z",
-      "isDirectory": false,
-      "isSymlink": false
+      "added": "2024-01-15T10:00:00Z",
+      "modified": "2024-01-15T12:00:00Z",
+      "bundle": "default"
     }
-  ]
+  },
+  "bundles": {
+    "default": { "created": "2024-01-15T10:00:00Z" }
+  }
 }
 ```
+
+Repo-scoped entries additionally carry `scope: "repo"`, `repoKey`, and
+`repoRelative` instead of resolving `source` against `$HOME`.
 
 ---
 
@@ -696,7 +918,7 @@ tuck automatically fixes permissions on restore:
 | Language | TypeScript | Go |
 | Learning curve | Low | Medium |
 | Templates | Basic | Advanced |
-| Encryption | GPG (planned) | age, GPG |
+| Encryption | AES-256-GCM (password) | age, GPG |
 | UI | Beautiful, interactive | Functional |
 | GitHub integration | Native | None |
 | Smart merge | Yes | No |
@@ -709,7 +931,7 @@ tuck automatically fixes permissions on restore:
 | Git abstraction | Yes | Thin wrapper |
 | Categorization | Automatic | Manual |
 | Templates | Basic | Jinja2-like |
-| Encryption | GPG (planned) | GPG |
+| Encryption | AES-256-GCM (password) | GPG |
 | Multi-machine | Via apply | Via alternates |
 
 ### vs dotbot

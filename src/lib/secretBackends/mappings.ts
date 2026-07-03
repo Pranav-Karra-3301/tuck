@@ -48,7 +48,7 @@ export const loadMappings = async (
   const mappingsPath = getMappingsPath(tuckDir, customPath);
 
   if (!(await pathExists(mappingsPath))) {
-    return { ...defaultMappingsFile };
+    return cloneDefaultMappings();
   }
 
   try {
@@ -58,9 +58,21 @@ export const loadMappings = async (
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     console.warn(`[tuck] Warning: Failed to load mappings file: ${errorMsg}`);
-    return { ...defaultMappingsFile };
+    return cloneDefaultMappings();
   }
 };
+
+/**
+ * Return a fresh, independent copy of the default mappings file.
+ *
+ * A shallow `{ ...defaultMappingsFile }` would share the nested `mappings`
+ * object by reference, so a later setMapping() would mutate the module-level
+ * default and leak state into every subsequent load.
+ */
+const cloneDefaultMappings = (): SecretMappingsFile => ({
+  ...defaultMappingsFile,
+  mappings: {},
+});
 
 /**
  * Save the mappings file to disk

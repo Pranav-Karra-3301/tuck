@@ -1,0 +1,201 @@
+{
+  "$schema": "https://tuck.sh/schemas/patterns-v1.json",
+  "category": "shell",
+  "patterns": [
+    {
+      "pattern": "~/.bashrc",
+      "category": "shell",
+      "description": "Bash interactive shell config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.bash_profile",
+      "category": "shell",
+      "description": "Bash login shell config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.bash_aliases",
+      "category": "shell",
+      "description": "Bash aliases",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.bash_functions",
+      "category": "shell",
+      "description": "Bash functions",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.bash_logout",
+      "category": "shell",
+      "description": "Bash logout script",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.zshrc",
+      "category": "shell",
+      "description": "Zsh interactive shell config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.zprofile",
+      "category": "shell",
+      "description": "Zsh login shell config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.zshenv",
+      "category": "shell",
+      "description": "Zsh environment variables",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.zlogin",
+      "category": "shell",
+      "description": "Zsh login script",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.zlogout",
+      "category": "shell",
+      "description": "Zsh logout script",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.zsh",
+      "category": "shell",
+      "description": "Zsh configuration directory",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/fish/config.fish",
+      "category": "shell",
+      "description": "Fish shell config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/fish/functions",
+      "category": "shell",
+      "description": "Fish functions",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/fish/completions",
+      "category": "shell",
+      "description": "Fish completions",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/fish/conf.d",
+      "category": "shell",
+      "description": "Fish config snippets",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.profile",
+      "category": "shell",
+      "description": "Generic shell profile",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.aliases",
+      "category": "shell",
+      "description": "Shell aliases",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.functions",
+      "category": "shell",
+      "description": "Shell functions",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.exports",
+      "category": "shell",
+      "description": "Environment exports",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.inputrc",
+      "category": "shell",
+      "description": "Readline configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.hushlogin",
+      "category": "shell",
+      "description": "Suppress login message",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "%USERPROFILE%/Documents/PowerShell/Microsoft.PowerShell_profile.ps1",
+      "category": "shell",
+      "description": "PowerShell 7+ profile",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    },
+    {
+      "pattern": "%USERPROFILE%/Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1",
+      "category": "shell",
+      "description": "Windows PowerShell profile",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    },
+    {
+      "pattern": "%APPDATA%/PowerShell",
+      "category": "shell",
+      "description": "PowerShell configuration directory",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    }
+  ]
+}

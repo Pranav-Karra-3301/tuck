@@ -69,6 +69,9 @@ vi.mock('../../src/lib/config.js', () => ({
 
 vi.mock('../../src/lib/manifest.js', () => ({
   createManifest: createManifestMock,
+  // init.ts now drops the manifest cache after a clone; the command imports this
+  // binding, so the mock must provide it (a no-op here).
+  clearManifestCache: vi.fn(),
 }));
 
 vi.mock('../../src/lib/git.js', () => ({
@@ -141,6 +144,22 @@ describe('init command behavior', () => {
     cloneRepoMock.mockResolvedValue(undefined);
     createManifestMock.mockResolvedValue(undefined);
     saveConfigMock.mockResolvedValue(undefined);
+  });
+
+  it('--bare still creates the security .gitignore (runtime exclusions)', async () => {
+    const { vol } = await import('memfs');
+    pathExistsMock.mockResolvedValue(false); // not already initialized
+    const { runInit } = await import('../../src/commands/init.js');
+
+    await runInit({ bare: true, yes: true });
+
+    // The runtime .gitignore is a SECURITY control (excludes secrets/keystore/
+    // backups) and must exist even for --bare, which only skips README/samples.
+    // Regression caught by live sandbox testing of `tuck init --bare`.
+    expect(vol.existsSync('/test-home/.tuck/.gitignore')).toBe(true);
+    expect(vol.readFileSync('/test-home/.tuck/.gitignore', 'utf-8')).toContain(
+      'secrets.local.json'
+    );
   });
 
   it('clones from remote and backfills missing manifest/config', async () => {

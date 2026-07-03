@@ -17,11 +17,17 @@ import { getTuckDir } from '../lib/paths.js';
 import { NotInitializedError } from '../errors.js';
 import { pathExists } from 'fs-extra';
 import { getManifestPath } from '../lib/paths.js';
+import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
+import { readFile, writeFile, unlink } from 'fs/promises';
+import { encryptFileContent, decryptFileContent, isEncryptedFileBuffer } from '../lib/crypto/index.js';
+import { expandPath } from '../lib/paths.js';
+import { EncryptionError, DecryptionError } from '../errors.js';
 
 /**
  * Show encryption status
  */
-const runStatus = async (): Promise<void> => {
+const runStatus = async (opts: { json?: boolean } = {}): Promise<void> => {
+  if (opts.json) setJsonMode(true, 'tuck encryption status');
   const tuckDir = getTuckDir();
 
   if (!(await pathExists(getManifestPath(tuckDir)))) {
@@ -29,6 +35,15 @@ const runStatus = async (): Promise<void> => {
   }
 
   const status = await getEncryptionStatus();
+
+  if (isJsonMode()) {
+    emitJsonOk({
+      enabled: status.enabled,
+      keystoreType: status.keystoreType,
+      hasStoredPassword: status.hasStoredPassword,
+    });
+    return;
+  }
 
   console.log();
   logger.info('Encryption Status');
@@ -217,13 +232,141 @@ const runEnable = async (): Promise<void> => {
   await runSetup();
 };
 
+/**
+ * Encrypt a file in place — write `<file>.enc` and (optionally) remove the
+ * plaintext. Used by power users and by `tuck add --encrypt`.
+ */
+const runEncryptFile = async (
+  input: string,
+  opts: { out?: string; keep?: boolean; json?: boolean }
+): Promise<void> => {
+  if (opts.json) setJsonMode(true, 'tuck encryption encrypt-file');
+  const inAbs = expandPath(input);
+  const outAbs = opts.out ? expandPath(opts.out) : `${inAbs}.enc`;
+  const plaintext = await readFile(inAbs);
+  // Never accept the passphrase on argv (it would leak into shell history and
+  // the process list). Use TUCK_PASSWORD for non-interactive runs, else prompt.
+  let password = process.env.TUCK_PASSWORD;
+  if (!password) {
+    if (isJsonMode()) {
+      throw new EncryptionError('Password required in JSON mode', [
+        'Set the TUCK_PASSWORD env var',
+      ]);
+    }
+    const entered = await prompts.password('Encryption password:');
+    if (!entered) throw new EncryptionError('No password provided');
+    password = entered;
+  }
+  const ciphertext = await encryptFileContent(plaintext, password);
+  await writeFile(outAbs, ciphertext);
+
+  // `--no-keep` removes the plaintext after encrypting. The freshly written
+  // ciphertext IS the recovery path (decrypt-file restores it), so this is a
+  // reversible deletion; still confirm interactively. In JSON mode the flag
+  // itself is the explicit consent (prompts are unavailable there).
+  let plaintextRemoved = false;
+  if (!opts.keep) {
+    const proceed = isJsonMode()
+      ? true
+      : await prompts.confirm(`Remove the plaintext ${inAbs} after encrypting?`, false);
+    if (proceed) {
+      await unlink(inAbs);
+      plaintextRemoved = true;
+    }
+  }
+
+  if (isJsonMode()) {
+    emitJsonOk({ encrypted: outAbs, bytes: ciphertext.length, plaintextRemoved });
+    return;
+  }
+  logger.success(`Encrypted → ${outAbs} (${ciphertext.length} bytes)`);
+  if (plaintextRemoved) {
+    logger.success(`Removed plaintext ${inAbs}`);
+  }
+};
+
+/**
+ * Resolve the plaintext output path for `decrypt-file`, never in place.
+ *   - explicit `out` is honored;
+ *   - otherwise strip a trailing `.enc`;
+ *   - if there is no `.enc` to strip, append `.dec` (so the output is never the
+ *     input — the old `|| `${inAbs}.dec`` fallback could never fire because a
+ *     non-empty path is truthy, silently overwriting the ciphertext).
+ * Throws if the resolved output would equal the input.
+ */
+export const resolveDecryptOutPath = (inAbs: string, outExpanded?: string): string => {
+  const stripped = inAbs.replace(/\.enc$/, '');
+  const outAbs = outExpanded ?? (stripped !== inAbs ? stripped : `${inAbs}.dec`);
+  if (outAbs === inAbs) {
+    throw new DecryptionError('Refusing to overwrite the encrypted input file in place', [
+      'Pass --out <path> to write the decrypted plaintext somewhere else',
+    ]);
+  }
+  return outAbs;
+};
+
+const runDecryptFile = async (
+  input: string,
+  opts: { out?: string; json?: boolean }
+): Promise<void> => {
+  if (opts.json) setJsonMode(true, 'tuck encryption decrypt-file');
+  const inAbs = expandPath(input);
+  const outAbs = resolveDecryptOutPath(inAbs, opts.out ? expandPath(opts.out) : undefined);
+  const ciphertext = await readFile(inAbs);
+  if (!isEncryptedFileBuffer(ciphertext)) {
+    throw new DecryptionError('File is not a tuck-encrypted file (missing TCKE header)');
+  }
+  // Never accept the passphrase on argv. Use TUCK_PASSWORD non-interactively,
+  // else prompt.
+  let password = process.env.TUCK_PASSWORD;
+  if (!password) {
+    if (isJsonMode()) {
+      throw new DecryptionError('Password required in JSON mode', [
+        'Set the TUCK_PASSWORD env var',
+      ]);
+    }
+    const entered = await prompts.password('Decryption password:');
+    if (!entered) throw new DecryptionError('No password provided');
+    password = entered;
+  }
+  const plaintext = await decryptFileContent(ciphertext, password);
+  await writeFile(outAbs, plaintext);
+  if (isJsonMode()) {
+    emitJsonOk({ decrypted: outAbs, bytes: plaintext.length });
+    return;
+  }
+  logger.success(`Decrypted → ${outAbs} (${plaintext.length} bytes)`);
+};
+
 export const encryptionCommand = new Command('encryption')
   .description('Manage backup encryption (power user)')
-  .addCommand(new Command('status').description('Show encryption status').action(runStatus))
+  .addCommand(
+    new Command('status')
+      .description('Show encryption status')
+      .option('--json', 'Emit JSON envelope')
+      .action(runStatus)
+  )
   .addCommand(new Command('setup').description('Set up backup encryption').action(runSetup))
   .addCommand(new Command('enable').description('Enable backup encryption').action(runEnable))
   .addCommand(new Command('disable').description('Disable backup encryption').action(runDisable))
-  .addCommand(new Command('rotate').description('Change encryption password').action(runRotate));
+  .addCommand(new Command('rotate').description('Change encryption password').action(runRotate))
+  .addCommand(
+    new Command('encrypt-file')
+      .description('Encrypt a single file (AES-256-GCM, PBKDF2)')
+      .argument('<file>', 'Path to the plaintext file')
+      .option('-o, --out <path>', 'Output path (default: <file>.enc)')
+      .option('--no-keep', 'Remove the plaintext file after encrypting')
+      .option('--json', 'Emit JSON envelope')
+      .action(runEncryptFile)
+  )
+  .addCommand(
+    new Command('decrypt-file')
+      .description('Decrypt a file produced by `tuck encryption encrypt-file`')
+      .argument('<file>', 'Path to the encrypted file')
+      .option('-o, --out <path>', 'Output path (default: strip .enc suffix)')
+      .option('--json', 'Emit JSON envelope')
+      .action(runDecryptFile)
+  );
 
 // Default action shows status
-encryptionCommand.action(runStatus);
+encryptionCommand.option('--json', 'Emit JSON envelope').action((opts: { json?: boolean }) => runStatus(opts));

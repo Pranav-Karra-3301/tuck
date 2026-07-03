@@ -2,13 +2,35 @@ import { Command } from 'commander';
 import { spawn } from 'child_process';
 import { prompts, logger, banner, colors as c } from '../ui/index.js';
 import { getTuckDir, getConfigPath, collapsePath } from '../lib/paths.js';
-import { loadConfig, saveConfig, resetConfig } from '../lib/config.js';
+import { loadConfig, saveConfig, resetConfig, clearConfigCache } from '../lib/config.js';
 import { loadManifest } from '../lib/manifest.js';
-import { addRemote, removeRemote, hasRemote } from '../lib/git.js';
+import { upsertRemote } from '../lib/git.js';
 import { NotInitializedError, ConfigError } from '../errors.js';
 import type { TuckConfigOutput } from '../schemas/config.schema.js';
 import { setupProvider } from '../lib/providerSetup.js';
 import { describeProviderConfig, getProvider } from '../lib/providers/index.js';
+import { setupRemoteForProvider } from '../lib/remoteSetup.js';
+import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
+import { IS_WINDOWS } from '../lib/platform.js';
+
+/**
+ * Resolve the editor to open config files with. Honors $EDITOR then $VISUAL,
+ * falling back to a sane platform default (Windows has no vim/vi out of the box).
+ */
+export const getDefaultEditor = (): string =>
+  process.env.EDITOR || process.env.VISUAL || (IS_WINDOWS ? 'notepad' : 'vim');
+
+interface ConfigGetOptions {
+  json?: boolean;
+}
+
+interface ConfigSetOptions {
+  json?: boolean;
+}
+
+interface ConfigListOptions {
+  json?: boolean;
+}
 
 /**
  * Configuration key metadata for validation and help
@@ -100,7 +122,10 @@ const CONFIG_KEYS: ConfigKeyInfo[] = [
 ];
 
 const UNSUPPORTED_CONFIG_KEY_PREFIXES = [
-  'templates',
+  // `templates.variables` IS wired (rendered on apply/restore via
+  // buildMaterializeCtx), so it is settable. `templates.enabled` remains a
+  // no-op gate and stays blocked to avoid a meaningless setting.
+  'templates.enabled',
   'encryption.enabled',
   'encryption.gpgKey',
   'encryption.files',
@@ -164,14 +189,25 @@ const parseValue = (value: string): unknown => {
   }
 };
 
-const runConfigGet = async (key: string): Promise<void> => {
+const runConfigGet = async (key: string, options: ConfigGetOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck config get');
+
   const tuckDir = getTuckDir();
   const config = await loadConfig(tuckDir);
 
   const value = getNestedValue(config as unknown as Record<string, unknown>, key);
 
   if (value === undefined) {
+    if (isJsonMode()) {
+      emitJsonOk({ key, value: null });
+      return;
+    }
     logger.error(`Key not found: ${key}`);
+    return;
+  }
+
+  if (isJsonMode()) {
+    emitJsonOk({ key, value });
     return;
   }
 
@@ -182,7 +218,13 @@ const runConfigGet = async (key: string): Promise<void> => {
   }
 };
 
-const runConfigSet = async (key: string, value: string): Promise<void> => {
+export const runConfigSet = async (
+  key: string,
+  value: string,
+  options: ConfigSetOptions = {}
+): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck config set');
+
   const unsupportedPrefix = UNSUPPORTED_CONFIG_KEY_PREFIXES.find(
     (prefix) => key === prefix || key.startsWith(`${prefix}.`)
   );
@@ -202,12 +244,29 @@ const runConfigSet = async (key: string, value: string): Promise<void> => {
   setNestedValue(configObj, key, parsedValue);
 
   await saveConfig(config, tuckDir);
+  // saveConfig leaves the cache populated with the just-written value. Drop it so
+  // a later loadConfig re-reads disk and an out-of-band change isn't masked by a
+  // stale in-memory cache for the rest of this run.
+  clearConfigCache();
+
+  if (isJsonMode()) {
+    emitJsonOk({ key, value: parsedValue, updated: true });
+    return;
+  }
+
   logger.success(`Set ${key} = ${JSON.stringify(parsedValue)}`);
 };
 
-const runConfigList = async (): Promise<void> => {
+const runConfigList = async (options: ConfigListOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck config list');
+
   const tuckDir = getTuckDir();
   const config = await loadConfig(tuckDir);
+
+  if (isJsonMode()) {
+    emitJsonOk({ config });
+    return;
+  }
 
   prompts.intro('tuck config');
   console.log();
@@ -221,7 +280,7 @@ const runConfigEdit = async (): Promise<void> => {
   const tuckDir = getTuckDir();
   const configPath = getConfigPath(tuckDir);
 
-  const editor = process.env.EDITOR || process.env.VISUAL || 'vim';
+  const editor = getDefaultEditor();
 
   logger.info(`Opening ${collapsePath(configPath)} in ${editor}...`);
 
@@ -313,8 +372,8 @@ const showConfigView = async (config: TuckConfigOutput): Promise<void> => {
     console.log();
   }
 
-  if (config.templates?.enabled || Object.keys(config.templates?.variables || {}).length > 0) {
-    console.log(c.yellow('! Templates config is currently reserved and not applied during restore/sync.'));
+  if (config.templates?.enabled) {
+    console.log(c.yellow('! templates.enabled is reserved and currently has no effect (template files render automatically on apply/restore).'));
     console.log();
   }
 };
@@ -382,6 +441,8 @@ const runConfigWizard = async (config: TuckConfigOutput, tuckDir: string): Promi
   };
 
   await saveConfig(updatedConfig, tuckDir);
+  // Drop the now-stale cache so a later read in the same run sees the write.
+  clearConfigCache();
 
   console.log();
   prompts.log.success('Configuration updated!');
@@ -437,6 +498,8 @@ const editConfigInteractive = async (config: TuckConfigOutput, tuckDir: string):
 
   setNestedValue(configObj, selectedKey, newValue);
   await saveConfig(config, tuckDir);
+  // Drop the now-stale cache so a later read in the same run sees the write.
+  clearConfigCache();
 
   prompts.log.success(`Updated ${selectedKey} = ${formatConfigValue(newValue)}`);
 };
@@ -457,7 +520,7 @@ const runInteractiveConfig = async (): Promise<void> => {
     { value: 'remote', label: 'Configure remote', hint: 'Set up GitHub, GitLab, or local mode' },
     { value: 'wizard', label: 'Run setup wizard', hint: 'Guided configuration' },
     { value: 'reset', label: 'Reset to defaults', hint: 'Restore default values' },
-    { value: 'open', label: 'Open in editor', hint: `Edit with ${process.env.EDITOR || 'vim'}` },
+    { value: 'open', label: 'Open in editor', hint: `Edit with ${getDefaultEditor()}` },
   ])) as string;
 
   console.log();
@@ -487,9 +550,11 @@ const runInteractiveConfig = async (): Promise<void> => {
 };
 
 /**
- * Run the remote provider configuration flow
+ * Run the remote provider configuration flow.
+ *
+ * Exported for unit testing the provider-agnostic remote-setup dedup.
  */
-const runConfigRemote = async (): Promise<void> => {
+export const runConfigRemote = async (): Promise<void> => {
   banner();
   prompts.intro('tuck config remote');
 
@@ -527,97 +592,68 @@ const runConfigRemote = async (): Promise<void> => {
   };
 
   await saveConfig(updatedConfig, tuckDir);
+  // Drop the post-write cache so any subsequent load re-reads disk (avoids a
+  // stale in-memory config masking an out-of-band change during this run).
+  clearConfigCache();
 
-  // If a remote URL was provided, update git remote
+  // Track whether a remote URL was ACTUALLY configured so the final message
+  // reflects reality (and never prints a false "Remote configured" success).
+  let configuredRemoteUrl: string | null = result.remoteUrl ?? null;
+
+  // If a remote URL was provided, update the git remote.
   if (result.remoteUrl) {
     try {
-      // Check if origin already exists
-      if (await hasRemote(tuckDir)) {
-        // Remove existing remote
-        await removeRemote(tuckDir, 'origin');
-      }
-      // Add new remote
-      await addRemote(tuckDir, 'origin', result.remoteUrl);
+      // Idempotent upsert: set-url if origin exists, else add. This avoids the
+      // remove-then-add race (a transient state with NO origin) that the old
+      // code created when reconfiguring an existing repo.
+      await upsertRemote(tuckDir, 'origin', result.remoteUrl);
       prompts.log.success('Git remote updated');
     } catch (error) {
       prompts.log.warning(
         `Could not update git remote: ${error instanceof Error ? error.message : String(error)}`
       );
       prompts.log.info(`Manually add remote: git remote add origin ${result.remoteUrl}`);
+      // The remote wasn't actually wired up; don't claim it was.
+      configuredRemoteUrl = null;
     }
   }
 
-  // If switching to a provider that can create repos, offer to create one
-  if (result.mode !== 'local' && result.mode !== 'custom' && !result.remoteUrl) {
-    const shouldCreateRepo = await prompts.confirm(
-      'Would you like to create a repository now?',
-      true
-    );
+  // If no remote URL was configured yet and the provider needs one (github /
+  // gitlab / custom), route through the SAME provider-agnostic remote-setup
+  // helper that `tuck init` uses. This deduplicates the old ad-hoc
+  // createRepo/getPreferredRepoUrl flow and ensures gitlab/custom go through
+  // their own provider instead of a github-shaped path.
+  //
+  // The helper now UPSERTS `origin` itself (no pre-remove dance here), so a
+  // reconfiguration won't hit the remove-then-add race.
+  if (result.mode !== 'local' && !result.remoteUrl) {
+    const provider = getProvider(result.mode, result.config);
+    const { remoteUrl } = await setupRemoteForProvider(provider, tuckDir);
 
-    if (shouldCreateRepo) {
-      const provider = getProvider(result.mode, result.config);
-
-      const repoName = await prompts.text('Repository name:', {
-        defaultValue: 'dotfiles',
-        placeholder: 'dotfiles',
-        validate: (value) => {
-          if (!value) return 'Repository name is required';
-          // Ensure name starts and ends with alphanumeric
-          if (!/^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$/.test(value)) {
-            return 'Repository name must start and end with alphanumeric characters';
-          }
-          return undefined;
-        },
-      });
-
-      const visibility = await prompts.select('Repository visibility:', [
-        { value: 'private', label: 'Private (recommended)', hint: 'Only you can see it' },
-        { value: 'public', label: 'Public', hint: 'Anyone can see it' },
-      ]);
-
-      try {
-        const spinner = prompts.spinner();
-        spinner.start('Creating repository...');
-
-        const repo = await provider.createRepo({
-          name: repoName,
-          description: 'My dotfiles managed with tuck',
-          isPrivate: visibility === 'private',
-        });
-
-        spinner.stop(`Repository created: ${repo.fullName}`);
-
-        // Get preferred URL and add as remote
-        const remoteUrl = await provider.getPreferredRepoUrl(repo);
-
-        try {
-          if (await hasRemote(tuckDir)) {
-            await removeRemote(tuckDir, 'origin');
-          }
-          await addRemote(tuckDir, 'origin', remoteUrl);
-          prompts.log.success('Remote configured');
-        } catch (error) {
-          prompts.log.warning(
-            `Could not add remote: ${error instanceof Error ? error.message : String(error)}`
-          );
-        }
-
-        // Update config with repo name
-        updatedConfig.remote = {
-          ...updatedConfig.remote,
-          repoName,
-        };
-        await saveConfig(updatedConfig, tuckDir);
-      } catch (error) {
-        prompts.log.error(
-          `Failed to create repository: ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
+    if (remoteUrl) {
+      configuredRemoteUrl = remoteUrl;
+      // The shared helper already wired up `origin`; persist the config so the
+      // remote selection survives across runs.
+      updatedConfig.remote = {
+        ...updatedConfig.remote,
+      };
+      await saveConfig(updatedConfig, tuckDir);
+      clearConfigCache();
     }
   }
 
   console.log();
-  prompts.log.success(`Remote configured: ${describeProviderConfig(result.config)}`);
+  // Final message must mirror reality. For a remote-requiring provider, only
+  // claim success if a remote URL was genuinely configured; otherwise warn with
+  // an actionable next step instead of a silent false "Remote configured".
+  if (result.mode !== 'local' && !configuredRemoteUrl) {
+    prompts.log.warning(
+      `Provider set to ${describeProviderConfig(result.config)}, but no remote was configured — ` +
+        'run `tuck config remote` again or add one manually'
+    );
+  } else {
+    prompts.log.success(`Remote configured: ${describeProviderConfig(result.config)}`);
+  }
   prompts.outro('Done!');
 };
 
@@ -636,14 +672,15 @@ export const configCommand = new Command('config')
     new Command('get')
       .description('Get a config value')
       .argument('<key>', 'Config key (e.g., "repository.autoCommit")')
-      .action(async (key: string) => {
+      .option('--json', 'Emit JSON envelope to stdout')
+      .action(async (key: string, options: ConfigGetOptions) => {
         const tuckDir = getTuckDir();
         try {
           await loadManifest(tuckDir);
         } catch {
           throw new NotInitializedError();
         }
-        await runConfigGet(key);
+        await runConfigGet(key, options);
       })
   )
   .addCommand(
@@ -651,26 +688,30 @@ export const configCommand = new Command('config')
       .description('Set a config value')
       .argument('<key>', 'Config key')
       .argument('<value>', 'Value to set (JSON or string)')
-      .action(async (key: string, value: string) => {
+      .option('--json', 'Emit JSON envelope to stdout')
+      .action(async (key: string, value: string, options: ConfigSetOptions) => {
         const tuckDir = getTuckDir();
         try {
           await loadManifest(tuckDir);
         } catch {
           throw new NotInitializedError();
         }
-        await runConfigSet(key, value);
+        await runConfigSet(key, value, options);
       })
   )
   .addCommand(
-    new Command('list').description('List all config').action(async () => {
-      const tuckDir = getTuckDir();
-      try {
-        await loadManifest(tuckDir);
-      } catch {
-        throw new NotInitializedError();
-      }
-      await runConfigList();
-    })
+    new Command('list')
+      .description('List all config')
+      .option('--json', 'Emit JSON envelope to stdout')
+      .action(async (options: ConfigListOptions) => {
+        const tuckDir = getTuckDir();
+        try {
+          await loadManifest(tuckDir);
+        } catch {
+          throw new NotInitializedError();
+        }
+        await runConfigList(options);
+      })
   )
   .addCommand(
     new Command('edit').description('Open config in editor').action(async () => {

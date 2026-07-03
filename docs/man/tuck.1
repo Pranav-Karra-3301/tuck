@@ -13,10 +13,76 @@ Initialize tuck
 .TP
 .B add
 Track new dotfiles
+.TP
+.B remove
+Stop tracking dotfiles
+.TP
+.B sync
+Sync all dotfile changes (pull, detect, scan, track, commit, push)
+.TP
+.B push
+Push changes to remote
+.TP
+.B pull
+Pull changes from remote
+.TP
+.B restore
+Restore dotfiles to the system
+.TP
+.B status
+Show current tracking status
+.TP
+.B list
+List all tracked files
+.TP
+.B diff
+Show differences between system and repository
+.TP
+.B config
+Manage tuck configuration
+.TP
+.B apply
+Apply dotfiles from a repository to this machine
+.TP
+.B undo
+Restore files from a Time Machine backup snapshot
+.TP
+.B scan
+Scan the system for dotfiles and select which to track
+.TP
+.B secrets
+Manage local secrets for placeholder replacement
+.TP
+.B encryption
+Manage backup encryption (AES-256-GCM, password-based)
+.TP
+.B doctor
+Run repository health and safety diagnostics
+.TP
+.B verify
+Verify that the live system, repo, and manifest agree
+.TP
+.B bundle
+Manage bundles \(em logical groups of tracked files
+.TP
+.B context
+Track AI agent configs across home and per-repo scopes
+.TP
+.B mcp
+Model Context Protocol server \(em expose tuck to AI agents
+.TP
+.B preset
+Apply or publish curated bundles of dotfiles & agent configs
+.TP
+.B repo
+Manage machine-local repo bindings
 .SH OPTIONS
 .TP
 .B \-h, \-\-help
 Show help
+.TP
+.B \-v, \-\-version
+Show version
 .SH FILES
 ~/.tuck
 .SH SEE ALSO

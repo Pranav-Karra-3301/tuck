@@ -1,0 +1,20 @@
+[user]
+	name = {{user | default "Your Name"}}
+	# email = you@example.com   # set manually; tuck won't guess
+
+[init]
+	defaultBranch = main
+
+[core]
+	editor = nano
+	autocrlf = input
+
+[pull]
+	rebase = false
+
+[push]
+	default = simple
+	autoSetupRemote = true
+
+[color]
+	ui = auto

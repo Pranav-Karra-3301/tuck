@@ -62,6 +62,12 @@ vi.mock('simple-git', () => {
   };
 });
 
+// cloneRepo shells out to `git clone` via child_process.execFile (simple-git
+// does not honor maxBuffer), so mock execFile to emulate a successful run and
+// guarantee no real git process is ever spawned.
+const { execFileMock } = vi.hoisted(() => ({ execFileMock: vi.fn() }));
+vi.mock('child_process', () => ({ execFile: execFileMock }));
+
 // Import after mocking
 import {
   initRepo,
@@ -76,11 +82,14 @@ import {
   getLog,
   getDiff,
   getCurrentBranch,
+  countCommitsBehindRemote,
   hasRemote,
   getRemoteUrl,
   getRemotes,
   addRemote,
   removeRemote,
+  setRemoteUrl,
+  upsertRemote,
   setDefaultBranch,
   cloneRepo,
 } from '../../src/lib/git.js';
@@ -92,6 +101,11 @@ describe('git', () => {
     // Reset the mock git instance before each test
     mockGitInstance = createMockGit();
     vi.clearAllMocks();
+    // promisify(execFile) calls execFile(cmd, args, opts, callback); resolve it.
+    execFileMock.mockImplementation((_cmd, _args, opts, cb) => {
+      const callback = typeof opts === 'function' ? opts : cb;
+      callback?.(null, { stdout: '', stderr: '' });
+    });
   });
 
   afterEach(() => {
@@ -131,9 +145,16 @@ describe('git', () => {
   // ============================================================================
 
   describe('cloneRepo', () => {
-    it('should clone a repository', async () => {
+    it('should clone a repository via execFile', async () => {
       const destDir = join(TEST_HOME, 'cloned-repo');
       await expect(cloneRepo('https://github.com/user/repo.git', destDir)).resolves.not.toThrow();
+
+      expect(execFileMock).toHaveBeenCalledWith(
+        'git',
+        ['clone', 'https://github.com/user/repo.git', destDir],
+        expect.objectContaining({ maxBuffer: expect.any(Number) }),
+        expect.any(Function)
+      );
     });
   });
 
@@ -152,6 +173,49 @@ describe('git', () => {
   describe('removeRemote', () => {
     it('should remove a remote', async () => {
       await expect(removeRemote(TEST_TUCK_DIR, 'origin')).resolves.not.toThrow();
+    });
+  });
+
+  describe('setRemoteUrl', () => {
+    it('should run git remote set-url', async () => {
+      mockGitInstance.remote = vi.fn().mockResolvedValue(undefined);
+      await expect(
+        setRemoteUrl(TEST_TUCK_DIR, 'origin', 'https://github.com/user/new.git')
+      ).resolves.not.toThrow();
+      expect(mockGitInstance.remote).toHaveBeenCalledWith([
+        'set-url',
+        'origin',
+        'https://github.com/user/new.git',
+      ]);
+    });
+  });
+
+  describe('upsertRemote', () => {
+    it('updates an existing origin in place (set-url, never add)', async () => {
+      // Default mock getRemotes returns an existing origin → hasRemote === true.
+      mockGitInstance.remote = vi.fn().mockResolvedValue(undefined);
+      await upsertRemote(TEST_TUCK_DIR, 'origin', 'https://github.com/user/new.git');
+
+      expect(mockGitInstance.remote).toHaveBeenCalledWith([
+        'set-url',
+        'origin',
+        'https://github.com/user/new.git',
+      ]);
+      expect(mockGitInstance.addRemote).not.toHaveBeenCalled();
+    });
+
+    it('adds origin when none exists (no remove+add race)', async () => {
+      // No remotes → hasRemote === false → addRemote path.
+      mockGitInstance.getRemotes = vi.fn().mockResolvedValue([]);
+      mockGitInstance.remote = vi.fn().mockResolvedValue(undefined);
+
+      await upsertRemote(TEST_TUCK_DIR, 'origin', 'https://github.com/user/new.git');
+
+      expect(mockGitInstance.addRemote).toHaveBeenCalledWith(
+        'origin',
+        'https://github.com/user/new.git'
+      );
+      expect(mockGitInstance.remote).not.toHaveBeenCalled();
     });
   });
 
@@ -227,7 +291,21 @@ describe('git', () => {
 
   describe('stageAll', () => {
     it('should stage all changes', async () => {
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'README.md'), '# test');
       await expect(stageAll(TEST_TUCK_DIR)).resolves.not.toThrow();
+      expect(mockGitInstance.raw).toHaveBeenCalledWith(['add', '--all', '--', 'README.md']);
+    });
+
+    it('skips internal runtime artifacts when staging everything', async () => {
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'README.md'), '# test');
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'audit.log'), 'legacy');
+      vol.writeFileSync(join(TEST_TUCK_DIR, '.tuck-keystore.enc'), 'legacy');
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'secrets.local.json'), '{}');
+      vol.mkdirSync(join(TEST_TUCK_DIR, 'backups'), { recursive: true });
+
+      await stageAll(TEST_TUCK_DIR);
+
+      expect(mockGitInstance.raw).toHaveBeenCalledWith(['add', '--all', '--', 'README.md']);
     });
   });
 
@@ -252,6 +330,95 @@ describe('git', () => {
         push(TEST_TUCK_DIR, { remote: 'origin', branch: 'main', setUpstream: true })
       ).resolves.not.toThrow();
     }, 30000); // Longer timeout for Windows CI
+
+    it('does not run gh auth setup-git when the remote is a non-github (gitlab) remote', async () => {
+      mockGitInstance.getRemotes.mockResolvedValue([
+        { name: 'origin', refs: { fetch: 'https://gitlab.com/user/repo.git', push: '' } },
+      ]);
+
+      await push(TEST_TUCK_DIR);
+
+      // gh must never be invoked for a GitLab remote — running `gh auth
+      // setup-git` would rewrite the user's GLOBAL github.com credential routing.
+      const ghCalls = execFileMock.mock.calls.filter((call) => call[0] === 'gh');
+      expect(ghCalls).toHaveLength(0);
+    });
+
+    it('does not run gh auth setup-git for an SSH github remote', async () => {
+      mockGitInstance.getRemotes.mockResolvedValue([
+        { name: 'origin', refs: { fetch: 'git@github.com:user/repo.git', push: '' } },
+      ]);
+
+      await push(TEST_TUCK_DIR);
+
+      const ghCalls = execFileMock.mock.calls.filter((call) => call[0] === 'gh');
+      expect(ghCalls).toHaveLength(0);
+    });
+
+    it('runs gh auth setup-git only for an HTTPS github.com remote when gh is logged in', async () => {
+      mockGitInstance.getRemotes.mockResolvedValue([
+        { name: 'origin', refs: { fetch: 'https://github.com/user/repo.git', push: '' } },
+      ]);
+      execFileMock.mockImplementation((cmd, args, opts, cb) => {
+        const callback = typeof opts === 'function' ? opts : cb;
+        if (cmd === 'gh' && Array.isArray(args) && args[0] === 'auth' && args[1] === 'status') {
+          callback?.(null, { stdout: '', stderr: 'Logged in to github.com as user' });
+          return;
+        }
+        callback?.(null, { stdout: '', stderr: '' });
+      });
+
+      await push(TEST_TUCK_DIR);
+
+      const setupGitCalls = execFileMock.mock.calls.filter(
+        (call) => call[0] === 'gh' && Array.isArray(call[1]) && call[1][1] === 'setup-git'
+      );
+      expect(setupGitCalls).toHaveLength(1);
+    });
+  });
+
+  describe('stageAll conflict guard', () => {
+    it('refuses to stage while merge conflicts are unresolved', async () => {
+      mockGitInstance.status.mockResolvedValue({
+        current: 'main',
+        conflicted: ['.zshrc'],
+        staged: [],
+        modified: [],
+        not_added: [],
+        deleted: [],
+        isClean: () => false,
+      });
+      vol.writeFileSync(join(TEST_TUCK_DIR, '.zshrc'), '<<<<<<< HEAD');
+
+      await expect(stageAll(TEST_TUCK_DIR)).rejects.toMatchObject({ code: 'GIT_ERROR' });
+      // Must never `git add --all` over the marker-corrupted file.
+      expect(mockGitInstance.raw).not.toHaveBeenCalledWith(
+        expect.arrayContaining(['add', '--all'])
+      );
+    });
+  });
+
+  describe('countCommitsBehindRemote', () => {
+    it('returns the rev-list count of commits behind the remote branch', async () => {
+      mockGitInstance.raw.mockResolvedValue('3\n');
+
+      const behind = await countCommitsBehindRemote(TEST_TUCK_DIR, 'main');
+
+      expect(behind).toBe(3);
+      expect(mockGitInstance.raw).toHaveBeenCalledWith([
+        'rev-list',
+        '--count',
+        'HEAD..origin/main',
+      ]);
+    });
+
+    it('returns null when the remote branch does not exist', async () => {
+      mockGitInstance.raw.mockRejectedValue(new Error('unknown revision'));
+
+      const behind = await countCommitsBehindRemote(TEST_TUCK_DIR, 'main');
+
+      expect(behind).toBeNull();
+    });
   });
 
   describe('pull', () => {
@@ -290,6 +457,15 @@ describe('git', () => {
     it('should respect maxCount option', async () => {
       const log = await getLog(TEST_TUCK_DIR, { maxCount: 5 });
       expect(log).toBeDefined();
+    });
+
+    it('should pass --since to git log when requested', async () => {
+      await getLog(TEST_TUCK_DIR, { since: '2024-01-01' });
+
+      expect(mockGitInstance.log).toHaveBeenCalledWith({
+        maxCount: 10,
+        '--since': '2024-01-01',
+      });
     });
   });
 

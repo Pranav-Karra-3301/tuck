@@ -11,6 +11,7 @@
 
 export type {
   BackendName,
+  ConfiguredBackendName,
   SecretBackend,
   SecretReference,
   SecretInfo,
@@ -25,7 +26,7 @@ export type {
   CacheStats,
 } from './types.js';
 
-export { BACKEND_NAMES } from './types.js';
+export { BACKEND_NAMES, CONFIGURABLE_BACKEND_NAMES } from './types.js';
 
 // ============================================================================
 // Backend Implementations

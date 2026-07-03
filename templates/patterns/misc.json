@@ -1,0 +1,163 @@
+{
+  "$schema": "https://tuck.sh/schemas/patterns-v1.json",
+  "category": "misc",
+  "patterns": [
+    {
+      "pattern": "~/.config/neofetch",
+      "category": "misc",
+      "description": "Neofetch config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/fastfetch",
+      "category": "misc",
+      "description": "Fastfetch config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/onefetch",
+      "category": "misc",
+      "description": "Onefetch config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/topgrade.toml",
+      "category": "misc",
+      "description": "Topgrade updater",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/youtube-dl",
+      "category": "misc",
+      "description": "youtube-dl config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/yt-dlp",
+      "category": "misc",
+      "description": "yt-dlp config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/mpv",
+      "category": "misc",
+      "description": "MPV media player",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/newsboat",
+      "category": "misc",
+      "description": "Newsboat RSS reader",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/cmus",
+      "category": "misc",
+      "description": "cmus music player",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/spotify-tui",
+      "category": "misc",
+      "description": "Spotify TUI",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.mailcap",
+      "category": "misc",
+      "description": "MIME type handlers",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.muttrc",
+      "category": "misc",
+      "description": "Mutt email client",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/mutt",
+      "category": "misc",
+      "description": "Mutt config directory",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/neomutt",
+      "category": "misc",
+      "description": "Neomutt config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.Xresources",
+      "category": "misc",
+      "description": "X11 resources",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.Xmodmap",
+      "category": "misc",
+      "description": "X11 keymap",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.xinitrc",
+      "category": "misc",
+      "description": "X11 init script",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "~/.xprofile",
+      "category": "misc",
+      "description": "X11 profile",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
+    },
+    {
+      "pattern": "%USERPROFILE%/.wslconfig",
+      "category": "misc",
+      "description": "WSL global configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    }
+  ]
+}

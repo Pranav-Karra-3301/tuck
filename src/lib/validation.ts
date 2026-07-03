@@ -190,7 +190,7 @@ export function validateDescription(description: string, maxLength: number = 350
 
   // Check for invalid characters including quotes, newlines, and shell metacharacters
   // eslint-disable-next-line no-control-regex
-  if (/[;&|`$(){}[\]<>!#*?'"\\n\r\t\x00-\x1F\x7F]/.test(description)) {
+  if (/[;&|`$(){}[\]<>!#*?'"\\\r\n\t\x00-\x1F\x7F]/.test(description)) {
     throw new Error(
       'Description contains invalid characters. Cannot contain: ; & | ` $ ( ) { } [ ] < > ! # * ? \' " \\ newlines or control characters'
     );

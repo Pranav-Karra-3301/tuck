@@ -3,7 +3,7 @@
  *
  * Commands:
  *   tuck secrets list          - List all stored secrets (values hidden)
- *   tuck secrets set <n> <v>   - Set a secret value
+ *   tuck secrets set <n>       - Set a secret value
  *   tuck secrets unset <name>  - Remove a secret
  *   tuck secrets path          - Show path to secrets file
  *   tuck secrets scan-history  - Scan git history for leaked secrets
@@ -16,7 +16,7 @@
 import { Command } from 'commander';
 import { prompts, logger, colors as c } from '../ui/index.js';
 import { getTuckDir, expandPath, pathExists } from '../lib/paths.js';
-import { loadManifest } from '../lib/manifest.js';
+import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import { loadConfig, saveConfig } from '../lib/config.js';
 import {
   listSecrets,
@@ -32,17 +32,15 @@ import {
   createResolver,
   setMapping,
   listMappings,
-  BACKEND_NAMES,
-  type BackendName,
+  CONFIGURABLE_BACKEND_NAMES,
+  type ConfiguredBackendName,
 } from '../lib/secretBackends/index.js';
-import { NotInitializedError } from '../errors.js';
+import { NotInitializedError, TuckError } from '../errors.js';
 import { getLog } from '../lib/git.js';
+import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 
-/**
- * Type guard to check if a string is a valid BackendName
- */
-const isBackendName = (value: string): value is BackendName => {
-  return (BACKEND_NAMES as readonly string[]).includes(value);
+const isConfiguredBackendName = (value: string): value is ConfiguredBackendName => {
+  return (CONFIGURABLE_BACKEND_NAMES as readonly string[]).includes(value);
 };
 
 /**
@@ -61,7 +59,13 @@ const isValidUrl = (value: string): boolean => {
 // List Command
 // ============================================================================
 
-const runSecretsList = async (): Promise<void> => {
+interface JsonOptions {
+  json?: boolean;
+}
+
+const runSecretsList = async (options: JsonOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets list');
+
   const tuckDir = getTuckDir();
 
   try {
@@ -72,12 +76,28 @@ const runSecretsList = async (): Promise<void> => {
 
   const secrets = await listSecrets(tuckDir);
 
+  if (isJsonMode()) {
+    // SECURITY: listSecrets never returns raw values; emit only the redacted
+    // metadata (name, placeholder, description, source, timestamps).
+    emitJsonOk({
+      secrets: secrets.map((secret) => ({
+        name: secret.name,
+        placeholder: secret.placeholder,
+        ...(secret.description !== undefined ? { description: secret.description } : {}),
+        ...(secret.source !== undefined ? { source: secret.source } : {}),
+        addedAt: secret.addedAt,
+        ...(secret.lastUsed !== undefined ? { lastUsed: secret.lastUsed } : {}),
+      })),
+    });
+    return;
+  }
+
   if (secrets.length === 0) {
     logger.info('No secrets stored');
     logger.dim(`Secrets file: ${getSecretsPath(tuckDir)}`);
     console.log();
     logger.dim('Secrets are stored when you choose to replace detected secrets with placeholders.');
-    logger.dim('You can also manually add secrets with: tuck secrets set <NAME> <value>');
+    logger.dim('You can also manually add secrets with: tuck secrets set <NAME>');
     return;
   }
 
@@ -106,7 +126,14 @@ const runSecretsList = async (): Promise<void> => {
 // Set Command
 // ============================================================================
 
-const runSecretsSet = async (name: string): Promise<void> => {
+interface SecretsSetOptions {
+  json?: boolean;
+  yes?: boolean;
+}
+
+const runSecretsSet = async (name: string, options: SecretsSetOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets set');
+
   const tuckDir = getTuckDir();
 
   try {
@@ -118,22 +145,46 @@ const runSecretsSet = async (name: string): Promise<void> => {
   // Validate or normalize name
   if (!isValidSecretName(name)) {
     const normalized = normalizeSecretName(name);
-    logger.warning(`Secret name normalized to: ${normalized}`);
-    logger.dim('Secret names must be uppercase alphanumeric with underscores (e.g., API_KEY)');
+    if (!isJsonMode()) {
+      logger.warning(`Secret name normalized to: ${normalized}`);
+      logger.dim('Secret names must be uppercase alphanumeric with underscores (e.g., API_KEY)');
+    }
     name = normalized;
   }
 
-  // Security: Always prompt for secret value interactively
-  // Never accept via command-line to prevent exposure in shell history and process list
-  // Note: Cancellation or empty input is handled below by validating the returned value.
-  const secretValue = await prompts.password(`Enter value for ${name}:`);
+  // In non-interactive mode (--json/--yes) we cannot prompt. Accept the value
+  // from TUCK_SECRET_VALUE so it never lands in argv/shell history, mirroring
+  // the interactive password prompt's "no value on the command line" rule.
+  let secretValue: string;
+  if (isJsonMode() || options.yes) {
+    secretValue = process.env.TUCK_SECRET_VALUE ?? '';
+    if (!secretValue || secretValue.trim().length === 0) {
+      throw new TuckError(
+        'Secret value not provided',
+        'SECRET_VALUE_REQUIRED',
+        ['Set TUCK_SECRET_VALUE in the environment before running with --json/--yes']
+      );
+    }
+  } else {
+    // Security: Always prompt for secret value interactively
+    // Never accept via command-line to prevent exposure in shell history and process list
+    // Note: Cancellation or empty input is handled below by validating the returned value.
+    secretValue = await prompts.password(`Enter value for ${name}:`);
 
-  if (!secretValue || secretValue.trim().length === 0) {
-    logger.error('Secret value cannot be empty');
-    return;
+    if (!secretValue || secretValue.trim().length === 0) {
+      logger.error('Secret value cannot be empty');
+      return;
+    }
   }
 
   await setSecret(tuckDir, name, secretValue);
+
+  if (isJsonMode()) {
+    // SECURITY: never echo the value back; only confirm the name and outcome.
+    emitJsonOk({ name, set: true });
+    return;
+  }
+
   logger.success(`Secret '${name}' set`);
   console.log();
   logger.dim(`Use {{${name}}} as placeholder in your dotfiles`);
@@ -143,7 +194,9 @@ const runSecretsSet = async (name: string): Promise<void> => {
 // Unset Command
 // ============================================================================
 
-const runSecretsUnset = async (name: string): Promise<void> => {
+const runSecretsUnset = async (name: string, options: JsonOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets unset');
+
   const tuckDir = getTuckDir();
 
   try {
@@ -153,6 +206,11 @@ const runSecretsUnset = async (name: string): Promise<void> => {
   }
 
   const removed = await unsetSecret(tuckDir, name);
+
+  if (isJsonMode()) {
+    emitJsonOk({ name, unset: removed });
+    return;
+  }
 
   if (removed) {
     logger.success(`Secret '${name}' removed`);
@@ -166,7 +224,9 @@ const runSecretsUnset = async (name: string): Promise<void> => {
 // Path Command
 // ============================================================================
 
-const runSecretsPath = async (): Promise<void> => {
+const runSecretsPath = async (options: JsonOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets path');
+
   const tuckDir = getTuckDir();
 
   try {
@@ -175,7 +235,14 @@ const runSecretsPath = async (): Promise<void> => {
     throw new NotInitializedError();
   }
 
-  console.log(getSecretsPath(tuckDir));
+  const path = getSecretsPath(tuckDir);
+
+  if (isJsonMode()) {
+    emitJsonOk({ path });
+    return;
+  }
+
+  console.log(path);
 };
 
 // ============================================================================
@@ -338,7 +405,41 @@ const runScanHistory = async (options: { since?: string; limit?: string }): Prom
 // Interactive Scan Command
 // ============================================================================
 
-const runScanFiles = async (paths: string[]): Promise<void> => {
+interface ScanFilesOptions {
+  json?: boolean;
+}
+
+/**
+ * Build a REDACTED summary of a scan suitable for JSON output.
+ *
+ * SECURITY-CRITICAL: this MUST NEVER include raw secret values, raw matched
+ * lines, or surrounding context. Only emit aggregate counts and a per-file
+ * `{ path, secretCount }` summary. Do not pass through `match.value`,
+ * `match.context`, or `match.redactedValue` (the file-level count is enough).
+ */
+const buildRedactedScanSummary = (summary: ScanSummary) => ({
+  totalFiles: summary.totalFiles,
+  scannedFiles: summary.scannedFiles,
+  skippedFiles: summary.skippedFiles,
+  filesWithSecrets: summary.filesWithSecrets,
+  totalSecrets: summary.totalSecrets,
+  bySeverity: {
+    critical: summary.bySeverity.critical,
+    high: summary.bySeverity.high,
+    medium: summary.bySeverity.medium,
+    low: summary.bySeverity.low,
+  },
+  files: summary.results
+    .filter((result) => result.hasSecrets)
+    .map((result) => ({
+      path: result.collapsedPath,
+      secretCount: result.matches.length,
+    })),
+});
+
+const runScanFiles = async (paths: string[], options: ScanFilesOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets scan');
+
   const tuckDir = getTuckDir();
 
   try {
@@ -347,19 +448,39 @@ const runScanFiles = async (paths: string[]): Promise<void> => {
     throw new NotInitializedError();
   }
 
-  if (paths.length === 0) {
-    logger.error('No files specified');
-    logger.dim('Usage: tuck secrets scan <file> [files...]');
+  const expandedPaths =
+    paths.length > 0
+      ? paths.map((path) => expandPath(path))
+      : Array.from(
+          new Set(
+            Object.values(await getAllTrackedFiles(tuckDir)).map((file) => expandPath(file.source))
+          )
+        );
+
+  if (expandedPaths.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk(
+        buildRedactedScanSummary({
+          totalFiles: 0,
+          scannedFiles: 0,
+          skippedFiles: 0,
+          filesWithSecrets: 0,
+          totalSecrets: 0,
+          bySeverity: { critical: 0, high: 0, medium: 0, low: 0 },
+          results: [],
+        })
+      );
+      return;
+    }
+    logger.warning('No tracked files to scan');
+    logger.dim("Run 'tuck add <path>' to start tracking files first");
     return;
   }
-
-  // Expand paths
-  const expandedPaths = paths.map((p) => expandPath(p));
 
   // Check files exist
   for (const path of expandedPaths) {
     if (!(await pathExists(path))) {
-      logger.warning(`File not found: ${path}`);
+      if (!isJsonMode()) logger.warning(`File not found: ${path}`);
     }
   }
 
@@ -371,16 +492,37 @@ const runScanFiles = async (paths: string[]): Promise<void> => {
   }
 
   if (existingPaths.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk(
+        buildRedactedScanSummary({
+          totalFiles: 0,
+          scannedFiles: 0,
+          skippedFiles: 0,
+          filesWithSecrets: 0,
+          totalSecrets: 0,
+          bySeverity: { critical: 0, high: 0, medium: 0, low: 0 },
+          results: [],
+        })
+      );
+      return;
+    }
     logger.error('No valid files to scan');
     return;
   }
 
-  const spinner = prompts.spinner();
-  spinner.start(`Scanning ${existingPaths.length} file(s)...`);
+  // Skip the clack spinner in JSON mode — its ANSI frames would land on stdout
+  // ahead of the envelope and break JSON.parse for the consuming agent/CI.
+  const spinner = isJsonMode() ? null : prompts.spinner();
+  spinner?.start(`Scanning ${existingPaths.length} file(s)...`);
 
   const summary = await scanForSecrets(existingPaths, tuckDir);
 
-  spinner.stop('Scan complete');
+  spinner?.stop('Scan complete');
+
+  if (isJsonMode()) {
+    emitJsonOk(buildRedactedScanSummary(summary));
+    return;
+  }
 
   if (summary.filesWithSecrets === 0) {
     console.log();
@@ -463,9 +605,9 @@ const runBackendSet = async (backend: string, options: BackendSetOptions): Promi
   }
 
   // Validate backend name using type guard
-  if (!isBackendName(backend)) {
+  if (!isConfiguredBackendName(backend)) {
     logger.error(`Invalid backend: ${backend}`);
-    logger.dim(`Valid backends: ${BACKEND_NAMES.join(', ')}`);
+    logger.dim(`Valid backends: ${CONFIGURABLE_BACKEND_NAMES.join(', ')}`);
     return;
   }
 
@@ -533,7 +675,7 @@ const runBackendSet = async (backend: string, options: BackendSetOptions): Promi
   logger.success(`Secret backend set to: ${backend}`);
 
   // Show setup instructions if not local
-  if (backend !== 'local') {
+  if (backend !== 'local' && backend !== 'auto') {
     const resolver = createResolver(tuckDir, { ...config.security, secretBackend: backend });
     const backendImpl = resolver.getBackend(backend);
     if (backendImpl) {
@@ -555,6 +697,8 @@ const runBackendStatus = async (): Promise<void> => {
   const config = await loadConfig(tuckDir);
   const resolver = createResolver(tuckDir, config.security);
   const statuses = await resolver.getBackendStatuses();
+  const configuredBackend = resolver.getConfiguredBackendName();
+  const effectiveBackend = await resolver.getEffectiveBackendName();
 
   console.log();
   console.log(c.bold.cyan('Secret Backend Status'));
@@ -574,7 +718,11 @@ const runBackendStatus = async (): Promise<void> => {
     console.log();
   }
 
-  console.log(c.dim(`Current backend: ${config.security.secretBackend || 'local'}`));
+  if (configuredBackend === 'auto') {
+    console.log(c.dim(`Current backend: auto (resolved to ${effectiveBackend})`));
+  } else {
+    console.log(c.dim(`Current backend: ${configuredBackend}`));
+  }
 };
 
 const runBackendList = async (): Promise<void> => {
@@ -584,7 +732,11 @@ const runBackendList = async (): Promise<void> => {
   console.log();
 
   const backends = [
-    { name: 'local', desc: 'Local secrets file (default)' },
+    {
+      name: 'auto',
+      desc: 'Auto-detect the best available external backend, then fall back to local',
+    },
+    { name: 'local', desc: 'Local secrets file (explicit fallback)' },
     { name: '1password', desc: '1Password password manager' },
     { name: 'bitwarden', desc: 'Bitwarden password manager' },
     { name: 'pass', desc: 'Standard Unix password store' },
@@ -721,15 +873,20 @@ const runTest = async (options: TestOptions): Promise<void> => {
   const resolver = createResolver(tuckDir, config.security);
 
   // Validate and narrow backend name
-  const rawBackendName = options.backend || config.security.secretBackend || 'local';
-  if (!isBackendName(rawBackendName)) {
+  const rawBackendName = options.backend || config.security.secretBackend || 'auto';
+  if (!isConfiguredBackendName(rawBackendName)) {
     logger.error(`Invalid backend: ${rawBackendName}`);
-    logger.dim(`Valid backends: ${BACKEND_NAMES.join(', ')}`);
+    logger.dim(`Valid backends: ${CONFIGURABLE_BACKEND_NAMES.join(', ')}`);
     return;
   }
-  const backendName = rawBackendName;
+  const backendName =
+    rawBackendName === 'auto' ? await resolver.getEffectiveBackendName() : rawBackendName;
 
-  prompts.intro(`tuck secrets test (${backendName})`);
+  prompts.intro(
+    rawBackendName === 'auto'
+      ? `tuck secrets test (auto -> ${backendName})`
+      : `tuck secrets test (${backendName})`
+  );
 
   const spinner = prompts.spinner();
   spinner.start('Checking backend availability...');
@@ -794,25 +951,35 @@ export const secretsCommand = new Command('secrets')
   .addCommand(
     new Command('list')
       .description('List all stored secrets (values hidden)')
-      .action(runSecretsList)
+      .option('--json', 'Emit JSON envelope to stdout (values are never included)')
+      .action((options: JsonOptions) => runSecretsList(options))
   )
   .addCommand(
     new Command('set')
       .description('Set a secret value (prompts securely)')
       .argument('<name>', 'Secret name (e.g., GITHUB_TOKEN)')
-      .action(runSecretsSet)
+      .option('--json', 'Emit JSON envelope to stdout (value is never echoed)')
+      .option('-y, --yes', 'Non-interactive: read value from TUCK_SECRET_VALUE')
+      .action((name: string, options: SecretsSetOptions) => runSecretsSet(name, options))
   )
   .addCommand(
     new Command('unset')
       .description('Remove a secret')
       .argument('<name>', 'Secret name to remove')
-      .action(runSecretsUnset)
+      .option('--json', 'Emit JSON envelope to stdout')
+      .action((name: string, options: JsonOptions) => runSecretsUnset(name, options))
   )
-  .addCommand(new Command('path').description('Show path to secrets file').action(runSecretsPath))
+  .addCommand(
+    new Command('path')
+      .description('Show path to secrets file')
+      .option('--json', 'Emit JSON envelope to stdout')
+      .action((options: JsonOptions) => runSecretsPath(options))
+  )
   .addCommand(
     new Command('scan')
       .description('Scan files for secrets')
       .argument('[paths...]', 'Files to scan')
+      .option('--json', 'Emit JSON envelope to stdout')
       .action(runScanFiles)
   )
   .addCommand(
@@ -829,7 +996,7 @@ export const secretsCommand = new Command('secrets')
       .addCommand(
         new Command('set')
           .description('Set the secret backend')
-          .argument('<backend>', 'Backend name: local, 1password, bitwarden, pass')
+          .argument('<backend>', 'Backend name: auto, local, 1password, bitwarden, pass')
           .option('--vault <vault>', 'Default vault (1Password)')
           .option('--server-url <url>', 'Server URL (Bitwarden)')
           .option('--store-path <path>', 'Password store path (pass)')

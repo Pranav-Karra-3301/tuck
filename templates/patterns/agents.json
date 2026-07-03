@@ -1,0 +1,165 @@
+{
+  "$schema": "https://tuck.sh/schemas/patterns-v1.json",
+  "category": "agents",
+  "patterns": [
+    {
+      "pattern": "~/.codex/config.toml",
+      "category": "agents",
+      "description": "Codex CLI configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.codex/skills",
+      "category": "agents",
+      "description": "Codex skills",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [
+        "runs",
+        "sessions",
+        "logs"
+      ]
+    },
+    {
+      "pattern": "~/.codex/automations",
+      "category": "agents",
+      "description": "Codex automations",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [
+        "**/*.db",
+        "runs",
+        "sessions"
+      ]
+    },
+    {
+      "pattern": "~/.claude",
+      "category": "agents",
+      "description": "Claude Code config home",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [
+        "projects/**/*.jsonl",
+        "logs",
+        "cache",
+        "todos",
+        "statsig",
+        "shell-snapshots"
+      ]
+    },
+    {
+      "pattern": "~/.claude/CLAUDE.md",
+      "category": "agents",
+      "description": "Claude Code global instructions",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.claude/settings.json",
+      "category": "agents",
+      "description": "Claude Code settings",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.claude/keybindings.json",
+      "category": "agents",
+      "description": "Claude Code keybindings",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.claude/commands",
+      "category": "agents",
+      "description": "Claude Code slash commands",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.claude/hooks",
+      "category": "agents",
+      "description": "Claude Code hooks",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.claude/projects",
+      "category": "agents",
+      "description": "Claude Code project memory",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.cursor",
+      "category": "agents",
+      "description": "Cursor editor config home",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.cursorrules",
+      "category": "agents",
+      "description": "Cursor rules (user-level)",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.aider.conf.yml",
+      "category": "agents",
+      "description": "Aider configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.aider.input.history",
+      "category": "agents",
+      "description": "Aider input history (may contain prompts)",
+      "sensitive": true,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/aider",
+      "category": "agents",
+      "description": "Aider configuration directory",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/openclaw",
+      "category": "agents",
+      "description": "OpenClaw configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.mcp.json",
+      "category": "agents",
+      "description": "Global MCP server manifest",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/mcp",
+      "category": "agents",
+      "description": "MCP server manifests",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    }
+  ]
+}

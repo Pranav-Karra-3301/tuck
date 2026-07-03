@@ -1,7 +1,21 @@
 import simpleGit, { SimpleGit, StatusResult } from 'simple-git';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { GitError } from '../errors.js';
 import { pathExists } from './paths.js';
 import { join } from 'path';
+import { readdir } from 'fs/promises';
+import { REPO_STAGE_BLOCKLIST } from './state.js';
+import { GIT_OPERATION_TIMEOUTS } from './validation.js';
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Upper bound on the buffered output of a single git child process. Mirrors
+ * CustomProvider.cloneRepo so a hostile/huge remote cannot make tuck buffer
+ * unbounded data into memory during a clone.
+ */
+const CLONE_MAX_BUFFER = 10 * 1024 * 1024; // 10MB
 
 export interface GitStatus {
   isRepo: boolean;
@@ -47,8 +61,18 @@ export const initRepo = async (dir: string): Promise<void> => {
 
 export const cloneRepo = async (url: string, dir: string): Promise<void> => {
   try {
-    const git = simpleGit();
-    await git.clone(url, dir);
+    // Bound the clone: a hung or hostile remote must never let `tuck init` /
+    // `tuck apply` hang forever, nor buffer unbounded output into memory.
+    //
+    // We shell out to `git clone` via Node's `execFile` (mirroring
+    // CustomProvider.cloneRepo) instead of simple-git, because simple-git v3
+    // does NOT forward `maxBuffer` to the underlying child process — only its
+    // `timeout.block` is honored, so the memory bound would silently be a no-op.
+    // `execFile`'s own `timeout` kills the process and `maxBuffer` caps output.
+    await execFileAsync('git', ['clone', url, dir], {
+      timeout: GIT_OPERATION_TIMEOUTS.CLONE,
+      maxBuffer: CLONE_MAX_BUFFER,
+    });
   } catch (error) {
     throw new GitError(`Failed to clone repository from ${url}`, String(error));
   }
@@ -69,6 +93,38 @@ export const removeRemote = async (dir: string, name: string): Promise<void> => 
     await git.removeRemote(name);
   } catch (error) {
     throw new GitError('Failed to remove remote', String(error));
+  }
+};
+
+/**
+ * Point an existing remote at a new URL (`git remote set-url <name> <url>`).
+ */
+export const setRemoteUrl = async (dir: string, name: string, url: string): Promise<void> => {
+  try {
+    const git = createGit(dir);
+    await git.remote(['set-url', name, url]);
+  } catch (error) {
+    throw new GitError('Failed to set remote url', String(error));
+  }
+};
+
+/**
+ * Idempotently configure a remote: if it already exists, update its URL in
+ * place; otherwise add it. This avoids the remove-then-add race (a transient
+ * state with NO origin) that breaks concurrent/repeated reconfiguration.
+ */
+export const upsertRemote = async (dir: string, name: string, url: string): Promise<void> => {
+  try {
+    if (await hasRemote(dir, name)) {
+      await setRemoteUrl(dir, name, url);
+    } else {
+      await addRemote(dir, name, url);
+    }
+  } catch (error) {
+    if (error instanceof GitError) {
+      throw error;
+    }
+    throw new GitError('Failed to upsert remote', String(error));
   }
 };
 
@@ -116,8 +172,31 @@ export const stageFiles = async (dir: string, files: string[]): Promise<void> =>
 export const stageAll = async (dir: string): Promise<void> => {
   try {
     const git = createGit(dir);
-    await git.add('.');
+
+    // Never `git add --all` over unresolved conflicts: that stages files still
+    // containing '<<<<<<<'/'>>>>>>>' markers and a subsequent commit would bake
+    // the corruption into history. Bail out and let the caller resolve first.
+    const status = await git.status();
+    const conflicted = status.conflicted ?? [];
+    if (conflicted.length > 0) {
+      throw new GitError(
+        'Refusing to stage files while merge conflicts are unresolved',
+        `Resolve conflicts (${conflicted.slice(0, 3).join(', ')}) or run 'git merge --abort'`
+      );
+    }
+
+    const entries = await readdir(dir, { withFileTypes: true });
+    const stageTargets = entries
+      .map((entry) => entry.name)
+      .filter((name) => !REPO_STAGE_BLOCKLIST.has(name));
+
+    if (stageTargets.length === 0) {
+      return;
+    }
+
+    await git.raw(['add', '--all', '--', ...stageTargets]);
   } catch (error) {
+    if (error instanceof GitError) throw error;
     throw new GitError('Failed to stage all files', String(error));
   }
 };
@@ -130,6 +209,16 @@ export const commit = async (dir: string, message: string): Promise<string> => {
   } catch (error) {
     throw new GitError('Failed to commit', String(error));
   }
+};
+
+/**
+ * True only for HTTPS github.com remotes. `gh auth setup-git` rewrites GLOBAL
+ * git credential routing for github.com/gist.github.com, so it must never run
+ * for GitLab, Gitea, SSH, or any non-GitHub remote — doing so would silently
+ * hijack credential handling for every repo on the machine.
+ */
+const isHttpsGitHubRemote = (url: string): boolean => {
+  return /^https:\/\/(www\.)?github\.com\//i.test(url.trim());
 };
 
 /**
@@ -162,9 +251,16 @@ export const push = async (
   options?: { remote?: string; branch?: string; force?: boolean; setUpstream?: boolean }
 ): Promise<void> => {
   try {
-    // Ensure git can use gh credentials if available
-    await ensureGitCredentials();
-    
+    const remote = options?.remote || 'origin';
+
+    // Only wire up gh credentials for HTTPS github.com remotes. Running
+    // `gh auth setup-git` for a GitLab/custom/SSH remote would rewrite the
+    // user's GLOBAL github.com credential routing for every repo on the machine.
+    const remoteUrl = await getRemoteUrl(dir, remote);
+    if (remoteUrl && isHttpsGitHubRemote(remoteUrl)) {
+      await ensureGitCredentials();
+    }
+
     const git = createGit(dir);
     const args: string[] = [];
 
@@ -175,7 +271,6 @@ export const push = async (
       args.push('--force');
     }
 
-    const remote = options?.remote || 'origin';
     const branch = options?.branch;
 
     if (branch) {
@@ -222,18 +317,43 @@ export const fetch = async (dir: string, remote = 'origin'): Promise<void> => {
   }
 };
 
+/**
+ * Count how many commits the local HEAD is behind `<remote>/<branch>`.
+ *
+ * `getStatus().behind` is derived from the upstream tracking ref and reports 0
+ * whenever the branch has no upstream — even if the remote holds commits. After
+ * a fetch this walks `HEAD..<remote>/<branch>` directly, so it stays accurate
+ * without an upstream. Returns null when the remote branch does not exist
+ * (nothing to compare against).
+ */
+export const countCommitsBehindRemote = async (
+  dir: string,
+  branch: string,
+  remote = 'origin'
+): Promise<number | null> => {
+  try {
+    const git = createGit(dir);
+    const out = await git.raw(['rev-list', '--count', `HEAD..${remote}/${branch}`]);
+    const count = Number.parseInt(out.trim(), 10);
+    return Number.isNaN(count) ? null : count;
+  } catch {
+    // No such remote-tracking ref (e.g. the branch was never pushed).
+    return null;
+  }
+};
+
 export const getLog = async (
   dir: string,
   options?: { maxCount?: number; since?: string }
 ): Promise<GitCommit[]> => {
   try {
     const git = createGit(dir);
-    const logOptions: { maxCount?: number; from?: string } = {
+    const logOptions: { maxCount?: number; '--since'?: string } = {
       maxCount: options?.maxCount || 10,
     };
 
     if (options?.since) {
-      logOptions.from = options.since;
+      logOptions['--since'] = options.since;
     }
 
     const log = await git.log(logOptions);

@@ -6,11 +6,13 @@
  * placeholders in dotfiles.
  */
 
-import { readFile, writeFile, chmod, stat } from 'fs/promises';
+import { readFile, chmod, stat } from 'fs/promises';
 import { join } from 'path';
 import { ensureDir } from 'fs-extra';
 import { pathExists } from '../paths.js';
+import { atomicWriteFile } from '../files.js';
 import { secretsStoreSchema, type SecretsStore } from '../../schemas/secrets.schema.js';
+import { ensureRuntimeArtifactsGitignored } from '../state.js';
 
 // File permission constants
 const SECRETS_FILE_MODE = 0o600; // Owner read/write only (rw-------)
@@ -104,9 +106,12 @@ export const saveSecretsStore = async (tuckDir: string, store: SecretsStore): Pr
   }
 
   const content = JSON.stringify(store, null, 2) + '\n';
-  await writeFile(secretsPath, content, 'utf-8');
+  // Atomic write with owner-only mode set on the temp file BEFORE the rename,
+  // so the plaintext secrets store is never briefly world/group-readable and a
+  // crash mid-write can't truncate the only cleartext copy of real secrets.
+  await atomicWriteFile(secretsPath, content, { mode: SECRETS_FILE_MODE });
 
-  // Security: Set file permissions to owner read/write only (0600)
+  // Belt-and-suspenders: re-assert 0600 (and surface the Windows caveat).
   try {
     await chmod(secretsPath, SECRETS_FILE_MODE);
   } catch {
@@ -297,24 +302,7 @@ export const touchSecrets = async (tuckDir: string, names: string[]): Promise<vo
  * Ensure the secrets file is in .gitignore
  */
 export const ensureSecretsGitignored = async (tuckDir: string): Promise<void> => {
-  const gitignorePath = join(tuckDir, '.gitignore');
-
-  let gitignoreContent = '';
-  if (await pathExists(gitignorePath)) {
-    gitignoreContent = await readFile(gitignorePath, 'utf-8');
-  }
-
-  // Check if already ignored
-  if (gitignoreContent.includes(SECRETS_FILENAME)) {
-    return;
-  }
-
-  // Add to .gitignore
-  const newContent = gitignoreContent.trim()
-    ? `${gitignoreContent.trim()}\n\n# Local secrets (NEVER commit)\n${SECRETS_FILENAME}\n`
-    : `# Local secrets (NEVER commit)\n${SECRETS_FILENAME}\n`;
-
-  await writeFile(gitignorePath, newContent, 'utf-8');
+  await ensureRuntimeArtifactsGitignored(tuckDir);
 };
 
 // ============================================================================

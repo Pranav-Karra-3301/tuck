@@ -1,0 +1,42 @@
+{
+  "$schema": "https://tuck.sh/schemas/patterns-v1.json",
+  "category": "macos",
+  "patterns": [
+    {
+      "pattern": "~/.finicky.js",
+      "category": "macos",
+      "description": "Finicky browser picker",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "darwin"
+    },
+    {
+      "pattern": "~/.config/karabiner",
+      "category": "macos",
+      "description": "Karabiner key remapping",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "darwin"
+    },
+    {
+      "pattern": "~/.hammerspoon",
+      "category": "macos",
+      "description": "Hammerspoon automation",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "darwin"
+    },
+    {
+      "pattern": "~/.config/raycast",
+      "category": "macos",
+      "description": "Raycast config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "darwin"
+    }
+  ]
+}

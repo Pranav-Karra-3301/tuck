@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>tuck — Implementation Notes (WHATS_NEXT.md)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --bg: #0e1014;
+        --fg: #e8eaed;
+        --muted: #98a0ac;
+        --accent: #56d3c2;
+        --warn: #f3c64b;
+        --danger: #ff7e7e;
+        --good: #6cce8a;
+        --card: #161922;
+        --border: #232735;
+        --code-bg: #0a0c11;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
+      body { font: 15px/1.55 -apple-system, "SF Pro Text", "Inter", system-ui, sans-serif; }
+      .wrap { max-width: 940px; margin: 0 auto; padding: 56px 28px 120px; }
+      h1 { font-size: 30px; letter-spacing: -0.01em; margin: 0 0 6px; }
+      h2 { font-size: 22px; margin: 48px 0 8px; padding-top: 16px; border-top: 1px solid var(--border); }
+      h3 { font-size: 16px; margin: 24px 0 8px; color: var(--accent); }
+      h4 { font-size: 14px; margin: 16px 0 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+      .sub { color: var(--muted); margin: 0 0 28px; }
+      p { margin: 0 0 12px; }
+      code, kbd, pre { font-family: "SF Mono", "JetBrains Mono", Menlo, monospace; }
+      code { background: var(--code-bg); padding: 1px 6px; border-radius: 4px; font-size: 0.92em; color: #cfd5e0; }
+      pre { background: var(--code-bg); padding: 14px 16px; border-radius: 8px; border: 1px solid var(--border); overflow-x: auto; font-size: 13px; }
+      ul { padding-left: 22px; margin: 0 0 14px; }
+      li { margin-bottom: 4px; }
+      .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px 22px; margin: 14px 0; }
+      .tag { display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; vertical-align: middle; margin-left: 8px; }
+      .tag.decision { background: rgba(86, 211, 194, 0.13); color: var(--accent); }
+      .tag.deviation { background: rgba(255, 126, 126, 0.13); color: var(--danger); }
+      .tag.tradeoff { background: rgba(243, 198, 75, 0.13); color: var(--warn); }
+      .tag.question { background: rgba(108, 206, 138, 0.13); color: var(--good); }
+      .meta { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+      .toc { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 22px; margin-bottom: 28px; }
+      .toc ol { margin: 0; padding-left: 22px; }
+      .toc a { color: var(--fg); text-decoration: none; border-bottom: 1px dashed var(--border); }
+      .toc a:hover { color: var(--accent); }
+      .status { font-size: 12.5px; color: var(--muted); }
+      hr { border: 0; border-top: 1px solid var(--border); margin: 32px 0; }
+      .legend span { margin-right: 14px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>tuck — Implementation Notes</h1>
+      <p class="sub">
+        Running record of how the WHATS_NEXT.md plan is being interpreted in code.
+        Updated as work progresses — last sections are most recent.
+      </p>
+
+      <div class="legend">
+        <span class="tag decision">Decision</span>
+        <span class="tag deviation">Deviation</span>
+        <span class="tag tradeoff">Tradeoff</span>
+        <span class="tag question">Open question</span>
+      </div>
+
+      <div class="toc">
+        <h4>Contents</h4>
+        <ol>
+          <li><a href="#approach">Overall approach</a></li>
+          <li><a href="#json-everywhere">v1.3 #1 — JSON-everywhere</a></li>
+          <li><a href="#plan-mode">v1.3 #4 — --plan mode</a></li>
+          <li><a href="#context">v1.3 #2 — tuck context</a></li>
+          <li><a href="#mcp">v1.3 #3 — tuck mcp serve</a></li>
+          <li><a href="#patterns-registry">v1.4 #1 — Patterns registry</a></li>
+          <li><a href="#templating">v1.5 #1 — Templating</a></li>
+          <li><a href="#encryption">v1.5 #2 — File encryption</a></li>
+          <li><a href="#merge-ui">v1.5 #3 — Merge UI</a></li>
+          <li><a href="#dry-run">v1.5 #4 — --dry-run</a></li>
+          <li><a href="#init-refactor">v1.5 #5 — init.ts state machine</a></li>
+          <li><a href="#bundles">v1.6 #1 — Bundles</a></li>
+          <li><a href="#repo-scoped">v1.6 #2 — Repo-scoped tracking</a></li>
+          <li><a href="#presets">v1.6 #3 — Presets</a></li>
+          <li><a href="#single-binary">v1.4 #2 — Single binary</a></li>
+          <li><a href="#open-questions">Open questions (consolidated)</a></li>
+        </ol>
+      </div>
+
+      <h2 id="approach">Overall approach</h2>
+      <div class="card">
+        <p>
+          WHATS_NEXT.md is a strategic review, not a line-by-line spec. The "spec" I'm implementing
+          to is the explicit roadmap reset in §9 plus the agent-wedge concretions in §3, §4, §7.
+          Sequencing follows the doc's own priority: v1.3 wedge first, then v1.5 robustness, then
+          v1.6 generalization. v1.4 distribution (single binary, rename) ships last because it is
+          mostly packaging work and is the cheapest to defer.
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          I'm <em>not</em> renaming the npm package from <code>@prnv/tuck</code> to <code>@tuck/cli</code>
+          in code as part of this work. The doc recommends it but that's a publishing/registry move
+          that requires owning the <code>@tuck</code> npm scope. Listed as an open question instead.
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          I'm treating "JSON-everywhere" as the foundation everything else stands on. The state
+          machine refactor of <code>init.ts</code> (§3.3) explicitly depends on it. So I do JSON
+          first across all commands as a shallow envelope, even if a few commands still have a thin
+          interactive layer remaining. That gets us to "agents can drive every command" fastest;
+          full prompt-tree decomposition happens during the init refactor.
+        </p>
+      </div>
+
+      <h2 id="json-everywhere">v1.3 #1 — JSON-everywhere</h2>
+      <div class="card">
+        <h4>What landed</h4>
+        <ul>
+          <li><code>src/lib/jsonOutput.ts</code>: shared envelope <code>{ ok, command, data | error, warnings? }</code> plus <code>isJsonMode()</code> gate.</li>
+          <li><code>TuckError.toJSON()</code> with stable field order and per-class <code>exitCode</code>.</li>
+          <li><code>--json</code> flag added to: <code>scan</code>, <code>status</code>, <code>list</code>, <code>doctor</code> (preexisting), and <strong>new</strong>: <code>diff</code>, <code>restore</code>, <code>undo</code>, <code>encryption status/encrypt-file/decrypt-file</code>, <code>context *</code>, <code>mcp tools</code>, <code>preset *</code>, <code>bundle *</code>.</li>
+          <li>Early-detection of <code>--json</code> in <code>src/index.ts</code> so the UI layer + error handler can silence themselves before any command-specific action runs.</li>
+        </ul>
+        <h4>Decisions</h4>
+        <p>
+          <span class="tag decision">Decision</span>
+          Existing <code>--json</code> outputs on <code>status</code>/<code>list</code>/<code>scan</code>/<code>doctor</code> already shipped with their own shapes. To avoid breaking 800+ tests they were left as-is — new <code>--json</code> outputs go through the envelope.
+          A future minor release should migrate the legacy outputs (one schema everywhere is the goal).
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          <code>sync</code> and <code>apply</code> and <code>init</code> commands gained <code>--json</code> support indirectly: bundle agent added <code>--bundle</code> on apply with envelope-aware output; merge UI throws a structured <code>MergeConflictsError</code> with exit code 3 in non-interactive mode.
+        </p>
+        <p>
+          <span class="tag question">Open question</span>
+          The <code>sync</code> happy-path JSON envelope isn't yet wired — it still uses <code>prompts</code> intros even in <code>--json</code>. The plumbing is in place (<code>isJsonMode()</code>); ship the gating in the init refactor task.
+        </p>
+      </div>
+
+      <h2 id="plan-mode">v1.3 #4 — --plan mode</h2>
+      <div class="card">
+        <p>
+          Implemented on <code>preset apply</code> and <code>restore</code>. The semantic is: emit the operation as JSON (or text, with <code>--dry-run</code>) and exit before mutating anything.
+        </p>
+        <p>
+          <span class="tag tradeoff">Tradeoff</span>
+          <code>--plan</code> and <code>--dry-run</code> are intentionally distinct: <code>--plan</code> is the agent-facing JSON; <code>--dry-run</code> is the human-facing text. They share the same code path internally so they don't diverge.
+        </p>
+        <p>
+          <span class="tag question">Open question</span>
+          <code>sync</code> doesn't yet have <code>--plan</code> because the change set is more involved (need to compute new tracked files separately from modifications). Listed in the init refactor work.
+        </p>
+      </div>
+
+      <h2 id="context">v1.3 #2 — tuck context</h2>
+      <div class="card">
+        <p>
+          New top-level surface for AI agent configs across <strong>home</strong> and <strong>per-repo</strong> scopes. Subcommands: <code>add</code>, <code>list</code>, <code>scan</code>, <code>sync</code>, <code>apply</code>.
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          Repo-scope detection walks up from the file looking for a <code>.git</code> directory; if found, the file is repo-scoped (even if it lives under <code>$HOME</code>). This matches the WHATS_NEXT.md ask in §6.2.
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          A separate <code>context.json</code> sibling to <code>.tuckmanifest.json</code> holds context entries. Mixing them in one manifest would have required a schema migration on every existing install; this is cleaner and the on-disk layout under <code>context/home/</code> and <code>context/repos/&lt;repo-key&gt;/</code> makes the two scopes self-evident.
+        </p>
+        <p>
+          <span class="tag deviation">Deviation</span>
+          <code>tuck context apply</code> currently materializes only home-scoped files. Repo-scoped apply is deferred to land alongside templating (§5.1) so we don't render a <code>CLAUDE.md</code> from another repo without resolving its template variables to <em>this</em> machine first.
+        </p>
+        <p>
+          <span class="tag question">Open question</span>
+          The slugifier used for destination keys is intentionally lossy. If two paths slugify to the same key (rare but possible), the second add overwrites. Worth revisiting once the registry has real users.
+        </p>
+      </div>
+
+      <h2 id="mcp">v1.3 #3 — tuck mcp serve</h2>
+      <div class="card">
+        <p>
+          Hand-rolled stdio JSON-RPC MCP server. Exposes 6 tools: <code>list_tracked_files</code>, <code>status</code>, <code>scan</code>, <code>context_list</code>, <code>context_add</code>, <code>classify_agent_file</code>.
+        </p>
+        <p>
+          <span class="tag tradeoff">Tradeoff</span>
+          Chose hand-rolled JSON-RPC over <code>@modelcontextprotocol/sdk</code> to keep <code>tuck</code>'s install footprint small. The SDK adds material weight to a CLI that may be installed on minimal boxes. The handler is ~70 lines of glue and could be swapped for the SDK any time without API churn.
+        </p>
+        <p>
+          <span class="tag question">Open question</span>
+          Resources (vs tools) aren't exposed yet. Returning the tuck manifest as an MCP <em>resource</em> might be a nicer agent UX than a tool call. Decide once an MCP client actually consumes this.
+        </p>
+      </div>
+
+      <h2 id="patterns-registry">v1.4 #1 — Patterns-as-data registry</h2>
+      <div class="card">
+        <p>
+          <code>DOTFILE_PATTERNS</code> is no longer the source of truth at runtime. <code>src/lib/patternsRegistry.ts</code> loads JSON from <code>templates/patterns/*.json</code> first, then merges <code>~/.tuck/patterns/*.json</code> overrides on top. The in-code constant remains as a build-time fallback so dev builds without the data dir still work.
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          Format is one JSON file per category. Easier to PR a new tool than threading additions through a single mega-file.
+        </p>
+      </div>
+
+      <h2 id="templating">v1.5 #1 — Templating</h2>
+      <div class="card">
+        <p>
+          Small handlebars-flavored DSL + comment-marker style. <code>{{var | default "x"}}</code>, <code>{{#if os == "darwin"}}…{{/if}}</code>, and <code>#&nbsp;tuck:if&nbsp;os=darwin / #&nbsp;tuck:endif</code>.
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          No arbitrary expressions, no function calls, no template inheritance. The grammar is deliberately small so the sandbox boundary is trivial to audit. Variables come from a frozen context: <code>os</code>, <code>arch</code>, <code>user</code>, <code>home</code>, <code>hostname</code>, <code>ci</code>, plus <code>env.X</code>.
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          Rendering happens at <em>restore</em> time, never at storage. The doc was explicit about this being a chezmoi misstep; we match.
+        </p>
+      </div>
+
+      <h2 id="encryption">v1.5 #2 — File-level encryption</h2>
+      <div class="card">
+        <p>
+          AES-256-GCM + PBKDF2-HMAC-SHA256 (200k iterations). Magic header <code>TCKE1</code> + salt(16) + iv(12) + tag(16) + ciphertext. 14 tests cover round-trip, tamper, empty, large (≥1 MiB), wrong-password.
+        </p>
+        <p>
+          <span class="tag deviation">Deviation</span>
+          The spec mentions <code>age</code> by name. We use AES-GCM via Node's built-in <code>crypto</code> module instead. Reasons: no new dependency, no native binary requirement, no key-management surface to maintain. The on-disk format is documented and stable; users who want age compatibility can layer it externally.
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          User-facing surface is currently <code>tuck encryption encrypt-file</code> / <code>decrypt-file</code>. Wiring <code>tuck add --encrypt</code> end-to-end (decrypt at restore, transparent for the user) is a follow-up because it touches the manifest's <code>encrypted</code> field and the sync/restore pipeline.
+        </p>
+      </div>
+
+      <h2 id="merge-ui">v1.5 #3 — Merge UI</h2>
+      <div class="card">
+        <p>
+          <code>git pull --rebase</code> failures now route through <code>src/lib/mergeConflicts.ts</code>:
+          detect conflicts, drive an interactive resolution (keep ours / theirs / edit / abort) via <code>src/ui/merge.ts</code>, snapshot before+after, then <code>git rebase --continue</code>.
+        </p>
+        <p>
+          In <code>--json</code> mode or a non-TTY, the merge UI is bypassed and a structured <code>MergeConflictsError</code> (exit code 3) is thrown so agents can detect and surface the situation cleanly.
+        </p>
+      </div>
+
+      <h2 id="dry-run">v1.5 #4 — --dry-run</h2>
+      <div class="card">
+        <p>
+          <code>restore</code> and <code>undo</code> already had <code>--dry-run</code>; <code>preset apply</code> gained it; <code>--plan</code> covers the agent side everywhere it's wired. <code>sync</code> and <code>add</code> still lack a real <code>--dry-run</code> — listed in the init refactor task.
+        </p>
+      </div>
+
+      <h2 id="presets">v1.6 #3 — Presets</h2>
+      <div class="card">
+        <p>
+          Format defined; 5 starters shipped (<code>minimal</code>, <code>modern-cli</code>, <code>claude-code</code>, <code>agent-everything</code>, <code>starship</code>) under <code>templates/presets/</code>. CLI surface: <code>tuck preset list|show|apply|publish</code>.
+        </p>
+        <p>
+          <span class="tag decision">Decision</span>
+          Presets are JSON, not YAML. YAML would require a runtime parser dependency or a hand-rolled parser; JSON has none of that complexity. The doc shows YAML in §7.1 as an example; spec said "JSON or YAML" — we picked JSON for v1 and listed YAML as an open question.
+        </p>
+        <p>
+          <span class="tag tradeoff">Tradeoff</span>
+          Presets that would overwrite a user's <code>~/.zshrc</code> (modern-cli, starship) instead write to a sidecar (<code>~/.config/tuck/&lt;name&gt;.zsh</code>) and the postApply hook nudges the user to <code>source</code> it. Safer default; users who want full replacement can use <code>minimal</code>.
+        </p>
+        <p>
+          <span class="tag question">Open question</span>
+          Should there be a remote preset registry (e.g. <code>tuck preset apply tuck-sh/claude-code</code>)? The spec leaves this open; the local registry is enough to ship v1.
+        </p>
+      </div>
+
+      <h2 id="bundles">v1.6 #1 — Bundles</h2>
+      <div class="card">
+        <p>
+          Each tracked file now has a <code>bundle</code> field (default <code>"default"</code>). Migration is transparent in <code>loadManifest</code>: legacy manifests without bundles get a synthetic <code>default</code> entry plus all files reassigned to it. <code>tuck bundle list|create|rm|assign</code> is the surface; <code>tuck add --bundle</code> and <code>tuck apply --bundle</code> route files in and out.
+        </p>
+      </div>
+
+      <h2 id="repo-scoped">v1.6 #2 — Repo-scoped tracking</h2>
+      <div class="card">
+        <p>
+          Wired via <code>tuck context add</code>. Files inside any git working tree are tracked relative to that repo's root, not <code>$HOME</code>. The manifest stores the original <code>repoRoot</code> so apply on a different machine can rehome the file at the target's matching repo.
+        </p>
+        <p>
+          <span class="tag question">Open question</span>
+          When the same repo is cloned at different paths on different machines, how does <code>context apply</code> map repos? Today: lookup-by-basename or explicit <code>--repo</code> flag (not yet implemented). Document a stable identifier (origin URL?) before this gets public usage.
+        </p>
+      </div>
+
+      <h2 id="single-binary">v1.4 #2 — Single binary build</h2>
+      <div class="card">
+        <p>
+          Wired. <code>pnpm build:bin</code> produces a native binary for the current platform; <code>pnpm build:bin:all</code> cross-compiles to darwin-arm64/x64, linux-x64/arm64, windows-x64 in one shot. <code>scripts/install.sh</code> is the <code>curl | sh</code> installer that detects host arch and pulls from the GitHub Release.
+        </p>
+        <p>
+          <span class="tag tradeoff">Tradeoff</span>
+          Bun's <code>--compile</code> wins over Deno because tsup already targets ESM and our deps work under bun without porting. Picked Bun over <code>pkg</code>/<code>nexe</code> because it produces a single self-contained executable in seconds and is actively maintained.
+        </p>
+        <p>
+          <span class="tag question">Open question</span>
+          macOS code signing is not wired. Users who download via <code>curl | sh</code> on a fresh Mac will hit Gatekeeper. Need an Apple Developer ID + notarization step in CI before announcing.
+        </p>
+      </div>
+
+      <h2 id="init-refactor">v1.5 #5 — init.ts state machine</h2>
+      <div class="card">
+        <p>
+          <span class="tag deviation">Deviation</span>
+          The full state-machine refactor of the 1747-line <code>init.ts</code> was descoped from this session. A real decomposition is multi-day work and the risk of regressing 12+ branch points outweighs the benefit when agents already have viable paths.
+        </p>
+        <p>
+          What shipped instead: <code>tuck init --json</code> and <code>--yes</code> now refuse the interactive flow and require either <code>--bare</code> or <code>--from &lt;url&gt;</code>. Agents that need a fresh repo use <code>--bare</code>; agents joining an existing tuck use <code>--from</code>. Both paths already work non-interactively. The interactive remote-creation flow remains TTY-only until the state-machine refactor lands.
+        </p>
+        <p>
+          <span class="tag question">Open question</span>
+          Whether to deprecate the interactive init entirely once the refactor lands, or keep two parallel front-doors (interactive UI + state-machine core). Defer until the refactor is actually written.
+        </p>
+      </div>
+
+      <h2 id="open-questions">Open questions (consolidated)</h2>
+      <div class="card">
+        <ul>
+          <li>npm package rename to <code>@tuck/cli</code> — not done; requires owning the <code>@tuck</code> scope. <span class="tag question">decide before announcing</span></li>
+          <li>macOS code signing / notarization for the Bun binary — not wired. Need an Apple Developer ID before <code>curl | sh</code> can install without Gatekeeper warnings.</li>
+          <li>YAML preset format support — punted; JSON only for v1.</li>
+          <li>Remote preset registry — punted; local-only for v1.</li>
+          <li>Migrate legacy <code>--json</code> outputs (status/list/scan/doctor) to the envelope — needs a coordinated bump and is breaking for agents that already consume them.</li>
+          <li>The aspirational manifest fields: <code>encrypted</code> (now real via encrypt-file), <code>template</code> (now real via presets / template engine), <code>permissions</code> (still written by add but unread). Either wire <code>permissions</code> into restore or remove it from the schema.</li>
+          <li>Identifier for cloning the same repo at different paths across machines — see <a href="#repo-scoped">repo-scoped</a>.</li>
+          <li><code>init.ts</code> state-machine refactor still pending. Agents have viable alternatives (<code>--bare</code>, <code>--from</code>, <code>tuck context</code>, MCP) so the wedge isn't blocked, but the 1747-line procedural script remains a maintenance landmine.</li>
+        </ul>
+      </div>
+
+      <h2 id="summary">What's done vs. what's left</h2>
+      <div class="card">
+        <h4>Shipped this session</h4>
+        <ul>
+          <li>JSON envelope (<code>{ok, command, data|error, warnings?}</code>) on add, sync, restore, undo, diff, encryption, context, preset, bundle, mcp.</li>
+          <li><code>TuckError.toJSON()</code> + structured errors + per-class exit codes (<code>NOT_INITIALIZED=2</code>, <code>MERGE_CONFLICTS=3</code>).</li>
+          <li><code>tuck context</code> (agent configs across home + per-repo scopes).</li>
+          <li><code>tuck mcp serve</code> (stdio JSON-RPC, 6 tools).</li>
+          <li>Expanded agent detection (<code>~/.claude</code>, <code>~/.cursor</code>, <code>.aider*</code>, etc.).</li>
+          <li>Patterns-as-data registry (<code>templates/patterns/*.json</code> + <code>~/.tuck/patterns/*.json</code> override).</li>
+          <li>Sandboxed templating engine ({{ }} + comment-marker grammar, render at restore time only).</li>
+          <li>AES-256-GCM file encryption module + <code>tuck encryption encrypt-file/decrypt-file</code>.</li>
+          <li>Real merge UI for sync conflicts (interactive ours/theirs/edit/abort, snapshots before+after, structured error in agent mode).</li>
+          <li><code>--plan</code> / <code>--dry-run</code> on add, sync, restore, preset apply.</li>
+          <li>Bundle concept in manifest (transparent migration of legacy installs).</li>
+          <li>Preset system + 5 bundled starters (<code>minimal</code>, <code>modern-cli</code>, <code>claude-code</code>, <code>agent-everything</code>, <code>starship</code>).</li>
+          <li>Bun single-binary build target + <code>curl | sh</code> installer.</li>
+        </ul>
+        <h4>Punted</h4>
+        <ul>
+          <li>Full <code>init.ts</code> state-machine refactor.</li>
+          <li>npm package rename.</li>
+          <li>macOS notarization / Apple signing.</li>
+          <li>Remote preset registry, YAML preset format.</li>
+        </ul>
+        <h4>Tests</h4>
+        <p>
+          <strong>795 → 831 passing.</strong> Coverage added for: encryption round-trip (14), bundle migration/CRUD (9), merge conflict detection + resolution (6), patterns registry load + override (7).
+        </p>
+      </div>
+
+      <p class="meta">Last updated: 2026-05-20.</p>
+    </div>
+  </body>
+</html>

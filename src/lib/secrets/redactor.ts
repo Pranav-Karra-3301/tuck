@@ -116,34 +116,36 @@ export const redactContent = (
   placeholderMap: Map<string, string> // secret value -> placeholder name
 ): RedactionResult => {
   let redactedContent = content;
-  const replacements: RedactionResult['replacements'] = [];
 
-  // Process all matches and replace secret values with placeholders
-  // Note: The split/join approach processes content multiple times, which could be
-  // optimized for large files by processing matches in reverse order by position.
-  // However, this approach is simpler and works well for typical config files.
-  for (const match of matches) {
-    const placeholderName = placeholderMap.get(match.value) || match.placeholder;
-    const placeholder = formatPlaceholder(placeholderName);
+  // Replace LONGEST values first. If a shorter detected secret is a literal
+  // substring of a longer one, replacing the shorter first would rewrite the
+  // longer secret's prefix and leave its remaining characters in cleartext
+  // (and orphan the longer placeholder). Length-descending order avoids this.
+  const ordered = [...matches].sort((a, b) => b.value.length - a.value.length);
 
-    // Replace all occurrences of this secret value
-    // Use a temporary marker to avoid replacing already-replaced content
-    // Security: Use crypto.randomBytes for unpredictable temp markers
+  for (const match of ordered) {
+    const placeholder = formatPlaceholder(placeholderMap.get(match.value) || match.placeholder);
+
+    // Replace all occurrences of this secret value. Use a temporary marker to
+    // avoid replacing already-replaced content.
+    // Security: Use crypto.randomBytes for unpredictable temp markers.
     const tempMarker = `__TUCK_TEMP_${randomBytes(16).toString('hex')}__`;
     redactedContent = redactedContent.split(match.value).join(tempMarker);
     redactedContent = redactedContent.split(tempMarker).join(placeholder);
-
-    replacements.push({
-      placeholder: placeholderName,
-      originalValue: match.value,
-      line: match.line,
-    });
   }
+
+  // Build the replacements report in original (line) order, then reverse — this
+  // preserves the prior contract (last line first) independent of replace order.
+  const replacements: RedactionResult['replacements'] = matches.map((match) => ({
+    placeholder: placeholderMap.get(match.value) || match.placeholder,
+    originalValue: match.value,
+    line: match.line,
+  }));
 
   return {
     originalContent: content,
     redactedContent,
-    replacements: replacements.reverse(), // Return in reverse line order (last line first) so callers can safely apply replacements without affecting subsequent line positions
+    replacements: replacements.reverse(), // reverse line order (last line first)
   };
 };
 
@@ -190,8 +192,12 @@ export const restoreContent = (
     const fullPlaceholder = match[0];
 
     if (placeholderName in secrets) {
-      // Replace this placeholder with actual value
-      restoredContent = restoredContent.replaceAll(fullPlaceholder, secrets[placeholderName]);
+      // Replace this placeholder with the actual value. Use a replacer FUNCTION
+      // (not the string form) so `$`-sequences in the secret ($&, $$, $`, $<n>)
+      // are inserted literally instead of being interpreted as replacement
+      // patterns, which would silently corrupt the restored credential.
+      const value = secrets[placeholderName];
+      restoredContent = restoredContent.replaceAll(fullPlaceholder, () => value);
       restored++;
     } else if (!seenUnresolved.has(placeholderName)) {
       // Track unresolved placeholders
@@ -310,6 +316,12 @@ export const restoreFiles = async (
     const expandedPath = expandPath(filepath);
 
     if (!(await pathExists(expandedPath))) {
+      continue;
+    }
+
+    // Secret placeholders are per-file; a tracked DIRECTORY has no content to
+    // restore at the directory level (and readFile on a dir throws EISDIR).
+    if ((await stat(expandedPath)).isDirectory()) {
       continue;
     }
 
@@ -440,6 +452,12 @@ export const restoreFilesWithResolver = async (
     const expandedPath = expandPath(filepath);
 
     if (!(await pathExists(expandedPath))) {
+      continue;
+    }
+
+    // Secret placeholders are per-file; a tracked DIRECTORY has no content to
+    // restore at the directory level (and readFile on a dir throws EISDIR).
+    if ((await stat(expandedPath)).isDirectory()) {
       continue;
     }
 

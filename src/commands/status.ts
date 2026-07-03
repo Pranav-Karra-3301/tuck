@@ -12,14 +12,13 @@ import { prompts } from '../ui/prompts.js';
 import {
   getTuckDir,
   collapsePath,
-  expandPath,
-  pathExists,
   validateSafeSourcePath,
   getSafeRepoPathFromDestination,
 } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import { getStatus, hasRemote, getRemoteUrl, getCurrentBranch } from '../lib/git.js';
-import { getFileChecksum } from '../lib/files.js';
+import { computeStateModel, type FileState } from '../lib/stateModel.js';
+import { setJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import { loadTuckignore } from '../lib/tuckignore.js';
 import { NotInitializedError } from '../errors.js';
 import { VERSION } from '../constants.js';
@@ -50,49 +49,65 @@ interface TuckStatus {
 // Status Detection
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const detectFileChanges = async (tuckDir: string): Promise<FileChange[]> => {
-  const files = await getAllTrackedFiles(tuckDir);
-  const ignoredPaths = await loadTuckignore(tuckDir);
-  const changes: FileChange[] = [];
+/**
+ * Map a state-model classification onto the coarse status/short-status label.
+ * `ok` and `unknown-repo` (a repo-scoped file whose repo is not bound on this
+ * machine) produce no change entry. Returns null for those.
+ */
+const stateToChangeStatus = (state: FileState): FileChange['status'] | null => {
+  switch (state) {
+    case 'drift-local':
+    case 'drift-repo':
+    case 'missing-repo':
+      return 'modified';
+    case 'missing-live':
+    case 'missing-both':
+      return 'deleted';
+    default:
+      // 'ok' | 'unknown-repo'
+      return null;
+  }
+};
 
-  for (const [, file] of Object.entries(files)) {
+export const detectFileChanges = async (tuckDir: string): Promise<FileChange[]> => {
+  const ignoredPaths = await loadTuckignore(tuckDir);
+
+  // Defense-in-depth: reject unsafe HOME-scoped manifest entries up front (a
+  // corrupt/hand-edited manifest must not point status at arbitrary paths).
+  // Repo-scoped entries live OUTSIDE $HOME by design and are keyed by
+  // `<repoKey>:<repoRelative>` rather than a filesystem path, so home-confinement
+  // does not apply — validating them here is exactly what used to crash status
+  // when run from a cwd outside $HOME. They are resolved safely below.
+  const files = await getAllTrackedFiles(tuckDir);
+  for (const file of Object.values(files)) {
+    if (file.scope === 'repo') {
+      continue;
+    }
     validateSafeSourcePath(file.source);
     getSafeRepoPathFromDestination(tuckDir, file.destination);
+  }
 
-    if (ignoredPaths.has(file.source)) {
+  // Use the shared state model so status agrees with verify/sync/diff and is
+  // template-, encryption-, and repo-scope-aware. The old raw-checksum compare
+  // reported encrypted/template files as permanently "modified" (live plaintext
+  // hash can never equal repo ciphertext) and mis-resolved repo-scoped entries.
+  const entries = await computeStateModel(tuckDir);
+  const changes: FileChange[] = [];
+
+  for (const entry of entries) {
+    if (ignoredPaths.has(entry.source)) {
       continue;
     }
-
-    const sourcePath = expandPath(file.source);
-
-    if (!(await pathExists(sourcePath))) {
-      changes.push({
-        path: file.source,
-        status: 'deleted',
-        source: file.source,
-        destination: file.destination,
-      });
+    const status = stateToChangeStatus(entry.state);
+    if (!status) {
       continue;
     }
-
-    try {
-      const sourceChecksum = await getFileChecksum(sourcePath);
-      if (sourceChecksum !== file.checksum) {
-        changes.push({
-          path: file.source,
-          status: 'modified',
-          source: file.source,
-          destination: file.destination,
-        });
-      }
-    } catch {
-      changes.push({
-        path: file.source,
-        status: 'modified',
-        source: file.source,
-        destination: file.destination,
-      });
-    }
+    changes.push({
+      path: entry.source,
+      status,
+      source: entry.source,
+      destination: entry.destination,
+    });
   }
 
   return changes;
@@ -310,7 +325,8 @@ const printShortStatus = (status: TuckStatus): void => {
 };
 
 const printJsonStatus = (status: TuckStatus): void => {
-  console.log(JSON.stringify(status, null, 2));
+  setJsonMode(true, 'tuck status');
+  emitJsonOk(status, 'tuck status');
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

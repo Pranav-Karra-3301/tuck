@@ -1,0 +1,296 @@
+{
+  "$schema": "https://tuck.sh/schemas/patterns-v1.json",
+  "category": "cli",
+  "patterns": [
+    {
+      "pattern": "~/.config/ripgrep",
+      "category": "cli",
+      "description": "Ripgrep config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.ripgreprc",
+      "category": "cli",
+      "description": "Ripgrep config (alt)",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.rgrc",
+      "category": "cli",
+      "description": "Ripgrep config (short)",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/fd",
+      "category": "cli",
+      "description": "fd find config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.fdignore",
+      "category": "cli",
+      "description": "fd ignore patterns",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/bat",
+      "category": "cli",
+      "description": "bat (better cat) config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/lsd",
+      "category": "cli",
+      "description": "lsd (better ls) config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/exa",
+      "category": "cli",
+      "description": "exa config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/eza",
+      "category": "cli",
+      "description": "eza config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.fzf.zsh",
+      "category": "cli",
+      "description": "fzf Zsh integration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.fzf.bash",
+      "category": "cli",
+      "description": "fzf Bash integration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/fzf",
+      "category": "cli",
+      "description": "fzf config directory",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.curlrc",
+      "category": "cli",
+      "description": "curl configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.wgetrc",
+      "category": "cli",
+      "description": "wget configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.netrc",
+      "category": "cli",
+      "description": "Network credentials",
+      "sensitive": true,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/aria2",
+      "category": "cli",
+      "description": "aria2 download manager",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/htop",
+      "category": "cli",
+      "description": "htop config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/btop",
+      "category": "cli",
+      "description": "btop config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/bottom",
+      "category": "cli",
+      "description": "bottom config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/glances",
+      "category": "cli",
+      "description": "Glances config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/lazygit",
+      "category": "cli",
+      "description": "Lazygit config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/lazydocker",
+      "category": "cli",
+      "description": "Lazydocker config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/ranger",
+      "category": "cli",
+      "description": "Ranger file manager",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/lf",
+      "category": "cli",
+      "description": "lf file manager",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/yazi",
+      "category": "cli",
+      "description": "Yazi file manager",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/nnn",
+      "category": "cli",
+      "description": "nnn file manager",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/zoxide",
+      "category": "cli",
+      "description": "zoxide (smart cd)",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/atuin",
+      "category": "cli",
+      "description": "Atuin shell history",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/thefuck",
+      "category": "cli",
+      "description": "thefuck config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/direnv",
+      "category": "cli",
+      "description": "direnv config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.direnvrc",
+      "category": "cli",
+      "description": "direnv config (alt)",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.ackrc",
+      "category": "cli",
+      "description": "ack search config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.agignore",
+      "category": "cli",
+      "description": "silver searcher ignore",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.editorconfig",
+      "category": "cli",
+      "description": "EditorConfig",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "%APPDATA%/lazygit/config.yml",
+      "category": "cli",
+      "description": "Lazygit config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    },
+    {
+      "pattern": "%APPDATA%/bat/config",
+      "category": "cli",
+      "description": "bat (better cat) config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    }
+  ]
+}

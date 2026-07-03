@@ -1,7 +1,9 @@
 import { Command } from 'commander';
-import { join, dirname } from 'path';
-import { readFile, writeFile, rm, chmod, stat } from 'fs/promises';
-import { ensureDir, pathExists as fsPathExists } from 'fs-extra';
+import { join, dirname, basename, resolve, isAbsolute } from 'path';
+import { readFile, writeFile, rm, chmod, stat, realpath, lstat, readlink } from 'fs/promises';
+import { ensureDir, pathExists as fsPathExists, copy } from 'fs-extra';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { tmpdir } from 'os';
 import { banner, prompts, logger, colors as c } from '../ui/index.js';
 import {
@@ -11,20 +13,28 @@ import {
   validateSafeSourcePath,
   validateSafeManifestDestination,
   validatePathWithinRoot,
+  validateSafeRepoSourcePath,
   getTuckDir,
 } from '../lib/paths.js';
+import { resolveWriteTarget, setKnownRepoRoots, allowedRoots, type RepoWriteTarget } from '../lib/writeContext.js';
+import { setFilePermissions, copyFileOrDir } from '../lib/files.js';
+import { resolveLiveTarget, resolveRepoRoot, bindRepo } from '../lib/repoScope.js';
 import { cloneRepo } from '../lib/git.js';
-import { isGhInstalled, findDotfilesRepo, ghCloneRepo, repoExists } from '../lib/github.js';
+import { isGhInstalled, ghCloneRepo, repoExists } from '../lib/github.js';
 import { createPreApplySnapshot } from '../lib/timemachine.js';
 import { smartMerge, isShellFile, generateMergePreview } from '../lib/merge.js';
 import { CATEGORIES } from '../constants.js';
-import type { TuckManifest } from '../types.js';
-import { tuckManifestSchema } from '../schemas/manifest.schema.js';
+import { type TuckManifestOutput } from '../schemas/manifest.schema.js';
+import { loadManifestFile } from '../lib/manifestFile.js';
+import { clearManifestCache } from '../lib/manifest.js';
 import { findPlaceholders, restoreContent, restoreFiles as restoreSecrets, getAllSecrets, getSecretCount } from '../lib/secrets/index.js';
 import { createResolver } from '../lib/secretBackends/index.js';
 import { loadConfig } from '../lib/config.js';
 import { IS_WINDOWS } from '../lib/platform.js';
-import { RepositoryNotFoundError } from '../errors.js';
+import { RepositoryNotFoundError, MaterializeError } from '../errors.js';
+import { getProvider, type ProviderMode, type RemoteConfig as ProviderRemoteConfig } from '../lib/providers/index.js';
+import { setJsonMode, isJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
+import { materializeForLive, keystorePassphrase, buildMaterializeCtx } from '../lib/materialize.js';
 
 // Track if Windows permission warning has been shown this session
 let windowsPermissionWarningShown = false;
@@ -66,61 +76,449 @@ const fixSecurePermissions = async (path: string): Promise<void> => {
   }
 };
 
+/**
+ * Reapply the permissions recorded in the manifest to a freshly-written file.
+ * writeFile uses the umask default, so without this a 0755 script lands
+ * non-executable and a 0600 file lands world-readable. No-op on Windows (handled
+ * inside setFilePermissions) and when no permissions were recorded.
+ */
+const applyRecordedPermissions = async (
+  writeTarget: string,
+  permissions?: string
+): Promise<void> => {
+  if (!permissions) return;
+  try {
+    await setFilePermissions(writeTarget, permissions);
+  } catch {
+    // Never fail an apply over a chmod that the filesystem rejects.
+  }
+};
+
+/**
+ * Defense against symlink TOCTOU during apply.
+ *
+ * Every other destination check in the apply path is purely LEXICAL (string
+ * validation of the intended path) and never resolves symlinks. A malicious repo
+ * can plant a symlinked path segment on the live tree (e.g. a directory entry
+ * that recreates `~/.config/app -> /etc`), after which a later write to a
+ * lexically-in-home path would follow that link and escape $HOME. Before every
+ * write we resolve the REAL path of the deepest existing ancestor of the target
+ * (following any symlinks, including the target itself when it already exists as
+ * a link) and assert the real destination still lands inside an allowed root —
+ * refusing to write THROUGH a symlinked segment. Throwing here aborts the write
+ * before any bytes or parent directories are created outside the sandbox/home.
+ */
+export const assertRealTargetWithinRoots = async (
+  writeTarget: string,
+  roots: string[]
+): Promise<void> => {
+  const resolved = resolve(writeTarget);
+
+  // Existence via lstat, NOT access(): a DANGLING symlink (target missing) still
+  // "exists" as a link and must be resolved — otherwise `writeFile` would create
+  // its target at the escaped location. access() follows the link and reports
+  // "missing", hiding the escape.
+  const linkExists = async (p: string): Promise<boolean> => {
+    try {
+      await lstat(p);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // Walk up to the deepest ancestor that exists (as a file, dir, or symlink).
+  let existing = resolved;
+  const tail: string[] = [];
+  while (!(await linkExists(existing))) {
+    tail.unshift(basename(existing));
+    const parent = dirname(existing);
+    if (parent === existing) break; // reached the filesystem root
+    existing = parent;
+  }
+
+  // This guard exists to catch symlink REDIRECTION: a repo/manifest that plants a
+  // symlinked segment so a lexically-in-bounds write follows the link and escapes
+  // the allowed roots. A write can only be redirected if some EXISTING component
+  // of its path is a symlink — a not-yet-created component cannot redirect
+  // anything. So scan the existing ancestors: if none is a symlink, no redirection
+  // is possible and the earlier lexical validators (validateSafeDestinationPath /
+  // repo-scope checks) are authoritative — allow the write. Detecting a symlink
+  // via lstat().isSymbolicLink() is reliable across real filesystems and the
+  // memfs-backed tests, unlike reconciling realpath() string forms (which diverge
+  // by separator/drive under memfs on Windows and caused out-of-home repo and
+  // sandbox writes to false-positive).
+  let symlinkedSegment = false;
+  let probe = existing;
+  let reachedRoot = false;
+  while (!reachedRoot) {
+    try {
+      if ((await lstat(probe)).isSymbolicLink()) {
+        symlinkedSegment = true;
+        break;
+      }
+    } catch {
+      // Non-existent/unreadable component: it cannot be a redirecting symlink.
+    }
+    const parent = dirname(probe);
+    if (parent === probe) reachedRoot = true; // reached the filesystem root
+    else probe = parent;
+  }
+  if (!symlinkedSegment) {
+    return;
+  }
+
+  // A symlinked segment is present — resolve `existing` to its real on-disk
+  // location, following symlinks, and confirm the real destination still lands
+  // inside an allowed root. realpath throws on a dangling symlink; fall back to
+  // readlink + the real parent so a broken-but-escaping link is still detected.
+  let realExisting: string;
+  try {
+    realExisting = await realpath(existing);
+  } catch {
+    const linkTarget = await readlink(existing).catch(() => null);
+    const realParent = await realpath(dirname(existing)).catch(() => resolve(dirname(existing)));
+    realExisting = linkTarget
+      ? isAbsolute(linkTarget)
+        ? resolve(linkTarget)
+        : resolve(realParent, linkTarget)
+      : join(realParent, basename(existing));
+  }
+  const realTarget = tail.length > 0 ? join(realExisting, ...tail) : realExisting;
+
+  // Normalize both sides the SAME way before comparing: realpath()/lstat() and
+  // node:path (sep/join) can disagree on separators, and lowercase on Windows
+  // (NTFS is case-insensitive) with the leading drive letter dropped.
+  const canonical = (p: string): string => {
+    let unified = p.replace(/\\/g, '/');
+    if (IS_WINDOWS) {
+      unified = unified.toLowerCase().replace(/^[a-z]:/, '');
+    }
+    return unified;
+  };
+
+  const realRoots = await Promise.all(
+    roots.map(async (r) => {
+      try {
+        return await realpath(r);
+      } catch {
+        return resolve(r);
+      }
+    })
+  );
+
+  const canonTarget = canonical(realTarget);
+  const contained = realRoots.some((root) => {
+    const canonRoot = canonical(root);
+    return canonTarget === canonRoot || canonTarget.startsWith(canonRoot + '/');
+  });
+  if (!contained) {
+    throw new Error(
+      `Refusing to write through a symlinked path: ${collapsePath(writeTarget)} ` +
+        `resolves to ${realTarget}, outside the allowed roots`
+    );
+  }
+};
+
+/**
+ * Resolve-symlink guard + ensure the parent directory exists, in that order:
+ * the containment check MUST run before ensureDir so we never materialize
+ * directories under an escaped (symlinked) location.
+ */
+const prepareWriteTarget = async (writeTarget: string): Promise<void> => {
+  await assertRealTargetWithinRoots(writeTarget, allowedRoots());
+  await ensureDir(dirname(writeTarget));
+};
+
+/**
+ * Apply a tracked DIRECTORY entry by copying the whole tree into place.
+ *
+ * The per-file apply loops read `repoPath` as text (for secret resolution /
+ * smart-merge), which throws EISDIR on a directory. Directory entries (e.g.
+ * `~/.config/nvim`, `~/.ssh`) are copied verbatim instead; secret/merge handling
+ * is per-file and does not apply to a directory tree.
+ */
+const applyDirectoryEntry = async (file: ApplyFile, dryRun: boolean): Promise<void> => {
+  const exists = await pathExists(file.destination);
+  if (dryRun) {
+    logger.file(exists ? 'modify' : 'add', `${collapsePath(file.destination)} (directory)`);
+    return;
+  }
+  const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
+  await prepareWriteTarget(writeTarget);
+  await copyFileOrDir(file.repoPath, writeTarget, { overwrite: true });
+  await applyRecordedPermissions(writeTarget, file.permissions);
+  await fixSecurePermissions(writeTarget);
+  logger.file(exists ? 'modify' : 'add', `${collapsePath(file.destination)} (directory)`);
+};
+
+/**
+ * True when the buffer is valid UTF-8. Used to detect binary files so they are
+ * copied verbatim rather than pushed through the text pipeline
+ * (materialize/secret-resolution/merge), whose `bytes.toString('utf8')` would
+ * replace invalid sequences with U+FFFD and silently corrupt the file.
+ */
+export const isValidUtf8 = (buf: Buffer): boolean => {
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(buf);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Apply a tracked BINARY (non-UTF-8) file by copying its repo bytes verbatim.
+ *
+ * Binary files are trackable as single entries (e.g. a font, a *.db, a keyring),
+ * and template/secret/merge processing is text-only. Copying the bytes preserves
+ * them exactly; routing them through the string pipeline would corrupt them.
+ * Only reached for non-template, non-encrypted files (those are always text once
+ * materialized).
+ */
+const applyBinaryEntry = async (file: ApplyFile, dryRun: boolean): Promise<void> => {
+  const exists = await pathExists(file.destination);
+  if (dryRun) {
+    logger.file(exists ? 'modify' : 'add', collapsePath(file.destination));
+    return;
+  }
+  const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
+  await prepareWriteTarget(writeTarget);
+  await copyFileOrDir(file.repoPath, writeTarget, { overwrite: true });
+  await applyRecordedPermissions(writeTarget, file.permissions);
+  await fixSecurePermissions(writeTarget);
+  logger.file(exists ? 'modify' : 'add', collapsePath(file.destination));
+};
+
 export interface ApplyOptions {
   merge?: boolean;
   replace?: boolean;
   dryRun?: boolean;
   force?: boolean;
   yes?: boolean;
+  /** Emit a single structured JSON envelope on stdout instead of human UI. */
+  json?: boolean;
+  /** Scope applied files to a single bundle. */
+  bundle?: string;
+  /** Bind an as-yet-unknown repo to this root before applying repo-scoped files. */
+  repoRoot?: string;
 }
 
-interface ApplyFile {
+export interface ApplyFile {
   source: string;
+  /** Absolute LIVE write target on this machine (home path or repo checkout path). */
   destination: string;
   category: string;
+  /** Path to the file's committed copy inside the cloned tuck repo (READ side). */
   repoPath: string;
+  /**
+   * Repo-write descriptor for resolveWriteTarget. Present only for repo-scoped
+   * files; absent for home-scoped files (which route through the home logic).
+   */
+  repoTarget?: RepoWriteTarget;
+  /** Recorded octal permissions (e.g. "755"), reapplied to the written file. */
+  permissions?: string;
+  /** Render the repo source as a template before writing to the live system. */
+  template: boolean;
+  /** Decrypt the repo source (TCKE1) before writing to the live system. */
+  encrypted: boolean;
 }
 
 interface ApplyResult {
   appliedCount: number;
   filesWithPlaceholders: Array<{
+    /** Display path (collapsed live destination) for warnings. */
     path: string;
     placeholders: string[];
+    /**
+     * The ACTUAL file apply wrote (resolveWriteTarget output). Local-store secret
+     * restoration must target this file — under --root it is the sandbox copy, not
+     * the operator's real ~ path (`path`). Using `path` would read/rewrite the real
+     * home file, escaping the sandbox.
+     */
+    writeTarget: string;
   }>;
+  /** repo-scoped sources skipped because their repo is unbound on this machine. */
+  skippedUnboundRepos: string[];
+}
+
+const execFileAsync = promisify(execFile);
+
+export type ApplySourceKind = 'provider-prefixed' | 'git-url' | 'local' | 'repo-id' | 'username';
+
+/** True for tar archives we know how to extract. */
+export const isTarballPath = (p: string): boolean => /\.(tar\.gz|tgz|tar)$/i.test(p);
+
+/**
+ * Classify an `apply <source>` argument. An existing LOCAL path wins over the
+ * URL/owner-repo/username interpretations (after the explicit provider: prefix),
+ * so tuck can apply from a directory or tarball with no remote — and no GitHub.
+ */
+export const classifyApplySource = (source: string, localExists: boolean): ApplySourceKind => {
+  if (/^(github|gitlab|custom):/u.test(source)) return 'provider-prefixed';
+  if (localExists) return 'local';
+  if (source.includes('://') || source.startsWith('git@')) return 'git-url';
+  if (source.includes('/')) return 'repo-id';
+  return 'username';
+};
+
+const buildProviderCloneUrl = (
+  providerMode: Extract<ProviderMode, 'github' | 'gitlab'>,
+  repoId: string,
+  remoteConfig?: ProviderRemoteConfig
+): string => {
+  const slashIndex = repoId.indexOf('/');
+  if (slashIndex <= 0 || slashIndex === repoId.length - 1) {
+    throw new RepositoryNotFoundError(repoId);
+  }
+
+  const owner = repoId.slice(0, slashIndex);
+  const repoName = repoId.slice(slashIndex + 1);
+  const provider = getProvider(providerMode, remoteConfig?.mode === providerMode ? remoteConfig : undefined);
+  return provider.buildRepoUrl(owner, repoName, 'https');
+};
+
+/**
+ * How {@link cloneSource} should materialize a resolved source.
+ *
+ * - `custom`  → clone through the CUSTOM provider's cloneRepo (file:// / full
+ *   git URLs / explicit `custom:` prefix). Carries the provider's clone
+ *   timeout/maxBuffer and never touches any github code path.
+ * - `git`     → clone a provider-BUILT URL (gitlab/github) through the capped
+ *   git.ts cloneRepo.
+ * - `github-repo-id` → a bare owner/repo resolved against github: gh-clone when
+ *   the CLI is present, otherwise a github URL BUILT via provider.buildRepoUrl
+ *   (never a hard-coded literal) cloned through git.ts.
+ */
+type CloneTransport = 'custom' | 'git' | 'github-repo-id';
+
+interface ResolvedSource {
+  repoId: string;
+  isUrl: boolean;
+  local?: 'dir' | 'tarball';
+  /** Clone transport for non-local sources (ignored when `local` is set). */
+  cloneVia?: CloneTransport;
 }
 
 /**
  * Resolve a source (username or repo URL) to a full repository identifier
  */
-const resolveSource = async (source: string): Promise<{ repoId: string; isUrl: boolean }> => {
-  // Check if it's a full URL
-  if (source.includes('://') || source.startsWith('git@')) {
-    return { repoId: source, isUrl: true };
+const resolveSource = async (source: string): Promise<ResolvedSource> => {
+  const configuredRemote = (await loadConfig(getTuckDir()))?.remote ?? { mode: 'local' as const };
+  const providerPrefixMatch = source.match(/^(github|gitlab|custom):(.*)$/u);
+
+  if (providerPrefixMatch) {
+    const providerMode = providerPrefixMatch[1] as Extract<ProviderMode, 'github' | 'gitlab' | 'custom'>;
+    const repoId = providerPrefixMatch[2];
+
+    // custom:<URL> → provider-neutral clone (custom provider). github/gitlab →
+    // a provider-BUILT URL cloned through the capped git.ts path.
+    if (providerMode === 'custom') {
+      return { repoId, isUrl: true, cloneVia: 'custom' };
+    }
+    return {
+      repoId: buildProviderCloneUrl(providerMode, repoId, configuredRemote),
+      isUrl: true,
+      cloneVia: 'git',
+    };
   }
 
-  // Check if it's a GitHub repo identifier (user/repo)
+  // A LOCAL directory or tarball — fully provider-free, no remote/GitHub needed.
+  const expandedSource = expandPath(source);
+  if (await pathExists(expandedSource)) {
+    return {
+      repoId: expandedSource,
+      isUrl: false,
+      local: isTarballPath(expandedSource) ? 'tarball' : 'dir',
+    };
+  }
+
+  // A file:// URL or full git URL (https/git@). These are provider-neutral and
+  // route through the CUSTOM provider's capped clone — never github.
+  if (source.includes('://') || source.startsWith('git@')) {
+    return { repoId: source, isUrl: true, cloneVia: 'custom' };
+  }
+
+  // Check if it's a repo identifier (owner/repo or group/subgroup/repo).
+  // Resolve against the CONFIGURED provider first, building the URL via that
+  // provider's buildRepoUrl — never an unconditional github.com.
   if (source.includes('/')) {
-    return { repoId: source, isUrl: false };
+    if (configuredRemote.mode === 'gitlab') {
+      return {
+        repoId: buildProviderCloneUrl('gitlab', source, configuredRemote),
+        isUrl: true,
+        cloneVia: 'git',
+      };
+    }
+    if (configuredRemote.mode === 'github') {
+      return {
+        repoId: buildProviderCloneUrl('github', source, configuredRemote),
+        isUrl: true,
+        cloneVia: 'git',
+      };
+    }
+
+    // No (or local) configured provider → fall back to github resolution, but
+    // still build the URL via the provider, never a hard-coded literal.
+    return { repoId: source, isUrl: false, cloneVia: 'github-repo-id' };
   }
 
   // Assume it's a username, try to find their dotfiles repo
   logger.info(`Looking for dotfiles repository for ${source}...`);
 
-  if (await isGhInstalled()) {
-    const dotfilesRepo = await findDotfilesRepo(source);
-    if (dotfilesRepo) {
-      logger.success(`Found repository: ${dotfilesRepo}`);
-      return { repoId: dotfilesRepo, isUrl: false };
+  const providerModes: Array<Extract<ProviderMode, 'github' | 'gitlab'>> =
+    configuredRemote.mode === 'gitlab' ? ['gitlab', 'github'] : ['github', 'gitlab'];
+
+  for (const mode of providerModes) {
+    if (mode === 'github' && !(await isGhInstalled())) {
+      continue;
+    }
+
+    try {
+      const provider = getProvider(mode, configuredRemote.mode === mode ? configuredRemote : undefined);
+      const dotfilesRepo = await provider.findDotfilesRepo(source);
+      if (dotfilesRepo) {
+        logger.success(`Found repository: ${dotfilesRepo}`);
+        return mode === 'github'
+          ? { repoId: dotfilesRepo, isUrl: false, cloneVia: 'github-repo-id' }
+          : {
+              repoId: buildProviderCloneUrl(mode, dotfilesRepo, configuredRemote),
+              isUrl: true,
+              cloneVia: 'git',
+            };
+      }
+    } catch {
+      continue;
     }
   }
 
   // Try common repo names
   const commonNames = ['dotfiles', 'tuck', '.dotfiles'];
-  for (const name of commonNames) {
-    const repoId = `${source}/${name}`;
-    if (await repoExists(repoId)) {
-      logger.success(`Found repository: ${repoId}`);
-      return { repoId, isUrl: false };
+  for (const mode of providerModes) {
+    for (const name of commonNames) {
+      const repoId = `${source}/${name}`;
+
+      try {
+        if (
+          mode === 'github'
+            ? await repoExists(repoId)
+            : await getProvider(
+                mode,
+                configuredRemote.mode === mode ? configuredRemote : undefined
+              ).repoExists(repoId)
+        ) {
+          logger.success(`Found repository: ${repoId}`);
+          return mode === 'github'
+            ? { repoId, isUrl: false, cloneVia: 'github-repo-id' }
+            : {
+                repoId: buildProviderCloneUrl(mode, repoId, configuredRemote),
+                isUrl: true,
+                cloneVia: 'git',
+              };
+        }
+      } catch {
+        continue;
+      }
     }
   }
 
@@ -128,31 +526,63 @@ const resolveSource = async (source: string): Promise<{ repoId: string; isUrl: b
 };
 
 /**
- * Clone the source repository to a temporary directory
+ * Clone the source repository to a temporary directory.
+ *
+ * The clone is routed by {@link ResolvedSource.cloneVia} so a provider-neutral
+ * source (file:// / full git URL / `custom:`) goes through the CUSTOM provider's
+ * capped clone instead of any github code path, and a bare owner/repo never
+ * builds a hard-coded `https://github.com/...` literal.
  */
-const cloneSource = async (repoId: string, isUrl: boolean): Promise<string> => {
+const cloneSource = async (resolved: ResolvedSource): Promise<string> => {
+  const { repoId, isUrl, local, cloneVia } = resolved;
   const tempDir = join(tmpdir(), `tuck-apply-${Date.now()}`);
   await ensureDir(tempDir);
 
-  if (isUrl) {
-    await cloneRepo(repoId, tempDir);
-  } else {
-    // Use gh CLI to clone if available, otherwise construct URL
+  if (local === 'dir') {
+    // Materialize the local source into a temp working copy (no remote).
+    await copy(repoId, tempDir, { overwrite: true });
+    return tempDir;
+  }
+
+  if (local === 'tarball') {
+    // Extract the archive into the temp dir (tar ships on macOS/Linux/Win10+).
+    await execFileAsync('tar', ['-xzf', repoId, '-C', tempDir]);
+    return tempDir;
+  }
+
+  if (cloneVia === 'custom') {
+    // file:// / full git URL / explicit custom: — clone through the custom
+    // provider (its timeout/maxBuffer), provider-neutral, never github.
+    await getProvider('custom').cloneRepo(repoId, tempDir);
+    return tempDir;
+  }
+
+  if (cloneVia === 'github-repo-id' || (!cloneVia && !isUrl)) {
+    // Bare owner/repo resolved against github: gh-clone when the CLI is present,
+    // otherwise a github URL BUILT via the provider (never a hard-coded literal)
+    // cloned through the capped git.ts path.
     if (await isGhInstalled()) {
       await ghCloneRepo(repoId, tempDir);
     } else {
-      const url = `https://github.com/${repoId}.git`;
+      const slashIndex = repoId.indexOf('/');
+      const owner = repoId.slice(0, slashIndex);
+      const repoName = repoId.slice(slashIndex + 1);
+      const url = getProvider('github').buildRepoUrl(owner, repoName, 'https');
       await cloneRepo(url, tempDir);
     }
+    return tempDir;
   }
 
+  // cloneVia === 'git' (or a legacy isUrl source): a provider-built URL cloned
+  // through the capped git.ts path.
+  await cloneRepo(repoId, tempDir);
   return tempDir;
 };
 
 /**
  * Read the manifest from a cloned repository
  */
-const readClonedManifest = async (repoDir: string): Promise<TuckManifest | null> => {
+const readClonedManifest = async (repoDir: string): Promise<TuckManifestOutput | null> => {
   const manifestPath = join(repoDir, '.tuckmanifest.json');
 
   if (!(await fsPathExists(manifestPath))) {
@@ -160,29 +590,117 @@ const readClonedManifest = async (repoDir: string): Promise<TuckManifest | null>
   }
 
   try {
-    const content = await readFile(manifestPath, 'utf-8');
-    const parsed = JSON.parse(content) as unknown;
-    return tuckManifestSchema.parse(parsed);
+    // A cloned/remote manifest is untrusted: load it through the shared,
+    // schema-validating loader so a hostile manifest is rejected before use.
+    return await loadManifestFile(manifestPath);
   } catch {
     return null;
   }
 };
 
 /**
- * Prepare the list of files to apply
+ * On a fresh machine the repo-scoped entries in the cloned manifest are not yet
+ * bound to any local checkout. `--repo-root <dir>` binds the repoKey(s) present
+ * in the manifest to that directory so the apply can place the files there.
+ *
+ * The single-repo case (the common one) binds the lone unbound repoKey to the
+ * given root. When several distinct unbound repoKeys are present we bind them
+ * all to the same root only if there is exactly one — otherwise we cannot safely
+ * guess which key the root belongs to and leave the rest unbound (skipped).
  */
-const prepareFilesToApply = async (
+const bindReposFromOption = async (
+  manifest: TuckManifestOutput,
+  repoRoot: string
+): Promise<void> => {
+  const unboundKeys = new Set<string>();
+  for (const file of Object.values(manifest.files)) {
+    if (file.scope === 'repo' && file.repoKey) {
+      if ((await resolveRepoRoot(file.repoKey)) === null) {
+        unboundKeys.add(file.repoKey);
+      }
+    }
+  }
+  // Only bind when the target is unambiguous (a single unbound repo).
+  if (unboundKeys.size === 1) {
+    const [key] = [...unboundKeys];
+    await bindRepo(key, repoRoot);
+  }
+};
+
+/**
+ * Register every bound repo root with the write context so out-of-home repo
+ * writes pass the copy/symlink guard (`allowedRoots()`).
+ */
+const registerKnownRepoRoots = async (manifest: TuckManifestOutput): Promise<void> => {
+  const roots: string[] = [];
+  for (const file of Object.values(manifest.files)) {
+    if (file.scope === 'repo' && file.repoKey) {
+      const root = await resolveRepoRoot(file.repoKey);
+      if (root) roots.push(root);
+    }
+  }
+  if (roots.length > 0) setKnownRepoRoots(roots);
+};
+
+/**
+ * Prepare the list of files to apply. Repo-scoped files are resolved to their
+ * LIVE checkout location on this machine; an unbound repo (no local checkout) is
+ * skipped — never guessed, never written to a wrong path — and reported back so
+ * callers can surface it.
+ *
+ * Unsafe manifest entries (traversal source/destination, out-of-repo path) are
+ * collected into `unsafe` and RETURNED rather than logged here: this function
+ * runs inside the MCP `apply_plan` tool where stdout is the JSON-RPC transport,
+ * so a stray `logger.warning` would corrupt the protocol stream. Each caller
+ * decides how to surface them (human logger vs addJsonWarning vs silent).
+ */
+export const prepareFilesToApply = async (
   repoDir: string,
-  manifest: TuckManifest
-): Promise<ApplyFile[]> => {
+  manifest: TuckManifestOutput,
+  bundle?: string
+): Promise<{ files: ApplyFile[]; skipped: string[]; unsafe: string[] }> => {
   const files: ApplyFile[] = [];
+  const skipped: string[] = [];
+  const unsafe: string[] = [];
 
   for (const [_id, file] of Object.entries(manifest.files)) {
+    // Scope to a single bundle when requested. Treat missing/legacy bundle
+    // values as "default" so legacy manifests stay applicable.
+    if (bundle && (file.bundle ?? 'default') !== bundle) {
+      continue;
+    }
+
+    const isRepoScoped = file.scope === 'repo';
+
     try {
-      validateSafeSourcePath(file.source);
+      if (isRepoScoped) {
+        // Repo-scoped: source is a "<repoKey>:<repoRelative>" pseudo-path that is
+        // NOT home-confined. Validate the repoRelative is a safe in-repo path.
+        if (!file.repoKey || !file.repoRelative) {
+          throw new Error('repo-scoped entry missing repoKey/repoRelative');
+        }
+        const root = await resolveRepoRoot(file.repoKey);
+        if (root) {
+          // Bound: confine the joined target within the actual repo root.
+          validateSafeRepoSourcePath(root, file.repoRelative);
+        } else {
+          // Unbound: only the structural shape of repoRelative is verifiable
+          // (no absolute, no "..") — there is no root to confine against yet.
+          const norm = file.repoRelative.replace(/\\/g, '/');
+          if (
+            norm.startsWith('/') ||
+            /^[A-Za-z]:[\\/]/.test(file.repoRelative) ||
+            norm.split('/').includes('..')
+          ) {
+            throw new Error(`Unsafe repo-relative path detected: ${file.repoRelative}`);
+          }
+        }
+      } else {
+        validateSafeSourcePath(file.source);
+      }
       validateSafeManifestDestination(file.destination);
     } catch {
-      logger.warning(`Skipping unsafe manifest entry: ${file.source}`);
+      unsafe.push(`Skipping unsafe manifest entry: ${file.source}`);
       continue;
     }
 
@@ -191,21 +709,48 @@ const prepareFilesToApply = async (
     try {
       validatePathWithinRoot(repoFilePath, repoDir, 'repository file');
     } catch {
-      logger.warning(`Skipping unsafe repository path from manifest: ${file.destination}`);
+      unsafe.push(`Skipping unsafe repository path from manifest: ${file.destination}`);
       continue;
     }
 
-    if (await fsPathExists(repoFilePath)) {
-      files.push({
-        source: file.source,
-        destination: expandPath(file.source),
-        category: file.category,
-        repoPath: repoFilePath,
-      });
+    if (!(await fsPathExists(repoFilePath))) {
+      continue;
     }
+
+    // Resolve the LIVE write location. Home files → expandPath(source). Repo files
+    // → the bound checkout path, or null when the repo is unbound on this machine.
+    const liveTarget = await resolveLiveTarget(file);
+
+    if (liveTarget === null) {
+      // Unbound repo — skip and report it. Never guess a destination.
+      skipped.push(file.source);
+      continue;
+    }
+
+    let repoTarget: RepoWriteTarget | undefined;
+    if (isRepoScoped) {
+      const root = await resolveRepoRoot(file.repoKey!);
+      // resolveLiveTarget already returned non-null → the repo is bound.
+      repoTarget = {
+        repoKey: file.repoKey!,
+        repoRelative: file.repoRelative!,
+        repoRoot: root!,
+      };
+    }
+
+    files.push({
+      source: file.source,
+      destination: liveTarget,
+      category: file.category,
+      repoPath: repoFilePath,
+      repoTarget,
+      permissions: file.permissions,
+      template: file.template,
+      encrypted: file.encrypted,
+    });
   }
 
-  return files;
+  return { files, skipped, unsafe };
 };
 
 /**
@@ -256,23 +801,63 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
   const result: ApplyResult = {
     appliedCount: 0,
     filesWithPlaceholders: [],
+    skippedUnboundRepos: [],
   };
 
   // Get tuck directory for secret resolution
   const tuckDir = getTuckDir();
+  // Template context (built-in vars + config.templates.variables), built once per apply.
+  const ctx = await buildMaterializeCtx(tuckDir);
 
   for (const file of files) {
-    let fileContent = await readFile(file.repoPath, 'utf-8');
+    // Directory entries are copied as a tree; readFile / secret-resolution /
+    // smart-merge are text-file operations that throw EISDIR on a directory.
+    if ((await stat(file.repoPath)).isDirectory()) {
+      await applyDirectoryEntry(file, dryRun);
+      result.appliedCount++;
+      continue;
+    }
+    const rawBytes = await readFile(file.repoPath);
+
+    // Binary (non-UTF-8) files that are neither templated nor encrypted must be
+    // copied byte-for-byte — the text pipeline below would UTF-8 round-trip them
+    // and replace invalid sequences with U+FFFD, silently corrupting the file.
+    if (!file.template && !file.encrypted && !isValidUtf8(rawBytes)) {
+      await applyBinaryEntry(file, dryRun);
+      result.appliedCount++;
+      continue;
+    }
+
+    let fileContent: string;
+    try {
+      fileContent = await materializeForLive(rawBytes, file, ctx, { getPassphrase: keystorePassphrase });
+    } catch (err) {
+      // A failed / absent-passphrase decryption must NEVER write ciphertext or
+      // partial output to the live system: skip this file loudly, keep the rest.
+      if (err instanceof MaterializeError) {
+        // Skip the file loudly and write NOTHING. This is NOT an unresolved secret
+        // placeholder — pushing it into filesWithPlaceholders would misreport it
+        // (as "unresolved placeholder, run tuck secrets set") AND trigger a
+        // spurious local-secret restore against a file we never wrote.
+        logger.warning(err.message);
+        if (isJsonMode()) addJsonWarning(err.message);
+        continue;
+      }
+      throw err;
+    }
 
     // Resolve placeholders using configured backend (1Password, Bitwarden, pass, or local)
     const secretsResult = await resolveFileSecrets(fileContent, tuckDir);
     fileContent = secretsResult.content;
 
-    // Track only unresolved placeholders
+    // Track only unresolved placeholders. Record the resolved write target so a
+    // later local-store secret restore rewrites the file apply ACTUALLY wrote
+    // (the sandbox copy under --root), never the operator's real ~ path.
     if (secretsResult.unresolved.length > 0) {
       result.filesWithPlaceholders.push({
         path: collapsePath(file.destination),
         placeholders: secretsResult.unresolved,
+        writeTarget: resolveWriteTarget(file.destination, file.repoTarget),
       });
     }
 
@@ -286,8 +871,12 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
           `${collapsePath(file.destination)} (${mergeResult.preservedBlocks} blocks preserved)`
         );
       } else {
-        await ensureDir(dirname(file.destination));
-        await writeFile(file.destination, mergeResult.content, 'utf-8');
+        // Confine the write under --root (no-op when not sandboxed). Repo files
+        // route through their repo descriptor so the target is the local checkout.
+        const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
+        await prepareWriteTarget(writeTarget);
+        await writeFile(writeTarget, mergeResult.content, 'utf-8');
+        await applyRecordedPermissions(writeTarget, file.permissions);
         logger.file('merge', collapsePath(file.destination));
       }
     } else {
@@ -300,10 +889,14 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
         }
       } else {
         const fileExists = await pathExists(file.destination);
+        const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
         // Write file content directly instead of copying (to preserve resolved secrets)
-        await ensureDir(dirname(file.destination));
-        await writeFile(file.destination, fileContent, 'utf-8');
-        await fixSecurePermissions(file.destination);
+        await prepareWriteTarget(writeTarget);
+        await writeFile(writeTarget, fileContent, 'utf-8');
+        // Reapply recorded permissions first (so a 0755 script lands executable),
+        // then the SSH/GPG fixup enforces its stricter floor for those dirs.
+        await applyRecordedPermissions(writeTarget, file.permissions);
+        await fixSecurePermissions(writeTarget);
         logger.file(fileExists ? 'modify' : 'add', collapsePath(file.destination));
       }
     }
@@ -321,23 +914,63 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
   const result: ApplyResult = {
     appliedCount: 0,
     filesWithPlaceholders: [],
+    skippedUnboundRepos: [],
   };
 
   // Get tuck directory for secret resolution
   const tuckDir = getTuckDir();
+  // Template context (built-in vars + config.templates.variables), built once per apply.
+  const ctx = await buildMaterializeCtx(tuckDir);
 
   for (const file of files) {
-    let fileContent = await readFile(file.repoPath, 'utf-8');
+    // Directory entries are copied as a tree; readFile / secret-resolution /
+    // smart-merge are text-file operations that throw EISDIR on a directory.
+    if ((await stat(file.repoPath)).isDirectory()) {
+      await applyDirectoryEntry(file, dryRun);
+      result.appliedCount++;
+      continue;
+    }
+    const rawBytes = await readFile(file.repoPath);
+
+    // Binary (non-UTF-8) files that are neither templated nor encrypted must be
+    // copied byte-for-byte — the text pipeline below would UTF-8 round-trip them
+    // and replace invalid sequences with U+FFFD, silently corrupting the file.
+    if (!file.template && !file.encrypted && !isValidUtf8(rawBytes)) {
+      await applyBinaryEntry(file, dryRun);
+      result.appliedCount++;
+      continue;
+    }
+
+    let fileContent: string;
+    try {
+      fileContent = await materializeForLive(rawBytes, file, ctx, { getPassphrase: keystorePassphrase });
+    } catch (err) {
+      // A failed / absent-passphrase decryption must NEVER write ciphertext or
+      // partial output to the live system: skip this file loudly, keep the rest.
+      if (err instanceof MaterializeError) {
+        // Skip the file loudly and write NOTHING. This is NOT an unresolved secret
+        // placeholder — pushing it into filesWithPlaceholders would misreport it
+        // (as "unresolved placeholder, run tuck secrets set") AND trigger a
+        // spurious local-secret restore against a file we never wrote.
+        logger.warning(err.message);
+        if (isJsonMode()) addJsonWarning(err.message);
+        continue;
+      }
+      throw err;
+    }
 
     // Resolve placeholders using configured backend (1Password, Bitwarden, pass, or local)
     const secretsResult = await resolveFileSecrets(fileContent, tuckDir);
     fileContent = secretsResult.content;
 
-    // Track only unresolved placeholders
+    // Track only unresolved placeholders. Record the resolved write target so a
+    // later local-store secret restore rewrites the file apply ACTUALLY wrote
+    // (the sandbox copy under --root), never the operator's real ~ path.
     if (secretsResult.unresolved.length > 0) {
       result.filesWithPlaceholders.push({
         path: collapsePath(file.destination),
         placeholders: secretsResult.unresolved,
+        writeTarget: resolveWriteTarget(file.destination, file.repoTarget),
       });
     }
 
@@ -349,10 +982,14 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
       }
     } else {
       const fileExists = await pathExists(file.destination);
+      const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
       // Write file content directly instead of copying (to preserve resolved secrets)
-      await ensureDir(dirname(file.destination));
-      await writeFile(file.destination, fileContent, 'utf-8');
-      await fixSecurePermissions(file.destination);
+      await prepareWriteTarget(writeTarget);
+      await writeFile(writeTarget, fileContent, 'utf-8');
+      // Reapply recorded permissions first (so a 0755 script lands executable),
+      // then the SSH/GPG fixup enforces its stricter floor for those dirs.
+      await applyRecordedPermissions(writeTarget, file.permissions);
+      await fixSecurePermissions(writeTarget);
       logger.file(fileExists ? 'modify' : 'add', collapsePath(file.destination));
     }
 
@@ -472,8 +1109,11 @@ const tryRestoreSecretsFromLocalStore = async (
       }
     }
 
-    // Restore secrets in the applied files
-    const pathsToRestore = filesWithPlaceholders.map(f => expandPath(f.path));
+    // Restore secrets in the files apply ACTUALLY wrote. Use the recorded write
+    // target (already absolute and sandbox-confined under --root), never
+    // expandPath(f.path) — that would resolve the operator's REAL ~ file and
+    // rewrite it with plaintext secrets, escaping the sandbox.
+    const pathsToRestore = filesWithPlaceholders.map(f => f.writeTarget);
     const result = await restoreSecrets(pathsToRestore, tuckDir);
 
     if (interactive && result.totalRestored > 0) {
@@ -503,29 +1143,33 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
   prompts.intro('tuck apply');
 
   // Resolve the source
-  let repoId: string;
-  let isUrl: boolean;
+  let resolved: ResolvedSource;
+  const repoId = source; // Snapshot label: the original source the user typed.
 
   try {
-    const resolved = await resolveSource(source);
-    repoId = resolved.repoId;
-    isUrl = resolved.isUrl;
+    resolved = await resolveSource(source);
   } catch (error) {
     prompts.log.error(error instanceof Error ? error.message : String(error));
     return;
   }
 
+  const { local } = resolved;
+
   // Clone the repository
   let repoDir: string;
   try {
     const spinner = prompts.spinner();
-    spinner.start('Cloning repository...');
-    repoDir = await cloneSource(repoId, isUrl);
-    spinner.stop('Repository cloned');
+    spinner.start(local ? 'Reading local source...' : 'Cloning repository...');
+    repoDir = await cloneSource(resolved);
+    spinner.stop(local ? 'Source ready' : 'Repository cloned');
   } catch (error) {
     prompts.log.error(`Failed to clone: ${error instanceof Error ? error.message : String(error)}`);
     return;
   }
+
+  // cloneSource just rewrote a repo out-of-band. Drop any in-memory manifest
+  // cache so the rest of this run reads fresh state, never a stale manifest.
+  clearManifestCache();
 
   try {
     // Read the manifest
@@ -540,11 +1184,30 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
       return;
     }
 
+    // --repo-root: bind the (single) unbound repo present before resolving files.
+    if (options.repoRoot) {
+      await bindReposFromOption(manifest, options.repoRoot);
+    }
+    await registerKnownRepoRoots(manifest);
+
     // Prepare files to apply
-    const files = await prepareFilesToApply(repoDir, manifest);
+    const { files, skipped, unsafe } = await prepareFilesToApply(repoDir, manifest, options.bundle);
+
+    // Surface unsafe/skipped manifest entries here (prepareFilesToApply no longer
+    // logs them itself, so it stays silent when reused by the MCP apply_plan tool).
+    for (const msg of unsafe) {
+      prompts.log.warning(msg);
+    }
+
+    if (skipped.length > 0) {
+      prompts.log.warning(
+        `Skipping ${skipped.length} repo-scoped file(s) for repos not linked on this machine:\n  ${skipped.join('\n  ')}`
+      );
+    }
 
     if (files.length === 0) {
-      prompts.log.warning('No files to apply');
+      const scope = options.bundle ? ` in bundle "${options.bundle}"` : '';
+      prompts.log.warning(`No files to apply${scope}`);
       return;
     }
 
@@ -626,19 +1289,17 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
       }
     }
 
-    // Create Time Machine backup before applying
-    // Note: We need to properly await async checks - Array.filter doesn't await promises
-    const existingPaths = [];
-    for (const file of files) {
-      if (await pathExists(file.destination)) {
-        existingPaths.push(file.destination);
-      }
-    }
+    // Create Time Machine backup before applying. Snapshot EVERY destination,
+    // not just the ones that already exist: createSnapshot records missing paths
+    // as existed:false, and restoreSnapshot (undo) deletes those on rollback — so
+    // a `tuck undo` after this apply also removes files this apply newly created,
+    // returning the system to its true pre-apply state.
+    const snapshotPaths = files.map((f) => f.destination);
 
-    if (existingPaths.length > 0 && !options.dryRun) {
+    if (snapshotPaths.length > 0 && !options.dryRun) {
       const spinner = prompts.spinner();
       spinner.start('Creating backup snapshot...');
-      const snapshot = await createPreApplySnapshot(existingPaths, repoId);
+      const snapshot = await createPreApplySnapshot(snapshotPaths, repoId);
       spinner.stop(`Backup created: ${snapshot.id}`);
       console.log();
     }
@@ -677,7 +1338,7 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
     if (!options.dryRun) {
       console.log();
       prompts.note(
-        'To undo this apply, run:\n  tuck restore --latest\n\nTo see all backups:\n  tuck restore --list',
+        'To undo this apply, run:\n  tuck undo --latest\n\nTo see all backups:\n  tuck undo --list',
         'Undo'
       );
     }
@@ -697,12 +1358,19 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
  * Run non-interactive apply
  */
 export const runApply = async (source: string, options: ApplyOptions): Promise<void> => {
-  // Resolve the source
-  const { repoId, isUrl } = await resolveSource(source);
+  if (options.json) setJsonMode(true, 'tuck apply');
 
-  // Clone the repository
-  logger.info('Cloning repository...');
-  const repoDir = await cloneSource(repoId, isUrl);
+  // Resolve the source
+  const resolved = await resolveSource(source);
+  const { local } = resolved;
+
+  // Clone (or materialize a local source).
+  logger.info(local ? 'Reading local source...' : 'Cloning repository...');
+  const repoDir = await cloneSource(resolved);
+
+  // cloneSource just rewrote a repo out-of-band. Drop any in-memory manifest
+  // cache so the rest of this run reads fresh state, never a stale manifest.
+  clearManifestCache();
 
   try {
     // Read the manifest
@@ -712,30 +1380,54 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
       throw new Error('No tuck manifest found in repository');
     }
 
+    // --repo-root: bind the (single) unbound repo present in the manifest so its
+    // files can be placed in the freshly-linked checkout on this machine.
+    if (options.repoRoot) {
+      await bindReposFromOption(manifest, options.repoRoot);
+    }
+    // Register bound repo roots so out-of-home repo writes pass the copy guard.
+    await registerKnownRepoRoots(manifest);
+
     // Prepare files to apply
-    const files = await prepareFilesToApply(repoDir, manifest);
+    const { files, skipped, unsafe } = await prepareFilesToApply(repoDir, manifest, options.bundle);
+
+    // Surface unsafe manifest entries: into the JSON envelope in --json mode, or
+    // as a human warning otherwise (logger is JSON-gated, so it never corrupts
+    // the envelope). prepareFilesToApply intentionally stays silent itself.
+    for (const msg of unsafe) {
+      if (isJsonMode()) addJsonWarning(msg);
+      else logger.warning(msg);
+    }
 
     if (files.length === 0) {
-      logger.warning('No files to apply');
+      if (isJsonMode()) {
+        emitJsonOk({ applied: 0, source, skipped });
+        return;
+      }
+      const scope = options.bundle ? ` in bundle "${options.bundle}"` : '';
+      logger.warning(`No files to apply${scope}`);
+      if (skipped.length > 0) {
+        logger.warning(
+          `Skipped ${skipped.length} repo-scoped file(s) for unlinked repos: ${skipped.join(', ')}`
+        );
+      }
       return;
     }
 
     // Determine strategy
     const strategy = options.replace ? 'replace' : 'merge';
 
-    // Create backup if not dry run
+    // Create backup if not dry run. Snapshot EVERY destination (not just existing
+    // ones) so `tuck undo` can also delete files this apply newly created —
+    // createSnapshot records missing paths as existed:false and restoreSnapshot
+    // removes them on undo.
     if (!options.dryRun) {
-      const existingPaths = [];
-      for (const file of files) {
-        if (await pathExists(file.destination)) {
-          existingPaths.push(file.destination);
-        }
-      }
+      const snapshotPaths = files.map((f) => f.destination);
 
-      if (existingPaths.length > 0) {
-        logger.info('Creating backup snapshot...');
-        const snapshot = await createPreApplySnapshot(existingPaths, repoId);
-        logger.success(`Backup created: ${snapshot.id}`);
+      if (snapshotPaths.length > 0) {
+        if (!isJsonMode()) logger.info('Creating backup snapshot...');
+        const snapshot = await createPreApplySnapshot(snapshotPaths, source);
+        if (!isJsonMode()) logger.success(`Backup created: ${snapshot.id}`);
       }
     }
 
@@ -753,12 +1445,30 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
       applyResult = await applyWithReplace(files, options.dryRun || false);
     }
 
+    const allSkipped = [...skipped, ...applyResult.skippedUnboundRepos];
+
+    if (isJsonMode()) {
+      emitJsonOk({
+        applied: applyResult.appliedCount,
+        source,
+        dryRun: !!options.dryRun,
+        skipped: allSkipped,
+      });
+      return;
+    }
+
     logger.blank();
 
     if (options.dryRun) {
       logger.info(`Would apply ${applyResult.appliedCount} files`);
     } else {
       logger.success(`Applied ${applyResult.appliedCount} files`);
+    }
+
+    if (allSkipped.length > 0) {
+      logger.warning(
+        `Skipped ${allSkipped.length} repo-scoped file(s) for unlinked repos: ${allSkipped.join(', ')}`
+      );
     }
 
     // Show placeholder warnings
@@ -776,7 +1486,7 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
     }
 
     if (!options.dryRun) {
-      logger.info('To undo: tuck restore --latest');
+      logger.info('To undo: tuck undo --latest');
     }
   } finally {
     // Clean up temp directory
@@ -790,15 +1500,24 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
 
 export const applyCommand = new Command('apply')
   .description('Apply dotfiles from a repository to this machine')
-  .argument('<source>', 'GitHub username, user/repo, or full repository URL')
+  .argument(
+    '<source>',
+    'username, user/repo, provider:user/repo, a full git URL, or a local directory/tarball path'
+  )
   .option('-m, --merge', 'Merge with existing files (preserve local customizations)')
   .option('-r, --replace', 'Replace existing files completely')
   .option('--dry-run', 'Show what would be applied without making changes')
   .option('-f, --force', 'Apply without confirmation prompts')
   .option('-y, --yes', 'Assume yes to all prompts')
+  .option('--json', 'Emit JSON envelope to stdout')
+  .option('-b, --bundle <name>', 'Only apply files in the named bundle')
+  .option(
+    '--repo-root <dir>',
+    'Bind an as-yet-unlinked repo to this checkout before applying repo-scoped files'
+  )
   .action(async (source: string, options: ApplyOptions) => {
     // Determine if we should run interactive mode
-    const isInteractive = !options.force && !options.yes && process.stdout.isTTY;
+    const isInteractive = !options.force && !options.yes && !options.json && process.stdout.isTTY;
 
     if (isInteractive) {
       await runInteractiveApply(source, options);

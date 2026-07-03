@@ -8,6 +8,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { SecretBackend, SecretReference, BitwardenConfig } from './types.js';
+import { assertSafeBackendPath } from './types.js';
 import { SecretBackendError, BackendAuthenticationError } from '../../errors.js';
 
 const execFileAsync = promisify(execFile);
@@ -151,18 +152,24 @@ export class BitwardenBackend implements SecretBackend {
         `Run: tuck secrets map ${ref.name} --bitwarden "item-name-or-id"`,
       ]);
     }
+    assertSafeBackendPath('bitwarden', ref.name, ref.backendPath);
 
     const env = this.getEnv();
 
-    try {
-      // Get the item by name or ID
-      const { stdout } = await execFileAsync('bw', ['get', 'item', ref.backendPath], { env });
-      const item = JSON.parse(stdout) as BitwardenItem;
+    // The path can include a field specifier: "item-name/field-name". The field
+    // part must be split off BEFORE the lookup — `bw get item` searches by item
+    // name, so passing the whole "item-name/field-name" as the item argument
+    // would never match a real item and always resolve to null.
+    const pathParts = ref.backendPath.split('/');
+    const itemName = pathParts[0];
+    const fieldName = pathParts.length > 1 ? pathParts.slice(1).join('/') : null;
 
-      // Determine which field to return
-      // Path can include field specifier: "item-name/field-name"
-      const pathParts = ref.backendPath.split('/');
-      const fieldName = pathParts.length > 1 ? pathParts.slice(1).join('/') : null;
+    try {
+      // Get the item by name or ID. The `--` end-of-options separator ensures
+      // the user-controlled item name is treated as a positional argument and
+      // never reinterpreted as a flag (matches op/pass).
+      const { stdout } = await execFileAsync('bw', ['get', 'item', '--', itemName], { env });
+      const item = JSON.parse(stdout) as BitwardenItem;
 
       if (fieldName) {
         // Look for custom field first

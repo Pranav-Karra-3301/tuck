@@ -36,7 +36,7 @@ vi.mock('cosmiconfig', () => ({
 }));
 
 // Import after mocking
-import { clearConfigCache } from '../../src/lib/config.js';
+import { clearConfigCache, loadConfig, saveConfig } from '../../src/lib/config.js';
 import { defaultConfig } from '../../src/schemas/config.schema.js';
 
 describe('config', () => {
@@ -78,6 +78,7 @@ describe('config', () => {
     it('should have security defaults', () => {
       expect(defaultConfig.security.scanSecrets).toBe(true);
       expect(defaultConfig.security.blockOnSecrets).toBe(true);
+      expect(defaultConfig.security.secretBackend).toBe('auto');
     });
 
     it('should have templates disabled by default', () => {
@@ -131,6 +132,68 @@ describe('config', () => {
       expect(defaultConfig.ui.colors).toBe(true);
       expect(defaultConfig.ui.emoji).toBe(true);
       expect(defaultConfig.ui.verbose).toBe(false);
+    });
+  });
+
+  // ============================================================================
+  // Deep-merge Tests (nested config defaults must survive partial config files)
+  // ============================================================================
+
+  describe('loadConfig deep-merge of nested keys', () => {
+    const configPath = join(TEST_TUCK_DIR, 'config.json');
+
+    it('should preserve security defaults when config file omits the security key', async () => {
+      // Regression: a shallow spread replaced defaultConfig.security with {},
+      // leaving scanSecrets/blockOnSecrets/minSeverity undefined.
+      vol.writeFileSync(
+        configPath,
+        JSON.stringify({ repository: { path: TEST_TUCK_DIR } }) + '\n'
+      );
+      clearConfigCache();
+
+      const config = await loadConfig(TEST_TUCK_DIR);
+      expect(config.security.scanSecrets).toBe(true);
+      expect(config.security.blockOnSecrets).toBe(true);
+      expect(config.security.minSeverity).toBe(defaultConfig.security.minSeverity);
+    });
+
+    it('should keep sibling security defaults when config file sets one security field', async () => {
+      vol.writeFileSync(
+        configPath,
+        JSON.stringify({ security: { scanSecrets: false } }) + '\n'
+      );
+      clearConfigCache();
+
+      const config = await loadConfig(TEST_TUCK_DIR);
+      expect(config.security.scanSecrets).toBe(false);
+      // Siblings must still carry their defaults, not become undefined.
+      expect(config.security.blockOnSecrets).toBe(true);
+      expect(config.security.minSeverity).toBe(defaultConfig.security.minSeverity);
+    });
+
+    it('should preserve remote defaults when config file omits the remote key', async () => {
+      vol.writeFileSync(
+        configPath,
+        JSON.stringify({ repository: { path: TEST_TUCK_DIR } }) + '\n'
+      );
+      clearConfigCache();
+
+      const config = await loadConfig(TEST_TUCK_DIR);
+      expect(config.remote.mode).toBe(defaultConfig.remote.mode);
+    });
+
+    it('should not drop sibling security fields on a partial saveConfig', async () => {
+      // saveConfig previously omitted security from its deep-merge list, so a
+      // partial save of one security field dropped the others.
+      vol.writeFileSync(configPath, JSON.stringify(defaultConfig) + '\n');
+      clearConfigCache();
+
+      await saveConfig({ security: { scanSecrets: false } }, TEST_TUCK_DIR);
+      clearConfigCache();
+
+      const reloaded = await loadConfig(TEST_TUCK_DIR);
+      expect(reloaded.security.scanSecrets).toBe(false);
+      expect(reloaded.security.blockOnSecrets).toBe(true);
     });
   });
 });

@@ -1,5 +1,6 @@
 import { beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import { vol } from 'memfs';
+import { setJsonMode } from '../src/lib/jsonOutput.js';
 
 // Test environment constants - exported for use in tests
 // Use forward slashes consistently for memfs compatibility, but provide
@@ -100,4 +101,7 @@ beforeEach(() => {
 afterEach(() => {
   // Cleanup after each test
   vol.reset();
+  // jsonMode is module-global; reset it so a test that enabled --json output
+  // can't leak that state into the next test (a real isolation footgun).
+  setJsonMode(false);
 });

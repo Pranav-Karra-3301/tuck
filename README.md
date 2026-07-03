@@ -124,20 +124,33 @@ tuck restore --all
 
 | Command              | Description                                  |
 | -------------------- | -------------------------------------------- |
-| `tuck config`        | View/edit configuration                      |
+| `tuck config`        | Interactive config menu (includes a setup wizard option) |
 | `tuck config remote` | Configure git provider (GitHub/GitLab/local) |
-| `tuck config wizard` | Interactive configuration setup              |
+| `tuck config get/set/list/edit/reset` | Read or change individual settings |
 
-### Diagnostics
+### Diagnostics & Verification
 
 | Command         | Description                                          |
 | --------------- | ---------------------------------------------------- |
 | `tuck doctor`   | Run repository health and safety diagnostics         |
+| `tuck verify`   | Verify the live system, repo, and manifest agree (add `--exit-code` as a CI gate) |
 
 `tuck doctor` flags:
 - `--json`: Machine-readable output for CI
 - `--strict`: Treat warnings as non-zero exit
-- `--category <env|repo|manifest|security|hooks>`: Run one check group
+- `-c, --category <env|repo|manifest|security|hooks|sandboxing>`: Run one check group
+
+### Advanced
+
+| Command             | Description                                                       |
+| ------------------- | ---------------------------------------------------------------- |
+| `tuck bundle`       | Manage bundles — logical groups of tracked files                 |
+| `tuck encryption`   | Manage at-rest backup encryption (AES-256-GCM, password-based)   |
+| `tuck secrets`      | Manage local secrets / placeholder replacement                   |
+| `tuck context`      | Track AI agent configs across home and per-repo scopes           |
+| `tuck preset`       | Apply or publish curated bundles of dotfiles & agent configs     |
+| `tuck repo`         | Manage machine-local repo bindings (for repo-scoped tracking)    |
+| `tuck mcp`          | Run the Model Context Protocol server (expose tuck to AI agents) |
 
 ## How It Works
 
@@ -201,7 +214,7 @@ tuck init
 
 ## Configuration
 
-Configure tuck via `~/.tuck/.tuckrc.json` or `tuck config wizard`:
+Configure tuck via `~/.tuck/.tuckrc.json` or the interactive `tuck config` menu (which includes a setup wizard):
 
 ```json
 {
@@ -252,12 +265,21 @@ tuck fully supports Windows with platform-specific handling:
 tuck supports smart merging for PowerShell profiles with preserve markers:
 
 ```powershell
-# In your PowerShell profile, mark local-only sections:
+# In your PowerShell profile, start a local-only section with a marker.
+# The block runs from the marker until the next blank line followed by a
+# non-indented, non-comment line (or end of file) — there is no closing marker.
 <# tuck:preserve #>
 # Machine-specific aliases
 Set-Alias code "C:\Program Files\Microsoft VS Code\Code.exe"
-<# /tuck:preserve #>
+
+# Everything above the blank line + this comment/statement is preserved.
 ```
+
+The marker (`<# tuck:preserve #>`, also `<# tuck:keep #>` / `<# tuck:local #>`)
+**opens** a preserved region; tuck ends the region at the first blank line that
+is followed by a non-indented, non-comment line, or at end of file. Do not add a
+`<# /tuck:preserve #>`-style closing marker — tuck does not recognize one, and it
+would be swept into the preserved block as ordinary content.
 
 ## Security
 
@@ -266,14 +288,16 @@ tuck is designed with security in mind:
 - **Never tracks private keys** — SSH keys, `.env` files, and credentials are blocked by default
 - **Secret scanning** — Warns if files contain API keys or tokens
 - **Placeholder support** — Replace secrets with `{{PLACEHOLDER}}` syntax
-- **Local secrets** — Store actual values in `secrets.local.json` (never committed)
+- **External-first secrets** — `security.secretBackend` defaults to `auto`, preferring external password managers before local fallback
+- **Local fallback secrets** — Store actual values in `secrets.local.json` when needed; it is gitignored by default
+- **Runtime state isolation** — Audit logs, snapshots, and fallback keystore data live outside the tracked tuck repo
 
 ```bash
 # Scan tracked files for secrets
 tuck secrets scan
 
 # Set a secret value locally
-tuck secrets set API_KEY "your-actual-key"
+tuck secrets set API_KEY
 ```
 
 ## Hooks

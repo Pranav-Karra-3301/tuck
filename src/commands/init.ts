@@ -13,7 +13,8 @@ import {
   collapsePath,
 } from '../lib/paths.js';
 import { saveConfig } from '../lib/config.js';
-import { createManifest } from '../lib/manifest.js';
+import { createManifest, clearManifestCache } from '../lib/manifest.js';
+import { loadManifestFile } from '../lib/manifestFile.js';
 import type { TuckManifest, RemoteConfig } from '../types.js';
 import {
   initRepo,
@@ -30,6 +31,8 @@ import {
   type ProviderSetupResult,
 } from '../lib/providerSetup.js';
 import { getProvider, describeProviderConfig, buildRemoteConfig } from '../lib/providers/index.js';
+import type { ProviderMode } from '../lib/providers/types.js';
+import { setupRemoteForProvider } from '../lib/remoteSetup.js';
 import {
   isGhInstalled,
   isGhAuthenticated,
@@ -56,7 +59,7 @@ import {
 import { detectDotfiles, DetectedFile, DETECTION_CATEGORIES } from '../lib/detect.js';
 import { copy } from 'fs-extra';
 import { tmpdir } from 'os';
-import { readFile, rm } from 'fs/promises';
+import { rm } from 'fs/promises';
 import { AlreadyInitializedError } from '../errors.js';
 import { CATEGORIES } from '../constants.js';
 import { defaultConfig } from '../schemas/config.schema.js';
@@ -64,6 +67,7 @@ import type { InitOptions } from '../types.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
 import { preparePathsForTracking } from '../lib/trackPipeline.js';
 import { errorToMessage } from '../lib/validation.js';
+import { REPO_RUNTIME_GITIGNORE_PATTERNS, ensureRuntimeArtifactsGitignored } from '../lib/state.js';
 
 const GITIGNORE_TEMPLATE = `# OS generated files
 .DS_Store
@@ -78,6 +82,9 @@ Thumbs.db
 *.bak
 *.backup
 *~
+
+# Local secrets and legacy runtime state
+${REPO_RUNTIME_GITIGNORE_PATTERNS.join('\n')}
 
 # Secret files (add patterns for files you want to exclude)
 # *.secret
@@ -195,6 +202,43 @@ const validateGitHubUrl = (value: string): string | undefined => {
 };
 
 /**
+ * Validate a remote URL against the CHOSEN provider, returning an error message
+ * (for a prompt validator) or undefined when valid. This replaces the old
+ * GitHub-only validation in the init remote-setup flow, which rejected every
+ * GitLab/custom URL and funneled those users through GitHub.
+ */
+export const validateRemoteUrlForMode = (
+  mode: ProviderMode,
+  value: string
+): string | undefined => {
+  if (!value || !value.trim()) return 'Repository URL is required';
+  if (mode === 'github') return validateGitHubUrl(value);
+  if (mode === 'gitlab' || mode === 'custom') {
+    return getProvider(mode).validateUrl(value)
+      ? undefined
+      : `Please enter a valid ${mode === 'gitlab' ? 'GitLab' : 'repository'} URL`;
+  }
+  return undefined; // local mode: no remote URL needed
+};
+
+/**
+ * Set up a remote for the CHOSEN provider (GitLab / custom / github) using the
+ * shared, provider-agnostic {@link setupRemoteForProvider}. This routes each
+ * provider through ITS OWN setup instructions + URL validation + URL builder,
+ * instead of funneling everything through GitHub-specific code that hard-coded
+ * github.com and rejected GitLab/custom URLs.
+ *
+ * Returns the configured URL or null. Exported for unit testing the gitlab path.
+ */
+export const setupRemoteForChosenProvider = async (
+  mode: ProviderMode,
+  tuckDir: string
+): Promise<string | null> => {
+  const { remoteUrl } = await setupRemoteForProvider(getProvider(mode), tuckDir);
+  return remoteUrl;
+};
+
+/**
  * Validate any Git repository URL (not just GitHub)
  * Used when cloning existing repositories that may be hosted anywhere
  */
@@ -285,6 +329,12 @@ const initFromScratch = async (
       await createDefaultFiles(tuckDir, hostname);
     });
   }
+
+  // Always exclude runtime secrets / keystore / backups from commits. This is a
+  // SECURITY control, not a "default file", so it must exist even for --bare
+  // (which only skips the README and sample files). For non-bare the full
+  // template above already contains these patterns, so this is a no-op.
+  await ensureRuntimeArtifactsGitignored(tuckDir);
 
   // Add remote if provided
   if (options.remote) {
@@ -799,8 +849,10 @@ const analyzeRepository = async (repoDir: string): Promise<RepositoryAnalysis> =
   // Check for valid tuck manifest
   if (await pathExists(manifestPath)) {
     try {
-      const content = await readFile(manifestPath, 'utf-8');
-      const manifest = JSON.parse(content) as TuckManifest;
+      // A cloned manifest is UNTRUSTED input: load it through the shared,
+      // schema-validating loader so a hostile/malformed manifest is rejected
+      // (caught below as "corrupted or invalid") before any import acts on it.
+      const manifest = (await loadManifestFile(manifestPath)) as unknown as TuckManifest;
 
       // Validate manifest has files
       if (manifest.files && Object.keys(manifest.files).length > 0) {
@@ -1153,6 +1205,11 @@ const initFromRemote = async (tuckDir: string, remoteUrl: string): Promise<void>
     await cloneRepo(remoteUrl, tuckDir);
   });
 
+  // The clone just wrote the manifest out-of-band. Drop any in-memory manifest
+  // cache so a later loadManifest in this same run (e.g. the restore step) reads
+  // the freshly-cloned manifest, never a stale cached one.
+  clearManifestCache();
+
   // Verify manifest exists
   if (!(await pathExists(getManifestPath(tuckDir)))) {
     logger.warning('No manifest found in cloned repository. Creating new manifest...');
@@ -1418,7 +1475,11 @@ const runInteractiveInit = async (): Promise<void> => {
       true
     );
 
-    if (wantsRemote) {
+    if (wantsRemote && providerResult.mode !== 'github') {
+      // GitLab / custom: use the provider abstraction instead of forcing the
+      // user through GitHub (the old funnel rejected their URLs outright).
+      remoteUrl = await setupRemoteForChosenProvider(providerResult.mode, tuckDir);
+    } else if (wantsRemote) {
       // Try GitHub auto-setup
       const ghResult = await setupGitHubRepo(tuckDir);
       remoteUrl = ghResult.remoteUrl;
@@ -1733,7 +1794,34 @@ export const initCommand = new Command('init')
   .option('-r, --remote <url>', 'Git remote URL to set up')
   .option('--bare', 'Initialize without any default files')
   .option('--from <url>', 'Clone from existing tuck repository')
-  .action(async (options: InitOptions) => {
+  .option('--json', 'Emit JSON envelope to stdout (requires --bare or --from)')
+  .option('-y, --yes', 'Auto-confirm prompts (use with --bare or --from)')
+  .action(async (options: InitOptions & { json?: boolean; yes?: boolean }) => {
+    // Agent / JSON mode: refuse interactive flow and require explicit args.
+    // The full init prompt tree (12+ branch points) requires the state-machine
+    // refactor to be safely JSON-driven; in the meantime --bare and --from are
+    // the two well-defined non-interactive paths that produce a usable repo.
+    if (options.json || options.yes) {
+      const { setJsonMode, isJsonMode, emitJsonOk } = await import('../lib/jsonOutput.js');
+      if (options.json) setJsonMode(true, 'tuck init');
+      if (!options.bare && !options.from) {
+        const { TuckError } = await import('../errors.js');
+        throw new TuckError(
+          'Interactive init is not supported in --json / --yes mode.',
+          'INIT_NEEDS_NON_INTERACTIVE_FLAGS',
+          [
+            'Use `tuck init --bare` for an empty local repo',
+            'Or `tuck init --from <url>` to clone an existing tuck repo',
+          ]
+        );
+      }
+      await runInit(options);
+      if (isJsonMode()) {
+        emitJsonOk({ initialized: true, dir: options.dir, bare: options.bare ?? false, from: options.from });
+      }
+      return;
+    }
+
     // If no options provided, run interactive mode
     if (!options.remote && !options.bare && !options.from && options.dir === '~/.tuck') {
       await runInteractiveInit();

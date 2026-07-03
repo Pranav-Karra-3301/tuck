@@ -1,0 +1,96 @@
+{
+  "$schema": "https://tuck.sh/schemas/patterns-v1.json",
+  "category": "git",
+  "patterns": [
+    {
+      "pattern": "~/.gitconfig",
+      "category": "git",
+      "description": "Git global configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.gitignore_global",
+      "category": "git",
+      "description": "Global gitignore patterns",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.gitignore",
+      "category": "git",
+      "description": "Global gitignore (alt location)",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.gitmessage",
+      "category": "git",
+      "description": "Git commit message template",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.gitattributes",
+      "category": "git",
+      "description": "Git attributes",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/git/config",
+      "category": "git",
+      "description": "Git XDG config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/git/ignore",
+      "category": "git",
+      "description": "Git XDG ignore",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/gh",
+      "category": "git",
+      "description": "GitHub CLI config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/hub",
+      "category": "git",
+      "description": "Hub CLI config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "%USERPROFILE%/.gitconfig",
+      "category": "git",
+      "description": "Git global configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    },
+    {
+      "pattern": "%USERPROFILE%/.gitignore_global",
+      "category": "git",
+      "description": "Global gitignore patterns",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    }
+  ]
+}

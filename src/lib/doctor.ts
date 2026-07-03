@@ -1,10 +1,19 @@
+import { readFile } from 'fs/promises';
 import { homedir } from 'os';
-import { join } from 'path';
+import { isAbsolute, join } from 'path';
 import type { TuckConfigOutput } from '../schemas/config.schema.js';
 import type { TuckManifestOutput } from '../schemas/manifest.schema.js';
 import { loadConfig } from './config.js';
 import { getStatus } from './git.js';
 import { loadManifest } from './manifest.js';
+import {
+  getFallbackKeystorePath,
+  getLegacyAuditLogPath,
+  getLegacyFallbackKeystorePath,
+  getLegacySnapshotsDir,
+  LOCAL_SECRETS_FILENAME,
+  REPO_RUNTIME_GITIGNORE_PATTERNS,
+} from './state.js';
 import {
   collapsePath,
   expandPath,
@@ -17,8 +26,17 @@ import {
   validateSafeManifestDestination,
   validateSafeSourcePath,
 } from './paths.js';
+import { isSandbox, getWriteRoot } from './writeContext.js';
+import { platform } from 'os';
 
-export const DOCTOR_CATEGORIES = ['env', 'repo', 'manifest', 'security', 'hooks'] as const;
+export const DOCTOR_CATEGORIES = [
+  'env',
+  'repo',
+  'manifest',
+  'security',
+  'hooks',
+  'sandboxing',
+] as const;
 
 export type DoctorCategory = (typeof DOCTOR_CATEGORIES)[number];
 export type DoctorStatus = 'pass' | 'warn' | 'fail';
@@ -318,11 +336,30 @@ const checkManifestPathSafety: DoctorCheck = {
 
     const violations: string[] = [];
     for (const [id, file] of Object.entries(context.manifest.files)) {
-      try {
-        validateSafeSourcePath(file.source);
-      } catch (error) {
-        violations.push(`${id}: unsafe source ${file.source} (${error instanceof Error ? error.message : String(error)})`);
-        continue;
+      if (file.scope === 'repo') {
+        // Repo-scoped entries are identified by (repoKey, repoRelative) and live
+        // under a repo root that may be OUTSIDE $HOME, so home-confinement does
+        // not apply. Validate that repoRelative is a safe relative path instead
+        // (matches manifest.schema's own repoRelative guard); the source is a
+        // `<repoKey>:<repoRelative>` key, not a filesystem path.
+        const repoRelative = file.repoRelative ?? '';
+        const norm = repoRelative.replace(/\\/g, '/');
+        if (
+          repoRelative === '' ||
+          isAbsolute(repoRelative) ||
+          /^[A-Za-z]:[\\/]/.test(repoRelative) ||
+          norm.split('/').includes('..')
+        ) {
+          violations.push(`${id}: unsafe repo-relative path ${repoRelative || '(missing)'}`);
+          continue;
+        }
+      } else {
+        try {
+          validateSafeSourcePath(file.source);
+        } catch (error) {
+          violations.push(`${id}: unsafe source ${file.source} (${error instanceof Error ? error.message : String(error)})`);
+          continue;
+        }
       }
 
       try {
@@ -515,6 +552,240 @@ const checkBackupOnRestore: DoctorCheck = {
   },
 };
 
+const checkRuntimeStateIsolation: DoctorCheck = {
+  id: 'security.repo-runtime-state',
+  category: 'security',
+  run: async (context) => {
+    if (!context.hasTuckDir) {
+      return {
+        id: 'security.repo-runtime-state',
+        category: 'security',
+        status: 'warn',
+        message: 'Skipped runtime-state isolation checks because tuck is not initialized',
+      };
+    }
+
+    const legacyArtifacts = [
+      getLegacySnapshotsDir(context.tuckDir),
+      getLegacyAuditLogPath(context.tuckDir),
+      getLegacyFallbackKeystorePath(context.tuckDir),
+    ];
+
+    const presentArtifacts: string[] = [];
+    for (const artifactPath of legacyArtifacts) {
+      if (await pathExists(artifactPath)) {
+        presentArtifacts.push(collapsePath(artifactPath));
+      }
+    }
+
+    if (presentArtifacts.length === 0) {
+      return {
+        id: 'security.repo-runtime-state',
+        category: 'security',
+        status: 'pass',
+        message: 'Sensitive runtime state is stored outside the tracked repository',
+      };
+    }
+
+    return {
+      id: 'security.repo-runtime-state',
+      category: 'security',
+      status: 'fail',
+      message: `Detected ${presentArtifacts.length} legacy runtime artifact${presentArtifacts.length === 1 ? '' : 's'} under the tuck repo`,
+      details: presentArtifacts.join(', '),
+      fix: 'Move or delete legacy audit logs, snapshots, and fallback keystore files from `~/.tuck`',
+    };
+  },
+};
+
+const checkRuntimeGitignoreCoverage: DoctorCheck = {
+  id: 'security.runtime-gitignore',
+  category: 'security',
+  run: async (context) => {
+    if (!context.hasTuckDir) {
+      return {
+        id: 'security.runtime-gitignore',
+        category: 'security',
+        status: 'warn',
+        message: 'Skipped runtime gitignore checks because tuck is not initialized',
+      };
+    }
+
+    const gitignorePath = join(context.tuckDir, '.gitignore');
+    if (!(await pathExists(gitignorePath))) {
+      return {
+        id: 'security.runtime-gitignore',
+        category: 'security',
+        status: 'fail',
+        message: 'Missing .gitignore in tuck repository',
+        fix: 'Recreate `.gitignore` with `tuck init` or add runtime-state exclusions manually',
+      };
+    }
+
+    const gitignoreContent = await readFile(gitignorePath, 'utf-8');
+    const existingPatterns = new Set(
+      gitignoreContent
+        .split(/\r?\n/u)
+        .map((line: string) => line.trim())
+        .filter(Boolean)
+    );
+    const missingPatterns = REPO_RUNTIME_GITIGNORE_PATTERNS.filter(
+      (pattern) => !existingPatterns.has(pattern)
+    );
+
+    if (missingPatterns.length === 0) {
+      return {
+        id: 'security.runtime-gitignore',
+        category: 'security',
+        status: 'pass',
+        message: 'Runtime-state artifacts are gitignored',
+      };
+    }
+
+    return {
+      id: 'security.runtime-gitignore',
+      category: 'security',
+      status: 'fail',
+      message: `Missing ${missingPatterns.length} runtime-state gitignore pattern${missingPatterns.length === 1 ? '' : 's'}`,
+      details: missingPatterns.join(', '),
+      fix: 'Add the missing runtime-state patterns to `.gitignore`',
+    };
+  },
+};
+
+const checkLocalSecretsPolicy: DoctorCheck = {
+  id: 'security.local-secrets',
+  category: 'security',
+  run: async (context) => {
+    if (!context.hasTuckDir || !context.config) {
+      return {
+        id: 'security.local-secrets',
+        category: 'security',
+        status: 'warn',
+        message: 'Skipped local secrets checks because configuration is unavailable',
+      };
+    }
+
+    const configuredBackend = context.config.security.secretBackend || 'auto';
+    const secretsPath = join(context.tuckDir, LOCAL_SECRETS_FILENAME);
+    const hasLocalSecretsFile = await pathExists(secretsPath);
+
+    if (configuredBackend === 'local') {
+      return {
+        id: 'security.local-secrets',
+        category: 'security',
+        status: 'warn',
+        message: 'Local secrets backend is configured explicitly',
+        details: collapsePath(secretsPath),
+        fix: 'Prefer `security.secretBackend = "auto"` or an external password manager backend',
+      };
+    }
+
+    if (hasLocalSecretsFile) {
+      return {
+        id: 'security.local-secrets',
+        category: 'security',
+        status: 'warn',
+        message: 'Local secrets store is present',
+        details: collapsePath(secretsPath),
+        fix: 'Keep local secrets only as a fallback and prefer external password managers for active use',
+      };
+    }
+
+    return {
+      id: 'security.local-secrets',
+      category: 'security',
+      status: 'pass',
+      message: 'No local secrets fallback is active',
+    };
+  },
+};
+
+const checkFallbackKeystoreUsage: DoctorCheck = {
+  id: 'security.fallback-keystore',
+  category: 'security',
+  run: async (context) => {
+    const fallbackPaths = [getFallbackKeystorePath(), getLegacyFallbackKeystorePath(context.tuckDir)];
+    const existingPaths: string[] = [];
+
+    for (const keystorePath of fallbackPaths) {
+      if (await pathExists(keystorePath)) {
+        existingPaths.push(collapsePath(keystorePath));
+      }
+    }
+
+    if (existingPaths.length === 0) {
+      return {
+        id: 'security.fallback-keystore',
+        category: 'security',
+        status: 'pass',
+        message: 'No fallback keystore file detected',
+      };
+    }
+
+    return {
+      id: 'security.fallback-keystore',
+      category: 'security',
+      status: 'warn',
+      message: 'Fallback encrypted keystore file is in use',
+      details: existingPaths.join(', '),
+      fix: 'Prefer OS-native credential stores when available and remove legacy keystore files from the repository',
+    };
+  },
+};
+
+const checkUnsupportedReservedConfig: DoctorCheck = {
+  id: 'security.unsupported-config',
+  category: 'security',
+  run: async (context) => {
+    if (!context.config) {
+      return {
+        id: 'security.unsupported-config',
+        category: 'security',
+        status: 'warn',
+        message: 'Skipped unsupported config checks because configuration is unavailable',
+      };
+    }
+
+    const unsupportedKeys: string[] = [];
+
+    // NOTE: templates.enabled / templates.variables are intentionally NOT flagged
+    // here. Templating shipped: `tuck add --template` renders on apply/restore
+    // and `config.templates.variables` is consumed by buildMaterializeCtx, so a
+    // non-empty variables map is a working config, not a health failure.
+    if (context.config.encryption?.enabled) {
+      unsupportedKeys.push('encryption.enabled');
+    }
+    if (
+      typeof context.config.encryption?.gpgKey === 'string' &&
+      context.config.encryption.gpgKey.trim().length > 0
+    ) {
+      unsupportedKeys.push('encryption.gpgKey');
+    }
+    if ((context.config.encryption?.files || []).length > 0) {
+      unsupportedKeys.push('encryption.files');
+    }
+
+    if (unsupportedKeys.length === 0) {
+      return {
+        id: 'security.unsupported-config',
+        category: 'security',
+        status: 'pass',
+        message: 'No unsupported reserved config keys are in use',
+      };
+    }
+
+    return {
+      id: 'security.unsupported-config',
+      category: 'security',
+      status: 'fail',
+      message: `Detected ${unsupportedKeys.length} reserved config key${unsupportedKeys.length === 1 ? '' : 's'} that are not wired yet`,
+      details: unsupportedKeys.join(', '),
+      fix: 'Remove unsupported tracked-file encryption settings until those features ship end-to-end',
+    };
+  },
+};
+
 const checkHooksSafety: DoctorCheck = {
   id: 'hooks.commands',
   category: 'hooks',
@@ -567,6 +838,84 @@ const checkHooksSafety: DoctorCheck = {
   },
 };
 
+/**
+ * OS-level sandbox wrapper recipes (audit §3.3). tuck's own `--root`
+ * confinement is a software boundary; for stronger isolation an agent runner
+ * should ALSO wrap the whole `tuck` invocation in an OS sandbox. We surface
+ * copy-pasteable recipes for the platforms tuck targets so an operator can pick
+ * the appropriate one without leaving the tool.
+ */
+const SANDBOX_RECIPES: Record<string, string> = {
+  // macOS: Apple's seatbelt. Confine writes to a single scratch directory.
+  'macOS sandbox-exec (.sb profile)':
+    'sandbox-exec -p \'(version 1)(deny default)(allow process*)(allow file-read*)' +
+    '(allow file-write* (subpath "/tmp/tuck-sandbox"))\' tuck apply <src> --root /tmp/tuck-sandbox',
+  // Linux: bubblewrap — bind a tmpfs over $HOME and a writable sandbox dir.
+  'Linux bubblewrap (bwrap)':
+    'bwrap --ro-bind / / --tmpfs /tmp --bind /tmp/tuck-sandbox /tmp/tuck-sandbox ' +
+    '--unshare-net tuck apply <src> --root /tmp/tuck-sandbox',
+  // Linux: Landlock LSM (kernel >= 5.13) — restrict the filesystem hierarchy a
+  // process may touch; pair with a small launcher that adds a write rule for the
+  // sandbox dir only. (No setuid required.)
+  'Linux Landlock (LSM, kernel >= 5.13)':
+    'Use a Landlock launcher granting LANDLOCK_ACCESS_FS_WRITE_FILE only under ' +
+    '/tmp/tuck-sandbox, then exec: tuck apply <src> --root /tmp/tuck-sandbox',
+  // Container: the strongest, fully disposable boundary.
+  'Container / docker':
+    'docker run --rm -v "$PWD/sandbox:/sandbox" -e TUCK_TARGET_ROOT=/sandbox ' +
+    'node:20 npx tuck apply <src>',
+};
+
+const checkSandboxRecipes: DoctorCheck = {
+  id: 'sandboxing.os-wrappers',
+  category: 'sandboxing',
+  run: async () => {
+    const recipeLines = Object.entries(SANDBOX_RECIPES).map(
+      ([name, cmd]) => `${name}: ${cmd}`
+    );
+    return {
+      id: 'sandboxing.os-wrappers',
+      category: 'sandboxing',
+      // Mention every wrapper in the message so it is greppable even without details.
+      message:
+        'OS-level sandbox wrappers available: macOS sandbox-exec, Linux bubblewrap (bwrap), ' +
+        'Linux Landlock, and container/docker (audit §3.3)',
+      status: 'pass',
+      details: recipeLines.join(' | '),
+      fix: 'Wrap `tuck apply/restore` in one of these OS sandboxes for defense-in-depth alongside `--root`',
+    };
+  },
+};
+
+const checkRootConfinement: DoctorCheck = {
+  id: 'sandboxing.root-confinement',
+  category: 'sandboxing',
+  run: async () => {
+    // `--root`/TUCK_TARGET_ROOT confinement is always compiled in. When a sandbox
+    // is actively engaged we surface the live root so the operator can confirm it.
+    if (isSandbox()) {
+      return {
+        id: 'sandboxing.root-confinement',
+        category: 'sandboxing',
+        status: 'pass',
+        message: `--root write confinement is ACTIVE (sandbox engaged on ${platform()})`,
+        details: `All writes are confined under: ${collapsePath(getWriteRoot())}`,
+      };
+    }
+
+    return {
+      id: 'sandboxing.root-confinement',
+      category: 'sandboxing',
+      status: 'pass',
+      message: '--root write confinement is available (pass `--root <dir>` or set TUCK_TARGET_ROOT)',
+      details:
+        'Run any mutating command with `--root <dir>` to confine every write under a dry home; ' +
+        'reads still use the real ~. Combine with `tuck verify --apply --root <dir>` for a safe preview.',
+      fix: 'For untrusted/agent-driven runs, always pass `--root <dir>` (and ideally an OS sandbox wrapper)',
+    };
+  },
+};
+
 const doctorChecks: DoctorCheck[] = [
   checkNodeVersion,
   checkHomeDirectory,
@@ -580,7 +929,14 @@ const doctorChecks: DoctorCheck[] = [
   checkManifestDuplicateDestinations,
   checkSecretScanning,
   checkBackupOnRestore,
+  checkRuntimeStateIsolation,
+  checkRuntimeGitignoreCoverage,
+  checkLocalSecretsPolicy,
+  checkFallbackKeystoreUsage,
+  checkUnsupportedReservedConfig,
   checkHooksSafety,
+  checkSandboxRecipes,
+  checkRootConfinement,
 ];
 
 const buildDoctorSummary = (checks: DoctorCheckResult[]): DoctorSummary => {

@@ -7,6 +7,7 @@ import {
   expandPath,
   pathExists,
   collapsePath,
+  isDirectory,
   validateSafeSourcePath,
   validateSafeManifestDestination,
   validatePathWithinRoot,
@@ -16,9 +17,21 @@ import {
   getAllTrackedFiles,
   updateFileInManifest,
   removeFileFromManifest,
-  getTrackedFileBySource,
+  buildSourceIndex,
+  clearManifestCache,
 } from '../lib/manifest.js';
 import { stageAll, commit, getStatus, push, hasRemote, fetch, pull } from '../lib/git.js';
+import {
+  detectConflicts,
+  applyResolution,
+  continueRebase,
+  abortRebase,
+  type FileConflict,
+} from '../lib/mergeConflicts.js';
+import { resolveConflictsInteractively } from '../ui/merge.js';
+import { createSnapshot } from '../lib/timemachine.js';
+import { resolveLiveTarget } from '../lib/repoScope.js';
+import { isJsonMode } from '../lib/jsonOutput.js';
 import {
   copyFileOrDir,
   getFileChecksum,
@@ -27,9 +40,13 @@ import {
   formatFileSize,
   SIZE_BLOCK_THRESHOLD,
 } from '../lib/files.js';
-import { addToTuckignore, loadTuckignore, isIgnored } from '../lib/tuckignore.js';
+import { addToTuckignore, loadTuckignore, isIgnoredInSet } from '../lib/tuckignore.js';
+import { checkLocalMode } from '../lib/remoteChecks.js';
+import { loadConfig } from '../lib/config.js';
+import { assertRemoteAvailable } from '../lib/providers/index.js';
 import { runPreSyncHook, runPostSyncHook, type HookOptions } from '../lib/hooks.js';
-import { NotInitializedError, SecretsDetectedError } from '../errors.js';
+import { NotInitializedError, SecretsDetectedError, MergeConflictsError } from '../errors.js';
+import { setJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
 import type { SyncOptions, FileChange } from '../types.js';
 import { detectDotfiles, DETECTION_CATEGORIES, type DetectedFile } from '../lib/detect.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
@@ -46,6 +63,19 @@ interface SyncResult {
   // The sync command only handles changes to already-tracked files.
 }
 
+/**
+ * A {@link FileChange} that also carries the manifest `id` it was derived from.
+ *
+ * detectChanges already knows each change's manifest id while iterating the
+ * tracked-files map, so it stamps it here. syncFiles can then update/remove the
+ * right manifest entry in O(1) instead of re-loading the whole map and doing a
+ * linear `Object.values(...).find(f => f.source === change.source)` per change
+ * (which was O(changes × tracked)). `id` is optional so changes constructed
+ * elsewhere remain assignable; syncFiles falls back to the old lookup when it's
+ * absent.
+ */
+type TrackedFileChange = FileChange & { id?: string };
+
 const pathsResolveToSameLocation = async (sourcePath: string, destinationPath: string): Promise<boolean> => {
   try {
     const [resolvedSource, resolvedDestination] = await Promise.all([
@@ -58,21 +88,50 @@ const pathsResolveToSameLocation = async (sourcePath: string, destinationPath: s
   }
 };
 
-const detectChanges = async (tuckDir: string): Promise<FileChange[]> => {
+const detectChanges = async (tuckDir: string): Promise<TrackedFileChange[]> => {
   const files = await getAllTrackedFiles(tuckDir);
   const ignoredPaths = await loadTuckignore(tuckDir);
-  const changes: FileChange[] = [];
+  const changes: TrackedFileChange[] = [];
 
-  for (const [, file] of Object.entries(files)) {
-    validateSafeSourcePath(file.source);
+  for (const [id, file] of Object.entries(files)) {
+    // Home-scoped sources are confined to $HOME; repo-scoped sources live under a
+    // (possibly out-of-home) repo root, so they are validated by their repoRelative
+    // safety in the manifest schema, not by validateSafeSourcePath.
+    if (file.scope !== 'repo') {
+      validateSafeSourcePath(file.source);
+    }
     validateSafeManifestDestination(file.destination);
+
+    // Template/encrypted files are ONE-DIRECTIONAL: the repo holds the SOURCE
+    // (template text / ciphertext) and the live file is a derived artifact
+    // (rendered / decrypted). Capturing the live file back into the repo would
+    // destroy the template source or write plaintext secrets — so sync NEVER
+    // captures these. Update them by editing the repo source and running
+    // `tuck apply`. (`tuck status` reports their real drift via the state model.)
+    if (file.template || file.encrypted) {
+      logger.debug?.(
+        `sync: skipping one-directional ${file.template ? 'template' : 'encrypted'} file ${file.source}`
+      );
+      continue;
+    }
 
     // Skip if in .tuckignore
     if (ignoredPaths.has(file.source)) {
       continue;
     }
 
-    const sourcePath = expandPath(file.source);
+    // Resolve the LIVE location on THIS machine. For home files this is
+    // expandPath(source); for repo files it is the bound repo root joined with
+    // repoRelative, or null when the repo is not bound here.
+    const sourcePath = await resolveLiveTarget(file);
+
+    // CRITICAL: an unbound repo file (null live target) must be SKIPPED — never
+    // reported as 'deleted'. Treating it as deleted would drop the committed copy
+    // and remove it from the shared manifest just because this machine hasn't
+    // linked the repo.
+    if (sourcePath === null) {
+      continue;
+    }
 
     // Check if source still exists
     if (!(await pathExists(sourcePath))) {
@@ -81,6 +140,7 @@ const detectChanges = async (tuckDir: string): Promise<FileChange[]> => {
         status: 'deleted',
         source: file.source,
         destination: file.destination,
+        id,
       });
       continue;
     }
@@ -94,6 +154,7 @@ const detectChanges = async (tuckDir: string): Promise<FileChange[]> => {
           status: 'modified',
           source: file.source,
           destination: file.destination,
+          id,
         });
       }
     } catch {
@@ -102,6 +163,7 @@ const detectChanges = async (tuckDir: string): Promise<FileChange[]> => {
         status: 'modified',
         source: file.source,
         destination: file.destination,
+        id,
       });
     }
   }
@@ -110,11 +172,98 @@ const detectChanges = async (tuckDir: string): Promise<FileChange[]> => {
 };
 
 /**
- * Pull from remote if behind, returns info about what happened
+ * Map the modified changes to their LIVE source paths on this machine, resolving
+ * repo-scoped entries through the repo registry (so the secret scanner reads the
+ * real checkout, not a "key:rel" pseudo-path). Unbound repo files resolve to null
+ * and are dropped from the result.
+ */
+const resolveModifiedChangeTargets = async (
+  tuckDir: string,
+  changes: FileChange[]
+): Promise<Array<{ change: FileChange; live: string }>> => {
+  const trackedFiles = await getAllTrackedFiles(tuckDir);
+  const targets: Array<{ change: FileChange; live: string }> = [];
+  for (const change of changes) {
+    if (change.status !== 'modified') continue;
+    const entry = Object.values(trackedFiles).find((f) => f.source === change.source);
+    const live = entry ? await resolveLiveTarget(entry) : expandPath(change.source);
+    if (live !== null) targets.push({ change, live });
+  }
+  return targets;
+};
+
+const resolveModifiedLivePaths = async (
+  tuckDir: string,
+  changes: FileChange[]
+): Promise<string[]> => {
+  const targets = await resolveModifiedChangeTargets(tuckDir, changes);
+  return targets.map((t) => t.live);
+};
+
+/**
+ * Snapshot every tracked file's source path before a potentially destructive
+ * pull. Failures here are non-fatal — we'd rather attempt the pull and warn
+ * than block sync entirely on a backup hiccup.
+ */
+const snapshotBeforePull = async (tuckDir: string, reason: string): Promise<void> => {
+  try {
+    const tracked = await getAllTrackedFiles(tuckDir);
+    // Resolve LIVE paths; drop unbound repo files (null) so we never snapshot a
+    // bogus "key:rel" pseudo-path for a repo this machine hasn't linked.
+    const resolved = await Promise.all(
+      Object.values(tracked).map((f) => resolveLiveTarget(f))
+    );
+    const sources = resolved.filter((p): p is string => p !== null);
+    if (sources.length === 0) return;
+    await createSnapshot(sources, reason);
+  } catch (error) {
+    logger.dim(
+      `Pre-pull snapshot skipped: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+};
+
+/**
+ * Drive the interactive conflict-resolution flow after a failed pull. Returns
+ * one of:
+ *   - `{ resolved: true }`  conflicts were resolved and the rebase continued.
+ *   - `{ resolved: false, aborted: true }`  user aborted; rebase rolled back.
+ *
+ * Any exception thrown is propagated to the caller for surfacing.
+ */
+const resolveConflictsInline = async (
+  tuckDir: string,
+  conflicts: FileConflict[]
+): Promise<{ resolved: boolean; aborted: boolean }> => {
+  const resolutions = await resolveConflictsInteractively(conflicts);
+
+  const aborted = resolutions.some((r) => r.choice === 'abort');
+  if (aborted) {
+    await abortRebase(tuckDir);
+    return { resolved: false, aborted: true };
+  }
+
+  for (const resolution of resolutions) {
+    await applyResolution(tuckDir, resolution);
+  }
+
+  await continueRebase(tuckDir);
+  return { resolved: true, aborted: false };
+};
+
+/**
+ * Pull from remote if behind, returns info about what happened.
+ *
+ * When `git pull --rebase` runs into per-file conflicts the rebase stops with
+ * a non-zero exit and the index is left with conflict markers. This function
+ * detects that case via {@link detectConflicts} and either:
+ *   - escalates a {@link MergeConflictsError} in non-interactive / JSON mode,
+ *   - or drives the interactive resolution UI before completing the rebase.
  */
 const pullIfBehind = async (
-  tuckDir: string
-): Promise<{ pulled: boolean; behind: number; error?: string }> => {
+  tuckDir: string,
+  options: SyncOptions = {}
+): Promise<{ pulled: boolean; behind: number; error?: string; resolvedConflicts?: string[] }> => {
   const hasRemoteRepo = await hasRemote(tuckDir);
   if (!hasRemoteRepo) {
     return { pulled: false, behind: 0 };
@@ -130,11 +279,74 @@ const pullIfBehind = async (
       return { pulled: false, behind: 0 };
     }
 
-    // Pull with rebase to keep history clean
-    await pull(tuckDir, { rebase: true });
+    // Snapshot tracked sources before a potentially-destructive pull so users
+    // can roll back if anything goes sideways during merge.
+    await snapshotBeforePull(tuckDir, 'Pre-sync pull backup');
 
-    return { pulled: true, behind: status.behind };
+    // Pull with rebase to keep history clean
+    try {
+      await pull(tuckDir, { rebase: true });
+      // The rebase rewrote .tuckmanifest.json out-of-band; drop the cached copy
+      // so the rest of this run (and change detection) sees the pulled state.
+      clearManifestCache();
+      return { pulled: true, behind: status.behind };
+    } catch (pullError) {
+      // A failed pull --rebase may have left conflicts staged in the index.
+      // If it didn't, this is just a regular git error and we re-throw.
+      const conflicts = await detectConflicts(tuckDir);
+      if (conflicts.length === 0) {
+        throw pullError;
+      }
+
+      // Non-interactive / JSON callers cannot drive the resolution UI. Throw
+      // a structured error so agents can detect and report it via the JSON
+      // envelope.
+      const nonInteractive = options.json === true || options.yes === true || isJsonMode();
+      if (nonInteractive) {
+        // Abort the in-progress rebase BEFORE throwing so ~/.tuck is left in a
+        // clean state — an automated/JSON caller cannot resolve conflicts, and
+        // leaving a half-finished rebase behind would wedge every subsequent
+        // git operation. The pre-pull snapshot already captured the live files
+        // so nothing is lost. If the abort itself fails we surface that too
+        // rather than masking it behind the conflict error.
+        try {
+          await abortRebase(tuckDir);
+        } catch (abortError) {
+          const abortMsg =
+            abortError instanceof Error ? abortError.message : String(abortError);
+          logger.dim(`Could not abort in-progress rebase automatically: ${abortMsg}`);
+        }
+        // The dedicated exit code (3) + stable MERGE_CONFLICTS code + recovery
+        // suggestions let agents detect and report this via the JSON envelope.
+        throw new MergeConflictsError(conflicts.map((c) => c.path));
+      }
+
+      const outcome = await resolveConflictsInline(tuckDir, conflicts);
+      if (outcome.aborted) {
+        return {
+          pulled: false,
+          behind: status.behind,
+          error: 'Pull aborted by user during conflict resolution',
+        };
+      }
+
+      // Snapshot post-resolution state too so the user has a checkpoint of the
+      // exact tree that survived the merge.
+      await snapshotBeforePull(tuckDir, 'Post-sync conflict resolution');
+
+      // Conflict resolution rewrote tracked files / the manifest; drop the cache.
+      clearManifestCache();
+
+      return {
+        pulled: true,
+        behind: status.behind,
+        resolvedConflicts: conflicts.map((c) => c.path),
+      };
+    }
   } catch (error) {
+    if (error instanceof MergeConflictsError) {
+      throw error;
+    }
     return {
       pulled: false,
       behind: 0,
@@ -150,16 +362,21 @@ const detectNewDotfiles = async (tuckDir: string): Promise<DetectedFile[]> => {
   // Get all detected dotfiles on the system
   const detected = await detectDotfiles();
 
+  // Build the "already tracked?" lookup ONCE (O(tracked)) instead of calling the
+  // O(N) getTrackedFileBySource per detected file (which was O(detected × tracked)),
+  // and load .tuckignore ONCE up front instead of re-reading it per detected file.
+  const sourceIndex = await buildSourceIndex(tuckDir);
+  const ignoredPaths = await loadTuckignore(tuckDir);
+
   // Filter out already-tracked files, ignored files, and excluded patterns
   const newFiles: DetectedFile[] = [];
 
   for (const file of detected) {
-    // Skip if already tracked
-    const tracked = await getTrackedFileBySource(tuckDir, file.path);
-    if (tracked) continue;
+    // Skip if already tracked (O(1) map lookup, same answer as getTrackedFileBySource).
+    if (sourceIndex.has(file.path)) continue;
 
-    // Skip if in .tuckignore
-    if (await isIgnored(tuckDir, file.path)) continue;
+    // Skip if in .tuckignore (same normalization as isIgnored, no per-file disk read).
+    if (isIgnoredInSet(ignoredPaths, file.path)) continue;
 
     newFiles.push(file);
   }
@@ -219,7 +436,7 @@ const generateCommitMessage = (result: SyncResult): string => {
 
 const syncFiles = async (
   tuckDir: string,
-  changes: FileChange[],
+  changes: TrackedFileChange[],
   options: SyncOptions
 ): Promise<SyncResult> => {
   const result: SyncResult = {
@@ -236,15 +453,48 @@ const syncFiles = async (
   // Run pre-sync hook
   await runPreSyncHook(tuckDir, hookOptions);
 
+  // Load the tracked-files map ONCE up front. The old loop re-read it per change
+  // (twice each: once to home-confine the source, once inside the modified/
+  // deleted branch to recover the file id), turning id recovery into an
+  // O(changes × tracked) linear scan. We index by source for O(1) lookups and
+  // prefer the id already stamped on the change by detectChanges.
+  const trackedFiles = await getAllTrackedFiles(tuckDir);
+  const bySource = new Map<string, { id: string; file: (typeof trackedFiles)[string] }>();
+  for (const [id, file] of Object.entries(trackedFiles)) {
+    bySource.set(file.source, { id, file });
+  }
+
   // Process each change
   for (const change of changes) {
-    validateSafeSourcePath(change.source);
     if (!change.destination) {
       throw new Error(`Unsafe manifest entry detected: missing destination for ${change.source}`);
     }
     validateSafeManifestDestination(change.destination);
 
-    const sourcePath = expandPath(change.source);
+    // Resolve the tracked entry + its id via the prebuilt index. Prefer the id
+    // carried on the change (set by detectChanges); fall back to the source
+    // lookup for changes constructed elsewhere.
+    const indexed = bySource.get(change.source);
+    const trackedEntry = indexed?.file;
+    const fileId = change.id ?? indexed?.id;
+
+    if (trackedEntry?.scope !== 'repo') {
+      validateSafeSourcePath(change.source);
+    }
+
+    // Resolve the live path from the tracked entry (repo root + repoRelative for
+    // repo files, expandPath for home files). Falls back to expandPath when the
+    // entry is unexpectedly absent.
+    const sourcePath = trackedEntry
+      ? await resolveLiveTarget(trackedEntry)
+      : expandPath(change.source);
+
+    // An unbound repo source (null) can't be synced — skip it defensively. In
+    // practice detectChanges already filters these out before we get here.
+    if (sourcePath === null) {
+      continue;
+    }
+
     const destPath = join(tuckDir, change.destination);
     validatePathWithinRoot(destPath, tuckDir, 'sync destination');
 
@@ -253,13 +503,23 @@ const syncFiles = async (
         // Symlink tracking can make source and destination the same underlying file.
         // Skip copying in that case to avoid same-file copy errors.
         if (!(await pathsResolveToSameLocation(sourcePath, destPath))) {
+          // fs-extra copy MERGES directory trees — it overwrites matching files
+          // but never removes destination files that were deleted from the live
+          // source. Left as a merge, a deletion inside a tracked directory would
+          // never propagate to the repo, the stored checksum would never match
+          // the live tree (so sync churns forever), and `tuck apply` would
+          // resurrect the deleted file elsewhere. Mirror instead: clear the
+          // destination first so the copy reproduces the source exactly.
+          // isDirectory is false when the source has vanished, so we never wipe
+          // the repo copy without a fresh source to replace it.
+          if (await isDirectory(sourcePath)) {
+            await deleteFileOrDir(destPath);
+          }
           await copyFileOrDir(sourcePath, destPath, { overwrite: true });
         }
 
-        // Update checksum in manifest
+        // Update checksum in manifest using the id resolved above.
         const newChecksum = await getFileChecksum(destPath);
-        const files = await getAllTrackedFiles(tuckDir);
-        const fileId = Object.entries(files).find(([, f]) => f.source === change.source)?.[0];
 
         if (fileId) {
           await updateFileInManifest(tuckDir, fileId, {
@@ -271,13 +531,25 @@ const syncFiles = async (
       result.modified.push(basename(change.path) || change.path);
     } else if (change.status === 'deleted') {
       await withSpinner(`Removing ${change.path}...`, async () => {
+        // Safety: never delete the repo copy without a recoverable backup first.
+        // The live source is already gone (that is what marked this 'deleted'),
+        // so the ONLY surviving copy may be this repo file — e.g. an initial
+        // `tuck add` that was never committed, or a tracked file whose parent
+        // volume is temporarily unmounted. Snapshot the REPO copy (destPath)
+        // into the time-machine so `tuck undo` can recover it. Failures here are
+        // non-fatal, but must not silently proceed to an unrecoverable delete.
+        try {
+          await createSnapshot([destPath], `Pre-sync delete backup: ${change.path}`);
+        } catch (error) {
+          logger.dim(
+            `Pre-delete snapshot skipped: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+
         // Delete the file from the tuck repository
         await deleteFileOrDir(destPath);
 
-        // Remove from manifest
-        const files = await getAllTrackedFiles(tuckDir);
-        const fileId = Object.entries(files).find(([, f]) => f.source === change.source)?.[0];
-
+        // Remove from manifest using the id resolved above.
         if (fileId) {
           await removeFileFromManifest(tuckDir, fileId);
         }
@@ -337,14 +609,16 @@ const scanAndHandleSecrets = async (
     return true;
   }
 
-  // Get paths of modified files (not deleted)
-  const modifiedPaths = changes
-    .filter((c) => c.status === 'modified')
-    .map((c) => expandPath(c.source));
+  // Resolve modified changes to their LIVE paths (repo-scoped entries via the
+  // repo registry), keeping the change association so the 'ignore' action can map
+  // a scan result back to the right change regardless of scope.
+  const targets = await resolveModifiedChangeTargets(tuckDir, changes);
 
-  if (modifiedPaths.length === 0) {
+  if (targets.length === 0) {
     return true;
   }
+
+  const modifiedPaths = targets.map((t) => t.live);
 
   // Scan files
   const spinner = prompts.spinner();
@@ -404,21 +678,29 @@ const scanAndHandleSecrets = async (
   }
 
   if (action === 'ignore') {
-    // Add files with secrets to .tuckignore
-    for (const result of summary.results) {
-      const sourcePath = changes.find((c) => expandPath(c.source) === result.path)?.source;
-      if (sourcePath) {
-        await addToTuckignore(tuckDir, sourcePath);
-        logger.dim(`Added ${collapsePath(result.path)} to .tuckignore`);
-      }
+    // Match each secret-bearing scan result back to its change via the resolved
+    // LIVE path. Matching on expandPath(c.source) is wrong for repo-scoped files
+    // (source is the `<repoKey>:<repoRelative>` identity, which expandPath
+    // resolves against cwd — never the real checkout path), so those changes
+    // silently escaped both the .tuckignore write AND the filter and were
+    // committed anyway. detectChanges keys .tuckignore on change.source, so that
+    // is the correct value to record for BOTH scopes.
+    const secretLivePaths = new Set(
+      summary.results.filter((r) => r.hasSecrets).map((r) => r.path)
+    );
+    const sourcesToRemove = new Set<string>();
+    for (const { change, live } of targets) {
+      if (!secretLivePaths.has(live)) continue;
+      sourcesToRemove.add(change.source);
+      await addToTuckignore(tuckDir, change.source);
+      logger.dim(`Added ${collapsePath(live)} to .tuckignore`);
     }
     // Filter out ignored files from changes list
     // Note: This intentionally mutates the 'changes' array in place so callers see the filtered list
-    const filesToRemove = new Set(summary.results.map((r) => r.path));
     changes.splice(
       0,
       changes.length,
-      ...changes.filter((c) => !filesToRemove.has(expandPath(c.source)))
+      ...changes.filter((c) => !sourcesToRemove.has(c.source))
     );
 
     if (changes.length === 0) {
@@ -441,13 +723,17 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
     const pullSpinner = prompts.spinner();
     pullSpinner.start('Checking remote for updates...');
 
-    const pullResult = await pullIfBehind(tuckDir);
+    const pullResult = await pullIfBehind(tuckDir, options);
     if (pullResult.error) {
       pullSpinner.stop(`Could not pull: ${pullResult.error}`);
       prompts.log.warning('Continuing with local changes...');
     } else if (pullResult.pulled) {
+      const conflictNote =
+        pullResult.resolvedConflicts && pullResult.resolvedConflicts.length > 0
+          ? ` (resolved ${pullResult.resolvedConflicts.length} conflict${pullResult.resolvedConflicts.length === 1 ? '' : 's'})`
+          : '';
       pullSpinner.stop(
-        `Pulled ${pullResult.behind} commit${pullResult.behind > 1 ? 's' : ''} from remote`
+        `Pulled ${pullResult.behind} commit${pullResult.behind > 1 ? 's' : ''} from remote${conflictNote}`
       );
     } else {
       pullSpinner.stop('Up to date with remote');
@@ -494,7 +780,7 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
         prompts.log.success(`Committed: ${hash.slice(0, 7)}`);
 
         // Push if remote exists
-        if (options.push !== false && (await hasRemote(tuckDir))) {
+        if (options.push !== false && !(await checkLocalMode(tuckDir)) && (await hasRemote(tuckDir))) {
           await pushWithSpinner(tuckDir, options);
         }
       }
@@ -724,7 +1010,7 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
   if (result.commitHash) {
     prompts.log.success(`Committed: ${result.commitHash.slice(0, 7)}`);
 
-    if (options.push !== false && (await hasRemote(tuckDir))) {
+    if (options.push !== false && !(await checkLocalMode(tuckDir)) && (await hasRemote(tuckDir))) {
       pushFailed = !(await pushWithSpinner(tuckDir, options));
     } else if (options.push === false) {
       prompts.log.info("Run 'tuck push' when ready to upload");
@@ -743,6 +1029,11 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
 const pushWithSpinner = async (tuckDir: string, _options: SyncOptions): Promise<boolean> => {
   const spinner = prompts.spinner();
   try {
+    // Provider gate: refuse to push in local-only mode even if a stray 'origin'
+    // remote is present. The configured provider mode is authoritative.
+    const config = await loadConfig(tuckDir);
+    assertRemoteAvailable(config.remote, 'push');
+
     const status = await getStatus(tuckDir);
     const needsUpstream = !status.tracking;
     const branch = status.branch;
@@ -779,10 +1070,66 @@ export const runSync = async (options: SyncOptions = {}): Promise<void> => {
   await runInteractiveSync(tuckDir, options);
 };
 
+/**
+ * Scan the about-to-be-synced changes for secrets and either block or warn,
+ * honoring `security.blockOnSecrets`. This is the SINGLE secret gate shared by
+ * every non-interactive sync path (`--json`, `--yes`, and the message path) so
+ * none of them can drift back into committing secrets. With `--force`, scanning
+ * is skipped but an audit entry is always recorded.
+ *
+ * Throws {@link SecretsDetectedError} when secrets are found and blocking is on.
+ * In JSON mode it emits structured warnings instead of human-readable output so
+ * the single-JSON-object stdout contract is preserved.
+ */
+const scanChangesForSecretsOrThrow = async (
+  tuckDir: string,
+  changes: FileChange[],
+  options: { force?: boolean; json?: boolean }
+): Promise<void> => {
+  if (options.force) {
+    await logForceSecretBypass(
+      options.json ? 'tuck sync --json --force' : 'tuck sync --force',
+      changes.length
+    );
+    const msg = 'Secret scanning bypassed via --force';
+    if (options.json) addJsonWarning(msg);
+    else logger.warning(msg);
+    return;
+  }
+
+  if (!(await isSecretScanningEnabled(tuckDir))) return;
+
+  const modifiedPaths = await resolveModifiedLivePaths(tuckDir, changes);
+  if (modifiedPaths.length === 0) return;
+
+  const summary = await scanForSecrets(modifiedPaths, tuckDir);
+  if (summary.totalSecrets === 0) return;
+
+  if (await shouldBlockOnSecrets(tuckDir)) {
+    if (!options.json) displayScanResults(summary);
+    throw new SecretsDetectedError(
+      summary.totalSecrets,
+      summary.results.map((r) => collapsePath(r.path))
+    );
+  }
+
+  // blockOnSecrets disabled: warn but continue.
+  if (options.json) {
+    addJsonWarning(
+      `${summary.totalSecrets} potential secret(s) detected but blockOnSecrets is disabled — proceeding`
+    );
+  } else {
+    displayScanResults(summary);
+    logger.warning('Secrets detected but blockOnSecrets is disabled - proceeding with sync');
+    logger.warning('Make sure your repository is private!');
+  }
+};
+
 export const runSyncCommand = async (
   messageArg: string | undefined,
   options: SyncOptions
 ): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck sync');
   const tuckDir = getTuckDir();
 
   // Verify tuck is initialized
@@ -790,6 +1137,112 @@ export const runSyncCommand = async (
     await loadManifest(tuckDir);
   } catch {
     throw new NotInitializedError();
+  }
+
+  // --plan / --dry-run: report what would happen and exit without mutating.
+  if (options.plan || options.dryRun) {
+    const changes = await detectChanges(tuckDir);
+    if (options.json) {
+      emitJsonOk({
+        plan: {
+          modified: changes.filter((c) => c.status === 'modified').map((c) => c.path),
+          deleted: changes.filter((c) => c.status === 'deleted').map((c) => c.path),
+        },
+      });
+      return;
+    }
+    logger.heading('Plan — would sync:');
+    for (const c of changes) logger.file(c.status === 'modified' ? 'modify' : 'delete', c.path);
+    return;
+  }
+
+  // If JSON or auto-yes mode and we have a path through, use non-interactive flow.
+  if (options.json || options.yes) {
+    const changes = await detectChanges(tuckDir);
+    if (changes.length === 0) {
+      // No tracked-file DRIFT — but the working tree may still hold uncommitted
+      // changes: the INITIAL `tuck add` (which copies into ~/.tuck without
+      // committing), a prior `pull`, or manual repo edits. Commit those instead
+      // of falsely reporting a no-op — otherwise the initial add is never
+      // committed and a later `tuck push` would push nothing. Mirrors the
+      // interactive path's gitStatus.hasChanges handling (runInteractiveSync).
+      // (Files reach the repo via `tuck add`, which already secret-scans them.)
+      const gitStatus = await getStatus(tuckDir);
+      if (!gitStatus.hasChanges) {
+        if (options.json) {
+          // Idempotent: nothing to do is a no-op, not a failure. Agents key on
+          // `noop` to tell "nothing changed" from "synced".
+          emitJsonOk({ modified: [], deleted: [], commitHash: null, noop: true });
+        } else {
+          logger.info('No changes detected');
+        }
+        return;
+      }
+      await stageAll(tuckDir);
+      const commitHash = await commit(tuckDir, messageArg || options.message || 'Update dotfiles');
+      let pushError: string | undefined;
+      if (options.push !== false && !(await checkLocalMode(tuckDir)) && (await hasRemote(tuckDir))) {
+        const config = await loadConfig(tuckDir);
+        assertRemoteAvailable(config.remote, 'push');
+        try {
+          await push(tuckDir);
+        } catch (err) {
+          if (!options.json) throw err;
+          pushError = err instanceof Error ? err.message : String(err);
+        }
+      }
+      if (options.json) {
+        emitJsonOk({
+          modified: [],
+          deleted: [],
+          commitHash,
+          noop: false,
+          ...(pushError ? { pushError } : {}),
+        });
+      } else {
+        logger.success(`Committed pending repository changes: ${commitHash.slice(0, 7)}`);
+      }
+      return;
+    }
+    // Secret gate: never let the non-interactive path commit/push secrets.
+    await scanChangesForSecretsOrThrow(tuckDir, changes, {
+      force: options.force,
+      json: options.json,
+    });
+    const message = messageArg || options.message;
+    const result = await syncFiles(tuckDir, changes, { ...options, message });
+    if (options.push !== false && !(await checkLocalMode(tuckDir)) && (await hasRemote(tuckDir))) {
+      // Provider gate: local-only mode refuses the push regardless of any stray
+      // 'origin' remote. The configured provider mode is authoritative.
+      const config = await loadConfig(tuckDir);
+      assertRemoteAvailable(config.remote, 'push');
+      try {
+        await push(tuckDir);
+      } catch (err) {
+        if (options.json) {
+          emitJsonOk({
+            modified: [...result.modified].sort(),
+            deleted: [...result.deleted].sort(),
+            commitHash: result.commitHash ?? null,
+            noop: false,
+            pushError: err instanceof Error ? err.message : String(err),
+          });
+          return;
+        }
+        throw err;
+      }
+    }
+    if (options.json) {
+      emitJsonOk({
+        modified: [...result.modified].sort(),
+        deleted: [...result.deleted].sort(),
+        commitHash: result.commitHash ?? null,
+        noop: false,
+      });
+    } else {
+      logger.success(`Synced ${changes.length} file${changes.length > 1 ? 's' : ''}`);
+    }
+    return;
   }
 
   // If no options (except --no-push), run interactive
@@ -806,35 +1259,8 @@ export const runSyncCommand = async (
     return;
   }
 
-  // Scan for secrets (non-interactive mode)
-  if (!options.force) {
-    const scanningEnabled = await isSecretScanningEnabled(tuckDir);
-    if (scanningEnabled) {
-      const modifiedPaths = changes
-        .filter((c) => c.status === 'modified')
-        .map((c) => expandPath(c.source));
-
-      if (modifiedPaths.length > 0) {
-        const summary = await scanForSecrets(modifiedPaths, tuckDir);
-        if (summary.totalSecrets > 0) {
-          displayScanResults(summary);
-
-          // Check if we should block or just warn
-          const shouldBlock = await shouldBlockOnSecrets(tuckDir);
-          if (shouldBlock) {
-            throw new SecretsDetectedError(
-              summary.totalSecrets,
-              summary.results.map((r) => collapsePath(r.path))
-            );
-          } else {
-            // Warn but continue
-            logger.warning('Secrets detected but blockOnSecrets is disabled - proceeding with sync');
-            logger.warning('Make sure your repository is private!');
-          }
-        }
-      }
-    }
-  }
+  // Scan for secrets (non-interactive message path) — shared gate.
+  await scanChangesForSecretsOrThrow(tuckDir, changes, { force: options.force, json: options.json });
 
   // Show changes
   logger.heading('Changes detected:');
@@ -855,7 +1281,11 @@ export const runSyncCommand = async (
 
     // Push by default unless --no-push
     // Commander converts --no-push to push: false, default is push: true
-    if (options.push !== false && (await hasRemote(tuckDir))) {
+    if (options.push !== false && !(await checkLocalMode(tuckDir)) && (await hasRemote(tuckDir))) {
+      // Provider gate: local-only mode refuses the push regardless of any stray
+      // 'origin' remote. The configured provider mode is authoritative.
+      const config = await loadConfig(tuckDir);
+      assertRemoteAvailable(config.remote, 'push');
       await withSpinner('Pushing to remote...', async () => {
         await push(tuckDir);
       });
@@ -882,6 +1312,10 @@ export const syncCommand = new Command('sync')
   .option('--no-hooks', 'Skip execution of pre/post sync hooks')
   .option('--trust-hooks', 'Trust and run hooks without confirmation (use with caution)')
   .option('-f, --force', 'Skip secret scanning (not recommended)')
+  .option('--json', 'Emit JSON envelope; non-interactive (errors on conflict)')
+  .option('-y, --yes', 'Auto-confirm prompts (use with --json for full automation)')
+  .option('--plan', 'Compute and emit the planned changes, do not execute')
+  .option('--dry-run', 'Same as --plan but prints human text')
   .action(async (messageArg: string | undefined, options: SyncOptions) => {
     await runSyncCommand(messageArg, options);
   });

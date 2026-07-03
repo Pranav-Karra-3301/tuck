@@ -1,10 +1,22 @@
-import { createHash } from 'crypto';
-import { readFile, stat, lstat, readdir, copyFile, symlink, unlink, rm } from 'fs/promises';
+import { createHash, randomBytes } from 'crypto';
+import {
+  readFile,
+  writeFile,
+  rename,
+  stat,
+  lstat,
+  readdir,
+  copyFile,
+  symlink,
+  unlink,
+  rm,
+} from 'fs/promises';
 import { copy, ensureDir } from 'fs-extra';
-import { join, dirname, basename } from 'path';
-import { constants } from 'fs';
-import { FileNotFoundError, PermissionError } from '../errors.js';
+import { join, dirname, basename, relative } from 'path';
+import { constants, lstatSync } from 'fs';
+import { FileNotFoundError, PermissionError, TuckError } from '../errors.js';
 import { expandPath, pathExists, isDirectory, validateSafeDestinationPath } from './paths.js';
+import { allowedRoots } from './writeContext.js';
 import { IS_WINDOWS } from './platform.js';
 
 export interface FileInfo {
@@ -23,11 +35,71 @@ export interface CopyResult {
   totalSize: number;
 }
 
+/**
+ * Atomically write `content` to `filepath`.
+ *
+ * Writes to a uniquely-named temp file in the **same directory** (so the final
+ * `rename` is a same-filesystem atomic swap), then renames it into place. A
+ * crash, SIGINT, or ENOSPC mid-write therefore leaves the target as either its
+ * previous content or the full new content — never a truncated fragment. This
+ * is the only safe way to persist source-of-truth files (manifest, config,
+ * secrets store).
+ *
+ * Mode resolution (in priority order):
+ *   1. `options.mode` when provided (e.g. `0o600` for the secrets store).
+ *   2. The existing file's mode when overwriting.
+ *   3. `0o600` for new dotfiles (basename starting with `.`).
+ *   4. The platform default otherwise.
+ */
+export const atomicWriteFile = async (
+  filepath: string,
+  content: string,
+  options?: { mode?: number }
+): Promise<void> => {
+  const tempSuffix = randomBytes(8).toString('hex');
+  const tempPath = join(dirname(filepath), `.${basename(filepath)}.tmp.${tempSuffix}`);
+
+  try {
+    let mode: number | undefined = options?.mode;
+
+    if (mode === undefined) {
+      let fileExists = false;
+      try {
+        const stats = await stat(filepath);
+        mode = stats.mode;
+        fileExists = true;
+      } catch {
+        // File does not exist yet.
+      }
+      // New security-sensitive dotfiles default to owner-only.
+      if (!fileExists && basename(filepath).startsWith('.')) {
+        mode = 0o600;
+      }
+    }
+
+    const writeOptions: { encoding: 'utf-8'; mode?: number } = { encoding: 'utf-8' };
+    if (typeof mode === 'number') writeOptions.mode = mode;
+    await writeFile(tempPath, content, writeOptions);
+    await rename(tempPath, filepath);
+  } catch (error) {
+    // Best-effort cleanup so a failed write never orphans a temp file.
+    try {
+      await unlink(tempPath);
+    } catch {
+      // Ignore cleanup errors.
+    }
+    throw error;
+  }
+};
+
 export const getFileChecksum = async (filepath: string): Promise<string> => {
   const expandedPath = expandPath(filepath);
 
   if (await isDirectory(expandedPath)) {
-    // For directories, create a hash of all file checksums
+    // For directories, hash each entry's RELATIVE PATH together with its content
+    // so the digest is sensitive to renames, additions, and deletions — not just
+    // raw content. (Hashing content alone meant a rename inside a tracked dir
+    // produced an identical checksum and the change was silently never synced.)
     const files = await getDirectoryFiles(expandedPath);
 
     // Handle empty directories - return hash of empty string for consistency
@@ -35,18 +107,45 @@ export const getFileChecksum = async (filepath: string): Promise<string> => {
       return createHash('sha256').update('').digest('hex');
     }
 
-    const hashes: string[] = [];
-
+    const entries: string[] = [];
     for (const file of files) {
+      const relPath = relative(expandedPath, file).replace(/\\/g, '/');
       const content = await readFile(file);
-      hashes.push(createHash('sha256').update(content).digest('hex'));
+      const contentHash = createHash('sha256').update(content).digest('hex');
+      entries.push(`${relPath}\0${contentHash}`);
     }
+    // Deterministic order regardless of readdir order.
+    entries.sort();
 
-    return createHash('sha256').update(hashes.join('')).digest('hex');
+    return createHash('sha256').update(entries.join('\n')).digest('hex');
   }
 
   const content = await readFile(expandedPath);
   return createHash('sha256').update(content).digest('hex');
+};
+
+/**
+ * Live-source stat cache for the mtime+size short-circuit.
+ *
+ * Returns `{ sourceMtimeMs, sourceSize }` ONLY for an existing regular file, so
+ * the caller can persist them next to the recorded checksum and later skip
+ * re-hashing an unchanged single file (see `stateModel.computeLiveChecksum`).
+ *
+ * Directories deliberately yield `{}`: a nested file change does not move a
+ * directory's own mtime/size, so a stat short-circuit on a dir would MISS real
+ * changes. Missing/inaccessible paths also yield `{}` (fall back to hashing).
+ */
+export const getSourceStatCache = async (
+  filepath: string
+): Promise<{ sourceMtimeMs?: number; sourceSize?: number }> => {
+  const expandedPath = expandPath(filepath);
+  try {
+    const stats = await stat(expandedPath);
+    if (!stats.isFile()) return {};
+    return { sourceMtimeMs: stats.mtimeMs, sourceSize: stats.size };
+  } catch {
+    return {};
+  }
 };
 
 export const getFileInfo = async (filepath: string): Promise<FileInfo> => {
@@ -78,28 +177,66 @@ export const getFileInfo = async (filepath: string): Promise<FileInfo> => {
   }
 };
 
-export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
-  const expandedPath = expandPath(dirpath);
-  const files: string[] = [];
+/**
+ * Result of a single recursive directory walk.
+ *
+ * `files` is the deterministically sorted list of tracked regular files (the
+ * exact same list `getDirectoryFiles` returns). `totalSize` is the summed byte
+ * size of those files, collected during the SAME walk so callers that need the
+ * size never have to traverse the tree a second time.
+ */
+export interface DirectoryTreeStats {
+  files: string[];
+  totalSize: number;
+}
 
-  // Skip common temporary/cache files and git repos that change frequently
-  const skipPatterns = [
-    '.DS_Store',
-    'Thumbs.db',
-    '.git', // Skip git directories to prevent nested repos
-    '.gitignore',
-    'node_modules',
-    '.cache',
-    '__pycache__',
-    '*.pyc',
-    '*.swp',
-    '*.tmp',
-    '.npmrc',
-    'package-lock.json',
-    'yarn.lock',
-    'pnpm-lock.yaml',
-  ];
+// Names that are always skipped when walking a tracked directory. Kept in a
+// single place so getDirectoryFiles and getDirectoryTreeStats can never drift.
+const DIRECTORY_SKIP_PATTERNS = [
+  '.DS_Store',
+  'Thumbs.db',
+  '.git', // Skip git directories to prevent nested repos
+  '.gitignore',
+  'node_modules',
+  '.cache',
+  '__pycache__',
+  '*.pyc',
+  '*.swp',
+  '*.tmp',
+  '.npmrc',
+  'package-lock.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+];
 
+const shouldSkipEntry = (name: string): boolean =>
+  DIRECTORY_SKIP_PATTERNS.some((pattern) => {
+    if (pattern.includes('*')) {
+      // Escape special regex characters (especially .) before replacing * with .*
+      const escapedPattern = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+      const regex = new RegExp('^' + escapedPattern + '$');
+      return regex.test(name);
+    }
+    return name === pattern;
+  });
+
+/**
+ * Single recursive walk shared by `getDirectoryFiles` and
+ * `getDirectoryTreeStats`. Pushes regular-file paths into `accFiles` and, when
+ * `collectSize` is true, adds each file's byte size to the returned running
+ * total. Sizes come from the same `lstat` used for symlink detection — since
+ * symlinks are skipped, every collected entry is a regular file whose `lstat`
+ * size equals its `stat` size, so the total is identical to the previous
+ * stat()-per-file approach.
+ *
+ * The file list is NOT sorted here; callers sort the fully-collected list so
+ * ordering matches the historical (sort-after-recurse) behavior exactly.
+ */
+const walkDirectory = async (
+  expandedPath: string,
+  accFiles: string[],
+  collectSize: boolean
+): Promise<number> => {
   let entries;
   try {
     entries = await readdir(expandedPath, { withFileTypes: true });
@@ -108,23 +245,15 @@ export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
     if (process.env.DEBUG) {
       console.warn(`[tuck] Warning: Could not read directory ${expandedPath}:`, error);
     }
-    return files;
+    return 0;
   }
+
+  let totalSize = 0;
 
   for (const entry of entries) {
     const entryPath = join(expandedPath, entry.name);
-    
-    const shouldSkip = skipPatterns.some(pattern => {
-      if (pattern.includes('*')) {
-        // Escape special regex characters (especially .) before replacing * with .*
-        const escapedPattern = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
-        const regex = new RegExp('^' + escapedPattern + '$');
-        return regex.test(entry.name);
-      }
-      return entry.name === pattern;
-    });
-    
-    if (shouldSkip) {
+
+    if (shouldSkipEntry(entry.name)) {
       continue;
     }
 
@@ -138,10 +267,13 @@ export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
       }
 
       if (entry.isDirectory()) {
-        const subFiles = await getDirectoryFiles(entryPath);
-        files.push(...subFiles);
+        totalSize += await walkDirectory(entryPath, accFiles, collectSize);
       } else if (entry.isFile()) {
-        files.push(entryPath);
+        accFiles.push(entryPath);
+        if (collectSize) {
+          // Same size stat() would report for a regular (non-symlink) file.
+          totalSize += lstats.size;
+        }
       }
     } catch (error) {
       // Skip entries we can't access (permission errors, etc.)
@@ -152,7 +284,30 @@ export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
     }
   }
 
+  return totalSize;
+};
+
+export const getDirectoryFiles = async (dirpath: string): Promise<string[]> => {
+  const expandedPath = expandPath(dirpath);
+  const files: string[] = [];
+  await walkDirectory(expandedPath, files, false);
   return files.sort();
+};
+
+/**
+ * Walk a directory tree ONCE, returning both the (sorted) file list and the
+ * total byte size of those files. Use this instead of calling
+ * `getDirectoryFiles`/`getDirectoryFileCount` and then re-walking to stat each
+ * file when you need the size — it produces an identical file list and size
+ * while traversing the tree a single time.
+ */
+export const getDirectoryTreeStats = async (
+  dirpath: string
+): Promise<DirectoryTreeStats> => {
+  const expandedPath = expandPath(dirpath);
+  const files: string[] = [];
+  const totalSize = await walkDirectory(expandedPath, files, true);
+  return { files: files.sort(), totalSize };
 };
 
 export const getDirectoryFileCount = async (dirpath: string): Promise<number> => {
@@ -160,10 +315,63 @@ export const getDirectoryFileCount = async (dirpath: string): Promise<number> =>
   return files.length;
 };
 
+/**
+ * Convert a single glob pattern (as used in detect.ts pattern `exclude` lists,
+ * e.g. "logs", "cache", "projects/[globstar]/*.jsonl", "[globstar]/*.db") into
+ * an anchored RegExp matched against a POSIX relative path. A globstar ("**")
+ * matches across path separators (including zero segments); a single "*"
+ * matches within one segment only.
+ */
+const excludeGlobToRegExp = (glob: string): RegExp => {
+  const g = glob.replace(/\\/g, '/').replace(/\/+$/, '');
+  let re = '';
+  for (let i = 0; i < g.length; i++) {
+    const ch = g[i];
+    if (ch === '*') {
+      if (g[i + 1] === '*') {
+        i++;
+        if (g[i + 1] === '/') {
+          i++;
+          re += '(?:.*/)?';
+        } else {
+          re += '.*';
+        }
+      } else {
+        re += '[^/]*';
+      }
+    } else if ('.+^${}()|[]\\?'.includes(ch)) {
+      re += '\\' + ch;
+    } else {
+      re += ch;
+    }
+  }
+  return new RegExp('^' + re + '$');
+};
+
+/**
+ * True when a POSIX relative path should be excluded from a directory copy by
+ * any of the given patterns. A bare name (no slash, no wildcard) matches that
+ * name at ANY depth (so `logs` skips a `logs/` subdirectory wherever it sits);
+ * patterns with separators/wildcards are matched against the full relative path.
+ */
+export const matchesExcludePattern = (relPosix: string, patterns: string[]): boolean => {
+  if (!relPosix) return false;
+  for (const raw of patterns) {
+    const pat = raw.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (!pat) continue;
+    if (!pat.includes('/') && !pat.includes('*')) {
+      if (relPosix.split('/').includes(pat)) return true;
+      continue;
+    }
+    if (excludeGlobToRegExp(pat).test(relPosix)) return true;
+  }
+  return false;
+};
+
 export const copyFileOrDir = async (
   source: string,
   destination: string,
-  options?: { overwrite?: boolean }
+  options?: { overwrite?: boolean; exclude?: string[] }
 ): Promise<CopyResult> => {
   const expandedSource = expandPath(source);
   const expandedDest = expandPath(destination);
@@ -172,35 +380,81 @@ export const copyFileOrDir = async (
     throw new FileNotFoundError(source);
   }
 
-  validateSafeDestinationPath(expandedDest);
+  // Validate against the active allowed roots ($HOME + bound repo roots, or the
+  // sandbox root) — not just $HOME — so repo-scoped writes to a bound checkout
+  // outside home are permitted while everything else stays confined.
+  validateSafeDestinationPath(expandedDest, allowedRoots());
 
   // Ensure destination directory exists
   await ensureDir(dirname(expandedDest));
 
   const sourceIsDir = await isDirectory(expandedSource);
+  const shouldOverwrite = options?.overwrite ?? true;
+
+  // When overwrite is disabled, never silently MERGE a source directory into an
+  // already-populated target directory: fs-extra's copy would happily union the
+  // two trees, leaving the caller unaware its config landed on top of someone
+  // else's. Fail clearly instead, mirroring the EEXIST guard COPYFILE_EXCL gives
+  // single files below. (We check before any directory is created or copied.)
+  if (sourceIsDir && !shouldOverwrite && (await pathExists(expandedDest))) {
+    throw new TuckError(
+      `Destination already exists: ${expandedDest}`,
+      'DESTINATION_EXISTS',
+      [
+        'Remove or rename the existing destination first',
+        'Pass overwrite to replace it (only if you intend to)',
+      ]
+    );
+  }
 
   try {
-    const shouldOverwrite = options?.overwrite ?? true;
-
     if (sourceIsDir) {
+      const excludePatterns = options?.exclude ?? [];
       // Copy directory but skip .git and other problematic files
-      await copy(expandedSource, expandedDest, { 
+      await copy(expandedSource, expandedDest, {
         overwrite: shouldOverwrite,
+        errorOnExist: !shouldOverwrite,
         filter: (src: string) => {
           const name = basename(src);
-          // Skip .git directories, node_modules, and cache directories
-          const skipDirs = ['.git', 'node_modules', '.cache', '__pycache__', '.DS_Store'];
-          return !skipDirs.includes(name);
+          // Use the SAME skip predicate as the directory walk that computes
+          // checksums (shouldSkipEntry / DIRECTORY_SKIP_PATTERNS), so the copied
+          // repo tree exactly matches the checksummed tree. Otherwise a copied
+          // nested .gitignore could silently exclude sibling tracked files from
+          // commits, and edits to skipped names (e.g. .npmrc) would never
+          // register as drift yet get reverted by apply/restore.
+          if (shouldSkipEntry(name)) return false;
+          // SECURITY (symlink TOCTOU): never recreate an in-tree symlink onto the
+          // live system. A committed symlink — especially one whose target
+          // escapes $HOME — would be planted verbatim, and a subsequent write
+          // through it could escape confinement. Copy file/dir CONTENT, never
+          // link topology. Sync stat only: fs-extra treats a Promise-returning
+          // filter as always-true, so an async check would silently no-op.
+          try {
+            if (lstatSync(src).isSymbolicLink()) return false;
+          } catch {
+            // Undeterminable → fall through; the apply write-path guard
+            // (assertRealTargetWithinRoots) is the authoritative confinement.
+          }
+          // Honor pattern-declared excludes (e.g. ~/.claude excludes
+          // projects/**/*.jsonl transcripts, caches) so ephemeral/sensitive
+          // content is never copied into the repo.
+          if (excludePatterns.length > 0) {
+            const rel = relative(expandedSource, src).split('\\').join('/');
+            if (matchesExcludePattern(rel, excludePatterns)) return false;
+          }
+          return true;
         }
       });
-      const fileCount = await getDirectoryFileCount(expandedDest);
-      const files = await getDirectoryFiles(expandedDest);
-      let totalSize = 0;
-      for (const file of files) {
-        const stats = await stat(file);
-        totalSize += stats.size;
-      }
-      return { source: expandedSource, destination: expandedDest, fileCount, totalSize };
+      // Single walk: collect the file list AND its total size in one traversal
+      // (was previously a getDirectoryFileCount + getDirectoryFiles + per-file
+      // stat — three passes over the same tree).
+      const { files, totalSize } = await getDirectoryTreeStats(expandedDest);
+      return {
+        source: expandedSource,
+        destination: expandedDest,
+        fileCount: files.length,
+        totalSize,
+      };
     } else {
       // Use COPYFILE_EXCL flag to prevent overwriting when overwrite is false
       // If overwrite is true (default), use mode 0 which allows overwriting
@@ -210,7 +464,19 @@ export const copyFileOrDir = async (
       return { source: expandedSource, destination: expandedDest, fileCount: 1, totalSize: stats.size };
     }
   } catch (error) {
-    throw new PermissionError(destination, 'write');
+    // Preserve the REAL failure cause. A blanket PermissionError hid whether the
+    // copy ran out of disk (ENOSPC), hit a missing path (ENOENT), or collided
+    // with an existing target (EEXIST) — all of which need different handling
+    // upstream. Only translate genuine permission failures into PermissionError;
+    // rethrow everything else with its original .code/.errno intact.
+    if (error instanceof TuckError) {
+      throw error;
+    }
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === 'EACCES' || code === 'EPERM' || code === undefined) {
+      throw new PermissionError(destination, 'write');
+    }
+    throw error;
   }
 };
 
@@ -251,7 +517,7 @@ export const createSymlink = async (
     throw new FileNotFoundError(target);
   }
 
-  validateSafeDestinationPath(expandedLink);
+  validateSafeDestinationPath(expandedLink, allowedRoots());
 
   // Ensure link parent directory exists
   await ensureDir(dirname(expandedLink));

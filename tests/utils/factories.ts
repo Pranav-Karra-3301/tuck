@@ -51,7 +51,7 @@ export const createMockConfig = (overrides?: Partial<TuckConfigOutput>): TuckCon
       excludePatterns: [],
       excludeFiles: [],
       maxFileSize: 10 * 1024 * 1024,
-      secretBackend: 'local',
+      secretBackend: 'auto',
       cacheSecrets: true,
       secretMappings: 'secrets.mappings.json',
       ...overrides?.security,

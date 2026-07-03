@@ -5,6 +5,7 @@ import { loadManifest } from '../lib/manifest.js';
 import { checkLocalMode, showLocalModeWarningForPush } from '../lib/remoteChecks.js';
 import {
   push,
+  fetch,
   hasRemote,
   getRemoteUrl,
   getStatus,
@@ -14,6 +15,9 @@ import {
 import { NotInitializedError, GitError } from '../errors.js';
 import type { PushOptions } from '../types.js';
 import { logForcePush } from '../lib/audit.js';
+import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
+import { loadConfig } from '../lib/config.js';
+import { assertRemoteAvailable } from '../lib/providers/index.js';
 
 const runInteractivePush = async (tuckDir: string): Promise<void> => {
   prompts.intro('tuck push');
@@ -47,6 +51,17 @@ const runInteractivePush = async (tuckDir: string): Promise<void> => {
 
     await addRemote(tuckDir, 'origin', remoteUrl);
     prompts.log.success('Remote added');
+  }
+
+  // Refresh remote-tracking refs so the ahead/behind divergence check below
+  // reflects the current remote, not the last fetch. Tolerate offline failures
+  // with a warning — a stale comparison is better than aborting the push.
+  try {
+    await withSpinner('Fetching...', async () => {
+      await fetch(tuckDir);
+    });
+  } catch {
+    prompts.log.warning('Could not fetch from remote; status may be out of date');
   }
 
   // Get current status
@@ -89,6 +104,12 @@ const runInteractivePush = async (tuckDir: string): Promise<void> => {
 
   // Push
   const needsUpstream = !status.tracking;
+
+  // Provider gate: refuse to push in local-only mode regardless of any stray
+  // 'origin' remote that may be present. This is authoritative over the mere
+  // existence of a git remote.
+  const config = await loadConfig(tuckDir);
+  assertRemoteAvailable(config.remote, 'push');
 
   try {
     await withSpinner('Pushing...', async () => {
@@ -133,6 +154,7 @@ const runInteractivePush = async (tuckDir: string): Promise<void> => {
 };
 
 const runPush = async (options: PushOptions): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck push');
   const tuckDir = getTuckDir();
 
   // Verify tuck is initialized
@@ -150,8 +172,11 @@ const runPush = async (options: PushOptions): Promise<void> => {
     );
   }
 
-  // If no options, run interactive
-  if (!options.force && !options.setUpstream) {
+  // If no options, run interactive. JSON mode and --yes are always
+  // non-interactive — they take the deterministic push path below. --yes must
+  // never route here, or `tuck push --yes` would hit an interactive prompt and
+  // fail on a non-TTY with an error telling the user to pass --yes.
+  if (!options.force && !options.setUpstream && !options.json && !options.yes) {
     await runInteractivePush(tuckDir);
     return;
   }
@@ -162,20 +187,39 @@ const runPush = async (options: PushOptions): Promise<void> => {
     throw new GitError('No remote configured', "Run 'tuck init -r <url>' or add a remote manually");
   }
 
-  const branch = await getCurrentBranch(tuckDir);
+  // Provider gate: refuse to push in local-only mode even if a stray 'origin'
+  // remote exists. The provider mode in config is authoritative.
+  const config = await loadConfig(tuckDir);
+  assertRemoteAvailable(config.remote, 'push');
 
-  // Require explicit confirmation for force push
-  if (options.force) {
-    const confirmed = await prompts.confirmDangerous(
-      'Force push will overwrite remote history.\n' +
-        'This can cause data loss for collaborators and is generally discouraged.',
-      'force'
-    );
-    if (!confirmed) {
-      logger.info('Push cancelled');
-      return;
+  const branch = await getCurrentBranch(tuckDir);
+  // Capture how far ahead of the remote we are, for the JSON envelope only.
+  // getStatus can throw (e.g. no tracking branch yet); never let it break push.
+  const nonInteractive = options.json === true || options.yes === true;
+  let ahead: number | undefined;
+  if (isJsonMode()) {
+    try {
+      ahead = (await getStatus(tuckDir)).ahead;
+    } catch {
+      ahead = undefined;
     }
-    logger.warning('Force pushing to remote...');
+  }
+
+  // Require explicit confirmation for force push. In non-interactive mode
+  // (--json / --yes) the caller has already opted in, so skip the prompt.
+  if (options.force) {
+    if (!nonInteractive) {
+      const confirmed = await prompts.confirmDangerous(
+        'Force push will overwrite remote history.\n' +
+          'This can cause data loss for collaborators and is generally discouraged.',
+        'force'
+      );
+      if (!confirmed) {
+        logger.info('Push cancelled');
+        return;
+      }
+      logger.warning('Force pushing to remote...');
+    }
     // Audit log for security tracking
     await logForcePush(branch);
   }
@@ -184,10 +228,17 @@ const runPush = async (options: PushOptions): Promise<void> => {
     await withSpinner('Pushing...', async () => {
       await push(tuckDir, {
         force: options.force,
+        // --set-upstream is a boolean trigger. We ALWAYS push the current
+        // branch — never a ref named after the flag's value — so the upstream
+        // is set for the branch the user is actually on.
         setUpstream: Boolean(options.setUpstream),
-        branch: options.setUpstream || branch,
+        branch,
       });
     });
+    if (isJsonMode()) {
+      emitJsonOk({ pushed: true, ahead, branch });
+      return;
+    }
     logger.success('Pushed successfully!');
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -207,7 +258,9 @@ const runPush = async (options: PushOptions): Promise<void> => {
 export const pushCommand = new Command('push')
   .description('Push changes to remote repository')
   .option('-f, --force', 'Force push')
-  .option('--set-upstream <name>', 'Set upstream branch')
+  .option('--set-upstream', 'Set upstream tracking for the current branch')
+  .option('--json', 'Emit JSON envelope to stdout')
+  .option('-y, --yes', 'Auto-confirm prompts (skip force-push confirmation)')
   .action(async (options: PushOptions) => {
     await runPush(options);
   });

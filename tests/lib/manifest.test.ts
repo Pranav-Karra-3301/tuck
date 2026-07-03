@@ -136,7 +136,12 @@ describe('manifest', () => {
 
       await saveManifest(mockManifest, TEST_TUCK_DIR);
 
-      expect(mockManifest.updated).not.toBe(originalUpdated);
+      // saveManifest stamps `updated` on a copy (not the caller's object) so a
+      // failed save can never leave in-memory state diverged from disk. Assert
+      // on the persisted value instead of the input object.
+      const content = vol.readFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), 'utf-8');
+      const saved = JSON.parse(content as string);
+      expect(saved.updated).not.toBe(originalUpdated);
     });
 
     it('should validate manifest before saving', async () => {
@@ -157,6 +162,30 @@ describe('manifest', () => {
 
       const loaded = await loadManifest(TEST_TUCK_DIR);
       expect(loaded.files['new-file']).toBeDefined();
+    });
+
+    it('should drop the cached manifest when a save fails, so the phantom entry never persists in memory', async () => {
+      // Regression: addFileToManifest mutates the shared cached object BEFORE
+      // saveManifest. If the save throws (validation/write failure), the mutation
+      // must NOT survive in the cache, or subsequent loads return unpersisted
+      // state (orphaned tracked file, manifest/repo mismatch on other machines).
+      const mockManifest = createMockManifest();
+      vol.writeFileSync(
+        join(TEST_TUCK_DIR, '.tuckmanifest.json'),
+        JSON.stringify(mockManifest, null, 2)
+      );
+
+      // Prime the cache.
+      await loadManifest(TEST_TUCK_DIR);
+
+      // An entry that fails schema validation forces saveManifest to throw.
+      await expect(
+        addFileToManifest(TEST_TUCK_DIR, 'phantom', { not: 'valid' } as never)
+      ).rejects.toThrow();
+
+      // Cache was invalidated -> next load re-reads disk truth (no phantom).
+      const reloaded = await loadManifest(TEST_TUCK_DIR);
+      expect(reloaded.files['phantom']).toBeUndefined();
     });
   });
 

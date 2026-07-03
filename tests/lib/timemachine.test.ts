@@ -65,8 +65,9 @@ import {
   formatSnapshotSize,
   formatSnapshotDate,
 } from '../../src/lib/timemachine.js';
+import { getSnapshotsDir } from '../../src/lib/state.js';
 
-const TIMEMACHINE_DIR = join(TEST_HOME, '.tuck', 'backups');
+const TIMEMACHINE_DIR = getSnapshotsDir();
 
 describe('timemachine', () => {
   beforeEach(() => {
@@ -143,13 +144,25 @@ describe('timemachine', () => {
       expect(backupPath).toContain('/.config/nvim/init.lua');
     });
 
-    it('should reject snapshot paths outside home directory', async () => {
-      const outsidePath = process.platform === 'win32' ? 'C:\\outside-secret' : '/outside-secret';
-      vol.writeFileSync(outsidePath, 'do-not-backup');
+    it('should snapshot paths outside home under a reserved _external subtree when Y is out of home', async () => {
+      // Repo-scoped files live in a checkout that can legitimately be outside
+      // $HOME. Snapshotting them must NOT throw (that would brick a whole apply);
+      // they are stored under _external/<hash>/ keyed by the absolute path, with
+      // the live restore target preserved as originalPath.
+      const outsidePath = process.platform === 'win32' ? 'C:\\work\\api\\.env' : '/opt/work/api/.env';
+      vol.mkdirSync(process.platform === 'win32' ? 'C:\\work\\api' : '/opt/work/api', {
+        recursive: true,
+      });
+      vol.writeFileSync(outsidePath, 'API_KEY=1');
 
-      await expect(createSnapshot([outsidePath], 'Unsafe path')).rejects.toThrow(
-        'outside home directory'
-      );
+      const snapshot = await createSnapshot([outsidePath], 'Out-of-home backup');
+
+      expect(snapshot.files.length).toBe(1);
+      expect(snapshot.files[0].existed).toBe(true);
+      expect(snapshot.files[0].originalPath.replace(/\\/g, '/')).toContain('/work/api/.env');
+      const backupPath = snapshot.files[0].backupPath.replace(/\\/g, '/');
+      expect(backupPath).toContain('/files/_external/');
+      expect(vol.readFileSync(snapshot.files[0].backupPath, 'utf-8')).toBe('API_KEY=1');
     });
   });
 
@@ -245,6 +258,14 @@ describe('timemachine', () => {
       );
     });
 
+    it('should suggest the real `tuck undo --list` command (not the non-existent restore flag)', async () => {
+      // The snapshot-not-found suggestion previously pointed at `tuck restore
+      // --list`, a flag the restore command does not define.
+      await expect(restoreSnapshot('nonexistent-id')).rejects.toMatchObject({
+        suggestions: expect.arrayContaining([expect.stringContaining('tuck undo --list')]),
+      });
+    });
+
     it('should restore files from snapshot', async () => {
       const testFile = join(TEST_HOME, '.zshrc');
       vol.writeFileSync(testFile, 'original content');
@@ -274,6 +295,32 @@ describe('timemachine', () => {
       await restoreSnapshot(snapshot.id);
 
       expect(vol.existsSync(newFile)).toBe(false);
+    });
+
+    it('takes a recoverable pre-undo snapshot before deleting valuable files', async () => {
+      const file = join(TEST_HOME, '.later-created');
+
+      // Snapshot taken when the file did NOT exist.
+      const snapA = await createSnapshot([file], 'Before file existed');
+
+      // User later creates valuable content at that path.
+      vol.writeFileSync(file, 'valuable-user-data');
+
+      // Undo (restore snapA) deletes the file...
+      await restoreSnapshot(snapA.id);
+      expect(vol.existsSync(file)).toBe(false);
+
+      // ...but a pre-undo snapshot must have captured the valuable content,
+      // and it must have a DISTINCT id from the snapshot being restored.
+      const snaps = await listSnapshots();
+      const preUndo = snaps.find((s) => s.reason.toLowerCase().includes('undo'));
+      expect(preUndo).toBeTruthy();
+      expect(preUndo!.id).not.toBe(snapA.id);
+
+      // Restoring the pre-undo snapshot recovers the data (undo-of-undo).
+      await restoreSnapshot(preUndo!.id);
+      expect(vol.existsSync(file)).toBe(true);
+      expect(vol.readFileSync(file, 'utf-8')).toBe('valuable-user-data');
     });
   });
 
@@ -317,6 +364,50 @@ describe('timemachine', () => {
       expect(vol.readFileSync(testFile, 'utf-8')).toBe('original');
       // bashrc should still be modified
       expect(vol.readFileSync(join(TEST_HOME, '.bashrc'), 'utf-8')).toBe('modified bash');
+    });
+
+    it('should capture a pre-undo backup of the current file before overwriting it', async () => {
+      const testFile = join(TEST_HOME, '.zshrc');
+      vol.writeFileSync(testFile, 'original');
+      const snapshot = await createSnapshot([testFile], 'Test');
+
+      vol.writeFileSync(testFile, 'live-edit-worth-keeping');
+
+      await restoreFileFromSnapshot(snapshot.id, testFile);
+
+      expect(vol.readFileSync(testFile, 'utf-8')).toBe('original');
+      // The current-state pre-undo backup makes this undo itself reversible.
+      const snapshots = await listSnapshots();
+      const preUndo = snapshots.find((s) => s.reason.startsWith('Pre-undo backup before restoring'));
+      expect(preUndo).toBeDefined();
+      const captured = preUndo!.files.find((f) => f.originalPath === testFile);
+      expect(captured?.existed).toBe(true);
+      expect(vol.readFileSync(captured!.backupPath, 'utf-8')).toBe('live-edit-worth-keeping');
+    });
+
+    it('should back up a file recorded as non-existent before deleting it on undo', async () => {
+      const nvimDir = join(TEST_HOME, '.config', 'nvim');
+      const target = join(nvimDir, 'init.lua');
+
+      // Snapshot the path while it does NOT exist → recorded existed:false.
+      const snapshot = await createSnapshot([target], 'Pre-apply');
+      expect(snapshot.files[0].existed).toBe(false);
+
+      // The user then creates the file; undoing must not destroy it unrecoverably.
+      vol.mkdirSync(nvimDir, { recursive: true });
+      vol.writeFileSync(target, 'set number');
+
+      await restoreFileFromSnapshot(snapshot.id, target);
+
+      // The file is removed (returning to the pre-apply state)...
+      expect(vol.existsSync(target)).toBe(false);
+      // ...but a pre-undo backup preserved its contents for recovery.
+      const snapshots = await listSnapshots();
+      const preUndo = snapshots.find((s) => s.reason.startsWith('Pre-undo backup before restoring'));
+      expect(preUndo).toBeDefined();
+      const captured = preUndo!.files.find((f) => f.originalPath === target);
+      expect(captured?.existed).toBe(true);
+      expect(vol.readFileSync(captured!.backupPath, 'utf-8')).toBe('set number');
     });
   });
 

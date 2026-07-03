@@ -1,0 +1,44 @@
+# Starship prompt config — managed by tuck (preset: starship)
+# Rendered for {{user | default "you"}} on {{os | default "unknown"}}
+
+# Increase the timeout for slow git status (in ms)
+command_timeout = 1000
+
+# Top-level format
+format = """
+[╭─](bold cyan) $username$hostname$directory$git_branch$git_status$nodejs$python$rust$cmd_duration
+[╰─](bold cyan)$character """
+
+[character]
+success_symbol = "[➜](bold green)"
+error_symbol   = "[✗](bold red)"
+
+[username]
+show_always = false
+format = "[$user]($style)@"
+style_user = "bold yellow"
+
+[hostname]
+ssh_only = true
+format = "[$hostname]($style) "
+style = "bold green"
+
+[directory]
+truncation_length = 3
+truncate_to_repo  = true
+format = "[$path]($style) "
+style = "bold blue"
+
+[git_branch]
+symbol = " "
+format = "[$symbol$branch]($style) "
+style  = "bold purple"
+
+[git_status]
+format = "[$all_status$ahead_behind]($style) "
+style  = "bold red"
+
+[cmd_duration]
+min_time = 2000
+format   = "took [$duration]($style) "
+style    = "yellow"

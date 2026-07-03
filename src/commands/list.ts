@@ -4,6 +4,7 @@ import { prompts, logger, formatCount, colors as c } from '../ui/index.js';
 import { getTuckDir } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import { NotInitializedError } from '../errors.js';
+import { setJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import { CATEGORIES } from '../constants.js';
 import type { ListOptions } from '../types.js';
 
@@ -102,7 +103,8 @@ const printJson = (groups: CategoryGroup[]): void => {
     {} as Record<string, { source: string; destination: string }[]>
   );
 
-  console.log(JSON.stringify(output, null, 2));
+  setJsonMode(true, 'tuck list');
+  emitJsonOk(output, 'tuck list');
 };
 
 const runList = async (options: ListOptions): Promise<void> => {
@@ -121,6 +123,13 @@ const runList = async (options: ListOptions): Promise<void> => {
   if (options.category) {
     groups = groups.filter((g) => g.name === options.category);
     if (groups.length === 0) {
+      // In --json mode the contract is "exactly one JSON envelope on stdout" —
+      // emit an empty (but valid) envelope instead of a human-readable warning
+      // so machine consumers can still JSON.parse the output.
+      if (options.json) {
+        printJson(groups);
+        return;
+      }
       logger.warning(`No files found in category: ${options.category}`);
       return;
     }

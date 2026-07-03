@@ -1,0 +1,6 @@
+{
+  "theme": "dark",
+  "autoSave": true,
+  "telemetry": false,
+  "user": "{{user | default \"you\"}}"
+}

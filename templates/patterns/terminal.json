@@ -1,0 +1,173 @@
+{
+  "$schema": "https://tuck.sh/schemas/patterns-v1.json",
+  "category": "terminal",
+  "patterns": [
+    {
+      "pattern": "~/.tmux.conf",
+      "category": "terminal",
+      "description": "Tmux configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.tmux",
+      "category": "terminal",
+      "description": "Tmux directory",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/tmux/tmux.conf",
+      "category": "terminal",
+      "description": "Tmux XDG config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.screenrc",
+      "category": "terminal",
+      "description": "GNU Screen configuration",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/alacritty",
+      "category": "terminal",
+      "description": "Alacritty terminal config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/kitty",
+      "category": "terminal",
+      "description": "Kitty terminal config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/wezterm",
+      "category": "terminal",
+      "description": "WezTerm config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.wezterm.lua",
+      "category": "terminal",
+      "description": "WezTerm config (alt)",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/hyper",
+      "category": "terminal",
+      "description": "Hyper terminal config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.hyper.js",
+      "category": "terminal",
+      "description": "Hyper terminal config (alt)",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/foot",
+      "category": "terminal",
+      "description": "Foot terminal config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/terminator",
+      "category": "terminal",
+      "description": "Terminator config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.config/tilix",
+      "category": "terminal",
+      "description": "Tilix terminal config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/Library/Preferences/com.googlecode.iterm2.plist",
+      "category": "terminal",
+      "description": "iTerm2 preferences",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "darwin"
+    },
+    {
+      "pattern": "%LOCALAPPDATA%/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json",
+      "category": "terminal",
+      "description": "Windows Terminal settings (Store)",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    },
+    {
+      "pattern": "%LOCALAPPDATA%/Microsoft/Windows Terminal/settings.json",
+      "category": "terminal",
+      "description": "Windows Terminal settings (non-Store)",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    },
+    {
+      "pattern": "%APPDATA%/ConEmu.xml",
+      "category": "terminal",
+      "description": "ConEmu settings",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    },
+    {
+      "pattern": "%APPDATA%/alacritty/alacritty.toml",
+      "category": "terminal",
+      "description": "Alacritty terminal config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    },
+    {
+      "pattern": "%APPDATA%/alacritty/alacritty.yml",
+      "category": "terminal",
+      "description": "Alacritty terminal config (legacy)",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    },
+    {
+      "pattern": "%USERPROFILE%/.wezterm.lua",
+      "category": "terminal",
+      "description": "WezTerm config",
+      "sensitive": false,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "win32"
+    }
+  ]
+}

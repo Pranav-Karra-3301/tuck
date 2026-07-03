@@ -45,35 +45,78 @@ tuck/
 │   │   ├── sync.ts      # tuck sync - Sync changes
 │   │   ├── push.ts      # tuck push - Push to remote
 │   │   ├── pull.ts      # tuck pull - Pull from remote
-│   │   ├── restore.ts   # tuck restore - Restore from backup
+│   │   ├── restore.ts   # tuck restore - Restore to the system
 │   │   ├── status.ts    # tuck status - Show status
 │   │   ├── list.ts      # tuck list - List tracked files
 │   │   ├── diff.ts      # tuck diff - Show differences
 │   │   ├── config.ts    # tuck config - Manage configuration
 │   │   ├── apply.ts     # tuck apply - Apply dotfiles from repo
-│   │   ├── undo.ts      # tuck undo - Undo/restore snapshots
-│   │   └── scan.ts      # tuck scan - Detect dotfiles on system
-│   ├── lib/             # Core modules
+│   │   ├── undo.ts      # tuck undo - Restore Time Machine snapshots
+│   │   ├── scan.ts      # tuck scan - Detect dotfiles on system
+│   │   ├── secrets.ts   # tuck secrets - Manage secrets/placeholders
+│   │   ├── encryption.ts # tuck encryption - Manage backup encryption
+│   │   ├── doctor.ts    # tuck doctor - Health/safety diagnostics
+│   │   ├── verify.ts    # tuck verify - Verify system/repo/manifest
+│   │   ├── bundle.ts    # tuck bundle - Manage bundles (file groups)
+│   │   ├── context.ts   # tuck context - Track AI agent configs
+│   │   ├── mcp.ts       # tuck mcp - Model Context Protocol server
+│   │   ├── preset.ts    # tuck preset - Apply/publish curated bundles
+│   │   └── repo.ts      # tuck repo - Machine-local repo bindings
+│   ├── lib/             # Core modules (~38 files + subdirs below)
 │   │   ├── paths.ts     # Path utilities
 │   │   ├── config.ts    # Config management
 │   │   ├── manifest.ts  # File tracking
+│   │   ├── manifestFile.ts # Manifest read/write
 │   │   ├── git.ts       # Git wrapper
-│   │   ├── files.ts     # File operations
-│   │   ├── backup.ts    # Backup system
-│   │   ├── hooks.ts     # Lifecycle hooks
 │   │   ├── github.ts    # GitHub CLI integration
+│   │   ├── files.ts     # File operations
+│   │   ├── fileTracking.ts # File tracking utilities
+│   │   ├── trackPipeline.ts # Track pipeline orchestration
+│   │   ├── backup.ts    # Backup system
 │   │   ├── timemachine.ts # Snapshot/time-machine backups
-│   │   ├── merge.ts     # Smart merging for shell files
-│   │   └── detect.ts    # Dotfile detection
+│   │   ├── hooks.ts     # Lifecycle hooks
+│   │   ├── detect.ts    # Dotfile detection
+│   │   ├── binary.ts    # Binary file detection
+│   │   ├── merge.ts     # Smart merging (shell/PowerShell)
+│   │   ├── mergeConflicts.ts # Merge-conflict handling
+│   │   ├── materialize.ts # Materialize templates/encrypted on apply
+│   │   ├── template.ts  # Template rendering
+│   │   ├── patternsRegistry.ts # Detection pattern registry
+│   │   ├── platform.ts  # Cross-platform (incl. Windows) helpers
+│   │   ├── state.ts     # Platform state dir (audit log, snapshots)
+│   │   ├── stateModel.ts # State model types/helpers
+│   │   ├── audit.ts     # Audit-log writing
+│   │   ├── repoScope.ts # Repo-scoped tracking resolution
+│   │   ├── writeContext.ts # Sandboxed write context (--root)
+│   │   ├── commandPath.ts # Command/executable path resolution
+│   │   ├── jsonOutput.ts # JSON envelope helpers
+│   │   ├── doctor.ts    # Diagnostics engine
+│   │   ├── remoteChecks.ts # Remote repository checks
+│   │   ├── remoteSetup.ts  # Remote setup helpers
+│   │   ├── providerSetup.ts # Git provider setup wizard
+│   │   ├── tuckignore.ts # .tuckignore file handling
+│   │   ├── validation.ts # Input validation utilities
+│   │   ├── updater.ts   # Update notifications
+│   │   ├── crypto/      # At-rest encryption (AES-256-GCM) + OS keystore/
+│   │   ├── providers/   # Git provider implementations (github/gitlab/custom/local)
+│   │   ├── secretBackends/ # 1Password/Bitwarden/pass/local backends
+│   │   └── secrets/     # Secret detection, redaction, storage
 │   ├── ui/              # UI components
 │   │   ├── banner.ts    # ASCII art
 │   │   ├── logger.ts    # Styled logs
 │   │   ├── prompts.ts   # Interactive prompts
 │   │   ├── spinner.ts   # Loading spinners
+│   │   ├── progress.ts  # Progress indicators
+│   │   ├── merge.ts     # Merge-conflict UI
+│   │   ├── theme.ts     # UI theme definitions
 │   │   └── table.ts     # Table output
 │   ├── schemas/         # Zod schemas
-│   │   ├── config.schema.ts   # Configuration schema
-│   │   └── manifest.schema.ts # Manifest schema
+│   │   ├── config.schema.ts        # Configuration schema
+│   │   ├── manifest.schema.ts      # Manifest schema
+│   │   ├── secrets.schema.ts       # Secrets schema
+│   │   ├── repos.schema.ts         # Repo-bindings schema
+│   │   ├── secretMappings.schema.ts # Secret-mappings schema
+│   │   └── snapshot.schema.ts      # Snapshot schema
 │   ├── constants.ts     # App constants
 │   ├── types.ts         # TypeScript types
 │   ├── errors.ts        # Custom errors
@@ -261,16 +304,20 @@ if (tracked) {
   console.log(tracked.id, tracked.file);
 }
 
-// Add a file to manifest
+// Add a file to manifest (fields must satisfy trackedFileSchema)
+const now = new Date().toISOString();
 manifest.files[fileId] = {
   source: collapsePath(sourcePath),
   destination: `files/${category}/${filename}`,
-  checksum: await getFileChecksum(sourcePath),
   category,
-  addedAt: new Date().toISOString(),
+  strategy: 'copy', // or 'symlink'
+  checksum: await getFileChecksum(sourcePath),
+  added: now,
+  modified: now,
+  // optional: encrypted, template, bundle, permissions
 };
 
-// Save changes
+// Save changes (validates against the Zod schema before writing)
 await saveManifest(manifest, tuckDir);
 ```
 
@@ -279,9 +326,9 @@ await saveManifest(manifest, tuckDir);
 ```typescript
 import {
   initRepo,
-  commitChanges,
+  commit,
   hasRemote,
-  pushChanges,
+  push,
   getStatus
 } from '../lib/git.js';
 
@@ -292,11 +339,11 @@ if (status.modified.length > 0) {
 }
 
 // Commit
-await commitChanges(tuckDir, 'feat: add new configuration');
+await commit(tuckDir, 'feat: add new configuration');
 
 // Push if remote exists
 if (await hasRemote(tuckDir)) {
-  await pushChanges(tuckDir);
+  await push(tuckDir);
 }
 ```
 
@@ -416,6 +463,33 @@ chore: update dependencies
 8. Handle edge cases (empty files, missing dirs, permissions)
 9. Pull from main before starting work
 10. Run full test suite before committing
+
+### Feature Delivery Rules
+
+1. Do not document, expose in config, or surface in manifests any feature that does not have an end-to-end test proving it works.
+2. Any change touching secrets, hooks, restore/apply flows, encryption, or remote execution must include a short threat model in the PR/patch notes.
+3. Any destructive or stateful feature must ship with preview mode, rollback or undo coverage, audit logging, and `tuck doctor` coverage.
+4. Every command or config change must update help text, README/docs, and tests in the same patch.
+5. Logs, prompts, snapshots, and diagnostics must never print secret values.
+
+### Tracked State Policy
+
+Every file created under `~/.tuck` or tuck-managed state must be classified before implementation:
+
+| Path / Kind | Policy |
+|-------------|--------|
+| `files/`, `.tuckmanifest.json`, `.tuckrc.json`, `README.md`, `secrets.mappings.json` | Tracked |
+| `secrets.local.json` | Repo-local but gitignored fallback only |
+| Legacy `backups/`, `audit.log`, `.tuck-keystore.enc` under `~/.tuck` | Deprecated and must stay gitignored if present |
+| Active snapshots, audit logs, fallback keystore | External-only runtime state outside the tracked repo |
+
+### Agent Checklist
+
+1. Verify cross-platform behavior for macOS, Linux, and Windows when touching paths, permissions, shells, or provider integrations.
+2. Keep the repo clean: do not stage caches, local secrets, audit logs, snapshots, or fallback keystore files.
+3. Prefer external secret backends; local secrets are an explicit fallback, not the default happy path.
+4. Add or update `doctor` checks when introducing new security-sensitive or stateful behavior.
+5. If a feature is intentionally reserved for future work, keep it hidden or blocked rather than partially wiring it.
 
 ---
 

@@ -9,10 +9,35 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { access } from 'fs/promises';
 import type { SecretBackend, SecretReference, PassConfig, SecretInfo } from './types.js';
+import { assertSafeBackendPath } from './types.js';
 import { SecretBackendError } from '../../errors.js';
 import { expandPath } from '../paths.js';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * A GPG key ID / fingerprint / email is embedded into PASSWORD_STORE_GPG_OPTS,
+ * which `pass` word-splits into extra gpg argv. `gpgId` comes from the committed
+ * `.tuckrc.json` (attacker-influenceable per the project threat model), so a
+ * value with whitespace or a leading dash could inject arbitrary gpg options
+ * (e.g. `--output <path>`). Restrict it to the characters a real key ID,
+ * 40-char fingerprint, or user@host identity actually uses — no whitespace,
+ * no leading dash — mirroring assertSafeBackendPath.
+ */
+const GPG_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._@+-]*$/;
+
+const assertSafeGpgId = (gpgId: string): void => {
+  if (!GPG_ID_PATTERN.test(gpgId)) {
+    throw new SecretBackendError(
+      'pass',
+      `Refusing unsafe gpgId "${gpgId}" (possible gpg argument injection)`,
+      [
+        'Set security.backends.pass.gpgId to a GPG key ID, fingerprint, or email',
+        'It must contain no whitespace and must not begin with a dash.',
+      ]
+    );
+  }
+};
 
 /**
  * Check if a file exists asynchronously
@@ -106,11 +131,13 @@ export class PassBackend implements SecretBackend {
         `Run: tuck secrets map ${ref.name} --pass "path/to/secret"`,
       ]);
     }
+    assertSafeBackendPath('pass', ref.name, ref.backendPath);
 
     const env = this.getEnv();
 
     try {
-      const { stdout } = await execFileAsync('pass', ['show', ref.backendPath], { env });
+      // `--` ends option parsing so the (validated) path is never a flag.
+      const { stdout } = await execFileAsync('pass', ['show', '--', ref.backendPath], { env });
 
       // By default, return just the first line (the password)
       // If the path ends with /*, return the full content
@@ -195,6 +222,7 @@ export class PassBackend implements SecretBackend {
       env.PASSWORD_STORE_DIR = this.storePath;
     }
     if (this.config.gpgId) {
+      assertSafeGpgId(this.config.gpgId);
       env.PASSWORD_STORE_GPG_OPTS = `--default-key ${this.config.gpgId}`;
     }
     return env;

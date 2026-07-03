@@ -9,6 +9,10 @@
 // execFile doesn't use shell interpolation, so malicious filenames can't execute arbitrary commands
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { readFile, unlink } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { randomBytes } from 'crypto';
 import { z } from 'zod';
 import type { SecretMatch, FileScanResult, ScanSummary } from './scanner.js';
 import { scanFiles as builtinScanFiles, redactSecret } from './scanner.js';
@@ -140,6 +144,30 @@ const generatePlaceholderFromRule = (ruleId: string): string => {
 };
 
 /**
+ * Convert a validated gitleaks finding into a SecretMatch.
+ *
+ * SECURITY: `context` is a DISPLAYED field (printed by displayScanResults), so
+ * it must never contain the raw secret. gitleaks' `Match` is the matched line
+ * including the live secret, so we redact it. `value` still holds the real
+ * secret because the redaction pipeline needs it to build placeholder mappings,
+ * but it is never printed directly.
+ */
+export const gitleaksResultToMatch = (finding: GitleaksResult): SecretMatch => {
+  const secretValue = finding.Secret || finding.Match;
+  return {
+    patternId: `gitleaks-${finding.RuleID}`,
+    patternName: finding.Description || finding.RuleID,
+    severity: mapGitleaksSeverity(finding.RuleID),
+    line: finding.StartLine,
+    column: finding.StartColumn,
+    value: secretValue,
+    redactedValue: redactSecret(secretValue),
+    context: redactSecret(finding.Match),
+    placeholder: generatePlaceholderFromRule(finding.RuleID),
+  };
+};
+
+/**
  * Sentinel value to indicate gitleaks failed for a specific file.
  * We use a Symbol (rather than null or a special error) to distinguish between:
  * - null: gitleaks succeeded but found no secrets
@@ -165,30 +193,55 @@ export const scanWithGitleaks = async (filepaths: string[]): Promise<ScanSummary
     const batch = filepaths.slice(i, i + CONCURRENCY);
     const batchResults = await Promise.all(
       batch.map(async (filepath): Promise<FileScanResult | null | typeof GITLEAKS_FAILED> => {
+      // gitleaks only writes its JSON findings when `--report-path` is set — it
+      // never emits them on stdout (without -v it prints nothing there). Reading
+      // stdout therefore always looked "clean" and silently disabled the scanner.
+      // Point gitleaks at a private temp report and read the findings from it.
+      const reportPath = join(tmpdir(), `tuck-gitleaks-${randomBytes(12).toString('hex')}.json`);
       try {
-        // Security: Use execFileAsync with array arguments to prevent command injection
-        // This prevents malicious filenames from executing arbitrary shell commands
-        const { stdout, stderr } = await execFileAsync('gitleaks', [
-          'detect',
-          '--source', filepath,
-          '--no-git',
-          '--report-format', 'json',
-          '--exit-code', '0'
-        ], { maxBuffer: 10 * 1024 * 1024 });
+        try {
+          // Security: Use execFileAsync with array arguments to prevent command injection
+          // This prevents malicious filenames from executing arbitrary shell commands
+          const { stderr } = await execFileAsync('gitleaks', [
+            'detect',
+            '--source', filepath,
+            '--no-git',
+            '--report-format', 'json',
+            '--report-path', reportPath,
+            '--exit-code', '0'
+          ], { maxBuffer: 10 * 1024 * 1024 });
 
-        // Check stderr for gitleaks errors (not just secret findings)
-        if (stderr && stderr.trim()) {
-          // Log stderr but continue - gitleaks may output warnings/errors to stderr
-          console.warn(`[tuck] Gitleaks stderr for ${filepath}: ${stderr.trim()}`);
+          // Check stderr for gitleaks errors (not just secret findings)
+          if (stderr && stderr.trim()) {
+            // Log stderr but continue - gitleaks may output warnings/errors to stderr
+            console.warn(`[tuck] Gitleaks stderr for ${filepath}: ${stderr.trim()}`);
+          }
+        } catch (execError) {
+          // Execution error - fall back to built-in scanner for this file
+          const errorMsg = execError instanceof Error ? execError.message : String(execError);
+          console.warn(`[tuck] Warning: Gitleaks scan failed for ${filepath}, falling back to built-in scanner: ${errorMsg}`);
+          return GITLEAKS_FAILED;
         }
 
-        if (!stdout.trim()) return null;
+        // Read the report gitleaks wrote. A missing/unreadable report means it
+        // produced no output we can trust, so fall back to the built-in scanner
+        // rather than assuming the file is clean (fail closed for a security control).
+        let reportRaw: string;
+        try {
+          reportRaw = await readFile(reportPath, 'utf-8');
+        } catch {
+          console.warn(`[tuck] Warning: Gitleaks wrote no readable report for ${filepath}, falling back to built-in scanner`);
+          return GITLEAKS_FAILED;
+        }
+
+        // An empty report file means gitleaks ran and found nothing.
+        if (!reportRaw.trim()) return null;
 
         // Security: Use Zod to validate external JSON input
         // This prevents prototype pollution and ensures type safety
         let gitleaksResults: GitleaksResult[];
         try {
-          const rawData = JSON.parse(stdout);
+          const rawData = JSON.parse(reportRaw);
           const validated = gitleaksOutputSchema.safeParse(rawData);
 
           if (!validated.success) {
@@ -206,27 +259,7 @@ export const scanWithGitleaks = async (filepaths: string[]): Promise<ScanSummary
 
         if (gitleaksResults.length === 0) return null;
 
-        const matches: SecretMatch[] = [];
-
-        for (const finding of gitleaksResults) {
-          const severity = mapGitleaksSeverity(finding.RuleID);
-
-          // Security: Use consistent redactSecret function for better security
-          const secretValue = finding.Secret || finding.Match;
-          const redactedValue = redactSecret(secretValue);
-
-          matches.push({
-            patternId: `gitleaks-${finding.RuleID}`,
-            patternName: finding.Description || finding.RuleID,
-            severity,
-            line: finding.StartLine,
-            column: finding.StartColumn,
-            value: secretValue,
-            redactedValue,
-            context: finding.Match,
-            placeholder: generatePlaceholderFromRule(finding.RuleID),
-          });
-        }
+        const matches: SecretMatch[] = gitleaksResults.map(gitleaksResultToMatch);
 
         // Collapse home directory in path for display using utility function
         const collapsedPath = collapsePath(filepath);
@@ -242,11 +275,9 @@ export const scanWithGitleaks = async (filepaths: string[]): Promise<ScanSummary
           lowCount: matches.filter(m => m.severity === 'low').length,
           skipped: false,
         };
-      } catch (execError) {
-        // Execution error - fall back to built-in scanner for this file
-        const errorMsg = execError instanceof Error ? execError.message : String(execError);
-        console.warn(`[tuck] Warning: Gitleaks scan failed for ${filepath}, falling back to built-in scanner: ${errorMsg}`);
-        return GITLEAKS_FAILED;
+      } finally {
+        // Never leave the (secret-bearing) temp report on disk.
+        await unlink(reportPath).catch(() => undefined);
       }
     })
     );

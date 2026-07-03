@@ -1,17 +1,21 @@
-import { basename } from 'path';
+import { basename, relative } from 'path';
 import { colors as c, logger, prompts } from '../ui/index.js';
 import {
   collapsePath,
   detectCategory,
   getDestinationPathFromSource,
+  getRepoScopedDestination,
   expandPath,
   isDirectory,
   pathExists,
   sanitizeFilename,
   validateSafeSourcePath,
+  validateSafeRepoSourcePath,
 } from './paths.js';
+import { findGitRoot, deriveRepoKey } from './repoScope.js';
+import { toPosixPath } from './platform.js';
 import { isFileTracked } from './manifest.js';
-import { checkFileSizeThreshold, formatFileSize, getDirectoryFileCount } from './files.js';
+import { checkFileSizeThreshold, formatFileSize, getDirectoryFileCount, getDirectoryFiles } from './files.js';
 import { shouldExcludeFromBin } from './binary.js';
 import { addToTuckignore, isIgnored } from './tuckignore.js';
 import {
@@ -22,6 +26,7 @@ import {
   SecretsDetectedError,
 } from '../errors.js';
 import { logForceSecretBypass } from './audit.js';
+import { isJsonMode } from './jsonOutput.js';
 import {
   getSecretsPath,
   isSecretScanningEnabled,
@@ -74,6 +79,23 @@ export interface PreparedTrackFile {
   isDir: boolean;
   fileCount: number;
   sensitive: boolean;
+  /**
+   * Tracking scope. Absent (or 'home') means a home-scoped file resolved
+   * against $HOME exactly as before. 'repo' means the file lives inside a git
+   * repo whose absolute path differs per machine; it is identified by a stable
+   * (repoKey, repoRelative) pair.
+   */
+  scope?: 'home' | 'repo';
+  /** Stable cross-machine repo identity (repo scope only). */
+  repoKey?: string;
+  /** POSIX path relative to the repo root (repo scope only). */
+  repoRelative?: string;
+  /** Absolute repo root on THIS machine (repo scope only; not committed). */
+  repoRoot?: string;
+  /** Canonicalized remote URL discovered while deriving the key, if any. */
+  remoteUrl?: string;
+  /** Absolute live path to copy FROM (repo scope only). */
+  liveSource?: string;
 }
 
 export interface PreparePathsForTrackingOptions {
@@ -83,6 +105,14 @@ export interface PreparePathsForTrackingOptions {
   allowAlreadyTracked?: boolean;
   secretHandling?: 'interactive' | 'strict';
   forceBypassCommand?: string;
+  /**
+   * Track candidates as REPO-scoped. `true` (or an empty string) means
+   * "auto-detect the enclosing git root from each path"; a string is an
+   * explicit repo root directory.
+   */
+  repo?: string | boolean;
+  /** Explicit repoKey override (advanced; default derives from the remote). */
+  repoKey?: string;
 }
 
 const isPrivateKey = (collapsedPath: string): boolean => {
@@ -216,8 +246,30 @@ const applySecretPolicy = async (
     return files;
   }
 
-  const filePaths = files.map((f) => expandPath(f.source));
-  const summary = await scanForSecrets(filePaths, tuckDir);
+  // Resolve each candidate to its LIVE path (repo-scoped entries carry a stable
+  // `<repoKey>:<repoRelative>` source, so we must scan the live absolute path,
+  // not the expanded identity string). DIRECTORY candidates must be expanded to
+  // their contained files: the scanner skips a directory path outright
+  // (skipReason 'Is a directory'), so without this a directory holding a
+  // credentials file would pass the secret gate completely unscanned. We keep a
+  // reverse map from each scanned file back to its owning candidate so the
+  // ignore action can act on the right candidate regardless of scope.
+  const scanPaths: string[] = [];
+  const ownerByScanPath = new Map<string, PreparedTrackFile>();
+  for (const file of files) {
+    const live = file.liveSource ?? expandPath(file.source);
+    if (await isDirectory(live)) {
+      for (const inner of await getDirectoryFiles(live)) {
+        scanPaths.push(inner);
+        if (!ownerByScanPath.has(inner)) ownerByScanPath.set(inner, file);
+      }
+    } else {
+      scanPaths.push(live);
+      ownerByScanPath.set(live, file);
+    }
+  }
+
+  const summary = await scanForSecrets(scanPaths, tuckDir);
 
   if (summary.filesWithSecrets === 0) {
     return files;
@@ -275,17 +327,28 @@ const applySecretPolicy = async (
   }
 
   if (action === 'ignore') {
-    const filesWithSecrets = new Set(summary.results.map((result) => result.collapsedPath));
-
-    for (const file of files) {
-      const normalizedSource = collapsePath(file.source);
-      if (filesWithSecrets.has(normalizedSource)) {
-        await addToTuckignore(tuckDir, file.source);
-        logger.success(`Added ${normalizedSource} to .tuckignore`);
-      }
+    // Map each secret-bearing scan result back to its OWNING candidate via the
+    // reverse map. Matching on collapsePath(file.source) is wrong for repo files
+    // (source is the `<repoKey>:<repoRelative>` identity, never a live path) and
+    // for directory candidates (the secret lives in an inner file, not the dir),
+    // so those files silently escaped the filter and were tracked anyway.
+    const owners = new Set<PreparedTrackFile>();
+    for (const result of summary.results) {
+      if (!result.hasSecrets) continue;
+      const owner = ownerByScanPath.get(result.path);
+      if (owner) owners.add(owner);
     }
 
-    const remaining = files.filter((file) => !filesWithSecrets.has(collapsePath(file.source)));
+    for (const file of owners) {
+      // Home files are ignored by their home-relative identity; repo files have
+      // no home-relative form, so record their collapsed live path instead.
+      const ignoreKey =
+        file.scope === 'repo' ? collapsePath(file.liveSource ?? file.source) : file.source;
+      await addToTuckignore(tuckDir, ignoreKey);
+      logger.success(`Added ${ignoreKey} to .tuckignore`);
+    }
+
+    const remaining = files.filter((file) => !owners.has(file));
     if (remaining.length === 0) {
       logger.info('No files remaining to track');
     }
@@ -312,13 +375,51 @@ export const preparePathsForTracking = async (
 ): Promise<PreparedTrackFile[]> => {
   const secretHandling = options.secretHandling ?? 'interactive';
   const prepared: PreparedTrackFile[] = [];
+  const isRepoScoped = options.repo !== undefined && options.repo !== false;
 
   for (const candidate of candidates) {
     const expandedPath = expandPath(candidate.path);
-    const collapsedPath = collapsePath(expandedPath);
-    validateSafeSourcePath(collapsedPath);
 
-    if (isPrivateKey(collapsedPath)) {
+    // For repo-scoped tracking the live file may be OUTSIDE $HOME, so we resolve
+    // a stable (repoKey, repoRelative) identity instead of a home-relative path.
+    let repoMeta: {
+      repoKey: string;
+      repoRelative: string;
+      repoRoot: string;
+      remoteUrl?: string;
+    } | null = null;
+
+    if (isRepoScoped) {
+      const explicitRoot =
+        typeof options.repo === 'string' && options.repo.trim() ? options.repo.trim() : undefined;
+      const repoRoot = explicitRoot
+        ? expandPath(explicitRoot)
+        : await findGitRoot(expandedPath);
+      if (!repoRoot) {
+        throw new FileNotFoundError(
+          `${candidate.path} (no enclosing git repository found for --repo)`
+        );
+      }
+
+      const repoRelative = toPosixPath(relative(repoRoot, expandedPath));
+      // Confine the file to the repo root and reject `..`/absolute escapes.
+      validateSafeRepoSourcePath(repoRoot, repoRelative);
+
+      const { repoKey, remoteUrl } = await deriveRepoKey(repoRoot, { repoKey: options.repoKey });
+      repoMeta = { repoKey, repoRelative, repoRoot, remoteUrl };
+    }
+
+    // The label used for already-tracked / ignored / display checks. Repo files
+    // are identified by their stable identity, never a home-relative path.
+    const trackingId = repoMeta
+      ? `${repoMeta.repoKey}:${repoMeta.repoRelative}`
+      : collapsePath(expandedPath);
+
+    if (!repoMeta) {
+      validateSafeSourcePath(trackingId);
+    }
+
+    if (!repoMeta && isPrivateKey(trackingId)) {
       throw new PrivateKeyError(candidate.path);
     }
 
@@ -326,28 +427,31 @@ export const preparePathsForTracking = async (
       throw new FileNotFoundError(candidate.path);
     }
 
-    if (!options.allowAlreadyTracked && (await isFileTracked(tuckDir, collapsedPath))) {
+    if (!options.allowAlreadyTracked && (await isFileTracked(tuckDir, trackingId))) {
       throw new FileAlreadyTrackedError(candidate.path);
     }
 
-    if (await isIgnored(tuckDir, collapsedPath)) {
-      logger.info(`Skipping ${collapsedPath} (in .tuckignore)`);
+    if (!repoMeta && (await isIgnored(tuckDir, trackingId))) {
+      // Suppressed in --json mode so stdout stays a single JSON envelope.
+      if (!isJsonMode()) logger.info(`Skipping ${trackingId} (in .tuckignore)`);
       continue;
     }
 
     if (await shouldExcludeFromBin(expandedPath)) {
       const sizeCheck = await checkFileSizeThreshold(expandedPath);
-      logger.info(
-        `Skipping binary executable: ${collapsedPath}` +
-          `${sizeCheck.size > 0 ? ` (${formatFileSize(sizeCheck.size)})` : ''}` +
-          ' - Add to .tuckignore to customize'
-      );
+      if (!isJsonMode()) {
+        logger.info(
+          `Skipping binary executable: ${trackingId}` +
+            `${sizeCheck.size > 0 ? ` (${formatFileSize(sizeCheck.size)})` : ''}` +
+            ' - Add to .tuckignore to customize'
+        );
+      }
       continue;
     }
 
     const sizeCheck = await checkFileSizeThreshold(expandedPath);
     const shouldTrack = await handleFileSizePolicy(
-      collapsedPath,
+      trackingId,
       sizeCheck.size,
       tuckDir,
       secretHandling
@@ -363,15 +467,35 @@ export const preparePathsForTracking = async (
     const nameOverride = customName ? sanitizeFilename(customName) : undefined;
     const filename = nameOverride || sanitizeFilename(expandedPath);
 
+    if (repoMeta) {
+      prepared.push({
+        source: trackingId,
+        destination: getRepoScopedDestination(repoMeta.repoKey, repoMeta.repoRelative),
+        category,
+        filename,
+        nameOverride,
+        isDir,
+        fileCount,
+        sensitive: isSensitiveFile(filename),
+        scope: 'repo',
+        repoKey: repoMeta.repoKey,
+        repoRelative: repoMeta.repoRelative,
+        repoRoot: repoMeta.repoRoot,
+        remoteUrl: repoMeta.remoteUrl,
+        liveSource: expandedPath,
+      });
+      continue;
+    }
+
     prepared.push({
-      source: collapsedPath,
+      source: trackingId,
       destination: getDestinationPathFromSource(tuckDir, category, expandedPath, nameOverride),
       category,
       filename,
       nameOverride,
       isDir,
       fileCount,
-      sensitive: isSensitiveFile(collapsedPath),
+      sensitive: isSensitiveFile(trackingId),
     });
   }
 

@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { prompts, logger } from '../ui/index.js';
 import { colors as c } from '../ui/theme.js';
+import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import {
   getTuckDir,
   expandPath,
@@ -21,10 +22,16 @@ import {
 import { NotInitializedError, FileNotFoundError, PermissionError } from '../errors.js';
 import { isBinaryExecutable } from '../lib/binary.js';
 import { isIgnored } from '../lib/tuckignore.js';
+import { resolveLiveTarget } from '../lib/repoScope.js';
+import {
+  materializeForLive,
+  keystorePassphrase,
+  buildMaterializeCtx,
+} from '../lib/materialize.js';
 import type { DiffOptions } from '../types.js';
 import { readFile } from 'fs/promises';
 
-interface FileDiff {
+export interface FileDiff {
   source: string;
   destination: string;
   hasChanges: boolean;
@@ -44,14 +51,26 @@ const isBinary = async (path: string): Promise<boolean> => {
   return await isBinaryExecutable(path);
 };
 
-const getFileDiff = async (tuckDir: string, source: string): Promise<FileDiff | null> => {
+export const getFileDiff = async (tuckDir: string, source: string): Promise<FileDiff | null> => {
   const tracked = await getTrackedFileBySource(tuckDir, source);
   if (!tracked) {
     throw new FileNotFoundError(`Not tracked: ${source}`);
   }
 
-  validateSafeSourcePath(tracked.file.source);
-  const systemPath = expandPath(source);
+  // Repo-scoped entries store `source` as `<repoKey>:<repoRelative>` and live
+  // OUTSIDE $HOME, so home-confinement does not apply to them; resolve their
+  // live path via the repo registry instead. Home-scoped entries keep the
+  // home-safety guard.
+  const isRepoScoped = tracked.file.scope === 'repo';
+  if (!isRepoScoped) {
+    validateSafeSourcePath(tracked.file.source);
+  }
+  const systemPath = await resolveLiveTarget(tracked.file);
+  if (systemPath === null) {
+    // Repo-scoped file whose repo is not bound on this machine — cannot compare,
+    // so report no diff rather than fabricating a cwd-relative path.
+    return null;
+  }
   const repoPath = getSafeRepoPathFromDestination(tuckDir, tracked.file.destination);
 
   const diff: FileDiff = {
@@ -119,6 +138,33 @@ const getFileDiff = async (tuckDir: string, source: string): Promise<FileDiff | 
     const repoChecksum = await getFileChecksum(repoPath);
     diff.hasChanges = systemChecksum !== repoChecksum;
 
+    return diff;
+  }
+
+  // Template/encrypted files: the repo copy holds SOURCE form (TCKE1 ciphertext
+  // or un-rendered {{ }} template), so comparing raw bytes always reports a
+  // change. Compare the live file against materialize(repo) instead — matching
+  // the state model that `tuck verify`/`tuck status` use.
+  if (tracked.file.template || tracked.file.encrypted) {
+    let materialized: string;
+    try {
+      const ctx = await buildMaterializeCtx(tuckDir);
+      const repoBytes = await readFile(repoPath);
+      materialized = await materializeForLive(repoBytes, tracked.file, ctx, {
+        getPassphrase: keystorePassphrase,
+      });
+    } catch {
+      // Cannot materialize (locked keystore, missing passphrase, corrupt
+      // ciphertext) — degrade to "no reportable diff" rather than emitting a
+      // bogus hunk of ciphertext vs plaintext.
+      return diff;
+    }
+    const systemContent = await readFile(systemPath, 'utf-8');
+    if (systemContent !== materialized) {
+      diff.hasChanges = true;
+      diff.systemContent = systemContent;
+      diff.repoContent = materialized;
+    }
     return diff;
   }
 
@@ -224,7 +270,15 @@ const formatUnifiedDiff = (diff: FileDiff): string => {
     const maxLines = Math.max(systemLines.length, repoLines.length);
 
     let inDiff = false;
-    let diffStart = 0;
+    // Count consecutive equal lines emitted as trailing context inside the
+    // current hunk. Once CONTEXT_LINES equal lines have been shown we CLOSE the
+    // hunk (inDiff = false) so a later change opens a fresh `@@` hunk instead of
+    // dumping the entire remainder of the file as "context" (which flooded the
+    // terminal for a one-line change in a large dotfile).
+    let trailingContext = 0;
+    // Highest source-line index already emitted as context, so a new hunk's
+    // preceding-context window never re-prints lines shown by the previous hunk.
+    let lastEmitted = -1;
 
     for (let i = 0; i < maxLines; i++) {
       const sysLine = systemLines[i];
@@ -233,7 +287,7 @@ const formatUnifiedDiff = (diff: FileDiff): string => {
       if (sysLine !== repoLine) {
         if (!inDiff) {
           inDiff = true;
-          diffStart = i;
+          const diffStart = i;
           const startLine = Math.max(0, diffStart - CONTEXT_LINES + 1);
           const contextLineCount = Math.min(diffStart, CONTEXT_LINES);
           const endLine = Math.min(maxLines, diffStart + CONTEXT_LINES + 1);
@@ -244,29 +298,40 @@ const formatUnifiedDiff = (diff: FileDiff): string => {
             )
           );
 
-          // Print context lines before diff
-          for (let j = startLine; j < i; j++) {
+          // Print preceding context, skipping any line already emitted as the
+          // trailing context of an earlier hunk.
+          for (let j = Math.max(startLine, lastEmitted + 1); j < i; j++) {
             const ctxLine = systemLines[j];
             if (ctxLine !== undefined) {
               lines.push(c.dim(`  ${ctxLine}`));
+              lastEmitted = j;
             }
           }
         }
 
+        trailingContext = 0;
         if (sysLine !== undefined) {
           lines.push(c.red(`- ${sysLine}`));
         }
         if (repoLine !== undefined) {
           lines.push(c.green(`+ ${repoLine}`));
         }
+        lastEmitted = i;
       } else if (inDiff) {
-        // Show context lines after diff changes
-        if (sysLine === repoLine && sysLine !== undefined) {
-          lines.push(c.dim(`  ${sysLine}`));
+        // Equal line while inside a hunk — show a bounded amount of trailing
+        // context, then close the hunk so the rest of the file isn't printed.
+        if (trailingContext < CONTEXT_LINES) {
+          if (sysLine !== undefined) {
+            lines.push(c.dim(`  ${sysLine}`));
+            lastEmitted = i;
+          }
+          trailingContext++;
+          if (trailingContext >= CONTEXT_LINES) {
+            inDiff = false;
+          }
+        } else {
+          inDiff = false;
         }
-      } else {
-        // Exit diff context after matching lines
-        inDiff = false;
       }
     }
   }
@@ -275,6 +340,7 @@ const formatUnifiedDiff = (diff: FileDiff): string => {
 };
 
 const runDiff = async (paths: string[], options: DiffOptions): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck diff');
   const tuckDir = getTuckDir();
 
   // Verify tuck is initialized
@@ -287,6 +353,10 @@ const runDiff = async (paths: string[], options: DiffOptions): Promise<void> => 
   // If --staged, show git diff
   if (options.staged) {
     const diff = await getDiff(tuckDir, { staged: true, stat: options.stat });
+    if (isJsonMode()) {
+      emitJsonOk({ staged: true, diff: diff ?? '' });
+      return;
+    }
     if (diff) {
       console.log(diff);
     } else {
@@ -341,6 +411,25 @@ const runDiff = async (paths: string[], options: DiffOptions): Promise<void> => 
     }
   }
 
+  if (isJsonMode()) {
+    emitJsonOk({
+      count: changedFiles.length,
+      files: changedFiles.map((d) => ({
+        source: d.source,
+        destination: d.destination,
+        isBinary: d.isBinary ?? false,
+        isDirectory: d.isDirectory ?? false,
+        hasChanges: d.hasChanges,
+        systemSize: d.systemSize,
+        repoSize: d.repoSize,
+        // Content is intentionally omitted from JSON output unless --stat is
+        // off and the consumer asks for it; keeping the envelope small.
+      })),
+    });
+    if (options.exitCode && changedFiles.length > 0) process.exit(1);
+    return;
+  }
+
   if (changedFiles.length === 0) {
     if (paths.length > 0) {
       logger.success('No differences found');
@@ -371,6 +460,12 @@ const runDiff = async (paths: string[], options: DiffOptions): Promise<void> => 
 
     console.log();
     prompts.outro(`Found ${changedFiles.length} changed file(s)`);
+    // --exit-code must still fire in the stat/name-only path (this branch is
+    // only reached when changedFiles.length > 0), or CI drift checks like
+    // `tuck diff --name-only --exit-code` would exit 0 despite real drift.
+    if (options.exitCode) {
+      process.exit(1);
+    }
     return;
   }
 
@@ -401,6 +496,7 @@ export const diffCommand = new Command('diff')
   )
   .option('--name-only', 'Show only changed file names')
   .option('--exit-code', 'Return exit code 1 if differences found')
+  .option('--json', 'Emit JSON envelope to stdout (suppresses interactive UI)')
   .action(async (paths: string[], options: DiffOptions) => {
     await runDiff(paths, options);
   });

@@ -9,16 +9,21 @@ const hasRemoteMock = vi.fn();
 const getRemoteUrlMock = vi.fn();
 const getStatusMock = vi.fn();
 const getCurrentBranchMock = vi.fn();
+const countCommitsBehindRemoteMock = vi.fn();
+const detectConflictsMock = vi.fn();
+const abortRebaseMock = vi.fn();
+const runRestoreMock = vi.fn();
 const loggerSuccessMock = vi.fn();
 const loggerInfoMock = vi.fn();
 const promptsIntroMock = vi.fn();
 const promptsOutroMock = vi.fn();
+const promptsConfirmMock = vi.fn();
 
 vi.mock('../../src/ui/index.js', () => ({
   prompts: {
     intro: promptsIntroMock,
     outro: promptsOutroMock,
-    confirm: vi.fn().mockResolvedValue(true),
+    confirm: promptsConfirmMock,
     note: vi.fn(),
     cancel: vi.fn(),
     log: {
@@ -58,6 +63,16 @@ vi.mock('../../src/lib/git.js', () => ({
   getRemoteUrl: getRemoteUrlMock,
   getStatus: getStatusMock,
   getCurrentBranch: getCurrentBranchMock,
+  countCommitsBehindRemote: countCommitsBehindRemoteMock,
+}));
+
+vi.mock('../../src/lib/mergeConflicts.js', () => ({
+  detectConflicts: detectConflictsMock,
+  abortRebase: abortRebaseMock,
+}));
+
+vi.mock('../../src/commands/restore.js', () => ({
+  runRestore: runRestoreMock,
 }));
 
 describe('pull command', () => {
@@ -73,6 +88,11 @@ describe('pull command', () => {
     hasRemoteMock.mockResolvedValue(true);
     getRemoteUrlMock.mockResolvedValue('https://github.com/example/dotfiles.git');
     getCurrentBranchMock.mockResolvedValue('main');
+    countCommitsBehindRemoteMock.mockResolvedValue(0);
+    detectConflictsMock.mockResolvedValue([]);
+    abortRebaseMock.mockResolvedValue(undefined);
+    runRestoreMock.mockResolvedValue(undefined);
+    promptsConfirmMock.mockResolvedValue(true);
     getStatusMock.mockResolvedValue({
       behind: 0,
       ahead: 0,
@@ -100,6 +120,16 @@ describe('pull command', () => {
     expect(loggerSuccessMock).toHaveBeenCalledWith('Pulled successfully!');
   });
 
+  it('restores tracked files after non-interactive pull when --restore is passed', async () => {
+    const { pullCommand } = await import('../../src/commands/pull.js');
+
+    await pullCommand.parseAsync(['node', 'pull', '--restore'], { from: 'user' });
+
+    expect(fetchMock).toHaveBeenCalledWith('/test-home/.tuck');
+    expect(pullMock).toHaveBeenCalledWith('/test-home/.tuck', { rebase: undefined });
+    expect(runRestoreMock).toHaveBeenCalledWith({ all: true });
+  });
+
   it('runs interactive flow when no flags are provided', async () => {
     const { pullCommand } = await import('../../src/commands/pull.js');
 
@@ -109,6 +139,40 @@ describe('pull command', () => {
     expect(fetchMock).toHaveBeenCalledWith('/test-home/.tuck');
   });
 
+  it('restores tracked files when interactive pull confirmation is accepted', async () => {
+    getStatusMock.mockResolvedValueOnce({
+      behind: 1,
+      ahead: 0,
+      tracking: 'origin/main',
+      modified: [],
+      staged: [],
+    });
+    promptsConfirmMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const { pullCommand } = await import('../../src/commands/pull.js');
+
+    await pullCommand.parseAsync(['node', 'pull'], { from: 'user' });
+
+    expect(pullMock).toHaveBeenCalledWith('/test-home/.tuck', { rebase: false });
+    expect(runRestoreMock).toHaveBeenCalledWith({ all: true });
+  });
+
+  it('skips restore when interactive pull confirmation is declined', async () => {
+    getStatusMock.mockResolvedValueOnce({
+      behind: 1,
+      ahead: 0,
+      tracking: 'origin/main',
+      modified: [],
+      staged: [],
+    });
+    promptsConfirmMock.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+    const { pullCommand } = await import('../../src/commands/pull.js');
+
+    await pullCommand.parseAsync(['node', 'pull'], { from: 'user' });
+
+    expect(pullMock).toHaveBeenCalledWith('/test-home/.tuck', { rebase: false });
+    expect(runRestoreMock).not.toHaveBeenCalled();
+  });
+
   it('throws when in local-only mode', async () => {
     checkLocalModeMock.mockResolvedValueOnce(true);
     const { pullCommand } = await import('../../src/commands/pull.js');
@@ -116,5 +180,112 @@ describe('pull command', () => {
     await expect(pullCommand.parseAsync(['node', 'pull', '--rebase'], { from: 'user' })).rejects.toMatchObject({
       code: 'GIT_ERROR',
     });
+  });
+
+  it('takes the deterministic merge path for --yes without going interactive', async () => {
+    const { pullCommand } = await import('../../src/commands/pull.js');
+
+    await pullCommand.parseAsync(['node', 'pull', '--yes'], { from: 'user' });
+
+    // `tuck pull --yes` must not hit the interactive rebase prompt (which would
+    // throw on a non-TTY). Deterministic path = default merge (rebase undefined).
+    expect(promptsIntroMock).not.toHaveBeenCalled();
+    expect(pullMock).toHaveBeenCalledWith('/test-home/.tuck', { rebase: undefined });
+    expect(loggerSuccessMock).toHaveBeenCalledWith('Pulled successfully!');
+  });
+
+  it('does not report "up to date" when the branch has no upstream but the remote has commits', async () => {
+    // No tracking ref, so status.behind is a misleading 0; the real remote has 2
+    // commits, surfaced by countCommitsBehindRemote after the fetch.
+    getStatusMock.mockResolvedValueOnce({
+      behind: 0,
+      ahead: 0,
+      tracking: undefined,
+      modified: [],
+      staged: [],
+    });
+    countCommitsBehindRemoteMock.mockResolvedValueOnce(2);
+    // First confirm is 'Use rebase instead of merge?' → merge; second is restore.
+    promptsConfirmMock.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+    const { pullCommand } = await import('../../src/commands/pull.js');
+
+    await pullCommand.parseAsync(['node', 'pull'], { from: 'user' });
+
+    expect(countCommitsBehindRemoteMock).toHaveBeenCalledWith('/test-home/.tuck', 'main');
+    // It must actually pull (not short-circuit as up to date), passing the
+    // branch explicitly since there is no upstream to infer it from.
+    expect(pullMock).toHaveBeenCalledWith('/test-home/.tuck', {
+      rebase: false,
+      branch: 'main',
+    });
+  });
+
+  it('aborts the merge and raises MergeConflictsError when a pull conflicts', async () => {
+    pullMock.mockRejectedValueOnce(new Error('Automatic merge failed; fix conflicts'));
+    detectConflictsMock.mockResolvedValueOnce([{ path: '.zshrc', ours: '', theirs: '' }]);
+    const { pullCommand } = await import('../../src/commands/pull.js');
+
+    await expect(
+      pullCommand.parseAsync(['node', 'pull', '--yes'], { from: 'user' })
+    ).rejects.toMatchObject({ code: 'MERGE_CONFLICTS' });
+
+    // The tuck repo must be returned to a clean state rather than left mid-merge.
+    expect(abortRebaseMock).toHaveBeenCalledWith('/test-home/.tuck');
+  });
+
+  it('emits a JSON envelope on a successful --json pull', async () => {
+    const { __resetJsonEmitState } = await import('../../src/lib/jsonOutput.js');
+    __resetJsonEmitState();
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const { pullCommand } = await import('../../src/commands/pull.js');
+    await pullCommand.parseAsync(['node', 'pull', '--rebase', '--json'], { from: 'user' });
+
+    writeSpy.mockRestore();
+
+    expect(fetchMock).toHaveBeenCalledWith('/test-home/.tuck');
+    expect(pullMock).toHaveBeenCalledWith('/test-home/.tuck', { rebase: true });
+
+    const env = JSON.parse(writes.join('').trim());
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck pull');
+    expect(env.data.pulled).toBe(true);
+
+    // Human output must be suppressed on the JSON path.
+    expect(loggerSuccessMock).not.toHaveBeenCalled();
+  });
+
+  it('reflects restore in the --json --restore envelope without printing human output', async () => {
+    const { __resetJsonEmitState } = await import('../../src/lib/jsonOutput.js');
+    __resetJsonEmitState();
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const { pullCommand } = await import('../../src/commands/pull.js');
+    await pullCommand.parseAsync(['node', 'pull', '--restore', '--json'], { from: 'user' });
+
+    writeSpy.mockRestore();
+
+    expect(pullMock).toHaveBeenCalledWith('/test-home/.tuck', { rebase: undefined });
+    expect(runRestoreMock).toHaveBeenCalledWith({ all: true });
+
+    const env = JSON.parse(writes.join('').trim());
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck pull');
+    expect(env.data.pulled).toBe(true);
+    expect(loggerSuccessMock).not.toHaveBeenCalled();
   });
 });

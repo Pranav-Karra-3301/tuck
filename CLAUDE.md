@@ -54,46 +54,95 @@ src/
 │   ├── sync.ts       # tuck sync - Sync changes
 │   ├── push.ts       # tuck push - Push to remote
 │   ├── pull.ts       # tuck pull - Pull from remote
-│   ├── restore.ts    # tuck restore - Restore from backup
+│   ├── restore.ts    # tuck restore - Restore to the system
 │   ├── status.ts     # tuck status - Show status
 │   ├── list.ts       # tuck list - List tracked files
 │   ├── diff.ts       # tuck diff - Show differences
 │   ├── config.ts     # tuck config - Manage configuration
 │   ├── apply.ts      # tuck apply - Apply dotfiles from repo
-│   ├── undo.ts       # tuck undo - Undo/restore from snapshots
+│   ├── undo.ts       # tuck undo - Restore from Time Machine snapshots
 │   ├── scan.ts       # tuck scan - Detect dotfiles on system
-│   └── secrets.ts    # tuck secrets - Manage detected secrets
+│   ├── secrets.ts    # tuck secrets - Manage secrets/placeholders
+│   ├── encryption.ts # tuck encryption - Manage backup encryption
+│   ├── doctor.ts     # tuck doctor - Health/safety diagnostics
+│   ├── verify.ts     # tuck verify - Verify system/repo/manifest agree
+│   ├── bundle.ts     # tuck bundle - Manage bundles (file groups)
+│   ├── context.ts    # tuck context - Track AI agent configs
+│   ├── mcp.ts        # tuck mcp - Model Context Protocol server
+│   ├── preset.ts     # tuck preset - Apply/publish curated bundles
+│   └── repo.ts       # tuck repo - Machine-local repo bindings
 ├── lib/          # Core library modules
-│   ├── paths.ts      # Path utilities and resolution
-│   ├── config.ts     # Configuration management
-│   ├── manifest.ts   # File tracking manifest
-│   ├── git.ts        # Git operations wrapper
-│   ├── files.ts      # File system operations
+│   ├── audit.ts        # Audit-log writing
+│   ├── backup.ts       # Backup functionality
+│   ├── binary.ts       # Binary file detection
+│   ├── commandPath.ts  # Command/executable path resolution
+│   ├── config.ts       # Configuration management
+│   ├── detect.ts       # Dotfile detection and categorization
+│   ├── doctor.ts       # Diagnostics engine
 │   ├── fileTracking.ts # File tracking utilities
-│   ├── backup.ts     # Backup functionality
-│   ├── hooks.ts      # Pre/post hook execution
-│   ├── github.ts     # GitHub CLI integration
-│   ├── timemachine.ts # Snapshot/time-machine backups
-│   ├── merge.ts      # Smart merging for shell files
-│   ├── detect.ts     # Dotfile detection and categorization
-│   ├── binary.ts     # Binary file detection
-│   ├── tuckignore.ts # .tuckignore file handling
-│   ├── updater.ts    # Update notifications
-│   ├── validation.ts # Input validation utilities
-│   ├── remoteChecks.ts # Remote repository checks
+│   ├── files.ts        # File system operations
+│   ├── git.ts          # Git operations wrapper
+│   ├── github.ts       # GitHub CLI integration
+│   ├── hooks.ts        # Pre/post hook execution
+│   ├── jsonOutput.ts   # JSON envelope helpers
+│   ├── manifest.ts     # File tracking manifest
+│   ├── manifestFile.ts # Manifest file read/write
+│   ├── materialize.ts  # Materialize templates/encrypted files on apply
+│   ├── merge.ts        # Smart merging for shell/PowerShell files
+│   ├── mergeConflicts.ts # Merge-conflict handling
+│   ├── paths.ts        # Path utilities and resolution
+│   ├── patternsRegistry.ts # Detection pattern registry
+│   ├── platform.ts     # Cross-platform (incl. Windows) helpers
 │   ├── providerSetup.ts # Git provider setup wizard
+│   ├── remoteChecks.ts # Remote repository checks
+│   ├── remoteSetup.ts  # Remote setup helpers
+│   ├── repoScope.ts    # Repo-scoped tracking resolution
+│   ├── state.ts        # Platform state dir (audit log, snapshots)
+│   ├── stateModel.ts   # State model types/helpers
+│   ├── template.ts     # Template rendering
+│   ├── timemachine.ts  # Snapshot/time-machine backups
+│   ├── trackPipeline.ts # Track pipeline orchestration
+│   ├── tuckignore.ts   # .tuckignore file handling
+│   ├── updater.ts      # Update notifications
+│   ├── validation.ts   # Input validation utilities
+│   ├── writeContext.ts # Sandboxed write context (--root)
+│   ├── crypto/       # At-rest encryption (AES-256-GCM)
+│   │   ├── encryption.ts     # Core AES-256-GCM/scrypt primitives
+│   │   ├── fileEncryption.ts # File encrypt/decrypt
+│   │   ├── manager.ts        # Encryption manager (setup/enable/rotate)
+│   │   ├── index.ts          # Barrel exports
+│   │   └── keystore/         # OS keystore backends
+│   │       ├── fallback.ts       # Encrypted-file fallback keystore
+│   │       ├── macos.ts          # macOS Keychain
+│   │       ├── linux.ts          # Linux secret service
+│   │       ├── windows.ts        # Windows credential store
+│   │       ├── types.ts          # Keystore interface
+│   │       └── index.ts          # Backend selection
 │   ├── providers/    # Git provider implementations
 │   │   ├── types.ts      # Provider interface definitions
 │   │   ├── github.ts     # GitHub provider
 │   │   ├── gitlab.ts     # GitLab provider
 │   │   ├── custom.ts     # Custom/generic git provider
-│   │   └── local.ts      # Local-only (no remote) provider
+│   │   ├── local.ts      # Local-only (no remote) provider
+│   │   └── index.ts      # Provider selection
+│   ├── secretBackends/ # External secret manager backends
+│   │   ├── onepassword.ts # 1Password backend
+│   │   ├── bitwarden.ts   # Bitwarden backend
+│   │   ├── pass.ts        # pass (GPG) backend
+│   │   ├── local.ts       # Local backend
+│   │   ├── mappings.ts    # Placeholder → backend path mappings
+│   │   ├── resolver.ts    # Secret resolution
+│   │   ├── cache.ts       # Resolution cache
+│   │   ├── types.ts       # Backend interface
+│   │   └── index.ts       # Backend selection
 │   └── secrets/      # Secret detection and management
 │       ├── scanner.ts    # Secret scanning logic
 │       ├── patterns.ts   # Secret detection patterns
 │       ├── redactor.ts   # Secret redaction utilities
+│       ├── regexSafety.ts # ReDoS-safe regex guards
 │       ├── store.ts      # Secure secret storage
-│       └── external.ts   # External secret manager integration
+│       ├── external.ts   # External secret manager integration
+│       └── index.ts      # Barrel exports
 ├── ui/           # Terminal UI components
 │   ├── banner.ts     # ASCII art and boxes
 │   ├── logger.ts     # Styled logging
@@ -101,11 +150,15 @@ src/
 │   ├── spinner.ts    # Loading spinners
 │   ├── progress.ts   # Progress indicators
 │   ├── table.ts      # Table formatting
+│   ├── merge.ts      # Merge-conflict UI
 │   └── theme.ts      # UI theme definitions
 ├── schemas/      # Zod validation schemas
-│   ├── config.schema.ts   # Configuration schema
-│   ├── manifest.schema.ts # Manifest schema
-│   └── secrets.schema.ts  # Secrets schema
+│   ├── config.schema.ts        # Configuration schema
+│   ├── manifest.schema.ts      # Manifest schema
+│   ├── secrets.schema.ts       # Secrets schema
+│   ├── repos.schema.ts         # Repo-bindings schema
+│   ├── secretMappings.schema.ts # Secret-mappings schema
+│   └── snapshot.schema.ts      # Snapshot schema
 ├── constants.ts  # App constants
 ├── types.ts      # TypeScript types
 ├── errors.ts     # Custom error classes

@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'fs/promises';
+import { readFile } from 'fs/promises';
 import {
   tuckManifestSchema,
   createEmptyManifest,
@@ -6,10 +6,37 @@ import {
   type TrackedFileOutput,
 } from '../schemas/manifest.schema.js';
 import { getManifestPath, pathExists } from './paths.js';
+import { atomicWriteFile } from './files.js';
 import { ManifestError } from '../errors.js';
 
 let cachedManifest: TuckManifestOutput | null = null;
 let cachedManifestDir: string | null = null;
+
+export const DEFAULT_BUNDLE = 'default';
+
+/**
+ * Forward-compatible migration: legacy manifests pre-dating bundles either
+ * lack the `bundles` registry entirely or have files with no `bundle` field.
+ * Zod's `.default(...)` already populates the missing values during parse, but
+ * we still need to guarantee a `default` bundle exists in the registry so the
+ * UI/JSON output stays consistent regardless of insertion order.
+ */
+const migrateBundles = (manifest: TuckManifestOutput): TuckManifestOutput => {
+  // After zod parse, bundle defaults are populated. Ensure the default bundle
+  // is registered if files reference it (which they will, after defaulting).
+  const needsDefault =
+    !manifest.bundles[DEFAULT_BUNDLE] &&
+    (Object.keys(manifest.bundles).length === 0 ||
+      Object.values(manifest.files).some((f) => f.bundle === DEFAULT_BUNDLE));
+
+  if (needsDefault) {
+    manifest.bundles[DEFAULT_BUNDLE] = {
+      created: manifest.created,
+    };
+  }
+
+  return manifest;
+};
 
 export const loadManifest = async (tuckDir: string): Promise<TuckManifestOutput> => {
   // Return cached manifest if same directory
@@ -32,7 +59,7 @@ export const loadManifest = async (tuckDir: string): Promise<TuckManifestOutput>
       throw new ManifestError(`Invalid manifest: ${result.error.message}`);
     }
 
-    cachedManifest = result.data;
+    cachedManifest = migrateBundles(result.data);
     cachedManifestDir = tuckDir;
 
     return cachedManifest;
@@ -53,20 +80,28 @@ export const saveManifest = async (
 ): Promise<void> => {
   const manifestPath = getManifestPath(tuckDir);
 
-  // Update the updated timestamp
-  manifest.updated = new Date().toISOString();
+  // The mutation helpers below (addFileToManifest, removeFileFromManifest, …)
+  // mutate the shared cached object BEFORE calling saveManifest. If validation
+  // or the atomic write fails, that in-memory mutation would otherwise survive
+  // and every subsequent loadManifest in this process would return state that
+  // was never persisted (an orphaned tracked file, manifest/repo mismatch on
+  // other machines). To prevent divergence:
+  //  1. stamp `updated` on a copy, never the caller's (possibly cached) object;
+  //  2. drop the cache on ANY failure so the next load re-reads disk truth.
+  const candidate: TuckManifestOutput = { ...manifest, updated: new Date().toISOString() };
 
-  // Validate before saving
-  const result = tuckManifestSchema.safeParse(manifest);
+  const result = tuckManifestSchema.safeParse(candidate);
   if (!result.success) {
+    clearManifestCache();
     throw new ManifestError(`Invalid manifest: ${result.error.message}`);
   }
 
   try {
-    await writeFile(manifestPath, JSON.stringify(result.data, null, 2) + '\n', 'utf-8');
+    await atomicWriteFile(manifestPath, JSON.stringify(result.data, null, 2) + '\n');
     cachedManifest = result.data;
     cachedManifestDir = tuckDir;
   } catch (error) {
+    clearManifestCache();
     throw new ManifestError(`Failed to save manifest: ${error}`);
   }
 };
@@ -84,7 +119,7 @@ export const createManifest = async (
   const manifest = createEmptyManifest(machine);
 
   try {
-    await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
+    await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
     cachedManifest = manifest;
     cachedManifestDir = tuckDir;
     return manifest;
@@ -162,6 +197,34 @@ export const getTrackedFileBySource = async (
   return null;
 };
 
+/**
+ * Build a single source→{id,file} lookup map for the manifest.
+ *
+ * `getTrackedFileBySource` is O(N) per call, so callers that probe many sources
+ * against the manifest (e.g. new-file detection in `scan`/`sync`, which checks
+ * every detected dotfile) were O(detected × tracked). Building this map ONCE
+ * before such a loop turns each "already tracked?" check into an O(1) lookup
+ * with identical semantics: a source is "tracked" iff it appears as a key here,
+ * exactly as `getTrackedFileBySource` returning non-null.
+ *
+ * Note: if two entries somehow share the same `source`, the LAST one in
+ * iteration order wins here. `getTrackedFileBySource` returns the FIRST match,
+ * but a duplicate-source manifest is malformed and never produced by tuck, so
+ * the only observable answer ("is this source tracked?") is unchanged.
+ */
+export const buildSourceIndex = async (
+  tuckDir: string
+): Promise<Map<string, { id: string; file: TrackedFileOutput }>> => {
+  const manifest = await loadManifest(tuckDir);
+  const index = new Map<string, { id: string; file: TrackedFileOutput }>();
+
+  for (const [id, file] of Object.entries(manifest.files)) {
+    index.set(file.source, { id, file });
+  }
+
+  return index;
+};
+
 export const getAllTrackedFiles = async (
   tuckDir: string
 ): Promise<Record<string, TrackedFileOutput>> => {
@@ -204,6 +267,106 @@ export const getCategories = async (tuckDir: string): Promise<string[]> => {
   }
 
   return Array.from(categories).sort();
+};
+
+export const ensureBundle = async (
+  tuckDir: string,
+  bundle: string,
+  description?: string
+): Promise<void> => {
+  const manifest = await loadManifest(tuckDir);
+  if (manifest.bundles[bundle]) {
+    if (description && !manifest.bundles[bundle].description) {
+      manifest.bundles[bundle].description = description;
+      await saveManifest(manifest, tuckDir);
+    }
+    return;
+  }
+
+  manifest.bundles[bundle] = {
+    created: new Date().toISOString(),
+    ...(description ? { description } : {}),
+  };
+  await saveManifest(manifest, tuckDir);
+};
+
+export const removeBundle = async (
+  tuckDir: string,
+  bundle: string,
+  options: { reassignTo?: string } = {}
+): Promise<{ reassigned: number }> => {
+  if (bundle === DEFAULT_BUNDLE) {
+    throw new ManifestError('Cannot remove the default bundle');
+  }
+
+  const manifest = await loadManifest(tuckDir);
+  if (!manifest.bundles[bundle]) {
+    throw new ManifestError(`Bundle not found: ${bundle}`);
+  }
+
+  const target = options.reassignTo ?? DEFAULT_BUNDLE;
+  if (!manifest.bundles[target] && target !== DEFAULT_BUNDLE) {
+    throw new ManifestError(`Reassignment target bundle not found: ${target}`);
+  }
+  if (target === DEFAULT_BUNDLE && !manifest.bundles[DEFAULT_BUNDLE]) {
+    manifest.bundles[DEFAULT_BUNDLE] = { created: new Date().toISOString() };
+  }
+
+  let reassigned = 0;
+  for (const [id, file] of Object.entries(manifest.files)) {
+    if (file.bundle === bundle) {
+      manifest.files[id] = { ...file, bundle: target, modified: new Date().toISOString() };
+      reassigned++;
+    }
+  }
+
+  delete manifest.bundles[bundle];
+  await saveManifest(manifest, tuckDir);
+  return { reassigned };
+};
+
+export const assignFileToBundle = async (
+  tuckDir: string,
+  id: string,
+  bundle: string
+): Promise<void> => {
+  const manifest = await loadManifest(tuckDir);
+  if (!manifest.files[id]) {
+    throw new ManifestError(`File not found in manifest: ${id}`);
+  }
+  if (!manifest.bundles[bundle]) {
+    throw new ManifestError(`Bundle not found: ${bundle}`);
+  }
+
+  manifest.files[id] = {
+    ...manifest.files[id],
+    bundle,
+    modified: new Date().toISOString(),
+  };
+  await saveManifest(manifest, tuckDir);
+};
+
+export const getFilesByBundle = async (
+  tuckDir: string,
+  bundle: string
+): Promise<Record<string, TrackedFileOutput>> => {
+  const manifest = await loadManifest(tuckDir);
+  const filtered: Record<string, TrackedFileOutput> = {};
+
+  for (const [id, file] of Object.entries(manifest.files)) {
+    if (file.bundle === bundle) {
+      filtered[id] = file;
+    }
+  }
+
+  return filtered;
+};
+
+export const getBundles = async (
+  tuckDir: string
+): Promise<Record<string, { description?: string; created: string }>> => {
+  const manifest = await loadManifest(tuckDir);
+  return manifest.bundles;
 };
 
 export const clearManifestCache = (): void => {
