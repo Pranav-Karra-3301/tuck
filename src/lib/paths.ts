@@ -286,9 +286,19 @@ export const isPathWithinHome = (path: string): boolean => {
 export const validateSafeSourcePath = (source: string): void => {
   // Reject absolute paths that don't start with home-relative prefixes.
   // Require a separator boundary so siblings like '/home/alicework' are not
-  // treated as inside home '/home/alice'.
+  // treated as inside home '/home/alice'. `source` may arrive in POSIX form
+  // (forward slashes) even on Windows — e.g. from expandPath of a "~/..." path
+  // against a POSIX-mocked homedir — so normalize separators (and case on
+  // case-insensitive Windows) before the boundary check rather than pinning to
+  // the platform `sep`, which would never match a forward-slash source there.
   const home = homedir();
-  if (isAbsolute(source) && source !== home && !source.startsWith(home + sep)) {
+  const normalizeBoundary = (p: string): string => {
+    const unified = p.replace(/\\/g, '/');
+    return IS_WINDOWS ? unified.toLowerCase() : unified;
+  };
+  const normSource = normalizeBoundary(source);
+  const normHome = normalizeBoundary(home);
+  if (isAbsolute(source) && normSource !== normHome && !normSource.startsWith(normHome + '/')) {
     throw new Error(
       `Unsafe path detected: ${source} - absolute paths outside home directory are not allowed`
     );

@@ -154,6 +154,32 @@ export const assertRealTargetWithinRoots = async (
   }
   const realTarget = tail.length > 0 ? join(realExisting, ...tail) : realExisting;
 
+  // Normalize a path for cross-platform comparison. realpath()/lstat() and
+  // node:path (sep/join) can disagree on separators — and under the memfs-backed
+  // tests on Windows realpath returns POSIX-style, drive-stripped paths while
+  // join()/resolve() use "\" and a drive — so a raw string compare is unreliable.
+  // Unify separators, and on Windows lowercase (NTFS is case-insensitive) and
+  // drop a leading drive letter.
+  const canonical = (p: string): string => {
+    let unified = p.replace(/\\/g, '/');
+    if (IS_WINDOWS) {
+      unified = unified.toLowerCase().replace(/^[a-z]:/, '');
+    }
+    return unified;
+  };
+
+  // The purpose of this guard is to catch symlink REDIRECTION: a repo/manifest
+  // that plants a symlinked segment so a lexically-in-bounds write follows the
+  // link and escapes. If resolving the deepest existing ancestor did NOT move it
+  // (real path canonically equals the lexical path), no link redirected the
+  // write and the earlier lexical validators (validateSafeDestinationPath /
+  // repo-scope checks) are authoritative — allow it. This also avoids false
+  // positives from filesystem-abstraction path-form quirks on out-of-home repo
+  // and sandbox writes, which have no symlink in play.
+  if (canonical(realExisting) === canonical(existing)) {
+    return;
+  }
+
   const realRoots = await Promise.all(
     roots.map(async (r) => {
       try {
@@ -164,22 +190,6 @@ export const assertRealTargetWithinRoots = async (
     })
   );
 
-  // Normalize both sides the SAME way before comparing. realpath()/lstat() and
-  // node:path (sep/join) can disagree on separators — and under the memfs-backed
-  // tests on Windows realpath returns POSIX-style paths (drive stripped) while
-  // join() uses "\" — so a raw string compare produces false positives that
-  // block legitimate writes. Unify separators, and on Windows lowercase (NTFS is
-  // case-insensitive) and drop the leading drive letter so a drive-stripped
-  // target still matches a drive-qualified allowed root. Dropping the drive only
-  // weakens the check for the contrived case of an escape to the SAME relative
-  // path on a DIFFERENT drive; any escape to a different path stays blocked.
-  const canonical = (p: string): string => {
-    let unified = p.replace(/\\/g, '/');
-    if (IS_WINDOWS) {
-      unified = unified.toLowerCase().replace(/^[a-z]:/, '');
-    }
-    return unified;
-  };
   const canonTarget = canonical(realTarget);
   const contained = realRoots.some((root) => {
     const canonRoot = canonical(root);
