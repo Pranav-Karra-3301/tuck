@@ -4,6 +4,7 @@ const loadManifestMock = vi.fn();
 const checkLocalModeMock = vi.fn();
 const showLocalModeWarningForPushMock = vi.fn();
 const pushMock = vi.fn();
+const fetchMock = vi.fn();
 const hasRemoteMock = vi.fn();
 const getRemoteUrlMock = vi.fn();
 const getStatusMock = vi.fn();
@@ -72,6 +73,7 @@ vi.mock('../../src/lib/remoteChecks.js', () => ({
 
 vi.mock('../../src/lib/git.js', () => ({
   push: pushMock,
+  fetch: fetchMock,
   hasRemote: hasRemoteMock,
   getRemoteUrl: getRemoteUrlMock,
   getStatus: getStatusMock,
@@ -107,6 +109,7 @@ describe('push command', () => {
     assertRemoteAvailableMock.mockImplementation(() => {});
     showLocalModeWarningForPushMock.mockResolvedValue(undefined);
     pushMock.mockResolvedValue(undefined);
+    fetchMock.mockResolvedValue(undefined);
     hasRemoteMock.mockResolvedValue(true);
     getRemoteUrlMock.mockResolvedValue('git@github.com:user/dotfiles.git');
     getStatusMock.mockResolvedValue({
@@ -180,6 +183,33 @@ describe('push command', () => {
       branch: 'main',
     });
     expect(promptsLogSuccessMock).toHaveBeenCalledWith('Pushed successfully!');
+  });
+
+  it('fetches before evaluating divergence in the interactive push flow', async () => {
+    const { pushCommand } = await import('../../src/commands/push.js');
+
+    await pushCommand.parseAsync([], { from: 'user' });
+
+    // Divergence must be measured against fresh remote-tracking refs, not the
+    // last fetch — otherwise the "behind remote" safety offer never fires.
+    expect(fetchMock).toHaveBeenCalledWith('/test-home/.tuck');
+  });
+
+  it('takes the deterministic (non-interactive) path for --yes without other flags', async () => {
+    getStatusMock.mockResolvedValue({ ahead: 1, behind: 0, tracking: 'origin/main' });
+    const { pushCommand } = await import('../../src/commands/push.js');
+
+    await pushCommand.parseAsync(['--yes'], { from: 'user' });
+
+    // `tuck push --yes` must not route into runInteractivePush (which would
+    // throw on a non-TTY telling the user to pass --yes, the flag they passed).
+    expect(promptsIntroMock).not.toHaveBeenCalled();
+    expect(pushMock).toHaveBeenCalledWith('/test-home/.tuck', {
+      force: undefined,
+      setUpstream: false,
+      branch: 'main',
+    });
+    expect(loggerSuccessMock).toHaveBeenCalledWith('Pushed successfully!');
   });
 
   it('emits a JSON envelope on a successful --json --force push', async () => {

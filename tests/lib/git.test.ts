@@ -82,6 +82,7 @@ import {
   getLog,
   getDiff,
   getCurrentBranch,
+  countCommitsBehindRemote,
   hasRemote,
   getRemoteUrl,
   getRemotes,
@@ -329,6 +330,95 @@ describe('git', () => {
         push(TEST_TUCK_DIR, { remote: 'origin', branch: 'main', setUpstream: true })
       ).resolves.not.toThrow();
     }, 30000); // Longer timeout for Windows CI
+
+    it('does not run gh auth setup-git when the remote is a non-github (gitlab) remote', async () => {
+      mockGitInstance.getRemotes.mockResolvedValue([
+        { name: 'origin', refs: { fetch: 'https://gitlab.com/user/repo.git', push: '' } },
+      ]);
+
+      await push(TEST_TUCK_DIR);
+
+      // gh must never be invoked for a GitLab remote — running `gh auth
+      // setup-git` would rewrite the user's GLOBAL github.com credential routing.
+      const ghCalls = execFileMock.mock.calls.filter((call) => call[0] === 'gh');
+      expect(ghCalls).toHaveLength(0);
+    });
+
+    it('does not run gh auth setup-git for an SSH github remote', async () => {
+      mockGitInstance.getRemotes.mockResolvedValue([
+        { name: 'origin', refs: { fetch: 'git@github.com:user/repo.git', push: '' } },
+      ]);
+
+      await push(TEST_TUCK_DIR);
+
+      const ghCalls = execFileMock.mock.calls.filter((call) => call[0] === 'gh');
+      expect(ghCalls).toHaveLength(0);
+    });
+
+    it('runs gh auth setup-git only for an HTTPS github.com remote when gh is logged in', async () => {
+      mockGitInstance.getRemotes.mockResolvedValue([
+        { name: 'origin', refs: { fetch: 'https://github.com/user/repo.git', push: '' } },
+      ]);
+      execFileMock.mockImplementation((cmd, args, opts, cb) => {
+        const callback = typeof opts === 'function' ? opts : cb;
+        if (cmd === 'gh' && Array.isArray(args) && args[0] === 'auth' && args[1] === 'status') {
+          callback?.(null, { stdout: '', stderr: 'Logged in to github.com as user' });
+          return;
+        }
+        callback?.(null, { stdout: '', stderr: '' });
+      });
+
+      await push(TEST_TUCK_DIR);
+
+      const setupGitCalls = execFileMock.mock.calls.filter(
+        (call) => call[0] === 'gh' && Array.isArray(call[1]) && call[1][1] === 'setup-git'
+      );
+      expect(setupGitCalls).toHaveLength(1);
+    });
+  });
+
+  describe('stageAll conflict guard', () => {
+    it('refuses to stage while merge conflicts are unresolved', async () => {
+      mockGitInstance.status.mockResolvedValue({
+        current: 'main',
+        conflicted: ['.zshrc'],
+        staged: [],
+        modified: [],
+        not_added: [],
+        deleted: [],
+        isClean: () => false,
+      });
+      vol.writeFileSync(join(TEST_TUCK_DIR, '.zshrc'), '<<<<<<< HEAD');
+
+      await expect(stageAll(TEST_TUCK_DIR)).rejects.toMatchObject({ code: 'GIT_ERROR' });
+      // Must never `git add --all` over the marker-corrupted file.
+      expect(mockGitInstance.raw).not.toHaveBeenCalledWith(
+        expect.arrayContaining(['add', '--all'])
+      );
+    });
+  });
+
+  describe('countCommitsBehindRemote', () => {
+    it('returns the rev-list count of commits behind the remote branch', async () => {
+      mockGitInstance.raw.mockResolvedValue('3\n');
+
+      const behind = await countCommitsBehindRemote(TEST_TUCK_DIR, 'main');
+
+      expect(behind).toBe(3);
+      expect(mockGitInstance.raw).toHaveBeenCalledWith([
+        'rev-list',
+        '--count',
+        'HEAD..origin/main',
+      ]);
+    });
+
+    it('returns null when the remote branch does not exist', async () => {
+      mockGitInstance.raw.mockRejectedValue(new Error('unknown revision'));
+
+      const behind = await countCommitsBehindRemote(TEST_TUCK_DIR, 'main');
+
+      expect(behind).toBeNull();
+    });
   });
 
   describe('pull', () => {

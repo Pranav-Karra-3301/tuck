@@ -154,6 +154,34 @@ describe('restore command behavior', () => {
     );
   });
 
+  it('writes no human logger output when runRestore runs in JSON mode (pull --json --restore)', async () => {
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: {
+        source: '~/.zshrc',
+        destination: 'files/shell/zshrc',
+        category: 'shell',
+      },
+    });
+
+    const { setJsonMode, __resetJsonEmitState } = await import('../../src/lib/jsonOutput.js');
+    const { logger } = await import('../../src/ui/index.js');
+    const { runRestore } = await import('../../src/commands/restore.js');
+
+    setJsonMode(true, 'tuck pull');
+    try {
+      await runRestore({ all: true, noHooks: true, noSecrets: true });
+    } finally {
+      setJsonMode(false);
+      __resetJsonEmitState();
+    }
+
+    // runRestore is invoked from pull's single-JSON-object path; its own
+    // success/blank/warning lines would corrupt that stdout contract.
+    expect(logger.success).not.toHaveBeenCalled();
+    expect(logger.blank).not.toHaveBeenCalled();
+    expect(logger.warning).not.toHaveBeenCalled();
+  });
+
   it('renders a template file on restore (P0-1)', async () => {
     vol.reset();
     vol.mkdirSync('/test-home/.tuck/files/shell', { recursive: true });

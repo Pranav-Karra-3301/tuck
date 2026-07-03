@@ -380,7 +380,8 @@ async function setupGitLabProvider(provider: GitProvider): Promise<ProviderSetup
 
       const args = ['auth', 'login', '--web'];
       if (providerUrl) {
-        args.push('-h', providerUrl.replace(/^https?:\/\//, ''));
+        // glab uses --hostname for host selection; -h is the --help shorthand.
+        args.push('--hostname', providerUrl.replace(/^https?:\/\//, ''));
       }
 
       await execFileAsync('glab', args);
