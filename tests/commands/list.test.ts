@@ -123,4 +123,31 @@ describe('list command', () => {
 
     expect(loggerWarningMock).toHaveBeenCalledWith('No files found in category: terminal');
   });
+
+  it('emits an empty JSON envelope (not a plain-text warning) when --json category has no matches', async () => {
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+    const { listCommand } = await import('../../src/commands/list.js');
+
+    await listCommand.parseAsync(['node', 'list', '--json', '--category', 'terminal'], {
+      from: 'user',
+    });
+
+    // The human warning must NOT be used in JSON mode — the machine contract is
+    // exactly one JSON envelope on stdout, even for the empty result.
+    expect(loggerWarningMock).not.toHaveBeenCalled();
+    const lines = writes.join('').trim().split('\n').filter(Boolean);
+    expect(lines.length).toBe(1);
+    const env = JSON.parse(lines[0]);
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck list');
+    expect(env.data).toEqual({});
+
+    writeSpy.mockRestore();
+  });
 });
