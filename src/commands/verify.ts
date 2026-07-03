@@ -25,7 +25,8 @@ import {
 } from '../lib/paths.js';
 import { loadManifest } from '../lib/manifest.js';
 import { copyFileOrDir, getFileChecksum } from '../lib/files.js';
-import { NotInitializedError } from '../errors.js';
+import { NotInitializedError, MaterializeError } from '../errors.js';
+import { materializeForLive, keystorePassphrase, buildMaterializeCtx } from '../lib/materialize.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import {
   setWriteContext,
@@ -36,7 +37,7 @@ import {
   getWriteRoot,
 } from '../lib/writeContext.js';
 import { smartMerge, isShellFile, type MergeConflict } from '../lib/merge.js';
-import { prepareFilesToApply } from './apply.js';
+import { prepareFilesToApply, isValidUtf8 } from './apply.js';
 import {
   computeStateModel,
   summarizeStateModel,
@@ -139,6 +140,9 @@ export const dryApplyIntoSandbox = async (
 ): Promise<DryApplyResult> => {
   const manifest = await loadManifest(tuckDir);
   const { files } = await prepareFilesToApply(tuckDir, manifest, bundle);
+  // Template context, built once — needed to render template files to the content
+  // a real apply WOULD write (so in-sync templates aren't reported as false drift).
+  const ctx = await buildMaterializeCtx(tuckDir);
 
   // Sources prepare KEPT — anything in the manifest with a real repo copy that
   // is NOT in this set was dropped (unsafe/escaping) and must be surfaced.
@@ -193,10 +197,52 @@ export const dryApplyIntoSandbox = async (
     }
 
     // ── single file ──
-    // Determine the content apply WOULD write: smart-merged for shell files with
-    // an existing live copy (and surface the conflicts apply discards), else the
-    // verbatim repo copy.
-    let content = await readFile(file.repoPath, 'utf-8');
+    const rawBytes = await readFile(file.repoPath);
+
+    // Binary (non-UTF-8) files that are neither templated nor encrypted are applied
+    // byte-for-byte — mirror apply so verify doesn't UTF-8-mangle them into a false
+    // 'modified'. Diff by checksum against the live file.
+    if (!file.template && !file.encrypted && !isValidUtf8(rawBytes)) {
+      await ensureDir(dirname(writeTarget));
+      await copyFileOrDir(file.repoPath, writeTarget, { overwrite: true });
+      let binStatus: DryApplyChange['status'];
+      let binBytesBefore = 0;
+      if (!liveExists) {
+        binStatus = 'created';
+      } else {
+        binBytesBefore = (await stat(file.destination)).size;
+        const [liveSum, sandboxSum] = await Promise.all([
+          getFileChecksum(file.destination),
+          getFileChecksum(writeTarget),
+        ]);
+        binStatus = liveSum === sandboxSum ? 'unchanged' : 'modified';
+      }
+      changes.push({
+        target: writeTarget,
+        status: binStatus,
+        bytesBefore: binBytesBefore,
+        bytesAfter: rawBytes.length,
+      });
+      continue;
+    }
+
+    // Materialize (decrypt → render) to the content a real apply WOULD write, so
+    // an in-sync encrypted/templated file is not diffed as raw ciphertext/template
+    // source (permanent false 'modified'). A failed/absent-passphrase decryption is
+    // skipped with a warning — exactly like apply — writing NOTHING for that file.
+    let content: string;
+    try {
+      content = await materializeForLive(rawBytes, file, ctx, { getPassphrase: keystorePassphrase });
+    } catch (err) {
+      if (err instanceof MaterializeError) {
+        logger.warning(err.message);
+        continue;
+      }
+      throw err;
+    }
+
+    // Smart-merge shell files with an existing live copy (and surface the conflicts
+    // apply discards).
     if (isShellFile(file.source) && liveExists) {
       const merge = await smartMerge(file.destination, content);
       content = merge.content;

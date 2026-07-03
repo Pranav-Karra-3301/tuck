@@ -310,4 +310,46 @@ describe('restore command behavior', () => {
     );
     expect(copyFileOrDirMock).not.toHaveBeenCalled();
   });
+
+  it('should not write any files when --dry-run is set in the interactive path', async () => {
+    // Interactive restore (no paths, no --all, no --yes/--json) previously dropped
+    // --dry-run and performed a REAL restore. It must now honor dryRun and write
+    // nothing.
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: { source: '~/.zshrc', destination: 'files/shell/zshrc', category: 'shell' },
+    });
+
+    const ui = await import('../../src/ui/index.js');
+    vi.mocked(ui.prompts.multiselect).mockResolvedValue(['zshrc'] as never);
+    vi.mocked(ui.prompts.select).mockResolvedValue(false as never); // copy strategy
+    vi.mocked(ui.prompts.confirm).mockResolvedValue(true as never);
+
+    const { runRestoreCommand } = await import('../../src/commands/restore.js');
+    await runRestoreCommand([], { dryRun: true } as never);
+
+    expect(copyFileOrDirMock).not.toHaveBeenCalled();
+    expect(createSymlinkMock).not.toHaveBeenCalled();
+    expect(createBackupMock).not.toHaveBeenCalled();
+  });
+
+  it('should carry --no-hooks through the interactive path', async () => {
+    // The interactive restore rebuilt a fresh options object that dropped noHooks;
+    // it must now pass the original options (skipHooks) through to the hook runner.
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: { source: '~/.zshrc', destination: 'files/shell/zshrc', category: 'shell' },
+    });
+
+    const ui = await import('../../src/ui/index.js');
+    vi.mocked(ui.prompts.multiselect).mockResolvedValue(['zshrc'] as never);
+    vi.mocked(ui.prompts.select).mockResolvedValue(false as never);
+    vi.mocked(ui.prompts.confirm).mockResolvedValue(true as never);
+
+    const { runRestoreCommand } = await import('../../src/commands/restore.js');
+    await runRestoreCommand([], { noHooks: true, noSecrets: true } as never);
+
+    expect(runPreRestoreHookMock).toHaveBeenCalledWith(
+      '/test-home/.tuck',
+      expect.objectContaining({ skipHooks: true })
+    );
+  });
 });
