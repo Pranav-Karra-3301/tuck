@@ -14,7 +14,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { vol } from 'memfs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { createMockManifest, createMockTrackedFile } from '../utils/factories.js';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
 
@@ -205,7 +205,11 @@ describe('tuck apply — audit regressions', () => {
     // operator's real file with plaintext secrets.
     expect(restoreSecretsMock).toHaveBeenCalledTimes(1);
     const [pathsToRestore] = restoreSecretsMock.mock.calls[0] as [string[], string];
-    expect(pathsToRestore).toEqual([join(SANDBOX, '.config', 'app', 'config')]);
-    expect(pathsToRestore).not.toContain(join(TEST_HOME, '.config', 'app', 'config'));
+    // apply builds the write target via resolveWriteTarget (resolve()), which adds
+    // the drive letter on Windows; resolve() the expectations too so the assertion
+    // is path-form agnostic while still proving the target is the SANDBOX copy and
+    // never the real ~/.config/app/config.
+    expect(pathsToRestore).toEqual([resolve(join(SANDBOX, '.config', 'app', 'config'))]);
+    expect(pathsToRestore).not.toContain(resolve(join(TEST_HOME, '.config', 'app', 'config')));
   });
 });
