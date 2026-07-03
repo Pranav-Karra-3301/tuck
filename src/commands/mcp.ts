@@ -442,11 +442,19 @@ export const dispatch = async (
 
     case 'tools/call': {
       if (!state.initialized) return rpcError(id, -32002, 'Server not initialized');
-      const params = (req.params ?? {}) as { name?: string; arguments?: Record<string, unknown> };
+      const params = (req.params ?? {}) as { name?: string; arguments?: unknown };
       const tool = tools.find((t) => t.name === params.name);
       if (!tool) return rpcError(id, -32601, `Unknown tool: ${params.name}`);
 
-      const args = params.arguments ?? {};
+      // `arguments` MUST be a plain object. A JSON string/number/array here would
+      // otherwise make validateArgs throw on `key in args` / Object.entries and
+      // reject the whole serve chain (crashing the server); report it as a TOOL
+      // error instead so the host surfaces it to the model.
+      const rawArgs = params.arguments ?? {};
+      if (typeof rawArgs !== 'object' || rawArgs === null || Array.isArray(rawArgs)) {
+        return toolError(id, 'Invalid arguments: "arguments" must be an object');
+      }
+      const args = rawArgs as Record<string, unknown>;
       // Argument and write-permission failures are TOOL errors (isError), not
       // transport errors — hosts surface them to the model instead of aborting.
       const argErr = validateArgs(tool, args);
@@ -490,18 +498,40 @@ const runServe = async (): Promise<void> => {
         respond(rpcError(null, -32600, 'Request exceeds maximum allowed size'));
         return;
       }
-      let req: JsonRpcRequest;
+      let parsed: unknown;
       try {
-        req = JSON.parse(trimmed) as JsonRpcRequest;
+        parsed = JSON.parse(trimmed);
       } catch {
         respond(rpcError(null, -32700, 'Parse error'));
         return;
       }
-      const resp = await dispatch(req, state);
-      if (resp) respond(resp);
+      // `JSON.parse('null')`/`'42'`/`'"x"'` all succeed but are not requests.
+      // Without this guard, dispatch's `req.id` would throw on a null/primitive
+      // and reject the serialized chain — taking the whole server down (exit 1).
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        respond(rpcError(null, -32600, 'Invalid Request'));
+        return;
+      }
+      try {
+        const resp = await dispatch(parsed as JsonRpcRequest, state);
+        if (resp) respond(resp);
+      } catch (err) {
+        // A handler/dispatch throw must never crash the server: report it as a
+        // JSON-RPC internal error and keep serving subsequent requests.
+        const reqId = (parsed as { id?: string | number | null }).id ?? null;
+        respond(rpcError(reqId, -32603, err instanceof Error ? err.message : String(err)));
+      }
     });
+    // The chain is only awaited on close; a rejected link (should be impossible
+    // now that the body catches) must not surface as an unhandledRejection.
+    chain = chain.catch(() => {});
   });
-  rl.on('close', () => process.exit(0));
+  // Await any in-flight request before exiting so a host that half-closes stdin
+  // after its last request still receives that request's response (process.exit
+  // is synchronous and would otherwise drop pending writes).
+  rl.on('close', () => {
+    void chain.finally(() => process.exit(0));
+  });
 };
 
 export const mcpCommand = new Command('mcp')
