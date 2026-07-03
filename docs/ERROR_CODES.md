@@ -14,6 +14,7 @@ This document lists all error codes used by tuck for programmatic error handling
 | `FILE_NOT_TRACKED` | `FileNotTrackedError` | File isn't being tracked | File not added with `tuck add` | Run `tuck add <path>` first |
 | `FILE_ALREADY_TRACKED` | `FileAlreadyTrackedError` | File is already tracked | Adding same file twice | Use `tuck sync` to update |
 | `GIT_ERROR` | `GitError` | Git operation failed | Auth issues, network, conflicts | Check git credentials and network |
+| `MERGE_CONFLICTS` | `MergeConflictsError` | Merge left unresolved conflicts (**exit code 3**, distinct for agent branching) | Overlapping local/remote edits | Resolve conflicts, then re-run the operation |
 | `CONFIG_ERROR` | `ConfigError` | Configuration problem | Corrupted config, invalid values | Run `tuck config reset` |
 | `MANIFEST_ERROR` | `ManifestError` | Manifest file issue | Corrupted JSON, schema mismatch | Restore from remote with `tuck init --from` |
 | `PERMISSION_ERROR` | `PermissionError` | Cannot read/write file | Wrong permissions, locked file | Check file permissions |
@@ -27,6 +28,16 @@ This document lists all error codes used by tuck for programmatic error handling
 | `BACKEND_NOT_AVAILABLE` | `BackendNotAvailableError` | Backend CLI missing | 1Password/Bitwarden not installed | Install the backend CLI |
 | `BACKEND_AUTH_ERROR` | `BackendAuthenticationError` | Backend not authenticated | Session expired | Re-authenticate with backend |
 | `UNRESOLVED_SECRETS` | `UnresolvedSecretsError` | Could not resolve secrets | Missing in backend | Ensure secrets are configured |
+| `MATERIALIZE_FAILED` | `MaterializeError` | Could not materialize a template/encrypted file on apply | Bad template, decryption failure | Check the source file and encryption password |
+| `OPERATION_CANCELLED` | `OperationCancelledError` | Operation was cancelled | User aborted, or a prompt required in a non-TTY context | Re-run interactively, or pass `-y/--yes` |
+| `PRIVATE_KEY_ERROR` | `PrivateKeyError` | Refused to track a private key | Attempting to add an SSH/GPG private key | Store keys in a secret manager, not dotfiles |
+| `REPOSITORY_NOT_FOUND` | `RepositoryNotFoundError` | No dotfiles repository found for the source | Bad user/repo, missing remote | Check the source argument and remote access |
+| `INVALID_MANIFEST` | `InvalidManifestError` | Manifest failed schema validation | Hand-edited or corrupted manifest | Restore from remote with `tuck init --from` |
+| `PATH_TRAVERSAL_ERROR` | `PathTraversalError` | Path escaped the allowed root | `..` segments or absolute escape in a path | Use a path within the tuck/target root |
+| `SECRETS_STORE_ERROR` | `SecretsStoreError` | Local secrets store operation failed | Corrupted store, permissions | Check the secrets store file and permissions |
+| `SCAN_LIMIT_ERROR` | `ScanLimitError` | Too many files to scan | Directory exceeds the scan limit | Narrow the scan scope or raise the limit |
+| `VALIDATION_ERROR` | `ValidationError` | Input failed validation | Invalid flag/field value | Correct the input per the message |
+| `KEYSTORE_ERROR` | `KeystoreError` | OS keystore operation failed | Keychain/secret-service unavailable | Check the OS keystore or use the fallback |
 
 ---
 
@@ -100,7 +111,7 @@ Suggestions:
 
 ### Force Bypass Warning
 
-Using `--force` to bypass secret scanning is logged in `~/.tuck/audit.log` for security tracking. This audit trail helps identify when potentially sensitive operations occurred.
+Using `--force` to bypass secret scanning is logged to the audit trail for security tracking, which helps identify when potentially sensitive operations occurred. The active audit log lives in the platform state directory — on macOS `~/Library/Application Support/tuck/audit.log`, on Linux `$XDG_STATE_HOME/tuck/audit.log` (falling back to `~/.local/state/tuck/audit.log`). (`~/.tuck/audit.log` is the deprecated legacy location.)
 
 ### Non-Interactive Mode (CI/Scripts)
 
@@ -170,7 +181,7 @@ Suggestions:
 If you encounter an unexpected error:
 
 1. Run with `DEBUG=1` to get full details
-2. Check `~/.tuck/audit.log` for recent operations
+2. Check the audit log in the platform state directory for recent operations (macOS: `~/Library/Application Support/tuck/audit.log`; Linux: `$XDG_STATE_HOME/tuck/audit.log` or `~/.local/state/tuck/audit.log`)
 3. Open an issue at https://github.com/Pranav-Karra-3301/tuck/issues
 
 Include:
