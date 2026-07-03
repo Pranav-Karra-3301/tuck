@@ -172,6 +172,19 @@ export const stageFiles = async (dir: string, files: string[]): Promise<void> =>
 export const stageAll = async (dir: string): Promise<void> => {
   try {
     const git = createGit(dir);
+
+    // Never `git add --all` over unresolved conflicts: that stages files still
+    // containing '<<<<<<<'/'>>>>>>>' markers and a subsequent commit would bake
+    // the corruption into history. Bail out and let the caller resolve first.
+    const status = await git.status();
+    const conflicted = status.conflicted ?? [];
+    if (conflicted.length > 0) {
+      throw new GitError(
+        'Refusing to stage files while merge conflicts are unresolved',
+        `Resolve conflicts (${conflicted.slice(0, 3).join(', ')}) or run 'git merge --abort'`
+      );
+    }
+
     const entries = await readdir(dir, { withFileTypes: true });
     const stageTargets = entries
       .map((entry) => entry.name)
@@ -183,6 +196,7 @@ export const stageAll = async (dir: string): Promise<void> => {
 
     await git.raw(['add', '--all', '--', ...stageTargets]);
   } catch (error) {
+    if (error instanceof GitError) throw error;
     throw new GitError('Failed to stage all files', String(error));
   }
 };
@@ -195,6 +209,16 @@ export const commit = async (dir: string, message: string): Promise<string> => {
   } catch (error) {
     throw new GitError('Failed to commit', String(error));
   }
+};
+
+/**
+ * True only for HTTPS github.com remotes. `gh auth setup-git` rewrites GLOBAL
+ * git credential routing for github.com/gist.github.com, so it must never run
+ * for GitLab, Gitea, SSH, or any non-GitHub remote — doing so would silently
+ * hijack credential handling for every repo on the machine.
+ */
+const isHttpsGitHubRemote = (url: string): boolean => {
+  return /^https:\/\/(www\.)?github\.com\//i.test(url.trim());
 };
 
 /**
@@ -227,9 +251,16 @@ export const push = async (
   options?: { remote?: string; branch?: string; force?: boolean; setUpstream?: boolean }
 ): Promise<void> => {
   try {
-    // Ensure git can use gh credentials if available
-    await ensureGitCredentials();
-    
+    const remote = options?.remote || 'origin';
+
+    // Only wire up gh credentials for HTTPS github.com remotes. Running
+    // `gh auth setup-git` for a GitLab/custom/SSH remote would rewrite the
+    // user's GLOBAL github.com credential routing for every repo on the machine.
+    const remoteUrl = await getRemoteUrl(dir, remote);
+    if (remoteUrl && isHttpsGitHubRemote(remoteUrl)) {
+      await ensureGitCredentials();
+    }
+
     const git = createGit(dir);
     const args: string[] = [];
 
@@ -240,7 +271,6 @@ export const push = async (
       args.push('--force');
     }
 
-    const remote = options?.remote || 'origin';
     const branch = options?.branch;
 
     if (branch) {
@@ -284,6 +314,31 @@ export const fetch = async (dir: string, remote = 'origin'): Promise<void> => {
     await git.fetch(remote);
   } catch (error) {
     throw new GitError('Failed to fetch', String(error));
+  }
+};
+
+/**
+ * Count how many commits the local HEAD is behind `<remote>/<branch>`.
+ *
+ * `getStatus().behind` is derived from the upstream tracking ref and reports 0
+ * whenever the branch has no upstream — even if the remote holds commits. After
+ * a fetch this walks `HEAD..<remote>/<branch>` directly, so it stays accurate
+ * without an upstream. Returns null when the remote branch does not exist
+ * (nothing to compare against).
+ */
+export const countCommitsBehindRemote = async (
+  dir: string,
+  branch: string,
+  remote = 'origin'
+): Promise<number | null> => {
+  try {
+    const git = createGit(dir);
+    const out = await git.raw(['rev-list', '--count', `HEAD..${remote}/${branch}`]);
+    const count = Number.parseInt(out.trim(), 10);
+    return Number.isNaN(count) ? null : count;
+  } catch {
+    // No such remote-tracking ref (e.g. the branch was never pushed).
+    return null;
   }
 };
 
