@@ -51,10 +51,19 @@ tuck restore --all
 | `status` | Show tracking status |
 | `list` | List tracked files by category |
 | `diff [paths]` | Show differences between system and repo |
-| `config` | Manage configuration (get/set/list/edit/reset) |
+| `config` | Manage configuration (get/set/list/edit/reset/remote) |
 | `scan` | Detect system dotfiles (100+ patterns) |
 | `apply <source>` | Apply dotfiles from another repo |
 | `undo` | Restore from Time Machine backups |
+| `secrets` | Manage local secrets / placeholder replacement (list/set/unset/path/scan/scan-history/backend/map/mappings/test) |
+| `encryption` | Manage at-rest backup encryption (AES-256-GCM, password-based) |
+| `doctor` | Run repository health and safety diagnostics |
+| `verify` | Verify the live system, repo, and manifest agree (`--exit-code` CI gate) |
+| `bundle` | Manage bundles — logical groups of tracked files |
+| `context` | Track AI agent configs across home and per-repo scopes |
+| `mcp` | Model Context Protocol server — expose tuck to AI agents |
+| `preset` | Apply or publish curated bundles of dotfiles & agent configs |
+| `repo` | Manage machine-local repo bindings (repoKey → absolute root) |
 
 ## Key Features
 
@@ -90,7 +99,7 @@ tuck restore --all
 3. **Smart detection** — Finds 100+ common dotfiles automatically
 4. **One-command setup** — `tuck apply username` on new machines
 5. **Git power, simple interface** — No git knowledge required
-6. **Cross-platform** — macOS, Linux support
+6. **Cross-platform** — macOS, Linux, and Windows support
 
 ## Links
 
