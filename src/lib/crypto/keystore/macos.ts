@@ -2,11 +2,49 @@
  * macOS Keychain integration using the `security` command
  */
 
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import type { Keystore } from './types.js';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Quote a token for `security`'s interactive command parser. Its tokenizer
+ * treats whitespace as a separator and `\`, `"`, `'` as special, so we wrap the
+ * value in double quotes and backslash-escape `\` and `"`. This lets us pass a
+ * secret (which may contain spaces or quotes) as a single argument WITHOUT ever
+ * placing it on the process argv.
+ */
+function quoteInteractiveArg(value: string): string {
+  return `"${value.replace(/([\\"])/g, '\\$1')}"`;
+}
+
+/**
+ * Run a single `security` sub-command in interactive mode, feeding the command
+ * line over stdin. Because the command line (and any secret in it) is written to
+ * the child's stdin rather than passed as argv, it is never exposed in `ps`.
+ */
+function runSecurityInteractive(command: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('security', ['-i'], { stdio: ['pipe', 'ignore', 'pipe'] });
+
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(stderr.trim() || `security exited with code ${code}`));
+      }
+    });
+
+    child.stdin.write(`${command}\n`);
+    child.stdin.end();
+  });
+}
 
 /**
  * Validate that an argument doesn't contain dangerous characters.
@@ -59,21 +97,25 @@ export class MacOSKeystore implements Keystore {
       // Ignore if doesn't exist
     }
 
-    // Add new password using execFile (no shell interpolation)
-    // -U flag updates if exists, but we delete first to be safe
-    const args = [
+    // Add the new password via `security -i` (interactive), writing the command
+    // over stdin. The secret must NOT be passed as an argv element: argv is
+    // world-readable via `ps`/Activity Monitor for the command's lifetime, which
+    // would leak the master backup-encryption password on shared machines. This
+    // mirrors the Linux keystore, which pipes the secret to secret-tool's stdin.
+    // -U updates in place if the entry already exists.
+    const command = [
       'add-generic-password',
+      '-U',
       '-s',
-      service,
+      quoteInteractiveArg(service),
       '-a',
-      account,
+      quoteInteractiveArg(account),
       '-w',
-      secret,
-      '-U', // Update if exists
-    ];
+      quoteInteractiveArg(secret),
+    ].join(' ');
 
     try {
-      await execFileAsync('security', args, { timeout: 10000 });
+      await runSecurityInteractive(command);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Failed to store in macOS Keychain: ${message}`);
