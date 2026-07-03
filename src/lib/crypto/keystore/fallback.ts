@@ -3,7 +3,7 @@
  * Used when system keychain is not available
  */
 
-import { readFile, writeFile, chmod, rm } from 'fs/promises';
+import { readFile, writeFile, chmod, rm, rename, unlink } from 'fs/promises';
 import {
   existsSync,
   readFileSync,
@@ -11,6 +11,7 @@ import {
   mkdirSync,
   chmodSync,
   renameSync,
+  unlinkSync,
   openSync,
   writeSync,
   closeSync,
@@ -21,16 +22,90 @@ import { homedir, hostname, userInfo } from 'os';
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'crypto';
 import { ensureDir, pathExists } from 'fs-extra';
 import type { Keystore } from './types.js';
-import { getFallbackKeystorePath, getLegacyFallbackKeystorePath } from '../../state.js';
+import {
+  getFallbackKeystorePath,
+  getLegacyFallbackKeystorePath,
+  getStateDir,
+} from '../../state.js';
 
 const ALGORITHM = 'aes-256-gcm';
 const INSTALL_SECRET_BYTES = 32;
 
 /**
- * Path to the per-install random secret. Lives under the user's tuck dir so it
- * is created once per machine/install and reused thereafter.
+ * Atomically persist an encrypted (binary) keystore buffer with owner-only
+ * permissions. Writes to a same-directory temp file, forces 0600 (in case umask
+ * stripped bits at create time, and to avoid a brief 0644 window on the real
+ * path), then renames into place — a crash/ENOSPC mid-write leaves the previous
+ * file intact instead of a truncated one that would be treated as "corrupt".
  */
-const getInstallSecretPath = (): string => join(homedir(), '.tuck', 'keystore.key');
+const atomicWriteKeystore = async (filepath: string, data: Buffer): Promise<void> => {
+  const tempPath = `${filepath}.tmp.${randomBytes(8).toString('hex')}`;
+  try {
+    await writeFile(tempPath, data, { mode: 0o600 });
+    await chmod(tempPath, 0o600);
+    await rename(tempPath, filepath);
+  } catch (error) {
+    await unlink(tempPath).catch(() => undefined);
+    throw error;
+  }
+};
+
+/**
+ * Path to the per-install random secret. Lives in the out-of-repo state dir
+ * (alongside the keystore file) so `tuck sync` can never stage/commit/push it —
+ * a committed secret would make the machine key derivable again from guessable
+ * factors, defeating its purpose.
+ */
+const getInstallSecretPath = (): string => join(getStateDir(), 'keystore', 'keystore.key');
+
+/**
+ * Legacy location: older tuck versions wrote the secret INSIDE the repo
+ * (~/.tuck/keystore.key), where tuck sync would commit and push it. Kept only so
+ * we can migrate it out on first use.
+ */
+const getLegacyInstallSecretPath = (): string => join(homedir(), '.tuck', 'keystore.key');
+
+/**
+ * Move a secret written by an older tuck out of the repo and into the state dir,
+ * preserving its bytes so the derived key (and thus the encrypted keystore) stays
+ * valid. Best-effort and idempotent; the in-repo copy is always removed so a
+ * later sync cannot push it.
+ */
+const migrateLegacyInstallSecret = (secretPath: string): void => {
+  const legacyPath = getLegacyInstallSecretPath();
+  if (existsSync(secretPath) || !existsSync(legacyPath)) {
+    return;
+  }
+
+  try {
+    const legacySecret = readFileSync(legacyPath);
+    if (legacySecret.length === INSTALL_SECRET_BYTES) {
+      mkdirSync(dirname(secretPath), { recursive: true });
+      try {
+        renameSync(legacyPath, secretPath);
+        return;
+      } catch {
+        // Cross-device or other rename failure — fall back to copy + delete so
+        // the in-repo original still gets removed below.
+        const fd = openSync(
+          secretPath,
+          fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY,
+          0o600
+        );
+        try {
+          writeSync(fd, legacySecret);
+        } finally {
+          closeSync(fd);
+        }
+      }
+    }
+    // Either migrated by copy, or the legacy secret was the wrong length and
+    // will be regenerated — in both cases drop the in-repo copy.
+    unlinkSync(legacyPath);
+  } catch {
+    // Best-effort; readOrCreateInstallSecret falls through to normal handling.
+  }
+};
 
 /**
  * Read (or create on first run) the per-install random secret. Mixing this
@@ -40,6 +115,8 @@ const getInstallSecretPath = (): string => join(homedir(), '.tuck', 'keystore.ke
  */
 const readOrCreateInstallSecret = (): Buffer => {
   const secretPath = getInstallSecretPath();
+
+  migrateLegacyInstallSecret(secretPath);
 
   if (existsSync(secretPath)) {
     const existing = readFileSync(secretPath);
@@ -218,7 +295,12 @@ export class FallbackKeystore implements Keystore {
         // Wrong key (or corrupt) — try the next candidate.
       }
     }
-    // Corrupted or undecryptable with any known key, start fresh.
+    // Undecryptable with every known key (truncated write, lost install secret,
+    // etc.). Preserve the unreadable file as `.corrupt` instead of letting the
+    // next saveData() silently overwrite it — it may hold the only copy of the
+    // backup-encryption password, and the project rule is never delete without a
+    // recovery path. (Mirrors the install-secret `.corrupt` convention above.)
+    await rename(loadPath, `${loadPath}.corrupt`).catch(() => undefined);
     return { entries: {}, version: 1 };
   }
 
@@ -227,9 +309,9 @@ export class FallbackKeystore implements Keystore {
     const encrypted = this.encrypt(Buffer.from(json, 'utf-8'));
 
     await ensureDir(dirname(this.keystorePath));
-    await writeFile(this.keystorePath, encrypted);
-    // Restrict permissions to owner only
-    await chmod(this.keystorePath, 0o600);
+    // Atomic write with owner-only perms — a crash mid-write must not truncate
+    // the keystore (which loadData would then treat as corrupt and discard).
+    await atomicWriteKeystore(this.keystorePath, encrypted);
 
     if (this.legacyKeystorePath && this.legacyKeystorePath !== this.keystorePath) {
       await rm(this.legacyKeystorePath, { force: true }).catch(() => undefined);

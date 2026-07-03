@@ -18,7 +18,7 @@ import { NotInitializedError } from '../errors.js';
 import { pathExists } from 'fs-extra';
 import { getManifestPath } from '../lib/paths.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
-import { readFile, writeFile } from 'fs/promises';
+import { readFile, writeFile, unlink } from 'fs/promises';
 import { encryptFileContent, decryptFileContent, isEncryptedFileBuffer } from '../lib/crypto/index.js';
 import { expandPath } from '../lib/paths.js';
 import { EncryptionError, DecryptionError } from '../errors.js';
@@ -238,38 +238,51 @@ const runEnable = async (): Promise<void> => {
  */
 const runEncryptFile = async (
   input: string,
-  opts: { out?: string; password?: string; keep?: boolean; json?: boolean }
+  opts: { out?: string; keep?: boolean; json?: boolean }
 ): Promise<void> => {
   if (opts.json) setJsonMode(true, 'tuck encryption encrypt-file');
   const inAbs = expandPath(input);
   const outAbs = opts.out ? expandPath(opts.out) : `${inAbs}.enc`;
   const plaintext = await readFile(inAbs);
-  let password = opts.password;
+  // Never accept the passphrase on argv (it would leak into shell history and
+  // the process list). Use TUCK_PASSWORD for non-interactive runs, else prompt.
+  let password = process.env.TUCK_PASSWORD;
   if (!password) {
     if (isJsonMode()) {
       throw new EncryptionError('Password required in JSON mode', [
-        'Pass --password or set TUCK_PASSWORD env var',
+        'Set the TUCK_PASSWORD env var',
       ]);
     }
-    password = process.env.TUCK_PASSWORD;
-  }
-  if (!password) {
     const entered = await prompts.password('Encryption password:');
     if (!entered) throw new EncryptionError('No password provided');
     password = entered;
   }
   const ciphertext = await encryptFileContent(plaintext, password);
   await writeFile(outAbs, ciphertext);
+
+  // `--no-keep` removes the plaintext after encrypting. The freshly written
+  // ciphertext IS the recovery path (decrypt-file restores it), so this is a
+  // reversible deletion; still confirm interactively. In JSON mode the flag
+  // itself is the explicit consent (prompts are unavailable there).
+  let plaintextRemoved = false;
   if (!opts.keep) {
-    // Caller asked us to replace the plaintext — but we preserve the original
-    // by default to avoid accidental data loss. The --keep flag is named to
-    // match the safer default ("keep the original"). Use --no-keep to delete.
+    const proceed = isJsonMode()
+      ? true
+      : await prompts.confirm(`Remove the plaintext ${inAbs} after encrypting?`, false);
+    if (proceed) {
+      await unlink(inAbs);
+      plaintextRemoved = true;
+    }
   }
+
   if (isJsonMode()) {
-    emitJsonOk({ encrypted: outAbs, bytes: ciphertext.length });
+    emitJsonOk({ encrypted: outAbs, bytes: ciphertext.length, plaintextRemoved });
     return;
   }
   logger.success(`Encrypted → ${outAbs} (${ciphertext.length} bytes)`);
+  if (plaintextRemoved) {
+    logger.success(`Removed plaintext ${inAbs}`);
+  }
 };
 
 /**
@@ -294,20 +307,22 @@ export const resolveDecryptOutPath = (inAbs: string, outExpanded?: string): stri
 
 const runDecryptFile = async (
   input: string,
-  opts: { out?: string; password?: string; json?: boolean }
+  opts: { out?: string; json?: boolean }
 ): Promise<void> => {
   if (opts.json) setJsonMode(true, 'tuck encryption decrypt-file');
   const inAbs = expandPath(input);
   const outAbs = resolveDecryptOutPath(inAbs, opts.out ? expandPath(opts.out) : undefined);
   const ciphertext = await readFile(inAbs);
   if (!isEncryptedFileBuffer(ciphertext)) {
-    throw new DecryptionError('File is not a tuck-encrypted file (missing TCKE1 header)');
+    throw new DecryptionError('File is not a tuck-encrypted file (missing TCKE header)');
   }
-  let password = opts.password ?? process.env.TUCK_PASSWORD;
+  // Never accept the passphrase on argv. Use TUCK_PASSWORD non-interactively,
+  // else prompt.
+  let password = process.env.TUCK_PASSWORD;
   if (!password) {
     if (isJsonMode()) {
       throw new DecryptionError('Password required in JSON mode', [
-        'Pass --password or set TUCK_PASSWORD env var',
+        'Set the TUCK_PASSWORD env var',
       ]);
     }
     const entered = await prompts.password('Decryption password:');
@@ -340,8 +355,7 @@ export const encryptionCommand = new Command('encryption')
       .description('Encrypt a single file (AES-256-GCM, PBKDF2)')
       .argument('<file>', 'Path to the plaintext file')
       .option('-o, --out <path>', 'Output path (default: <file>.enc)')
-      .option('-p, --password <pw>', 'Password (else TUCK_PASSWORD or prompt)')
-      .option('--keep', 'Preserve the plaintext (default true; --no-keep removes it)', true)
+      .option('--no-keep', 'Remove the plaintext file after encrypting')
       .option('--json', 'Emit JSON envelope')
       .action(runEncryptFile)
   )
@@ -350,7 +364,6 @@ export const encryptionCommand = new Command('encryption')
       .description('Decrypt a file produced by `tuck encryption encrypt-file`')
       .argument('<file>', 'Path to the encrypted file')
       .option('-o, --out <path>', 'Output path (default: strip .enc suffix)')
-      .option('-p, --password <pw>', 'Password (else TUCK_PASSWORD or prompt)')
       .option('--json', 'Emit JSON envelope')
       .action(runDecryptFile)
   );

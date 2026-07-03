@@ -5,6 +5,7 @@
 import { vol } from 'memfs';
 import { join, dirname } from 'path';
 import { createMockConfig, createMockManifest } from './factories.js';
+import { REPO_RUNTIME_GITIGNORE_PATTERNS } from '../../src/lib/state.js';
 import type { TuckConfigOutput } from '../../src/schemas/config.schema.js';
 import type { TuckManifestOutput } from '../../src/schemas/manifest.schema.js';
 
@@ -49,10 +50,12 @@ export const initTestTuck = async (options?: {
   const manifest = createMockManifest(options?.manifest);
   vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
 
-  // Create .gitignore
+  // Create .gitignore. Derive the runtime-state exclusions from the shared
+  // constant so this helper never drifts from what `tuck init` actually writes
+  // (and from the doctor `security.runtime-gitignore` check).
   vol.writeFileSync(
     join(TEST_TUCK_DIR, '.gitignore'),
-    '.DS_Store\n*.bak\nsecrets.local.json\nbackups/\naudit.log\n.tuck-keystore.enc\n'
+    ['.DS_Store', '*.bak', ...REPO_RUNTIME_GITIGNORE_PATTERNS, ''].join('\n')
   );
 
   // Create tracked files if specified

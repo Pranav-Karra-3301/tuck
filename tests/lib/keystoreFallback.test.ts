@@ -5,10 +5,14 @@ import { homedir, hostname, userInfo } from 'os';
 import { join } from 'path';
 import { createHash, createCipheriv, randomBytes } from 'crypto';
 import { TEST_HOME } from '../setup.js';
+import { getStateDir } from '../../src/lib/state.js';
 import { FallbackKeystore } from '../../src/lib/crypto/keystore/fallback.js';
 
-// The per-install random secret lives alongside the user's tuck dir.
-const keystoreKeyPath = () => join(homedir(), '.tuck', 'keystore.key');
+// The per-install random secret lives in the out-of-repo state dir (alongside
+// the keystore file) so `tuck sync` can never commit/push it.
+const keystoreKeyPath = () => join(getStateDir(), 'keystore', 'keystore.key');
+// Older tuck versions wrote it INSIDE the repo (~/.tuck/keystore.key).
+const legacyKeystoreKeyPath = () => join(homedir(), '.tuck', 'keystore.key');
 
 // Replicate the PRE-install-secret (legacy) key derivation + encrypt format so
 // we can forge a keystore file exactly as an older tuck version wrote it.
@@ -30,7 +34,7 @@ describe('FallbackKeystore per-install random secret', () => {
     vol.mkdirSync(TEST_HOME, { recursive: true });
   });
 
-  it('persists a 32-byte random secret at ~/.tuck/keystore.key on first use', async () => {
+  it('persists a 32-byte random secret in the out-of-repo state dir on first use', async () => {
     expect(existsSync(keystoreKeyPath())).toBe(false);
 
     const ks = new FallbackKeystore();
@@ -39,6 +43,15 @@ describe('FallbackKeystore per-install random secret', () => {
     expect(existsSync(keystoreKeyPath())).toBe(true);
     const secret = readFileSync(keystoreKeyPath());
     expect(secret.length).toBe(32);
+  });
+
+  it('never writes the install secret inside the repo (~/.tuck)', async () => {
+    const ks = new FallbackKeystore();
+    await ks.store('svc', 'acct', 'topsecret');
+
+    // The in-repo location must stay empty — a committed secret would make the
+    // machine key derivable again from guessable factors.
+    expect(existsSync(legacyKeystoreKeyPath())).toBe(false);
   });
 
   it('reuses the stored secret across calls (stable key)', async () => {
@@ -71,6 +84,55 @@ describe('FallbackKeystore per-install random secret', () => {
     const ks2 = new FallbackKeystore(customPath);
     const retrieved = await ks2.retrieve('svc', 'acct');
     expect(retrieved).toBeNull();
+  });
+});
+
+describe('FallbackKeystore install-secret migration out of the repo', () => {
+  beforeEach(() => {
+    vol.reset();
+    vol.mkdirSync(TEST_HOME, { recursive: true });
+  });
+
+  it('migrates a legacy in-repo secret to the state dir and deletes the in-repo copy', async () => {
+    // Simulate an install created by an older tuck: the 32-byte secret sits in
+    // the repo at ~/.tuck/keystore.key.
+    const legacySecret = Buffer.alloc(32, 3);
+    mkdirSync(join(homedir(), '.tuck'), { recursive: true });
+    writeFileSync(legacyKeystoreKeyPath(), legacySecret);
+    expect(existsSync(keystoreKeyPath())).toBe(false);
+
+    const ks = new FallbackKeystore();
+    await ks.store('svc', 'acct', 'topsecret');
+
+    // The secret is now in the out-of-repo state dir, byte-for-byte preserved
+    // (so any data encrypted with it stays decryptable) ...
+    expect(existsSync(keystoreKeyPath())).toBe(true);
+    expect(Buffer.compare(readFileSync(keystoreKeyPath()), legacySecret)).toBe(0);
+    // ... and the in-repo copy is gone so a later sync cannot push it.
+    expect(existsSync(legacyKeystoreKeyPath())).toBe(false);
+  });
+});
+
+describe('FallbackKeystore undecryptable-file handling', () => {
+  beforeEach(() => {
+    vol.reset();
+    vol.mkdirSync(TEST_HOME, { recursive: true });
+  });
+
+  it('moves an undecryptable keystore aside as .corrupt instead of silently discarding it', async () => {
+    const customPath = join(TEST_HOME, 'garbage-ks.enc');
+
+    // A file that decrypts with NO known key (random bytes / truncated write).
+    // The old behavior silently treated this as an empty store, so the next
+    // write would overwrite it — destroying the only copy of the stored secret.
+    writeFileSync(customPath, randomBytes(64));
+
+    const ks = new FallbackKeystore(customPath);
+    expect(await ks.retrieve('svc', 'acct')).toBeNull();
+
+    // The unreadable bytes are preserved for manual recovery, not overwritten.
+    expect(existsSync(`${customPath}.corrupt`)).toBe(true);
+    expect(existsSync(customPath)).toBe(false);
   });
 });
 

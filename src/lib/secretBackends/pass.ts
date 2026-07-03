@@ -16,6 +16,30 @@ import { expandPath } from '../paths.js';
 const execFileAsync = promisify(execFile);
 
 /**
+ * A GPG key ID / fingerprint / email is embedded into PASSWORD_STORE_GPG_OPTS,
+ * which `pass` word-splits into extra gpg argv. `gpgId` comes from the committed
+ * `.tuckrc.json` (attacker-influenceable per the project threat model), so a
+ * value with whitespace or a leading dash could inject arbitrary gpg options
+ * (e.g. `--output <path>`). Restrict it to the characters a real key ID,
+ * 40-char fingerprint, or user@host identity actually uses — no whitespace,
+ * no leading dash — mirroring assertSafeBackendPath.
+ */
+const GPG_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._@+-]*$/;
+
+const assertSafeGpgId = (gpgId: string): void => {
+  if (!GPG_ID_PATTERN.test(gpgId)) {
+    throw new SecretBackendError(
+      'pass',
+      `Refusing unsafe gpgId "${gpgId}" (possible gpg argument injection)`,
+      [
+        'Set security.backends.pass.gpgId to a GPG key ID, fingerprint, or email',
+        'It must contain no whitespace and must not begin with a dash.',
+      ]
+    );
+  }
+};
+
+/**
  * Check if a file exists asynchronously
  */
 const fileExists = async (path: string): Promise<boolean> => {
@@ -198,6 +222,7 @@ export class PassBackend implements SecretBackend {
       env.PASSWORD_STORE_DIR = this.storePath;
     }
     if (this.config.gpgId) {
+      assertSafeGpgId(this.config.gpgId);
       env.PASSWORD_STORE_GPG_OPTS = `--default-key ${this.config.gpgId}`;
     }
     return env;
