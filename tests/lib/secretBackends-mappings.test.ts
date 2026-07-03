@@ -29,10 +29,6 @@ describe('secret mappings', () => {
   beforeEach(() => {
     vol.reset();
     vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });
-    // Seed a real empty mappings file so loadMappings parses a FRESH object from
-    // disk. `loadMappings` returns `{ ...defaultMappingsFile }` (a shallow spread
-    // that shares the nested `mappings` object) only on the missing-file path; a
-    // present file avoids mutating that shared module default across tests.
     vol.writeFileSync(MAPPINGS_FILE, JSON.stringify({ version: '1.0.0', mappings: {} }));
   });
   afterEach(() => {
@@ -50,6 +46,18 @@ describe('secret mappings', () => {
     vol.unlinkSync(MAPPINGS_FILE);
     const mappings = await loadMappings(TEST_TUCK_DIR);
     expect(mappings).toEqual({ version: '1.0.0', mappings: {} });
+  });
+
+  it('setMapping on the missing-file path does not mutate the shared module default', async () => {
+    // Regression: loadMappings must return an independent copy (fresh nested
+    // `mappings` object) so mutating one load never leaks into the next.
+    vol.unlinkSync(MAPPINGS_FILE);
+    await setMapping(TEST_TUCK_DIR, 'LEAK_CHECK', 'local', true);
+
+    vol.reset();
+    vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });
+    const fresh = await loadMappings(TEST_TUCK_DIR);
+    expect(fresh.mappings).toEqual({});
   });
 
   it('loadMappings warns and returns defaults on a corrupt file', async () => {
