@@ -79,7 +79,7 @@ const addFiles = async (
   });
 };
 
-const runInteractiveAdd = async (tuckDir: string): Promise<void> => {
+const runInteractiveAdd = async (tuckDir: string, options: AddOptions = {}): Promise<void> => {
   prompts.intro('tuck add');
 
   const pathsInput = await prompts.text('Enter file paths to track (space-separated):', {
@@ -91,13 +91,25 @@ const runInteractiveAdd = async (tuckDir: string): Promise<void> => {
   });
 
   const paths = pathsInput.split(/\s+/).filter(Boolean);
-  const candidates: TrackPathCandidate[] = paths.map((path) => ({ path }));
+  const candidates: TrackPathCandidate[] = paths.map((path) => ({
+    path,
+    category: options.category,
+    name: options.name,
+  }));
 
   let filesToAdd: FileToAdd[];
   try {
+    // Forward the CLI flags so interactive add honors --encrypt/--force/--repo/
+    // --category/--name identically to the non-interactive path (addFiles below
+    // applies --encrypt/--template/--symlink/--bundle).
     filesToAdd = await preparePathsForTracking(candidates, tuckDir, {
+      category: options.category,
+      name: options.name,
+      force: options.force,
       secretHandling: 'interactive',
       forceBypassCommand: 'tuck add --force',
+      repo: options.repo,
+      repoKey: options.repoKey,
     });
   } catch (error) {
     if (error instanceof Error) {
@@ -141,7 +153,7 @@ const runInteractiveAdd = async (tuckDir: string): Promise<void> => {
     return;
   }
 
-  await addFiles(filesToAdd, tuckDir, {});
+  await addFiles(filesToAdd, tuckDir, options);
 
   prompts.outro(`Added ${filesToAdd.length} ${filesToAdd.length === 1 ? 'file' : 'files'}`);
   logger.info("Run 'tuck sync' to commit changes");
@@ -208,7 +220,7 @@ const runAdd = async (paths: string[], options: AddOptions): Promise<void> => {
       else logger.info('No paths provided.');
       return;
     }
-    await runInteractiveAdd(tuckDir);
+    await runInteractiveAdd(tuckDir, options);
     return;
   }
 

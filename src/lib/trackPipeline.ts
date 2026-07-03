@@ -26,6 +26,7 @@ import {
   SecretsDetectedError,
 } from '../errors.js';
 import { logForceSecretBypass } from './audit.js';
+import { isJsonMode } from './jsonOutput.js';
 import {
   getSecretsPath,
   isSecretScanningEnabled,
@@ -400,17 +401,20 @@ export const preparePathsForTracking = async (
     }
 
     if (!repoMeta && (await isIgnored(tuckDir, trackingId))) {
-      logger.info(`Skipping ${trackingId} (in .tuckignore)`);
+      // Suppressed in --json mode so stdout stays a single JSON envelope.
+      if (!isJsonMode()) logger.info(`Skipping ${trackingId} (in .tuckignore)`);
       continue;
     }
 
     if (await shouldExcludeFromBin(expandedPath)) {
       const sizeCheck = await checkFileSizeThreshold(expandedPath);
-      logger.info(
-        `Skipping binary executable: ${trackingId}` +
-          `${sizeCheck.size > 0 ? ` (${formatFileSize(sizeCheck.size)})` : ''}` +
-          ' - Add to .tuckignore to customize'
-      );
+      if (!isJsonMode()) {
+        logger.info(
+          `Skipping binary executable: ${trackingId}` +
+            `${sizeCheck.size > 0 ? ` (${formatFileSize(sizeCheck.size)})` : ''}` +
+            ' - Add to .tuckignore to customize'
+        );
+      }
       continue;
     }
 
