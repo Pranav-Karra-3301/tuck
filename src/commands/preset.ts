@@ -26,12 +26,13 @@
 
 import { Command } from 'commander';
 import { readFile, writeFile, mkdir, readdir, stat } from 'fs/promises';
+import { existsSync } from 'fs';
 import { join, isAbsolute, resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { homedir } from 'os';
 import { collapsePath, pathExists, validateSafeDestinationPath } from '../lib/paths.js';
 import { resolveWriteTarget, allowedRoots } from '../lib/writeContext.js';
-import { copyFileOrDir } from '../lib/files.js';
+import { copyFileOrDir, setFilePermissions } from '../lib/files.js';
 import { logger, prompts, colors as c } from '../ui/index.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import { TuckError } from '../errors.js';
@@ -68,15 +69,19 @@ interface Preset {
   hooks?: PresetHooks;
 }
 
-const bundledRegistryDir = (): string => {
-  // Resolve to <pkg>/templates/presets — works under dist/ and src/ both.
+export const bundledRegistryDir = (): string => {
+  // Resolve to <pkg>/templates/presets. The package layout differs between dev
+  // (src/commands → ../../templates) and the published, tsup-bundled build
+  // (dist → ../templates), so probe each candidate and return the first that
+  // actually exists. Blindly returning candidates[0] made the bundled registry
+  // unreachable in every npm install (it resolved outside the package).
   const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
     resolve(here, '../../templates/presets'),
     resolve(here, '../templates/presets'),
     resolve(here, '../../../templates/presets'),
   ];
-  return candidates[0];
+  return candidates.find((dir) => existsSync(dir)) ?? candidates[0];
 };
 
 const loadPresetFile = async (path: string): Promise<Preset> => {
@@ -214,7 +219,7 @@ const showAction = async (name: string, opts: { json?: boolean }): Promise<void>
   }
 };
 
-const applyAction = async (
+export const applyAction = async (
   name: string,
   opts: { json?: boolean; yes?: boolean; plan?: boolean; dryRun?: boolean }
 ): Promise<void> => {
@@ -230,7 +235,12 @@ const applyAction = async (
     hostname: process.env.HOSTNAME || '',
   };
 
-  const planEntries: Array<{ source: string; target: string; template: boolean }> = [];
+  const planEntries: Array<{
+    source: string;
+    target: string;
+    template: boolean;
+    permissions?: string;
+  }> = [];
   for (const prov of preset.provides) {
     for (const f of prov.files) {
       planEntries.push({
@@ -239,6 +249,7 @@ const applyAction = async (
         // validates the target stays inside the allowed root.
         target: resolveWriteTarget(f.target),
         template: !!f.template,
+        ...(f.permissions ? { permissions: f.permissions } : {}),
       });
     }
   }
@@ -299,6 +310,15 @@ const applyAction = async (
       await writeFile(e.target, rendered as string, 'utf-8');
     } else {
       await copyFileOrDir(e.source, e.target, { overwrite: true });
+    }
+    // Honor the preset author's declared permission hardening (e.g. "600" for
+    // an SSH/credential file). No-ops on Windows. Skipped for directories —
+    // permissions on preset entries only make sense for individual files.
+    if (e.permissions && !e.template && (await stat(e.source)).isDirectory()) {
+      // Directory sources: leave mode as copied; a declared bitmask on a dir is
+      // ambiguous and setFilePermissions targets a single path.
+    } else if (e.permissions) {
+      await setFilePermissions(e.target, e.permissions);
     }
   }
 
