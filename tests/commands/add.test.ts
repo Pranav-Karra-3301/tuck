@@ -287,6 +287,34 @@ describe('add command behavior', () => {
     expect(trackFilesWithProgressMock).not.toHaveBeenCalled();
   });
 
+  it('forwards --encrypt to tracking on the interactive path (path entered at the prompt)', async () => {
+    const { addCommand } = await import('../../src/commands/add.js');
+    const { prompts } = await import('../../src/ui/index.js');
+
+    // No positional paths => interactive path; the path is typed at the prompt.
+    vi.mocked(prompts.text).mockResolvedValue('~/.zshrc');
+    vi.mocked(prompts.select).mockResolvedValue('shell');
+    vi.mocked(prompts.confirm).mockResolvedValue(true);
+
+    // The shared `addCommand` singleton retains option values across parseAsync
+    // calls (an earlier --json test leaks json=true), so clear the flags this
+    // test relies on before parsing.
+    addCommand.setOptionValue('json', false);
+    addCommand.setOptionValue('plan', false);
+    addCommand.setOptionValue('dryRun', false);
+    addCommand.setOptionValue('yes', false);
+
+    await addCommand.parseAsync(['--encrypt'], { from: 'user' });
+
+    // Before the fix, addFiles was called with `{}` and --encrypt was dropped,
+    // silently storing plaintext. The flag must now reach tracking.
+    expect(trackFilesWithProgressMock).toHaveBeenCalledWith(
+      expect.any(Array),
+      '/test-home/.tuck',
+      expect.objectContaining({ encrypt: true })
+    );
+  });
+
   it('passes custom --name through to tracking destination generation', async () => {
     const { addFilesFromPaths } = await import('../../src/commands/add.js');
     sanitizeFilenameMock.mockReturnValueOnce('custom-zshrc');
