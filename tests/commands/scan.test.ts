@@ -164,6 +164,52 @@ describe('scan command behavior', () => {
     writeSpy.mockRestore();
   });
 
+  it('emits an empty JSON envelope (not human text) when no dotfiles are detected', async () => {
+    detectDotfilesMock.mockResolvedValue([]);
+    const { runScan } = await import('../../src/commands/scan.js');
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    await runScan({ json: true });
+
+    const lines = writes.join('').trim().split('\n').filter(Boolean);
+    expect(lines.length).toBe(1);
+    const env = JSON.parse(lines[0]);
+    expect(env).toMatchObject({ ok: true, command: 'tuck scan', data: { files: [] } });
+    // The human warning path must NOT have fired in JSON mode.
+    expect(loggerWarnMock).not.toHaveBeenCalled();
+
+    writeSpy.mockRestore();
+  });
+
+  it('emits an empty JSON envelope with a warning when --category matches nothing', async () => {
+    const { runScan } = await import('../../src/commands/scan.js');
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    await runScan({ json: true, category: 'nonexistent' });
+
+    const lines = writes.join('').trim().split('\n').filter(Boolean);
+    expect(lines.length).toBe(1);
+    const env = JSON.parse(lines[0]);
+    expect(env.ok).toBe(true);
+    expect(env.data.files).toEqual([]);
+    expect(JSON.stringify(env.warnings)).toContain('nonexistent');
+    expect(loggerWarnMock).not.toHaveBeenCalled();
+
+    writeSpy.mockRestore();
+  });
+
   it('runs quick mode without tracking files', async () => {
     const { runScan } = await import('../../src/commands/scan.js');
 

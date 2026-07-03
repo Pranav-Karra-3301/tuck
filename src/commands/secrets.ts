@@ -510,12 +510,14 @@ const runScanFiles = async (paths: string[], options: ScanFilesOptions = {}): Pr
     return;
   }
 
-  const spinner = prompts.spinner();
-  spinner.start(`Scanning ${existingPaths.length} file(s)...`);
+  // Skip the clack spinner in JSON mode — its ANSI frames would land on stdout
+  // ahead of the envelope and break JSON.parse for the consuming agent/CI.
+  const spinner = isJsonMode() ? null : prompts.spinner();
+  spinner?.start(`Scanning ${existingPaths.length} file(s)...`);
 
   const summary = await scanForSecrets(existingPaths, tuckDir);
 
-  spinner.stop('Scan complete');
+  spinner?.stop('Scan complete');
 
   if (isJsonMode()) {
     emitJsonOk(buildRedactedScanSummary(summary));
