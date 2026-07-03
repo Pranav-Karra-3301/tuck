@@ -31,6 +31,71 @@ const COMMON_DOTFILE_REPO_NAMES = ['dotfiles', 'tuck', '.dotfiles', 'dot-files',
 const DEFAULT_GITLAB_HOST = 'gitlab.com';
 
 // ============================================================================
+// Argv builders
+// ----------------------------------------------------------------------------
+// glab reserves `-h` as the inherited `--help` shorthand on EVERY subcommand,
+// so it can never be used to pass a host. Host selection uses the long flags
+// where they exist (`--hostname` for auth/api, `--host` for config) and the
+// GITLAB_HOST env var for `repo` subcommands, which have no host flag at all.
+// These builders are pure so the exact argv is unit-testable.
+// ============================================================================
+
+/** `glab auth status --hostname <host>` (never `-h`, which is --help). */
+export function buildAuthStatusArgs(host: string): string[] {
+  return ['auth', 'status', '--hostname', host];
+}
+
+/** `glab api user --hostname <host>`. */
+export function buildApiUserArgs(host: string): string[] {
+  return ['api', 'user', '--hostname', host];
+}
+
+/**
+ * `glab repo view <repo>` (host comes from GITLAB_HOST env, not a flag).
+ * glab's machine-readable output flag is `-F/--output`, not `-o`.
+ */
+export function buildRepoViewArgs(repoName: string, json = false): string[] {
+  const args = ['repo', 'view', repoName];
+  if (json) args.push('-F', 'json');
+  return args;
+}
+
+/**
+ * `glab repo create <name> --private|--public [--description <d>]`.
+ * No `-y` flag (glab repo create has none) and no host flag (GITLAB_HOST env).
+ */
+export function buildRepoCreateArgs(options: CreateRepoOptions): string[] {
+  const args = ['repo', 'create', options.name];
+  if (options.isPrivate !== false) {
+    args.push('--private');
+  } else {
+    args.push('--public');
+  }
+  if (options.description) {
+    args.push('--description', options.description);
+  }
+  return args;
+}
+
+/** `glab repo clone <repo> <targetDir>` (host from GITLAB_HOST env). */
+export function buildRepoCloneArgs(repoName: string, targetDir: string): string[] {
+  return ['repo', 'clone', repoName, targetDir];
+}
+
+/** `glab config get git_protocol --host <host>` (config uses `--host`). */
+export function buildConfigGetProtocolArgs(host: string): string[] {
+  return ['config', 'get', 'git_protocol', '--host', host];
+}
+
+/**
+ * Environment for `repo` subcommands, which have no host flag. GITLAB_HOST
+ * directs glab at the correct instance without leaking into flag parsing.
+ */
+export function glabHostEnv(host: string): NodeJS.ProcessEnv {
+  return { ...process.env, GITLAB_HOST: host };
+}
+
+// ============================================================================
 // GitLab Provider
 // ============================================================================
 
@@ -68,7 +133,7 @@ export class GitLabProvider implements GitProvider {
 
   async isAuthenticated(): Promise<boolean> {
     try {
-      const { stdout, stderr } = await execFileAsync('glab', ['auth', 'status', '-h', this.host]);
+      const { stdout, stderr } = await execFileAsync('glab', buildAuthStatusArgs(this.host));
       const output = (stderr || stdout || '').trim();
       // glab outputs "Logged in to <host> as <username>" on success
       return output.includes('Logged in');
@@ -88,7 +153,7 @@ export class GitLabProvider implements GitProvider {
 
     try {
       // glab api returns user info
-      const { stdout } = await execFileAsync('glab', ['api', 'user', '-h', this.host]);
+      const { stdout } = await execFileAsync('glab', buildApiUserArgs(this.host));
       const data = JSON.parse(stdout);
       return {
         login: data.username || '',
@@ -99,7 +164,7 @@ export class GitLabProvider implements GitProvider {
       // Primary API call failed - try fallback method
       // This is expected if user doesn't have API access
       try {
-        const { stdout, stderr } = await execFileAsync('glab', ['auth', 'status', '-h', this.host]);
+        const { stdout, stderr } = await execFileAsync('glab', buildAuthStatusArgs(this.host));
         const output = stderr || stdout || '';
         // Parse "Logged in to gitlab.com as username" format
         const match = output.match(/Logged in to .+ as (\S+)/);
@@ -159,7 +224,7 @@ export class GitLabProvider implements GitProvider {
   async repoExists(repoName: string): Promise<boolean> {
     this.validateRepoName(repoName);
     try {
-      await execFileAsync('glab', ['repo', 'view', repoName, '-h', this.host]);
+      await execFileAsync('glab', buildRepoViewArgs(repoName), { env: glabHostEnv(this.host) });
       return true;
     } catch {
       return false;
@@ -176,7 +241,7 @@ export class GitLabProvider implements GitProvider {
 
     if (!(await this.isAuthenticated())) {
       throw new ProviderError(`Not authenticated with GitLab (${this.host})`, 'gitlab', [
-        `Run: glab auth login -h ${this.host}`,
+        `Run: glab auth login --hostname ${this.host}`,
       ]);
     }
 
@@ -208,24 +273,10 @@ export class GitLabProvider implements GitProvider {
       ]);
     }
 
-    const args: string[] = ['repo', 'create', options.name, '-h', this.host];
-
-    // GitLab uses --private and --public flags
-    if (options.isPrivate !== false) {
-      args.push('--private');
-    } else {
-      args.push('--public');
-    }
-
-    if (options.description) {
-      args.push('--description', options.description);
-    }
-
-    // Add --confirm to skip prompts (glab calls it -y or --yes)
-    args.push('-y');
+    const args = buildRepoCreateArgs(options);
 
     try {
-      const { stdout } = await execFileAsync('glab', args);
+      const { stdout } = await execFileAsync('glab', args, { env: glabHostEnv(this.host) });
 
       // Parse the output to get repo info
       // glab outputs the URL of the created repo
@@ -252,15 +303,9 @@ export class GitLabProvider implements GitProvider {
   async getRepoInfo(repoName: string): Promise<ProviderRepo | null> {
     this.validateRepoName(repoName);
     try {
-      const { stdout } = await execFileAsync('glab', [
-        'repo',
-        'view',
-        repoName,
-        '-h',
-        this.host,
-        '-o',
-        'json',
-      ]);
+      const { stdout } = await execFileAsync('glab', buildRepoViewArgs(repoName, true), {
+        env: glabHostEnv(this.host),
+      });
       const result = JSON.parse(stdout);
 
       const pathWithNamespace = result.path_with_namespace || repoName;
@@ -286,7 +331,9 @@ export class GitLabProvider implements GitProvider {
     this.validateRepoName(repoName);
 
     try {
-      await execFileAsync('glab', ['repo', 'clone', repoName, targetDir, '-h', this.host]);
+      await execFileAsync('glab', buildRepoCloneArgs(repoName, targetDir), {
+        env: glabHostEnv(this.host),
+      });
     } catch (error) {
       throw new ProviderError(`Failed to clone repository "${repoName}"`, 'gitlab', [
         String(error),
@@ -362,7 +409,7 @@ scoop install glab`;
       this.host !== DEFAULT_GITLAB_HOST
         ? `
 For self-hosted GitLab (${this.host}):
-glab auth login -h ${this.host}`
+glab auth login --hostname ${this.host}`
         : '';
 
     return `GitLab CLI (glab) - Official GitLab command line tool
@@ -416,13 +463,7 @@ https://docs.gitlab.com/ee/user/ssh.html`;
 
   private async getPreferredProtocol(): Promise<'ssh' | 'https'> {
     try {
-      const { stdout } = await execFileAsync('glab', [
-        'config',
-        'get',
-        'git_protocol',
-        '-h',
-        this.host,
-      ]);
+      const { stdout } = await execFileAsync('glab', buildConfigGetProtocolArgs(this.host));
       return stdout.trim().toLowerCase() === 'ssh' ? 'ssh' : 'https';
     } catch {
       return 'https';
