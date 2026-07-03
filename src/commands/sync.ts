@@ -7,6 +7,7 @@ import {
   expandPath,
   pathExists,
   collapsePath,
+  isDirectory,
   validateSafeSourcePath,
   validateSafeManifestDestination,
   validatePathWithinRoot,
@@ -176,19 +177,27 @@ const detectChanges = async (tuckDir: string): Promise<TrackedFileChange[]> => {
  * real checkout, not a "key:rel" pseudo-path). Unbound repo files resolve to null
  * and are dropped from the result.
  */
-const resolveModifiedLivePaths = async (
+const resolveModifiedChangeTargets = async (
   tuckDir: string,
   changes: FileChange[]
-): Promise<string[]> => {
+): Promise<Array<{ change: FileChange; live: string }>> => {
   const trackedFiles = await getAllTrackedFiles(tuckDir);
-  const paths: string[] = [];
+  const targets: Array<{ change: FileChange; live: string }> = [];
   for (const change of changes) {
     if (change.status !== 'modified') continue;
     const entry = Object.values(trackedFiles).find((f) => f.source === change.source);
     const live = entry ? await resolveLiveTarget(entry) : expandPath(change.source);
-    if (live !== null) paths.push(live);
+    if (live !== null) targets.push({ change, live });
   }
-  return paths;
+  return targets;
+};
+
+const resolveModifiedLivePaths = async (
+  tuckDir: string,
+  changes: FileChange[]
+): Promise<string[]> => {
+  const targets = await resolveModifiedChangeTargets(tuckDir, changes);
+  return targets.map((t) => t.live);
 };
 
 /**
@@ -494,6 +503,18 @@ const syncFiles = async (
         // Symlink tracking can make source and destination the same underlying file.
         // Skip copying in that case to avoid same-file copy errors.
         if (!(await pathsResolveToSameLocation(sourcePath, destPath))) {
+          // fs-extra copy MERGES directory trees — it overwrites matching files
+          // but never removes destination files that were deleted from the live
+          // source. Left as a merge, a deletion inside a tracked directory would
+          // never propagate to the repo, the stored checksum would never match
+          // the live tree (so sync churns forever), and `tuck apply` would
+          // resurrect the deleted file elsewhere. Mirror instead: clear the
+          // destination first so the copy reproduces the source exactly.
+          // isDirectory is false when the source has vanished, so we never wipe
+          // the repo copy without a fresh source to replace it.
+          if (await isDirectory(sourcePath)) {
+            await deleteFileOrDir(destPath);
+          }
           await copyFileOrDir(sourcePath, destPath, { overwrite: true });
         }
 
@@ -510,6 +531,21 @@ const syncFiles = async (
       result.modified.push(basename(change.path) || change.path);
     } else if (change.status === 'deleted') {
       await withSpinner(`Removing ${change.path}...`, async () => {
+        // Safety: never delete the repo copy without a recoverable backup first.
+        // The live source is already gone (that is what marked this 'deleted'),
+        // so the ONLY surviving copy may be this repo file — e.g. an initial
+        // `tuck add` that was never committed, or a tracked file whose parent
+        // volume is temporarily unmounted. Snapshot the REPO copy (destPath)
+        // into the time-machine so `tuck undo` can recover it. Failures here are
+        // non-fatal, but must not silently proceed to an unrecoverable delete.
+        try {
+          await createSnapshot([destPath], `Pre-sync delete backup: ${change.path}`);
+        } catch (error) {
+          logger.dim(
+            `Pre-delete snapshot skipped: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+
         // Delete the file from the tuck repository
         await deleteFileOrDir(destPath);
 
@@ -573,13 +609,16 @@ const scanAndHandleSecrets = async (
     return true;
   }
 
-  // Get LIVE paths of modified files (not deleted), resolving repo-scoped
-  // entries through the repo registry.
-  const modifiedPaths = await resolveModifiedLivePaths(tuckDir, changes);
+  // Resolve modified changes to their LIVE paths (repo-scoped entries via the
+  // repo registry), keeping the change association so the 'ignore' action can map
+  // a scan result back to the right change regardless of scope.
+  const targets = await resolveModifiedChangeTargets(tuckDir, changes);
 
-  if (modifiedPaths.length === 0) {
+  if (targets.length === 0) {
     return true;
   }
+
+  const modifiedPaths = targets.map((t) => t.live);
 
   // Scan files
   const spinner = prompts.spinner();
@@ -639,21 +678,29 @@ const scanAndHandleSecrets = async (
   }
 
   if (action === 'ignore') {
-    // Add files with secrets to .tuckignore
-    for (const result of summary.results) {
-      const sourcePath = changes.find((c) => expandPath(c.source) === result.path)?.source;
-      if (sourcePath) {
-        await addToTuckignore(tuckDir, sourcePath);
-        logger.dim(`Added ${collapsePath(result.path)} to .tuckignore`);
-      }
+    // Match each secret-bearing scan result back to its change via the resolved
+    // LIVE path. Matching on expandPath(c.source) is wrong for repo-scoped files
+    // (source is the `<repoKey>:<repoRelative>` identity, which expandPath
+    // resolves against cwd — never the real checkout path), so those changes
+    // silently escaped both the .tuckignore write AND the filter and were
+    // committed anyway. detectChanges keys .tuckignore on change.source, so that
+    // is the correct value to record for BOTH scopes.
+    const secretLivePaths = new Set(
+      summary.results.filter((r) => r.hasSecrets).map((r) => r.path)
+    );
+    const sourcesToRemove = new Set<string>();
+    for (const { change, live } of targets) {
+      if (!secretLivePaths.has(live)) continue;
+      sourcesToRemove.add(change.source);
+      await addToTuckignore(tuckDir, change.source);
+      logger.dim(`Added ${collapsePath(live)} to .tuckignore`);
     }
     // Filter out ignored files from changes list
     // Note: This intentionally mutates the 'changes' array in place so callers see the filtered list
-    const filesToRemove = new Set(summary.results.map((r) => r.path));
     changes.splice(
       0,
       changes.length,
-      ...changes.filter((c) => !filesToRemove.has(expandPath(c.source)))
+      ...changes.filter((c) => !sourcesToRemove.has(c.source))
     );
 
     if (changes.length === 0) {
