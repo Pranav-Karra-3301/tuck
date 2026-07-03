@@ -383,6 +383,18 @@ describe('paths-extended', () => {
         );
       }
     });
+
+    it('should reject a sibling dir sharing the home prefix at the absolute-path gate', () => {
+      // Regression: the first gate used startsWith(home) with no separator
+      // boundary, so '/test-homework/x' slipped past it (only the later
+      // isPathWithinHome check caught it, with a different message). It must
+      // now be rejected by the absolute-path gate itself.
+      if (process.platform !== 'win32') {
+        expect(() => validateSafeSourcePath(`${TEST_HOME}work/x`)).toThrow(
+          'absolute paths outside home directory'
+        );
+      }
+    });
   });
 
   describe('validateSafeDestinationPath', () => {
