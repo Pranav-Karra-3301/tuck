@@ -80,12 +80,19 @@ export const saveManifest = async (
 ): Promise<void> => {
   const manifestPath = getManifestPath(tuckDir);
 
-  // Update the updated timestamp
-  manifest.updated = new Date().toISOString();
+  // The mutation helpers below (addFileToManifest, removeFileFromManifest, …)
+  // mutate the shared cached object BEFORE calling saveManifest. If validation
+  // or the atomic write fails, that in-memory mutation would otherwise survive
+  // and every subsequent loadManifest in this process would return state that
+  // was never persisted (an orphaned tracked file, manifest/repo mismatch on
+  // other machines). To prevent divergence:
+  //  1. stamp `updated` on a copy, never the caller's (possibly cached) object;
+  //  2. drop the cache on ANY failure so the next load re-reads disk truth.
+  const candidate: TuckManifestOutput = { ...manifest, updated: new Date().toISOString() };
 
-  // Validate before saving
-  const result = tuckManifestSchema.safeParse(manifest);
+  const result = tuckManifestSchema.safeParse(candidate);
   if (!result.success) {
+    clearManifestCache();
     throw new ManifestError(`Invalid manifest: ${result.error.message}`);
   }
 
@@ -94,6 +101,7 @@ export const saveManifest = async (
     cachedManifest = result.data;
     cachedManifestDir = tuckDir;
   } catch (error) {
+    clearManifestCache();
     throw new ManifestError(`Failed to save manifest: ${error}`);
   }
 };
