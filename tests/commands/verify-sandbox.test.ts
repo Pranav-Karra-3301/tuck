@@ -52,6 +52,8 @@ interface ManifestFileInput {
   destination: string;
   category?: string;
   checksum: string;
+  template?: boolean;
+  encrypted?: boolean;
 }
 
 const writeManifestFiles = (files: Record<string, ManifestFileInput>) => {
@@ -63,6 +65,8 @@ const writeManifestFiles = (files: Record<string, ManifestFileInput>) => {
       category: f.category ?? 'shell',
       strategy: 'copy',
       checksum: f.checksum,
+      template: f.template ?? false,
+      encrypted: f.encrypted ?? false,
       added: '2026-01-01T00:00:00.000Z',
       modified: '2026-01-01T00:00:00.000Z',
     };
@@ -199,6 +203,30 @@ describe('verify --root / --apply', () => {
     expect(byTarget('.newrc').bytesBefore).toBe(0);
     expect(byTarget('.newrc').bytesAfter).toBe('NEW\n'.length);
     expect(byTarget('.modrc').bytesBefore).toBe('LIVE VERSION\n'.length);
+  });
+
+  it('reports a template file that is in sync as unchanged, not false drift', async () => {
+    // The repo copy holds template SOURCE ({{os}}); the live file holds the
+    // RENDERED content. Without materializing, verify --apply would diff raw
+    // source vs rendered live and report a permanent false 'modified'.
+    vol.writeFileSync(`${TUCK}/files/shell/zshrc`, 'os={{os}}\n');
+    vol.writeFileSync('/test-home/.zshrc', `os=${process.platform}\n`);
+
+    writeManifestFiles({
+      zshrc: {
+        source: '~/.zshrc',
+        destination: 'files/shell/zshrc',
+        checksum: await checksum(`${TUCK}/files/shell/zshrc`),
+        template: true,
+      },
+    });
+
+    await runVerify({ json: true, apply: true, root: SANDBOX });
+
+    const env = envelope();
+    const change = env.data.changes.find((ch: { target: string }) => ch.target.includes('.zshrc'));
+    expect(change).toBeTruthy();
+    expect(change.status).toBe('unchanged');
   });
 
   it('--apply honors a GLOBAL --root (WriteContext) when options.root is unset', async () => {
