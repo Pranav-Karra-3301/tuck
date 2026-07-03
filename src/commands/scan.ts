@@ -226,10 +226,26 @@ const addFilesWithProgress = async (
     return 0;
   }
 
-  const filesToTrack: FileToTrack[] = prepared.map((file) => ({
-    path: file.source,
-    category: file.category,
-  }));
+  // Carry each detected pattern's `exclude` list into tracking, keyed by the
+  // collapsed source path, so directory patterns (e.g. ~/.claude) don't copy
+  // their excluded transcripts/caches into the repo. The dead-metadata excludes
+  // were previously dropped entirely by the {path, category}-only mapping.
+  const excludeBySource = new Map<string, string[]>();
+  for (const file of selected) {
+    if (file.exclude && file.exclude.length > 0) {
+      excludeBySource.set(collapsePath(file.path), file.exclude);
+      excludeBySource.set(file.path, file.exclude);
+    }
+  }
+
+  const filesToTrack: FileToTrack[] = prepared.map((file) => {
+    const exclude = excludeBySource.get(file.source) ?? excludeBySource.get(collapsePath(file.source));
+    return {
+      path: file.source,
+      category: file.category,
+      ...(exclude ? { exclude } : {}),
+    };
+  });
 
   // Use the shared tracking utility
   const result = await trackFilesWithProgress(filesToTrack, tuckDir, {

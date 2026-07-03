@@ -315,10 +315,63 @@ export const getDirectoryFileCount = async (dirpath: string): Promise<number> =>
   return files.length;
 };
 
+/**
+ * Convert a single glob pattern (as used in detect.ts pattern `exclude` lists,
+ * e.g. "logs", "cache", "projects/[globstar]/*.jsonl", "[globstar]/*.db") into
+ * an anchored RegExp matched against a POSIX relative path. A globstar ("**")
+ * matches across path separators (including zero segments); a single "*"
+ * matches within one segment only.
+ */
+const excludeGlobToRegExp = (glob: string): RegExp => {
+  const g = glob.replace(/\\/g, '/').replace(/\/+$/, '');
+  let re = '';
+  for (let i = 0; i < g.length; i++) {
+    const ch = g[i];
+    if (ch === '*') {
+      if (g[i + 1] === '*') {
+        i++;
+        if (g[i + 1] === '/') {
+          i++;
+          re += '(?:.*/)?';
+        } else {
+          re += '.*';
+        }
+      } else {
+        re += '[^/]*';
+      }
+    } else if ('.+^${}()|[]\\?'.includes(ch)) {
+      re += '\\' + ch;
+    } else {
+      re += ch;
+    }
+  }
+  return new RegExp('^' + re + '$');
+};
+
+/**
+ * True when a POSIX relative path should be excluded from a directory copy by
+ * any of the given patterns. A bare name (no slash, no wildcard) matches that
+ * name at ANY depth (so `logs` skips a `logs/` subdirectory wherever it sits);
+ * patterns with separators/wildcards are matched against the full relative path.
+ */
+export const matchesExcludePattern = (relPosix: string, patterns: string[]): boolean => {
+  if (!relPosix) return false;
+  for (const raw of patterns) {
+    const pat = raw.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (!pat) continue;
+    if (!pat.includes('/') && !pat.includes('*')) {
+      if (relPosix.split('/').includes(pat)) return true;
+      continue;
+    }
+    if (excludeGlobToRegExp(pat).test(relPosix)) return true;
+  }
+  return false;
+};
+
 export const copyFileOrDir = async (
   source: string,
   destination: string,
-  options?: { overwrite?: boolean }
+  options?: { overwrite?: boolean; exclude?: string[] }
 ): Promise<CopyResult> => {
   const expandedSource = expandPath(source);
   const expandedDest = expandPath(destination);
@@ -356,6 +409,7 @@ export const copyFileOrDir = async (
 
   try {
     if (sourceIsDir) {
+      const excludePatterns = options?.exclude ?? [];
       // Copy directory but skip .git and other problematic files
       await copy(expandedSource, expandedDest, {
         overwrite: shouldOverwrite,
@@ -364,7 +418,15 @@ export const copyFileOrDir = async (
           const name = basename(src);
           // Skip .git directories, node_modules, and cache directories
           const skipDirs = ['.git', 'node_modules', '.cache', '__pycache__', '.DS_Store'];
-          return !skipDirs.includes(name);
+          if (skipDirs.includes(name)) return false;
+          // Honor pattern-declared excludes (e.g. ~/.claude excludes
+          // projects/**/*.jsonl transcripts, caches) so ephemeral/sensitive
+          // content is never copied into the repo.
+          if (excludePatterns.length > 0) {
+            const rel = relative(expandedSource, src).split('\\').join('/');
+            if (matchesExcludePattern(rel, excludePatterns)) return false;
+          }
+          return true;
         }
       });
       // Single walk: collect the file list AND its total size in one traversal

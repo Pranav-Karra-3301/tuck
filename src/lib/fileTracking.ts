@@ -29,6 +29,13 @@ export interface FileToTrack {
   /** Bundle to assign the tracked file to. Defaults to "default". */
   bundle?: string;
   /**
+   * Glob patterns (relative to a tracked DIRECTORY) to exclude from the copy
+   * into the repo — carried from a detection pattern's `exclude` list so
+   * ephemeral/sensitive subpaths (e.g. ~/.claude's conversation transcripts and
+   * caches) never land in the repo. Ignored for single-file tracking.
+   */
+  exclude?: string[];
+  /**
    * Repo-scoped tracking metadata. When `scope === 'repo'` the file lives inside
    * a git repo whose absolute path differs per machine; it is stored by stable
    * (repoKey, repoRelative) and the precomputed repo-scoped `destination`/`source`
@@ -274,7 +281,12 @@ export const trackFilesWithProgress = async (
         await writeFile(destination, await encryptFileContent(plaintext, passphrase));
       } else {
         // Default: copy file into the repository (from the absolute live path).
-        await copyFileOrDir(expandedPath, destination, { overwrite: true });
+        // Pattern-declared excludes keep ephemeral/sensitive subpaths out of the
+        // repo when tracking a directory (no-op for single files).
+        await copyFileOrDir(expandedPath, destination, {
+          overwrite: true,
+          ...(file.exclude && file.exclude.length > 0 ? { exclude: file.exclude } : {}),
+        });
       }
 
       // Get file info
