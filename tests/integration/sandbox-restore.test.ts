@@ -15,14 +15,14 @@ import { clearConfigCache } from '../../src/lib/config.js';
 const TUCK = '/test-home/.tuck';
 const SANDBOX = '/test-home/sandbox';
 
-const seedRepo = async (repoContent: string) => {
+const seedRepo = async (repoContent: string, backupOnRestore = false) => {
   vol.mkdirSync(`${TUCK}/files/shell`, { recursive: true });
   vol.writeFileSync(`${TUCK}/files/shell/zshrc`, repoContent);
   const { getFileChecksum } = await import('../../src/lib/files.js');
   const checksum = await getFileChecksum(`${TUCK}/files/shell/zshrc`);
   vol.writeFileSync(
     `${TUCK}/.tuckrc.json`,
-    JSON.stringify({ repository: { path: TUCK }, files: { strategy: 'copy', backupOnRestore: false } })
+    JSON.stringify({ repository: { path: TUCK }, files: { strategy: 'copy', backupOnRestore } })
   );
   vol.writeFileSync(
     `${TUCK}/.tuckmanifest.json`,
@@ -72,5 +72,26 @@ describe('tuck restore under a sandbox root', () => {
     expect(vol.readFileSync(`${SANDBOX}/.zshrc`, 'utf-8')).toBe('export SANDBOX_OK=1\n');
     // ...and the real home was never touched.
     expect(vol.existsSync('/test-home/.zshrc')).toBe(false);
+  });
+
+  it('should not crash or back up into the real home when backupOnRestore is on and the sandbox target is absent', async () => {
+    // backupOnRestore defaults to true in real configs. The tracked file EXISTS
+    // in the real home (so existsAtTarget is true) but NOT in the fresh sandbox.
+    // Gating the backup on the real-home flag while backing up the sandbox path
+    // made createBackup throw "Source path does not exist" and abort the restore.
+    await seedRepo('export SANDBOX_OK=1\n', true);
+    vol.writeFileSync('/test-home/.zshrc', 'export REAL_HOME=1\n');
+    setWriteContext({ root: SANDBOX, isSandbox: true });
+
+    const { runRestoreCommand } = await import('../../src/commands/restore.js');
+    await expect(
+      runRestoreCommand(['~/.zshrc'], { yes: true, noHooks: true, noSecrets: true } as never)
+    ).resolves.not.toThrow();
+
+    // Restored into the sandbox, real home untouched (still the original bytes)...
+    expect(vol.readFileSync(`${SANDBOX}/.zshrc`, 'utf-8')).toBe('export SANDBOX_OK=1\n');
+    expect(vol.readFileSync('/test-home/.zshrc', 'utf-8')).toBe('export REAL_HOME=1\n');
+    // ...and no backup was written into the real home's backup dir.
+    expect(vol.existsSync('/test-home/.tuck-backups')).toBe(false);
   });
 });
