@@ -11,6 +11,7 @@ import {
   getSafeRepoPathFromDestination,
   getTuckDir,
 } from '../../src/lib/paths.js';
+import { assertRealTargetWithinRoots } from '../../src/commands/apply.js';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
 
 describe('Path Traversal Security', () => {
@@ -136,6 +137,54 @@ describe('Path Traversal Security', () => {
       if (process.platform !== 'win32') {
         expect(() => getTuckDir('/etc/tuck')).toThrow('custom tuck directory must be within home');
       }
+    });
+  });
+
+  // Regression: the apply write path was confined only LEXICALLY, so a symlinked
+  // path segment planted on the live tree (by a malicious repo's directory entry)
+  // let a subsequent write escape $HOME. assertRealTargetWithinRoots is the
+  // realpath-based guard that closes that TOCTOU by refusing to write THROUGH a
+  // symlinked segment. (See src/commands/apply.ts.)
+  describe('assertRealTargetWithinRoots (symlink TOCTOU guard)', () => {
+    it('rejects a write when a path segment resolves outside home via a symlink', async () => {
+      // Attacker plants ~/link -> /outside; the lexical destination ~/link/pwned
+      // looks home-scoped but escapes once the symlink is resolved.
+      vol.mkdirSync('/outside', { recursive: true });
+      vol.symlinkSync('/outside', join(TEST_HOME, 'link'));
+
+      // The lexical validator does NOT catch it — this is exactly the gap.
+      expect(() =>
+        validatePathWithinRoot(join(TEST_HOME, 'link', 'pwned'), TEST_HOME)
+      ).not.toThrow();
+
+      // The realpath guard DOES.
+      await expect(
+        assertRealTargetWithinRoots(join(TEST_HOME, 'link', 'pwned'), [TEST_HOME])
+      ).rejects.toThrow(/symlinked path|outside the allowed roots/);
+    });
+
+    it('rejects writing directly onto an existing symlink that points outside home', async () => {
+      vol.mkdirSync('/outside', { recursive: true });
+      vol.symlinkSync('/outside/secret', join(TEST_HOME, '.evil'));
+
+      await expect(
+        assertRealTargetWithinRoots(join(TEST_HOME, '.evil'), [TEST_HOME])
+      ).rejects.toThrow(/symlinked path|outside the allowed roots/);
+    });
+
+    it('allows a normal home-scoped write with no symlinked segment', async () => {
+      await expect(
+        assertRealTargetWithinRoots(join(TEST_HOME, '.config', 'app', 'settings'), [TEST_HOME])
+      ).resolves.toBeUndefined();
+    });
+
+    it('allows a symlinked segment that stays inside home', async () => {
+      vol.mkdirSync(join(TEST_HOME, 'real'), { recursive: true });
+      vol.symlinkSync(join(TEST_HOME, 'real'), join(TEST_HOME, 'inlink'));
+
+      await expect(
+        assertRealTargetWithinRoots(join(TEST_HOME, 'inlink', 'file'), [TEST_HOME])
+      ).resolves.toBeUndefined();
     });
   });
 });

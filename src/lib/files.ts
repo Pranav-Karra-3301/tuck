@@ -13,7 +13,7 @@ import {
 } from 'fs/promises';
 import { copy, ensureDir } from 'fs-extra';
 import { join, dirname, basename, relative } from 'path';
-import { constants } from 'fs';
+import { constants, lstatSync } from 'fs';
 import { FileNotFoundError, PermissionError, TuckError } from '../errors.js';
 import { expandPath, pathExists, isDirectory, validateSafeDestinationPath } from './paths.js';
 import { allowedRoots } from './writeContext.js';
@@ -423,6 +423,18 @@ export const copyFileOrDir = async (
           // commits, and edits to skipped names (e.g. .npmrc) would never
           // register as drift yet get reverted by apply/restore.
           if (shouldSkipEntry(name)) return false;
+          // SECURITY (symlink TOCTOU): never recreate an in-tree symlink onto the
+          // live system. A committed symlink — especially one whose target
+          // escapes $HOME — would be planted verbatim, and a subsequent write
+          // through it could escape confinement. Copy file/dir CONTENT, never
+          // link topology. Sync stat only: fs-extra treats a Promise-returning
+          // filter as always-true, so an async check would silently no-op.
+          try {
+            if (lstatSync(src).isSymbolicLink()) return false;
+          } catch {
+            // Undeterminable → fall through; the apply write-path guard
+            // (assertRealTargetWithinRoots) is the authoritative confinement.
+          }
           // Honor pattern-declared excludes (e.g. ~/.claude excludes
           // projects/**/*.jsonl transcripts, caches) so ephemeral/sensitive
           // content is never copied into the repo.
