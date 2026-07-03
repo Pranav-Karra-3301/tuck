@@ -235,7 +235,6 @@ export const addContextFile = async (
   validateSafeSourcePath(absPath);
 
   const { scope, repoRoot } = await decideScope(absPath);
-  const isDir = await isDirectory(absPath);
   const agent = classifyAgentPath(absPath);
 
   // Source representation: home-scoped uses ~/ prefix, repo-scoped uses absolute
@@ -243,12 +242,22 @@ export const addContextFile = async (
   // stored, so apply can choose a different remote root if needed).
   const source = scope === 'home' ? collapsePath(absPath) : absPath;
   const destination = destinationFor({ scope, repoRoot, source });
-  const id = `${scope}__${slugifyPath(scope === 'home' ? source : relative(repoRoot!, absPath))}`;
+  // Repo-scoped ids MUST include the repo identity: two repos each with a
+  // root-level CLAUDE.md would otherwise collide on `repo__claude.md`, and the
+  // second `context add` would silently overwrite the first repo's entry.
+  // repoScopeKey is already collision-safe and used for the destination.
+  const id =
+    scope === 'home'
+      ? `home__${slugifyPath(source)}`
+      : `repo__${repoScopeKey(repoRoot!)}__${slugifyPath(relative(repoRoot!, absPath))}`;
 
   const destAbs = join(tuckDir, destination);
   await mkdir(dirname(destAbs), { recursive: true });
   await copyFileOrDir(absPath, destAbs, { overwrite: true });
-  const checksum = isDir ? '' : await getFileChecksum(absPath).catch(() => '');
+  // Record a checksum for directories too (getFileChecksum hashes a directory's
+  // relative-path+content tree) so `context sync` can later detect edits inside
+  // a tracked directory instead of leaving it permanently stale.
+  const checksum = await getFileChecksum(absPath).catch(() => '');
 
   const now = new Date().toISOString();
   const entry: ContextEntry = {
@@ -388,7 +397,9 @@ const syncAction = async (opts: { json?: boolean }): Promise<void> => {
   for (const [, e] of Object.entries(manifest.entries)) {
     const absSource = e.scope === 'home' ? expandPath(e.source) : e.source;
     if (!(await pathExists(absSource))) continue;
-    if (await isDirectory(absSource)) continue;
+    // Directory entries are re-synced too: getFileChecksum hashes the whole tree
+    // so an edit to a file inside a tracked directory (e.g. ~/.config/mcp/) is
+    // detected instead of being silently skipped and left stale in the repo.
     const nextChecksum = await getFileChecksum(absSource).catch(() => '');
     if (nextChecksum && nextChecksum !== e.checksum) {
       const destAbs = join(tuckDir, e.destination);

@@ -7,9 +7,15 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { vol } from 'memfs';
-import { join, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
+import { fileURLToPath } from 'url';
 import { TEST_HOME } from '../setup.js';
-import { assertPresetTargetsSafe, decidePresetOverwrite } from '../../src/commands/preset.js';
+import {
+  assertPresetTargetsSafe,
+  decidePresetOverwrite,
+  bundledRegistryDir,
+  applyAction,
+} from '../../src/commands/preset.js';
 
 // Spy on the snapshot helper so we can assert it is (or is not) called with the
 // existing targets — without exercising the real Time Machine internals.
@@ -253,5 +259,61 @@ describe('preset apply (integration)', () => {
     // Plan is read-only: target not written, no snapshot.
     expect(vol.existsSync(resolve(TEST_HOME, '.claude', 'CLAUDE.md'))).toBe(false);
     expect(createPreApplySnapshotMock).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'applies the preset file\'s declared permissions to the written target',
+    async () => {
+      // Stage a preset whose (non-template) file declares a hardened mode, like
+      // an SSH/credential config. The permissions field was parsed but never
+      // chmod'd, so the hardening was silently dropped.
+      vol.mkdirSync(PRESET_DIR, { recursive: true });
+      vol.writeFileSync(
+        join(PRESET_DIR, 'preset.json'),
+        JSON.stringify({
+          name: 'demo',
+          version: '1.0.0',
+          description: 'test preset',
+          provides: [
+            {
+              category: 'ssh',
+              files: [{ source: 'files/config', target: '~/.ssh/config', permissions: '600' }],
+            },
+          ],
+        })
+      );
+      vol.mkdirSync(join(PRESET_DIR, 'files'), { recursive: true });
+      vol.writeFileSync(join(PRESET_DIR, 'files', 'config'), 'Host *\n');
+
+      // Call applyAction directly with a clean opts object — the shared
+      // Commander `apply` subcommand leaks boolean option state (e.g. --plan)
+      // across parseAsync calls, which would otherwise divert this run.
+      await applyAction(PRESET_DIR, { yes: true });
+
+      const target = resolve(TEST_HOME, '.ssh', 'config');
+      expect(vol.existsSync(target)).toBe(true);
+      const mode = vol.statSync(target).mode & 0o777;
+      expect(mode.toString(8)).toBe('600');
+    }
+  );
+});
+
+describe('bundledRegistryDir', () => {
+  beforeEach(() => {
+    vol.reset();
+    vol.mkdirSync(TEST_HOME, { recursive: true });
+  });
+
+  it('returns the first candidate that exists rather than always candidates[0]', () => {
+    // <repoRoot>/src/templates/presets — the second candidate, which is what the
+    // published (dist) build actually resolves to. candidates[0] resolves outside
+    // the package there and does not exist.
+    const secondCandidate = resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      '../../src/templates/presets'
+    );
+    vol.mkdirSync(secondCandidate, { recursive: true });
+
+    expect(bundledRegistryDir()).toBe(secondCandidate);
   });
 });

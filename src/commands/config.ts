@@ -122,7 +122,10 @@ const CONFIG_KEYS: ConfigKeyInfo[] = [
 ];
 
 const UNSUPPORTED_CONFIG_KEY_PREFIXES = [
-  'templates',
+  // `templates.variables` IS wired (rendered on apply/restore via
+  // buildMaterializeCtx), so it is settable. `templates.enabled` remains a
+  // no-op gate and stays blocked to avoid a meaningless setting.
+  'templates.enabled',
   'encryption.enabled',
   'encryption.gpgKey',
   'encryption.files',
@@ -369,8 +372,8 @@ const showConfigView = async (config: TuckConfigOutput): Promise<void> => {
     console.log();
   }
 
-  if (config.templates?.enabled || Object.keys(config.templates?.variables || {}).length > 0) {
-    console.log(c.yellow('! Templates config is currently reserved and not applied during restore/sync.'));
+  if (config.templates?.enabled) {
+    console.log(c.yellow('! templates.enabled is reserved and currently has no effect (template files render automatically on apply/restore).'));
     console.log();
   }
 };

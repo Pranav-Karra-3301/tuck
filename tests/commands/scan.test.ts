@@ -183,4 +183,43 @@ describe('scan command behavior', () => {
     expect(preparePathsForTrackingMock).toHaveBeenCalledTimes(1);
     expect(trackFilesWithProgressMock).toHaveBeenCalledTimes(1);
   });
+
+  it("threads a detected directory's exclude list into tracking so ephemeral subpaths are not copied", async () => {
+    detectDotfilesMock.mockResolvedValue([
+      {
+        path: '~/.claude',
+        category: 'misc',
+        description: 'Claude Code config',
+        sensitive: false,
+        isDirectory: true,
+        exclude: ['projects/**/*.jsonl', 'logs', 'cache'],
+      },
+    ]);
+    preparePathsForTrackingMock.mockResolvedValue([
+      {
+        source: '~/.claude',
+        destination: 'files/misc/claude',
+        category: 'misc',
+        filename: 'claude',
+        isDir: true,
+        fileCount: 3,
+        sensitive: false,
+      },
+    ]);
+
+    const { runScan } = await import('../../src/commands/scan.js');
+    promptsSelectMock.mockResolvedValueOnce('all');
+    promptsConfirmMock.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+    await runScan({});
+
+    expect(trackFilesWithProgressMock).toHaveBeenCalledTimes(1);
+    const filesArg = trackFilesWithProgressMock.mock.calls[0][0];
+    expect(filesArg).toEqual([
+      expect.objectContaining({
+        path: '~/.claude',
+        exclude: ['projects/**/*.jsonl', 'logs', 'cache'],
+      }),
+    ]);
+  });
 });

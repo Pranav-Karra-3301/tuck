@@ -10,7 +10,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { vol } from 'memfs';
 import { join } from 'path';
 import { Command } from 'commander';
-import { assertContextWriteSafe } from '../../src/commands/context.js';
+import {
+  assertContextWriteSafe,
+  addContextFile,
+  getContextEntries,
+} from '../../src/commands/context.js';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
 
 // The apply/list/add actions write through the UI layer; mock it so no clack
@@ -357,5 +361,79 @@ describe('context list/add --json envelope', () => {
     expect(listEnv.data.entries[0].id).toBe(addEnv.data.id);
     expect(listEnv.data.entries[0].agent).toBe('claude');
     expect(listEnv.data.entries[0].scope).toBe('home');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Repo-scoped id uniqueness + directory sync.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('addContextFile repo-scoped id uniqueness', () => {
+  beforeEach(() => {
+    vol.reset();
+    vol.mkdirSync(TEST_HOME, { recursive: true });
+    vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });
+    writeBaseManifest();
+  });
+
+  it('does not collide two repos that each have a root-level CLAUDE.md', async () => {
+    const repoA = `${TEST_HOME}/work/repoA`;
+    const repoB = `${TEST_HOME}/work/repoB`;
+    for (const repo of [repoA, repoB]) {
+      vol.mkdirSync(`${repo}/.git`, { recursive: true });
+      vol.writeFileSync(`${repo}/CLAUDE.md`, `# ${repo}\n`);
+    }
+
+    const a = await addContextFile(TEST_TUCK_DIR, `${repoA}/CLAUDE.md`);
+    const b = await addContextFile(TEST_TUCK_DIR, `${repoB}/CLAUDE.md`);
+
+    // The two repo-scoped entries MUST get distinct ids (the old key was
+    // `repo__claude.md` for both, so the second add silently replaced the first).
+    expect(a.id).not.toBe(b.id);
+    expect(a.entry.scope).toBe('repo');
+    expect(b.entry.scope).toBe('repo');
+
+    const entries = await getContextEntries(TEST_TUCK_DIR);
+    expect(Object.keys(entries)).toHaveLength(2);
+    expect(entries[a.id]).toBeDefined();
+    expect(entries[b.id]).toBeDefined();
+  });
+});
+
+describe('context sync directory entries', () => {
+  const runSync = async (): Promise<void> => {
+    const { contextCommand } = await import('../../src/commands/context.js');
+    const { clearManifestCache } = await import('../../src/lib/manifest.js');
+    clearManifestCache();
+    const program = new Command('tuck');
+    program.exitOverride();
+    program.configureOutput({ writeOut: () => {}, writeErr: () => {} });
+    program.addCommand(contextCommand);
+    await program.parseAsync(['node', 'tuck', 'context', 'sync']);
+  };
+
+  beforeEach(() => {
+    vol.reset();
+    vol.mkdirSync(TEST_HOME, { recursive: true });
+    vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });
+    writeBaseManifest();
+  });
+
+  it('refreshes a tracked directory in the repo after a file inside it changes', async () => {
+    const dir = `${TEST_HOME}/.config/mcp`;
+    vol.mkdirSync(dir, { recursive: true });
+    vol.writeFileSync(`${dir}/servers.json`, 'v1');
+
+    const { entry } = await addContextFile(TEST_TUCK_DIR, dir);
+    const repoInner = join(TEST_TUCK_DIR, entry.destination, 'servers.json');
+    expect(vol.readFileSync(repoInner, 'utf-8')).toBe('v1');
+
+    // Edit a file inside the tracked directory — the directory's own mtime does
+    // not change, so this is exactly the case the old `continue` skipped.
+    vol.writeFileSync(`${dir}/servers.json`, 'v2');
+
+    await runSync();
+
+    expect(vol.readFileSync(repoInner, 'utf-8')).toBe('v2');
   });
 });
