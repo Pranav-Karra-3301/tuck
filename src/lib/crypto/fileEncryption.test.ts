@@ -3,7 +3,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { randomBytes } from 'node:crypto';
+import {
+  randomBytes,
+  createCipheriv,
+  pbkdf2Sync,
+} from 'node:crypto';
 
 import {
   encryptFileContent,
@@ -11,6 +15,18 @@ import {
   isEncryptedFile,
 } from './fileEncryption.js';
 import { DecryptionError, EncryptionError } from '../../errors.js';
+
+// Forge a legacy TCKE1 payload exactly as an older tuck (200k iterations, no
+// embedded iteration count) would have written it, so we can prove old .enc
+// files stay decryptable after the KDF bump.
+const forgeLegacyTcke1 = (plaintext: Buffer, passphrase: string): Buffer => {
+  const salt = randomBytes(16);
+  const iv = randomBytes(12);
+  const key = pbkdf2Sync(passphrase, salt, 200_000, 32, 'sha256');
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  return Buffer.concat([Buffer.from('TCKE1', 'ascii'), salt, iv, cipher.getAuthTag(), ciphertext]);
+};
 
 describe('fileEncryption', () => {
   const passphrase = 'correct horse battery staple';
@@ -107,6 +123,38 @@ describe('fileEncryption', () => {
       // 5-byte prefix that is not exactly "TCKE1".
       expect(isEncryptedFile(Buffer.from('TCKE0extra'))).toBe(false);
       expect(isEncryptedFile(Buffer.from('tcke1extra'))).toBe(false);
+    });
+  });
+
+  describe('KDF versioning (TCKE2 / TCKE1)', () => {
+    it('writes the current TCKE2 header with 600,000 PBKDF2 iterations', async () => {
+      const encrypted = await encryptFileContent(Buffer.from('hi'), passphrase);
+
+      expect(encrypted.subarray(0, 5).toString('ascii')).toBe('TCKE2');
+      // 4-byte big-endian iteration count immediately follows the magic.
+      expect(encrypted.readUInt32BE(5)).toBe(600_000);
+    });
+
+    it('still decrypts a legacy TCKE1 (200k) file', async () => {
+      const plaintext = Buffer.from('legacy secret payload', 'utf-8');
+      const legacy = forgeLegacyTcke1(plaintext, passphrase);
+
+      expect(legacy.subarray(0, 5).toString('ascii')).toBe('TCKE1');
+      expect(isEncryptedFile(legacy)).toBe(true);
+
+      const decrypted = await decryptFileContent(legacy, passphrase);
+      expect(decrypted.equals(plaintext)).toBe(true);
+    });
+
+    it('rejects a TCKE2 header that declares an out-of-range iteration count', async () => {
+      const encrypted = await encryptFileContent(Buffer.from('x'), passphrase);
+      const tampered = Buffer.from(encrypted);
+      // Overwrite the iteration count with an absurd value (DoS guard).
+      tampered.writeUInt32BE(4_000_000_000, 5);
+
+      await expect(decryptFileContent(tampered, passphrase)).rejects.toBeInstanceOf(
+        DecryptionError
+      );
     });
   });
 
