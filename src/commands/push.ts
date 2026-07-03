@@ -5,6 +5,7 @@ import { loadManifest } from '../lib/manifest.js';
 import { checkLocalMode, showLocalModeWarningForPush } from '../lib/remoteChecks.js';
 import {
   push,
+  fetch,
   hasRemote,
   getRemoteUrl,
   getStatus,
@@ -50,6 +51,17 @@ const runInteractivePush = async (tuckDir: string): Promise<void> => {
 
     await addRemote(tuckDir, 'origin', remoteUrl);
     prompts.log.success('Remote added');
+  }
+
+  // Refresh remote-tracking refs so the ahead/behind divergence check below
+  // reflects the current remote, not the last fetch. Tolerate offline failures
+  // with a warning — a stale comparison is better than aborting the push.
+  try {
+    await withSpinner('Fetching...', async () => {
+      await fetch(tuckDir);
+    });
+  } catch {
+    prompts.log.warning('Could not fetch from remote; status may be out of date');
   }
 
   // Get current status
@@ -160,9 +172,11 @@ const runPush = async (options: PushOptions): Promise<void> => {
     );
   }
 
-  // If no options, run interactive. JSON mode is always non-interactive — it
-  // takes the deterministic push path below and emits a single envelope.
-  if (!options.force && !options.setUpstream && !options.json) {
+  // If no options, run interactive. JSON mode and --yes are always
+  // non-interactive — they take the deterministic push path below. --yes must
+  // never route here, or `tuck push --yes` would hit an interactive prompt and
+  // fail on a non-TTY with an error telling the user to pass --yes.
+  if (!options.force && !options.setUpstream && !options.json && !options.yes) {
     await runInteractivePush(tuckDir);
     return;
   }
