@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { join, dirname, basename, resolve, sep, isAbsolute } from 'path';
+import { join, dirname, basename, resolve, isAbsolute } from 'path';
 import { readFile, writeFile, rm, chmod, stat, realpath, lstat, readlink } from 'fs/promises';
 import { ensureDir, pathExists as fsPathExists, copy } from 'fs-extra';
 import { execFile } from 'child_process';
@@ -164,9 +164,27 @@ export const assertRealTargetWithinRoots = async (
     })
   );
 
-  const contained = realRoots.some(
-    (root) => realTarget === root || realTarget.startsWith(root + sep)
-  );
+  // Normalize both sides the SAME way before comparing. realpath()/lstat() and
+  // node:path (sep/join) can disagree on separators — and under the memfs-backed
+  // tests on Windows realpath returns POSIX-style paths (drive stripped) while
+  // join() uses "\" — so a raw string compare produces false positives that
+  // block legitimate writes. Unify separators, and on Windows lowercase (NTFS is
+  // case-insensitive) and drop the leading drive letter so a drive-stripped
+  // target still matches a drive-qualified allowed root. Dropping the drive only
+  // weakens the check for the contrived case of an escape to the SAME relative
+  // path on a DIFFERENT drive; any escape to a different path stays blocked.
+  const canonical = (p: string): string => {
+    let unified = p.replace(/\\/g, '/');
+    if (IS_WINDOWS) {
+      unified = unified.toLowerCase().replace(/^[a-z]:/, '');
+    }
+    return unified;
+  };
+  const canonTarget = canonical(realTarget);
+  const contained = realRoots.some((root) => {
+    const canonRoot = canonical(root);
+    return canonTarget === canonRoot || canonTarget.startsWith(canonRoot + '/');
+  });
   if (!contained) {
     throw new Error(
       `Refusing to write through a symlinked path: ${collapsePath(writeTarget)} ` +
