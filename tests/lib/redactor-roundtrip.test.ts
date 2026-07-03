@@ -62,6 +62,36 @@ describe('redactor round-trip with overlapping (short ⊂ long) secrets', () => 
   });
 });
 
+describe('restoreContent with $-bearing secret values', () => {
+  it('inserts the secret literally when it contains $ replacement patterns', () => {
+    // A plain string-form replaceAll would interpret $&, $$, $`, $<n> in the
+    // value as replacement patterns, splicing surrounding content into the
+    // credential. The replacer-function form must insert the value verbatim.
+    const secrets: Record<string, string> = {
+      TOKEN: "pa$&ss$`word$$1",
+    };
+    const { restoredContent, restored } = restoreContent('export X={{TOKEN}}', secrets);
+
+    expect(restored).toBe(1);
+    expect(restoredContent).toBe("export X=pa$&ss$`word$$1");
+  });
+
+  it('round-trips a redact -> restore for a password full of $ sequences', () => {
+    const SECRET = 'A$$b$&c$`d';
+    const original = `PASSWORD=${SECRET}`;
+
+    const { redactedContent } = redactContent(
+      original,
+      [makeMatch(SECRET, 'DB_PASSWORD')],
+      new Map([[SECRET, 'DB_PASSWORD']])
+    );
+    expect(redactedContent).toBe('PASSWORD={{DB_PASSWORD}}');
+
+    const { restoredContent } = restoreContent(redactedContent, { DB_PASSWORD: SECRET });
+    expect(restoredContent).toBe(original);
+  });
+});
+
 describe('restoreFiles with a tracked directory path', () => {
   it('skips a directory entry without throwing EISDIR', async () => {
     // restore (and apply) pass restored target paths to restoreFiles to swap
