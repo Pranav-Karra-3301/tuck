@@ -416,9 +416,13 @@ export const copyFileOrDir = async (
         errorOnExist: !shouldOverwrite,
         filter: (src: string) => {
           const name = basename(src);
-          // Skip .git directories, node_modules, and cache directories
-          const skipDirs = ['.git', 'node_modules', '.cache', '__pycache__', '.DS_Store'];
-          if (skipDirs.includes(name)) return false;
+          // Use the SAME skip predicate as the directory walk that computes
+          // checksums (shouldSkipEntry / DIRECTORY_SKIP_PATTERNS), so the copied
+          // repo tree exactly matches the checksummed tree. Otherwise a copied
+          // nested .gitignore could silently exclude sibling tracked files from
+          // commits, and edits to skipped names (e.g. .npmrc) would never
+          // register as drift yet get reverted by apply/restore.
+          if (shouldSkipEntry(name)) return false;
           // Honor pattern-declared excludes (e.g. ~/.claude excludes
           // projects/**/*.jsonl transcripts, caches) so ephemeral/sensitive
           // content is never copied into the repo.

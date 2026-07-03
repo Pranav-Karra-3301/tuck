@@ -61,6 +61,28 @@ describe('files', () => {
       expect(vol.existsSync(join(dest, 'logs'))).toBe(false);
       expect(vol.existsSync(join(dest, 'logs/app.log'))).toBe(false);
     });
+
+    it('skips the same names as the checksum walk (e.g. .gitignore, .npmrc) when copying a directory', async () => {
+      // Regression: copyFileOrDir's skip list diverged from
+      // DIRECTORY_SKIP_PATTERNS, so a nested .gitignore/.npmrc was copied into
+      // the repo (silently excluding sibling tracked files from commits) while
+      // the checksum walk ignored it (edits never registered as drift).
+      const src = join(TEST_HOME, '.config/nvim');
+      vol.mkdirSync(src, { recursive: true });
+      vol.writeFileSync(join(src, 'init.lua'), 'vim.opt.number = true');
+      vol.writeFileSync(join(src, '.gitignore'), 'plugin/\n*.local');
+      vol.writeFileSync(join(src, '.npmrc'), 'registry=example');
+      vol.writeFileSync(join(src, 'cache.swp'), 'junk');
+
+      const dest = join(TEST_HOME, '.tuck/files/config/nvim');
+      await copyFileOrDir(src, dest, { overwrite: true });
+
+      expect(vol.existsSync(join(dest, 'init.lua'))).toBe(true);
+      // These must NOT be copied so the repo tree matches the checksummed tree.
+      expect(vol.existsSync(join(dest, '.gitignore'))).toBe(false);
+      expect(vol.existsSync(join(dest, '.npmrc'))).toBe(false);
+      expect(vol.existsSync(join(dest, 'cache.swp'))).toBe(false);
+    });
   });
 
   describe('formatBytes', () => {

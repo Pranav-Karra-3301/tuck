@@ -42,6 +42,7 @@ import {
   getAllHooks,
 } from '../../src/lib/hooks.js';
 import { loadConfig } from '../../src/lib/config.js';
+import { prompts } from '../../src/ui/prompts.js';
 
 describe('hooks', () => {
   beforeEach(() => {
@@ -101,6 +102,35 @@ describe('hooks', () => {
 
       // The hook should attempt to execute (may fail in test environment)
       expect(result).toBeDefined();
+    });
+
+    it('should skip an untrusted hook when stdin is not a TTY even if stdout is', async () => {
+      // Regression: interactivity was decided from stdout only, so with a
+      // non-TTY stdin (e.g. `tuck sync < /dev/null`) runHook tried to prompt
+      // and ensureInteractive() aborted the whole command instead of skipping.
+      vi.mocked(loadConfig).mockResolvedValue({
+        repository: { path: TEST_TUCK_DIR },
+        files: { backupDir: 'backups', symlink: false },
+        hooks: { preSync: 'echo "test"' },
+        templates: {},
+        encryption: {},
+        ui: { color: true, verbose: false },
+      } as never);
+
+      const origStdout = process.stdout.isTTY;
+      const origStdin = process.stdin.isTTY;
+      process.stdout.isTTY = true;
+      process.stdin.isTTY = false;
+      try {
+        const result = await runHook('preSync', TEST_TUCK_DIR, { silent: true });
+        expect(result.success).toBe(true);
+        expect(result.skipped).toBe(true);
+        // Must take the skip path, never attempt a prompt on a non-TTY stdin.
+        expect(prompts.confirm).not.toHaveBeenCalled();
+      } finally {
+        process.stdout.isTTY = origStdout;
+        process.stdin.isTTY = origStdin;
+      }
     });
   });
 

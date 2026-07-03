@@ -97,6 +97,27 @@ describe('validation', () => {
       expect(() => validateDescription('test | cat')).toThrow();
       expect(() => validateDescription('test && cmd')).toThrow();
     });
+
+    it('should accept ordinary descriptions containing the letter n', async () => {
+      // Regression: a stray `\\n` in the invalid-character class matched a
+      // literal 'n', so every description containing 'n' was rejected, which
+      // broke provider repo auto-creation (default desc "Dotfiles managed by
+      // tuck").
+      const { validateDescription } = await import('../../src/lib/validation.js');
+      expect(() => validateDescription('Dotfiles managed by tuck')).not.toThrow();
+      expect(() => validateDescription('n')).not.toThrow();
+      expect(() => validateDescription('Personal config')).not.toThrow();
+    });
+
+    it('should still reject descriptions containing a real newline', async () => {
+      const { validateDescription } = await import('../../src/lib/validation.js');
+      expect(() => validateDescription('line one\nline two')).toThrow();
+    });
+
+    it('should still reject descriptions containing a backslash', async () => {
+      const { validateDescription } = await import('../../src/lib/validation.js');
+      expect(() => validateDescription('path\\to\\thing')).toThrow();
+    });
   });
 
   describe('validateHostname', () => {
