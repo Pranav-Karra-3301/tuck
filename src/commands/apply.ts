@@ -116,6 +116,44 @@ const applyDirectoryEntry = async (file: ApplyFile, dryRun: boolean): Promise<vo
   logger.file(exists ? 'modify' : 'add', `${collapsePath(file.destination)} (directory)`);
 };
 
+/**
+ * True when the buffer is valid UTF-8. Used to detect binary files so they are
+ * copied verbatim rather than pushed through the text pipeline
+ * (materialize/secret-resolution/merge), whose `bytes.toString('utf8')` would
+ * replace invalid sequences with U+FFFD and silently corrupt the file.
+ */
+export const isValidUtf8 = (buf: Buffer): boolean => {
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(buf);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Apply a tracked BINARY (non-UTF-8) file by copying its repo bytes verbatim.
+ *
+ * Binary files are trackable as single entries (e.g. a font, a *.db, a keyring),
+ * and template/secret/merge processing is text-only. Copying the bytes preserves
+ * them exactly; routing them through the string pipeline would corrupt them.
+ * Only reached for non-template, non-encrypted files (those are always text once
+ * materialized).
+ */
+const applyBinaryEntry = async (file: ApplyFile, dryRun: boolean): Promise<void> => {
+  const exists = await pathExists(file.destination);
+  if (dryRun) {
+    logger.file(exists ? 'modify' : 'add', collapsePath(file.destination));
+    return;
+  }
+  const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
+  await ensureDir(dirname(writeTarget));
+  await copyFileOrDir(file.repoPath, writeTarget, { overwrite: true });
+  await applyRecordedPermissions(writeTarget, file.permissions);
+  await fixSecurePermissions(writeTarget);
+  logger.file(exists ? 'modify' : 'add', collapsePath(file.destination));
+};
+
 export interface ApplyOptions {
   merge?: boolean;
   replace?: boolean;
@@ -153,8 +191,16 @@ export interface ApplyFile {
 interface ApplyResult {
   appliedCount: number;
   filesWithPlaceholders: Array<{
+    /** Display path (collapsed live destination) for warnings. */
     path: string;
     placeholders: string[];
+    /**
+     * The ACTUAL file apply wrote (resolveWriteTarget output). Local-store secret
+     * restoration must target this file — under --root it is the sandbox copy, not
+     * the operator's real ~ path (`path`). Using `path` would read/rewrite the real
+     * home file, escaping the sandbox.
+     */
+    writeTarget: string;
   }>;
   /** repo-scoped sources skipped because their repo is unbound on this machine. */
   skippedUnboundRepos: string[];
@@ -628,9 +674,19 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
       result.appliedCount++;
       continue;
     }
+    const rawBytes = await readFile(file.repoPath);
+
+    // Binary (non-UTF-8) files that are neither templated nor encrypted must be
+    // copied byte-for-byte — the text pipeline below would UTF-8 round-trip them
+    // and replace invalid sequences with U+FFFD, silently corrupting the file.
+    if (!file.template && !file.encrypted && !isValidUtf8(rawBytes)) {
+      await applyBinaryEntry(file, dryRun);
+      result.appliedCount++;
+      continue;
+    }
+
     let fileContent: string;
     try {
-      const rawBytes = await readFile(file.repoPath);
       fileContent = await materializeForLive(rawBytes, file, ctx, { getPassphrase: keystorePassphrase });
     } catch (err) {
       // A failed / absent-passphrase decryption must NEVER write ciphertext or
@@ -651,11 +707,14 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
     const secretsResult = await resolveFileSecrets(fileContent, tuckDir);
     fileContent = secretsResult.content;
 
-    // Track only unresolved placeholders
+    // Track only unresolved placeholders. Record the resolved write target so a
+    // later local-store secret restore rewrites the file apply ACTUALLY wrote
+    // (the sandbox copy under --root), never the operator's real ~ path.
     if (secretsResult.unresolved.length > 0) {
       result.filesWithPlaceholders.push({
         path: collapsePath(file.destination),
         placeholders: secretsResult.unresolved,
+        writeTarget: resolveWriteTarget(file.destination, file.repoTarget),
       });
     }
 
@@ -728,9 +787,19 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
       result.appliedCount++;
       continue;
     }
+    const rawBytes = await readFile(file.repoPath);
+
+    // Binary (non-UTF-8) files that are neither templated nor encrypted must be
+    // copied byte-for-byte — the text pipeline below would UTF-8 round-trip them
+    // and replace invalid sequences with U+FFFD, silently corrupting the file.
+    if (!file.template && !file.encrypted && !isValidUtf8(rawBytes)) {
+      await applyBinaryEntry(file, dryRun);
+      result.appliedCount++;
+      continue;
+    }
+
     let fileContent: string;
     try {
-      const rawBytes = await readFile(file.repoPath);
       fileContent = await materializeForLive(rawBytes, file, ctx, { getPassphrase: keystorePassphrase });
     } catch (err) {
       // A failed / absent-passphrase decryption must NEVER write ciphertext or
@@ -751,11 +820,14 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
     const secretsResult = await resolveFileSecrets(fileContent, tuckDir);
     fileContent = secretsResult.content;
 
-    // Track only unresolved placeholders
+    // Track only unresolved placeholders. Record the resolved write target so a
+    // later local-store secret restore rewrites the file apply ACTUALLY wrote
+    // (the sandbox copy under --root), never the operator's real ~ path.
     if (secretsResult.unresolved.length > 0) {
       result.filesWithPlaceholders.push({
         path: collapsePath(file.destination),
         placeholders: secretsResult.unresolved,
+        writeTarget: resolveWriteTarget(file.destination, file.repoTarget),
       });
     }
 
@@ -894,8 +966,11 @@ const tryRestoreSecretsFromLocalStore = async (
       }
     }
 
-    // Restore secrets in the applied files
-    const pathsToRestore = filesWithPlaceholders.map(f => expandPath(f.path));
+    // Restore secrets in the files apply ACTUALLY wrote. Use the recorded write
+    // target (already absolute and sandbox-confined under --root), never
+    // expandPath(f.path) — that would resolve the operator's REAL ~ file and
+    // rewrite it with plaintext secrets, escaping the sandbox.
+    const pathsToRestore = filesWithPlaceholders.map(f => f.writeTarget);
     const result = await restoreSecrets(pathsToRestore, tuckDir);
 
     if (interactive && result.totalRestored > 0) {
@@ -1065,19 +1140,17 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
       }
     }
 
-    // Create Time Machine backup before applying
-    // Note: We need to properly await async checks - Array.filter doesn't await promises
-    const existingPaths = [];
-    for (const file of files) {
-      if (await pathExists(file.destination)) {
-        existingPaths.push(file.destination);
-      }
-    }
+    // Create Time Machine backup before applying. Snapshot EVERY destination,
+    // not just the ones that already exist: createSnapshot records missing paths
+    // as existed:false, and restoreSnapshot (undo) deletes those on rollback — so
+    // a `tuck undo` after this apply also removes files this apply newly created,
+    // returning the system to its true pre-apply state.
+    const snapshotPaths = files.map((f) => f.destination);
 
-    if (existingPaths.length > 0 && !options.dryRun) {
+    if (snapshotPaths.length > 0 && !options.dryRun) {
       const spinner = prompts.spinner();
       spinner.start('Creating backup snapshot...');
-      const snapshot = await createPreApplySnapshot(existingPaths, repoId);
+      const snapshot = await createPreApplySnapshot(snapshotPaths, repoId);
       spinner.stop(`Backup created: ${snapshot.id}`);
       console.log();
     }
@@ -1116,7 +1189,7 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
     if (!options.dryRun) {
       console.log();
       prompts.note(
-        'To undo this apply, run:\n  tuck restore --latest\n\nTo see all backups:\n  tuck restore --list',
+        'To undo this apply, run:\n  tuck undo --latest\n\nTo see all backups:\n  tuck undo --list',
         'Undo'
       );
     }
@@ -1187,19 +1260,17 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
     // Determine strategy
     const strategy = options.replace ? 'replace' : 'merge';
 
-    // Create backup if not dry run
+    // Create backup if not dry run. Snapshot EVERY destination (not just existing
+    // ones) so `tuck undo` can also delete files this apply newly created —
+    // createSnapshot records missing paths as existed:false and restoreSnapshot
+    // removes them on undo.
     if (!options.dryRun) {
-      const existingPaths = [];
-      for (const file of files) {
-        if (await pathExists(file.destination)) {
-          existingPaths.push(file.destination);
-        }
-      }
+      const snapshotPaths = files.map((f) => f.destination);
 
-      if (existingPaths.length > 0) {
-        logger.info('Creating backup snapshot...');
-        const snapshot = await createPreApplySnapshot(existingPaths, source);
-        logger.success(`Backup created: ${snapshot.id}`);
+      if (snapshotPaths.length > 0) {
+        if (!isJsonMode()) logger.info('Creating backup snapshot...');
+        const snapshot = await createPreApplySnapshot(snapshotPaths, source);
+        if (!isJsonMode()) logger.success(`Backup created: ${snapshot.id}`);
       }
     }
 
@@ -1258,7 +1329,7 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
     }
 
     if (!options.dryRun) {
-      logger.info('To undo: tuck restore --latest');
+      logger.info('To undo: tuck undo --latest');
     }
   } finally {
     // Clean up temp directory
