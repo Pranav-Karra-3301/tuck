@@ -136,7 +136,7 @@ describe('hasSubtree', () => {
 });
 
 describe('mergeSubtreeIntoLive', () => {
-  it('deep-merges the subtree back while leaving every other key untouched', () => {
+  it('REPLACES the tracked subtree while leaving every other key untouched', () => {
     const live = JSON.stringify(
       {
         oauthToken: 'MACHINE-SECRET',
@@ -153,12 +153,45 @@ describe('mergeSubtreeIntoLive', () => {
     // Machine-managed keys are preserved verbatim.
     expect(merged.oauthToken).toBe('MACHINE-SECRET');
     expect(merged.numStartups).toBe(99);
-    // The tracked subtree is deep-merged: updated + added + existing siblings kept.
+    // The tracked subtree is REPLACED wholesale: entries deleted from the repo
+    // copy ('stale') must NOT survive on the live machine — a deep-merge here
+    // would resurrect them and the next sync would push them back to the repo,
+    // reverting the deletion globally.
     expect(merged.mcpServers).toEqual({
       git: { command: 'NEW' },
-      stale: { command: 'x' },
       added: { command: 'y' },
     });
+  });
+
+  it('propagates deletions inside the tracked subtree (no resurrection loop)', () => {
+    const live = JSON.stringify({ mcpServers: { removed: { command: 'gone' } }, other: 1 });
+    const repoSubtree = canonicalJson({ kept: { command: 'k' } });
+    const merged = JSON.parse(mergeSubtreeIntoLive(live, repoSubtree, 'mcpServers'));
+    expect(merged.mcpServers.removed).toBeUndefined();
+    expect(merged.mcpServers.kept).toEqual({ command: 'k' });
+    expect(merged.other).toBe(1);
+  });
+
+  it('rejects prototype-named key path segments', () => {
+    for (const bad of ['__proto__', 'constructor', 'a.prototype.b']) {
+      expect(() => parseJsonKeyPath(bad)).toThrow(/reserved property/);
+    }
+  });
+
+  it('never matches inherited properties during navigation', () => {
+    // 'toString' exists on every object via the prototype chain; extraction
+    // must treat it as ABSENT when it is not an own key (previously inherited
+    // lookups "succeeded" and wrote literal `undefined` — invalid JSON — to
+    // the repo). ('constructor'/'__proto__' are rejected at parse time.)
+    expect(() => extractSubtree(JSON.stringify({ a: 1 }), 'toString')).toThrow(/not found/);
+  });
+
+  it('a "__proto__" data key in live JSON never pollutes Object.prototype', () => {
+    const live = JSON.stringify({ '__proto__': { polluted: true }, mcpServers: {} });
+    const repoSubtree = canonicalJson({ s: { command: 'x' } });
+    const merged = mergeSubtreeIntoLive(live, repoSubtree, 'mcpServers');
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(JSON.parse(merged).mcpServers).toEqual({ s: { command: 'x' } });
   });
 
   it('creates the key (and intermediate objects) when absent from live', () => {

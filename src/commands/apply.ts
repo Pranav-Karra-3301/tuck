@@ -31,7 +31,7 @@ import { findPlaceholders, restoreContent, restoreFiles as restoreSecrets, getAl
 import { createResolver } from '../lib/secretBackends/index.js';
 import { loadConfig } from '../lib/config.js';
 import { IS_WINDOWS } from '../lib/platform.js';
-import { RepositoryNotFoundError, MaterializeError } from '../errors.js';
+import { RepositoryNotFoundError, MaterializeError, JsonKeyError } from '../errors.js';
 import { getProvider, type ProviderMode, type RemoteConfig as ProviderRemoteConfig } from '../lib/providers/index.js';
 import { setJsonMode, isJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
 import { materializeForLive, keystorePassphrase, buildMaterializeCtx } from '../lib/materialize.js';
@@ -868,11 +868,24 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
     }
     const rawBytes = await readFile(file.repoPath);
 
-    // JSON-key entries deep-merge their stored subtree into the live file rather
-    // than replacing it (never routed through materialize/smart-merge/binary).
+    // JSON-key entries write their stored subtree into the live file at the
+    // tracked path, preserving every other key (never routed through
+    // materialize/smart-merge/binary). A corrupt/JSONC live file must skip
+    // THIS entry loudly and keep the rest of the run going, like
+    // MaterializeError below.
     if (file.jsonKey) {
-      await applyJsonKeyEntry(file, rawBytes, tuckDir, dryRun, result);
-      result.appliedCount++;
+      try {
+        await applyJsonKeyEntry(file, rawBytes, tuckDir, dryRun, result);
+        result.appliedCount++;
+      } catch (err) {
+        if (err instanceof JsonKeyError) {
+          const msg = `Skipped ${collapsePath(file.destination)}: ${err.message}`;
+          logger.warning(msg);
+          if (isJsonMode()) addJsonWarning(msg);
+        } else {
+          throw err;
+        }
+      }
       continue;
     }
 
@@ -989,11 +1002,24 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
     }
     const rawBytes = await readFile(file.repoPath);
 
-    // JSON-key entries deep-merge their stored subtree into the live file rather
-    // than replacing it (never routed through materialize/smart-merge/binary).
+    // JSON-key entries write their stored subtree into the live file at the
+    // tracked path, preserving every other key (never routed through
+    // materialize/smart-merge/binary). A corrupt/JSONC live file must skip
+    // THIS entry loudly and keep the rest of the run going, like
+    // MaterializeError below.
     if (file.jsonKey) {
-      await applyJsonKeyEntry(file, rawBytes, tuckDir, dryRun, result);
-      result.appliedCount++;
+      try {
+        await applyJsonKeyEntry(file, rawBytes, tuckDir, dryRun, result);
+        result.appliedCount++;
+      } catch (err) {
+        if (err instanceof JsonKeyError) {
+          const msg = `Skipped ${collapsePath(file.destination)}: ${err.message}`;
+          logger.warning(msg);
+          if (isJsonMode()) addJsonWarning(msg);
+        } else {
+          throw err;
+        }
+      }
       continue;
     }
 

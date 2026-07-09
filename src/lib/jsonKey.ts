@@ -56,6 +56,17 @@ export const parseJsonKeyPath = (key: string): string[] => {
       `Invalid JSON key path "${key}": segments must be non-empty (no leading, trailing, or doubled dots)`
     );
   }
+  // Prototype-named segments would match inherited properties during
+  // navigation ('constructor' "exists" on every object) and writing to
+  // __proto__ mutates Object.prototype — reject them outright.
+  const dangerous = segments.find((segment) =>
+    ['__proto__', 'prototype', 'constructor'].includes(segment)
+  );
+  if (dangerous !== undefined) {
+    throw new JsonKeyError(
+      `Invalid JSON key path "${key}": "${dangerous}" is a reserved property name`
+    );
+  }
   return segments;
 };
 
@@ -103,7 +114,7 @@ const getValueAtPath = (
 ): { found: true; value: JsonValue } | { found: false } => {
   let current: JsonValue = root;
   for (const segment of segments) {
-    if (!isPlainObject(current) || !(segment in current)) {
+    if (!isPlainObject(current) || !Object.prototype.hasOwnProperty.call(current, segment)) {
       return { found: false };
     }
     current = current[segment];
@@ -120,9 +131,16 @@ const getValueAtPath = (
  */
 export const deepMergeJson = (base: JsonValue, patch: JsonValue): JsonValue => {
   if (isPlainObject(base) && isPlainObject(patch)) {
-    const out: Record<string, JsonValue> = { ...base };
+    // Null-prototype accumulator: a legitimate "__proto__" data key parsed
+    // from JSON must never hit Object.prototype through plain assignment.
+    const out: Record<string, JsonValue> = Object.create(null) as Record<string, JsonValue>;
+    for (const key of Object.keys(base)) {
+      out[key] = base[key];
+    }
     for (const key of Object.keys(patch)) {
-      out[key] = key in base ? deepMergeJson(base[key], patch[key]) : patch[key];
+      out[key] = Object.prototype.hasOwnProperty.call(base, key)
+        ? deepMergeJson(base[key], patch[key])
+        : patch[key];
     }
     return out;
   }
@@ -130,10 +148,12 @@ export const deepMergeJson = (base: JsonValue, patch: JsonValue): JsonValue => {
 };
 
 /**
- * Return a copy of `obj` with `value` deep-merged in at `segments`, creating
- * intermediate objects as needed. A non-object node encountered along the path
- * is replaced by a fresh object (the tracked subtree wins over conflicting live
- * scalar/array state at that exact path — never elsewhere).
+ * Return a copy of `obj` with `value` REPLACING whatever sits at `segments`,
+ * creating intermediate objects as needed. Everything OUTSIDE the tracked path
+ * is preserved; everything AT the path is tuck-managed by definition, so the
+ * repo subtree replaces it wholesale — a deep-merge here would resurrect keys
+ * deleted from the repo copy on every apply (and the next sync would capture
+ * the resurrected key back into the repo, reverting the deletion globally).
  */
 const mergeAtPath = (
   obj: Record<string, JsonValue>,
@@ -141,11 +161,17 @@ const mergeAtPath = (
   value: JsonValue
 ): Record<string, JsonValue> => {
   const [head, ...rest] = segments;
-  const clone: Record<string, JsonValue> = { ...obj };
+  const clone: Record<string, JsonValue> = Object.create(null) as Record<string, JsonValue>;
+  for (const key of Object.keys(obj)) {
+    clone[key] = obj[key];
+  }
   if (rest.length === 0) {
-    clone[head] = head in clone ? deepMergeJson(clone[head], value) : value;
+    clone[head] = value;
   } else {
-    const child = isPlainObject(clone[head]) ? clone[head] : {};
+    const existing: JsonValue | undefined = Object.prototype.hasOwnProperty.call(clone, head)
+      ? clone[head]
+      : undefined;
+    const child = isPlainObject(existing) ? existing : {};
     clone[head] = mergeAtPath(child, rest, value);
   }
   return clone;
@@ -194,12 +220,13 @@ export const hasSubtree = (content: string, key: string): boolean => {
 };
 
 /**
- * Deep-merge a repo-stored subtree back into a live file's text at `key`,
- * returning the full updated file text (2-space indented, trailing newline).
+ * Write a repo-stored subtree back into a live file's text at `key`, returning
+ * the full updated file text (2-space indented, trailing newline).
  *
- * Every key outside the tracked path is preserved byte-for-value: only the
- * subtree at `key` is updated (deep-merged, so nested siblings inside the
- * subtree also survive). When the live file is absent/empty the result is a new
+ * Every key outside the tracked path is preserved byte-for-value; the value AT
+ * the tracked path is REPLACED by the repo subtree (it is tuck-managed by
+ * definition — replacing is what lets deletions inside the subtree propagate
+ * across machines). When the live file is absent/empty the result is a new
  * object holding just the subtree.
  *
  * @throws {@link JsonKeyError} when the repo subtree or a non-empty live file is

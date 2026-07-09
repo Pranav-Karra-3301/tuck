@@ -628,6 +628,45 @@ const syncFiles = async (
   return result;
 };
 
+
+/**
+ * Secret-scan the extracted SUBTREE of every modified JSON-key entry — the
+ * exact bytes sync would capture into the repo. Whole-file scanning is wrong
+ * for these files (machine tokens outside the subtree would false-positive),
+ * but skipping them entirely made --key files strictly weaker than whole-file
+ * tracking: a secret added INSIDE the subtree after `tuck add` flowed into the
+ * repo unwarned.
+ */
+const scanJsonKeySubtrees = async (
+  tuckDir: string,
+  changes: FileChange[]
+): Promise<Array<{ source: string; count: number; patterns: string[] }>> => {
+  const { scanContent } = await import('../lib/secrets/scanner.js');
+  const trackedFiles = await getAllTrackedFiles(tuckDir);
+  const findings: Array<{ source: string; count: number; patterns: string[] }> = [];
+  for (const change of changes) {
+    if (change.status !== 'modified') continue;
+    const entry = Object.values(trackedFiles).find((f) => f.source === change.source);
+    if (!entry?.jsonKey) continue;
+    const live = await resolveLiveTarget(entry);
+    if (live === null || !(await pathExists(live))) continue;
+    try {
+      const subtree = extractSubtree(await readFile(live, 'utf-8'), entry.jsonKey);
+      const matches = scanContent(subtree);
+      if (matches.length > 0) {
+        findings.push({
+          source: change.source,
+          count: matches.length,
+          patterns: [...new Set(matches.map((m) => m.patternName))],
+        });
+      }
+    } catch {
+      // Corrupt live JSON / missing key path is surfaced by the capture step.
+    }
+  }
+  return findings;
+};
+
 /**
  * Scan modified files for secrets and handle user interaction
  * Returns true if sync should continue, false if aborted
@@ -675,7 +714,29 @@ const scanAndHandleSecrets = async (
   const spinner = prompts.spinner();
   spinner.start('Scanning for secrets...');
   const summary = await scanForSecrets(modifiedPaths, tuckDir);
+  const subtreeFindings = await scanJsonKeySubtrees(tuckDir, changes);
   spinner.stop('Scan complete');
+
+  if (subtreeFindings.length > 0) {
+    console.log();
+    console.log(c.yellow('Potential secrets inside tracked JSON subtrees:'));
+    for (const f of subtreeFindings) {
+      console.log(c.dim(`  • ${f.source} — ${f.count} finding(s): ${f.patterns.join(', ')}`));
+    }
+    console.log();
+    const choice = await prompts.select(
+      'These values WOULD be captured into the repo. Continue?',
+      [
+        { value: 'abort', label: 'Abort sync (remove or extract the secret first)' },
+        { value: 'proceed', label: 'Proceed anyway (the secret will be committed)' },
+      ]
+    );
+    if (choice !== 'proceed') {
+      prompts.cancel('Sync aborted - secrets detected in a tracked JSON subtree');
+      return false;
+    }
+    await logForceSecretBypass('tuck sync (proceed past jsonKey subtree findings)', subtreeFindings.length);
+  }
 
   if (summary.totalSecrets === 0) {
     return true;
@@ -1151,6 +1212,20 @@ const scanChangesForSecretsOrThrow = async (
   if (!(await isSecretScanningEnabled(tuckDir))) return;
 
   const modifiedPaths = await resolveModifiedLivePaths(tuckDir, changes);
+  const subtreeFindings = await scanJsonKeySubtrees(tuckDir, changes);
+
+  if (subtreeFindings.length > 0 && (await shouldBlockOnSecrets(tuckDir))) {
+    throw new SecretsDetectedError(
+      subtreeFindings.reduce((n, f) => n + f.count, 0),
+      subtreeFindings.map((f) => f.source)
+    );
+  }
+  if (subtreeFindings.length > 0) {
+    const msg = `${subtreeFindings.length} tracked JSON subtree(s) contain potential secrets but blockOnSecrets is disabled — proceeding`;
+    if (options.json) addJsonWarning(msg);
+    else logger.warning(msg);
+  }
+
   if (modifiedPaths.length === 0) return;
 
   const summary = await scanForSecrets(modifiedPaths, tuckDir);

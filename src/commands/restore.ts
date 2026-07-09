@@ -28,7 +28,7 @@ import { materializeForLive, keystorePassphrase, buildMaterializeCtx } from '../
 import { mergeSubtreeIntoLive } from '../lib/jsonKey.js';
 import { createBackup } from '../lib/backup.js';
 import { runPreRestoreHook, runPostRestoreHook, type HookOptions } from '../lib/hooks.js';
-import { NotInitializedError, FileNotFoundError, TuckError, MaterializeError } from '../errors.js';
+import { NotInitializedError, FileNotFoundError, TuckError, MaterializeError, JsonKeyError } from '../errors.js';
 import { CATEGORIES } from '../constants.js';
 import type { RestoreOptions } from '../types.js';
 import { setJsonMode, isJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
@@ -330,17 +330,35 @@ const restoreFilesInternal = async (
       }
     }
 
-    // Restore file
-    await withSpinner(`Restoring ${file.source}...`, async () => {
-      if (file.jsonKey) {
-        // Deep-merge the tracked subtree back into the live file, preserving
-        // every other key (tokens, caches, machine state). A backup was already
-        // taken above when the live file existed.
+    // JSON-key merge is computed BEFORE the spinner so a corrupt/JSONC live
+    // file skips THIS entry loudly (like MaterializeError above) and the rest
+    // of the run continues.
+    let jsonKeyMerged: string | null = null;
+    if (file.jsonKey) {
+      try {
         const repoSubtree = await readFile(file.destination, 'utf8');
         const liveContent = (await pathExists(targetPath)) ? await readFile(targetPath, 'utf8') : null;
-        const merged = mergeSubtreeIntoLive(liveContent, repoSubtree, file.jsonKey);
+        jsonKeyMerged = mergeSubtreeIntoLive(liveContent, repoSubtree, file.jsonKey);
+      } catch (err) {
+        if (err instanceof JsonKeyError) {
+          const msg = `Skipped ${file.source}: ${err.message}`;
+          logger.warning(msg);
+          if (isJsonMode()) addJsonWarning(msg);
+          skipped.push(file.source);
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    // Restore file
+    await withSpinner(`Restoring ${file.source}...`, async () => {
+      if (file.jsonKey && jsonKeyMerged !== null) {
+        // Write the tracked subtree back into the live file, preserving every
+        // other key (tokens, caches, machine state). A backup was already
+        // taken above when the live file existed.
         await ensureDir(dirname(targetPath));
-        await writeFile(targetPath, merged, 'utf-8');
+        await writeFile(targetPath, jsonKeyMerged, 'utf-8');
       } else if (linkThisFile) {
         await createSymlink(file.destination, targetPath, { overwrite: true });
       } else if (materialized !== null) {

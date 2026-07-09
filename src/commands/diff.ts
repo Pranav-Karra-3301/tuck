@@ -23,6 +23,7 @@ import { NotInitializedError, FileNotFoundError, PermissionError } from '../erro
 import { isBinaryExecutable } from '../lib/binary.js';
 import { isIgnored } from '../lib/tuckignore.js';
 import { resolveLiveTarget } from '../lib/repoScope.js';
+import { extractSubtree } from '../lib/jsonKey.js';
 import {
   materializeForLive,
   keystorePassphrase,
@@ -138,6 +139,34 @@ export const getFileDiff = async (tuckDir: string, source: string): Promise<File
     const repoChecksum = await getFileChecksum(repoPath);
     diff.hasChanges = systemChecksum !== repoChecksum;
 
+    return diff;
+  }
+
+  // JSON-key entries track only a SUBTREE of the live file: compare
+  // extractSubtree(live) against the repo copy — diffing the whole live file
+  // would always report changes AND print every untracked live key (machine
+  // tokens included) in the hunks.
+  if (tracked.file.jsonKey) {
+    const repoContent = await readFile(repoPath, 'utf-8');
+    let liveSubtree: string;
+    try {
+      const liveRaw = await readFile(systemPath, 'utf-8');
+      liveSubtree = extractSubtree(liveRaw, tracked.file.jsonKey);
+    } catch {
+      // Corrupt live JSON or missing key path: fall back to whole-repo view so
+      // the divergence is visible without dumping unrelated live keys.
+      diff.hasChanges = true;
+      diff.repoContent = repoContent;
+      diff.repoSize = repoContent.length;
+      return diff;
+    }
+    diff.hasChanges = liveSubtree !== repoContent;
+    if (diff.hasChanges) {
+      diff.systemContent = liveSubtree;
+      diff.systemSize = liveSubtree.length;
+      diff.repoContent = repoContent;
+      diff.repoSize = repoContent.length;
+    }
     return diff;
   }
 
