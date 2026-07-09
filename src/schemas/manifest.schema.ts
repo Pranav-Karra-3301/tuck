@@ -2,6 +2,39 @@ import { z } from 'zod';
 
 export const fileStrategySchema = z.enum(['copy', 'symlink']);
 
+/**
+ * How arrays are reconciled during a structured (JSON) three-way merge.
+ * - `union`   — combine both sides, dropping deep-duplicate entries (default;
+ *               ideal for allowlists like Claude permission `allow`/`deny`).
+ * - `concat`  — append both sides verbatim, keeping duplicates.
+ * - `replace` — treat a diverged array as a scalar conflict (resolved via the
+ *               `conflict` strategy) instead of combining.
+ */
+export const arrayMergeStrategySchema = z.enum(['union', 'concat', 'replace']);
+
+/**
+ * How an irreconcilable scalar/type conflict is resolved during a structured
+ * merge (both sides changed the same leaf to different values).
+ * - `ours`   — always keep the local value.
+ * - `theirs` — always take the incoming value.
+ * - `manual` — surface the conflict and stop instead of guessing (default).
+ */
+export const conflictResolutionSchema = z.enum(['ours', 'theirs', 'manual']);
+
+/**
+ * Per-file structured-merge policy. When present, `tuck sync` performs a
+ * key-level three-way merge of the tracked file instead of a silent
+ * whole-file overwrite when local and remote have both diverged. Absent
+ * (undefined) preserves the legacy behavior, so existing manifests parse
+ * byte-identical (this field is `.optional()`, never `.default()`).
+ */
+export const mergePolicySchema = z.object({
+  /** Structured format to parse. Only JSON is supported in v1. */
+  format: z.literal('json'),
+  arrays: arrayMergeStrategySchema.default('union'),
+  conflict: conflictResolutionSchema.default('manual'),
+});
+
 export const trackedFileSchema = z
   .object({
     source: z.string(),
@@ -46,6 +79,12 @@ export const trackedFileSchema = z
     repoKey: z.string().optional(),
     /** POSIX path of the file relative to the repo root. */
     repoRelative: z.string().optional(),
+    /**
+     * Optional structured three-way merge policy. When set, `tuck sync`
+     * reconciles this file key-by-key instead of overwriting it wholesale.
+     * Undefined for the vast majority of files (plain copy semantics).
+     */
+    merge: mergePolicySchema.optional(),
   })
   .superRefine((file, ctx) => {
     if (file.scope === 'repo') {

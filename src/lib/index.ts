@@ -8,5 +8,7 @@ export * from './hooks.js';
 export * from './github.js';
 export * from './timemachine.js';
 export * from './merge.js';
+export * from './jsonMerge.js';
+export * from './jsonMergeSync.js';
 export * from './detect.js';
 export * from './remoteChecks.js';
