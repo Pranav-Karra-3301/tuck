@@ -1,3 +1,30 @@
+# [1.12.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.11.0...v1.12.0) (2026-07-09)
+
+
+### Bug Fixes
+
+* **apply:** snapshot actual write targets and scope secrets to tracked subtrees ([e39a9d6](https://github.com/Pranav-Karra-3301/tuck/commit/e39a9d6c8cdb68dcd45d03ff61ab811e3999393a))
+* **cli:** close non-interactive hang and credential-leak paths ([658a13a](https://github.com/Pranav-Karra-3301/tuck/commit/658a13a33f90dd93264120b28c8f4c2db457e198))
+* **jsonkey:** byte-preserving write-back and subtree-scoped diff/scan ([807062b](https://github.com/Pranav-Karra-3301/tuck/commit/807062bf65234bee2ada2af71b7204c53902f617))
+* **merge:** base-aware array union and prototype-safe object merge ([376c7fc](https://github.com/Pranav-Karra-3301/tuck/commit/376c7fcde86ad2064381f2bcd822d75c8b08476a))
+* **rules:** protect canonical sources and validate manifest repo roots ([61903d8](https://github.com/Pranav-Karra-3301/tuck/commit/61903d894520498dd1c62b664407e97386520207))
+* **secrets:** two-pass value encryption and per-salt key cache ([7fd4662](https://github.com/Pranav-Karra-3301/tuck/commit/7fd46623d297519ae6f700ab8d1a4ee7ad162a62))
+* **settings:** fail closed on backup failure and report mid-replay errors ([b1210c5](https://github.com/Pranav-Karra-3301/tuck/commit/b1210c56ad089aeb2fec0bfc8c9642d106f78c87))
+* **sync:** make JSON merge safe on non-interactive and jsonKey paths ([8581679](https://github.com/Pranav-Karra-3301/tuck/commit/858167910b9b83f6918123438bd1ee68d5ae6810))
+
+
+### Features
+
+* **cli:** agent-native audit — --non-interactive, ANSI suppression, contextual git errors ([#105](https://github.com/Pranav-Karra-3301/tuck/issues/105)) ([bcd2e5e](https://github.com/Pranav-Karra-3301/tuck/commit/bcd2e5e8c8f614597e51eeec579d9d9adc4b90f0)), closes [#52](https://github.com/Pranav-Karra-3301/tuck/issues/52)
+* JSON-path-scoped tracking (tuck add --key) ([#109](https://github.com/Pranav-Karra-3301/tuck/issues/109)) ([f5b2b13](https://github.com/Pranav-Karra-3301/tuck/commit/f5b2b13a2a2d3f52c8bb24b59d0574d81d8aa2ff))
+* **rules:** fan one canonical rules file out to per-tool variants ([#108](https://github.com/Pranav-Karra-3301/tuck/issues/108)) ([3937cc2](https://github.com/Pranav-Karra-3301/tuck/commit/3937cc2d42c0ee02efd5c9e61e3b128b75cf5d45))
+* safe first apply — diff summary, auto-snapshot, adopt-first init & undo breadcrumbs ([#111](https://github.com/Pranav-Karra-3301/tuck/issues/111)) ([6674adf](https://github.com/Pranav-Karra-3301/tuck/commit/6674adf32f6fd498c5e8df9dec7d3401c9e6d01c))
+* **secrets:** fix-instead-of-block remediation with a centralized allowlist ([#112](https://github.com/Pranav-Karra-3301/tuck/issues/112)) ([c7f6e93](https://github.com/Pranav-Karra-3301/tuck/commit/c7f6e93d3732842611723f8269ae8ac4f900107f))
+* **secrets:** read-only commands never prompt (status/diff/list) ([#116](https://github.com/Pranav-Karra-3301/tuck/issues/116)) ([5dd4885](https://github.com/Pranav-Karra-3301/tuck/commit/5dd48857d94d06097e4b307d9d6928bce5f4a2f1))
+* **secrets:** value-level (SOPS-style) encryption ([#115](https://github.com/Pranav-Karra-3301/tuck/issues/115)) ([54dd472](https://github.com/Pranav-Karra-3301/tuck/commit/54dd472397ac18a373fdb6d029805263df481c15))
+* **settings:** versioned OS settings (macOS defaults) ([#113](https://github.com/Pranav-Karra-3301/tuck/issues/113)) ([d6159cf](https://github.com/Pranav-Karra-3301/tuck/commit/d6159cfdf57900b30d03a5a89f95999f857cd9f0))
+* structured JSON three-way smart merge for agent-mutated configs ([#110](https://github.com/Pranav-Karra-3301/tuck/issues/110)) ([325dd69](https://github.com/Pranav-Karra-3301/tuck/commit/325dd69c33540ee4d5c10c2bee40de02678de56d))
+
 <img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
 # [1.11.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.10.0...v1.11.0) (2026-07-09)
