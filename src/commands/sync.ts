@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { join, basename } from 'path';
-import { realpath } from 'fs/promises';
+import { realpath, readFile, writeFile } from 'fs/promises';
+import { createHash } from 'node:crypto';
 import { prompts, logger, withSpinner, colors as c } from '../ui/index.js';
 import {
   getTuckDir,
@@ -45,6 +46,7 @@ import { checkLocalMode } from '../lib/remoteChecks.js';
 import { loadConfig } from '../lib/config.js';
 import { assertRemoteAvailable } from '../lib/providers/index.js';
 import { runPreSyncHook, runPostSyncHook, type HookOptions } from '../lib/hooks.js';
+import { extractSubtree, hasSubtree } from '../lib/jsonKey.js';
 import { NotInitializedError, SecretsDetectedError, MergeConflictsError } from '../errors.js';
 import { setJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
 import type { SyncOptions, FileChange } from '../types.js';
@@ -145,6 +147,30 @@ const detectChanges = async (tuckDir: string): Promise<TrackedFileChange[]> => {
       continue;
     }
 
+    // JSON-key files: compare only the SUBTREE extracted from the live file to
+    // the recorded checksum (which is of the repo's canonical subtree). A raw
+    // whole-file checksum would always differ — the live file also holds tokens/
+    // caches we deliberately never track — and would make sync capture the whole
+    // file back into the repo, leaking those keys. If the key was removed from
+    // the live file, SKIP (never wipe the tracked subtree from the repo).
+    if (file.jsonKey) {
+      try {
+        const content = await readFile(sourcePath, 'utf8');
+        if (!hasSubtree(content, file.jsonKey)) {
+          continue;
+        }
+        const subtree = extractSubtree(content, file.jsonKey);
+        const subtreeChecksum = createHash('sha256').update(Buffer.from(subtree, 'utf8')).digest('hex');
+        if (subtreeChecksum !== file.checksum) {
+          changes.push({ path: file.source, status: 'modified', source: file.source, destination: file.destination, id });
+        }
+      } catch {
+        // Live file unreadable / not valid JSON — skip rather than capture a
+        // malformed whole file into the repo.
+      }
+      continue;
+    }
+
     // Check if file has changed compared to stored checksum
     try {
       const sourceChecksum = await getFileChecksum(sourcePath);
@@ -186,6 +212,12 @@ const resolveModifiedChangeTargets = async (
   for (const change of changes) {
     if (change.status !== 'modified') continue;
     const entry = Object.values(trackedFiles).find((f) => f.source === change.source);
+    // JSON-key files are deliberately EXCLUDED from the whole-file secret scan:
+    // the live file (e.g. ~/.claude.json) mixes the tracked subtree with OAuth
+    // tokens and history that tuck never captures, so scanning the whole file
+    // would false-positive on secrets that can never reach the repo. Their
+    // subtree is secret-scanned at `tuck add` time instead.
+    if (entry?.jsonKey) continue;
     const live = entry ? await resolveLiveTarget(entry) : expandPath(change.source);
     if (live !== null) targets.push({ change, live });
   }
@@ -499,6 +531,25 @@ const syncFiles = async (
     validatePathWithinRoot(destPath, tuckDir, 'sync destination');
 
     if (change.status === 'modified') {
+      // JSON-key files re-extract ONLY the tracked subtree from the live file
+      // into the repo copy — never the whole file — so machine state/tokens that
+      // live alongside the tracked key are never captured or committed.
+      if (trackedEntry?.jsonKey) {
+        await withSpinner(`Syncing ${change.path}...`, async () => {
+          const content = await readFile(sourcePath, 'utf8');
+          const subtree = extractSubtree(content, trackedEntry.jsonKey as string);
+          await writeFile(destPath, subtree);
+          const newChecksum = await getFileChecksum(destPath);
+          if (fileId) {
+            await updateFileInManifest(tuckDir, fileId, {
+              checksum: newChecksum,
+              modified: new Date().toISOString(),
+            });
+          }
+        });
+        result.modified.push(basename(change.path) || change.path);
+        continue;
+      }
       await withSpinner(`Syncing ${change.path}...`, async () => {
         // Symlink tracking can make source and destination the same underlying file.
         // Skip copying in that case to avoid same-file copy errors.

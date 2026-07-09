@@ -21,6 +21,7 @@ import { getFileChecksum } from './files.js';
 import { getAllTrackedFiles } from './manifest.js';
 import { resolveLiveTarget } from './repoScope.js';
 import { materializeForLive, keystorePassphrase, buildMaterializeCtx } from './materialize.js';
+import { extractSubtree, hasSubtree } from './jsonKey.js';
 import type { TemplateContext } from './template.js';
 import type { TrackedFileOutput } from '../schemas/manifest.schema.js';
 
@@ -130,6 +131,36 @@ export const computeFileState = async (
   if (sourceAbs === null) {
     // Repo-scoped file whose repo is not bound on this machine — cannot compare.
     return entry('unknown-repo', null, repoChecksum);
+  }
+
+  // JSON-key files: the tracked unit is the SUBTREE at `jsonKey`, not the whole
+  // live file. Compare the checksum of the subtree extracted from the LIVE file
+  // against the repo copy (which stores exactly that canonical subtree) — so
+  // machine-managed keys elsewhere in the live file never register as drift.
+  if (file.jsonKey) {
+    const liveExists = await pathExists(sourceAbs);
+    if (!liveExists && repoChecksum === null) return entry('missing-both', null, repoChecksum);
+    if (!liveExists) return entry('missing-live', null, repoChecksum);
+    if (repoChecksum === null) return entry('missing-repo', null, repoChecksum);
+    try {
+      const liveContent = await readFile(sourceAbs, 'utf8');
+      // The tracked key is absent from the live file: the subtree is effectively
+      // missing on this machine (apply would re-add it).
+      if (!hasSubtree(liveContent, file.jsonKey)) return entry('missing-live', null, repoChecksum);
+      const liveSub = extractSubtree(liveContent, file.jsonKey);
+      const liveChecksum = createHash('sha256').update(Buffer.from(liveSub, 'utf8')).digest('hex');
+      const state: FileState =
+        liveChecksum !== repoChecksum
+          ? 'drift-local'
+          : repoChecksum !== file.checksum
+            ? 'drift-repo'
+            : 'ok';
+      return entry(state, liveChecksum, repoChecksum);
+    } catch {
+      // Live file is unreadable / not valid JSON: surface as local drift so the
+      // user investigates, rather than crashing status/verify.
+      return entry('drift-local', null, repoChecksum);
+    }
   }
 
   // Materialized files (template/encrypted): the LIVE form is materialize(repo),

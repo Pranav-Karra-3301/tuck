@@ -25,6 +25,7 @@ import { loadConfig } from '../lib/config.js';
 import { copyFileOrDir, createSymlink, setFilePermissions } from '../lib/files.js';
 import { ensureDir } from 'fs-extra';
 import { materializeForLive, keystorePassphrase, buildMaterializeCtx } from '../lib/materialize.js';
+import { mergeSubtreeIntoLive } from '../lib/jsonKey.js';
 import { createBackup } from '../lib/backup.js';
 import { runPreRestoreHook, runPostRestoreHook, type HookOptions } from '../lib/hooks.js';
 import { NotInitializedError, FileNotFoundError, TuckError, MaterializeError } from '../errors.js';
@@ -104,6 +105,11 @@ interface FileToRestore {
   template: boolean;
   /** Decrypt the repo source (TCKE1) before writing to the live system. */
   encrypted: boolean;
+  /**
+   * Dot-delimited JSON key path when the repo copy is only a subtree. On restore
+   * it is deep-merged back into the live file rather than overwriting it.
+   */
+  jsonKey?: string;
 }
 
 interface RestoreResult {
@@ -157,6 +163,7 @@ const prepareFilesToRestore = async (
         permissions: tracked.file.permissions,
         template: tracked.file.template,
         encrypted: tracked.file.encrypted,
+        jsonKey: tracked.file.jsonKey,
       });
     }
   } else {
@@ -182,6 +189,7 @@ const prepareFilesToRestore = async (
         permissions: file.permissions,
         template: file.template,
         encrypted: file.encrypted,
+        jsonKey: file.jsonKey,
       });
     }
   }
@@ -296,7 +304,9 @@ const restoreFilesInternal = async (
     // place, never SYMLINKED — a symlink would expose raw TCKE1 ciphertext or the
     // {{ }} template source at the live path. Force copy+materialize for them even
     // when the symlink strategy is otherwise in effect (--symlink / config).
-    const linkThisFile = useSymlink && !file.template && !file.encrypted;
+    // JSON-key files are ALSO copy/merge-only: symlinking would expose the
+    // subtree AS the whole live file and drop every other key.
+    const linkThisFile = useSymlink && !file.template && !file.encrypted && !file.jsonKey;
 
     // Pre-materialize template/encrypted files (decrypt/render) BEFORE any write,
     // so a failed / absent-passphrase decryption skips this file and never ships
@@ -322,7 +332,16 @@ const restoreFilesInternal = async (
 
     // Restore file
     await withSpinner(`Restoring ${file.source}...`, async () => {
-      if (linkThisFile) {
+      if (file.jsonKey) {
+        // Deep-merge the tracked subtree back into the live file, preserving
+        // every other key (tokens, caches, machine state). A backup was already
+        // taken above when the live file existed.
+        const repoSubtree = await readFile(file.destination, 'utf8');
+        const liveContent = (await pathExists(targetPath)) ? await readFile(targetPath, 'utf8') : null;
+        const merged = mergeSubtreeIntoLive(liveContent, repoSubtree, file.jsonKey);
+        await ensureDir(dirname(targetPath));
+        await writeFile(targetPath, merged, 'utf-8');
+      } else if (linkThisFile) {
         await createSymlink(file.destination, targetPath, { overwrite: true });
       } else if (materialized !== null) {
         // Decrypted/rendered content written directly (not a raw repo copy).

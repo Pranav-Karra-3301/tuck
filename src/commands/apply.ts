@@ -35,6 +35,7 @@ import { RepositoryNotFoundError, MaterializeError } from '../errors.js';
 import { getProvider, type ProviderMode, type RemoteConfig as ProviderRemoteConfig } from '../lib/providers/index.js';
 import { setJsonMode, isJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
 import { materializeForLive, keystorePassphrase, buildMaterializeCtx } from '../lib/materialize.js';
+import { mergeSubtreeIntoLive } from '../lib/jsonKey.js';
 
 // Track if Windows permission warning has been shown this session
 let windowsPermissionWarningShown = false;
@@ -322,6 +323,11 @@ export interface ApplyFile {
   template: boolean;
   /** Decrypt the repo source (TCKE1) before writing to the live system. */
   encrypted: boolean;
+  /**
+   * Dot-delimited JSON key path when the repo copy is only a subtree. On apply
+   * it is deep-merged back into the live file, preserving all other keys.
+   */
+  jsonKey?: string;
 }
 
 interface ApplyResult {
@@ -747,6 +753,7 @@ export const prepareFilesToApply = async (
       permissions: file.permissions,
       template: file.template,
       encrypted: file.encrypted,
+      jsonKey: file.jsonKey,
     });
   }
 
@@ -795,6 +802,48 @@ const resolveFileSecrets = async (
 };
 
 /**
+ * Apply a JSON-key entry: deep-merge the repo's stored subtree back into the
+ * live file, leaving every other key untouched. Used by BOTH the merge and
+ * replace strategies — a JSON subtree is never allowed to clobber the whole
+ * file, so "replace" still means "replace only the tracked key". Secret
+ * placeholders inside the subtree are resolved on the merged content, exactly
+ * like whole-file entries.
+ */
+const applyJsonKeyEntry = async (
+  file: ApplyFile,
+  rawBytes: Buffer,
+  tuckDir: string,
+  dryRun: boolean,
+  result: ApplyResult
+): Promise<void> => {
+  const repoSubtree = rawBytes.toString('utf8');
+  const exists = await pathExists(file.destination);
+  const liveContent = exists ? await readFile(file.destination, 'utf8') : null;
+  let merged = mergeSubtreeIntoLive(liveContent, repoSubtree, file.jsonKey as string);
+
+  const secretsResult = await resolveFileSecrets(merged, tuckDir);
+  merged = secretsResult.content;
+  if (secretsResult.unresolved.length > 0) {
+    result.filesWithPlaceholders.push({
+      path: collapsePath(file.destination),
+      placeholders: secretsResult.unresolved,
+      writeTarget: resolveWriteTarget(file.destination, file.repoTarget),
+    });
+  }
+
+  if (dryRun) {
+    logger.file(exists ? 'modify' : 'add', `${collapsePath(file.destination)} (--key ${file.jsonKey})`);
+    return;
+  }
+
+  const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
+  await prepareWriteTarget(writeTarget);
+  await writeFile(writeTarget, merged, 'utf-8');
+  await applyRecordedPermissions(writeTarget, file.permissions);
+  logger.file(exists ? 'modify' : 'add', `${collapsePath(file.destination)} (--key ${file.jsonKey})`);
+};
+
+/**
  * Apply files with merge strategy
  */
 const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<ApplyResult> => {
@@ -818,6 +867,14 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
       continue;
     }
     const rawBytes = await readFile(file.repoPath);
+
+    // JSON-key entries deep-merge their stored subtree into the live file rather
+    // than replacing it (never routed through materialize/smart-merge/binary).
+    if (file.jsonKey) {
+      await applyJsonKeyEntry(file, rawBytes, tuckDir, dryRun, result);
+      result.appliedCount++;
+      continue;
+    }
 
     // Binary (non-UTF-8) files that are neither templated nor encrypted must be
     // copied byte-for-byte — the text pipeline below would UTF-8 round-trip them
@@ -931,6 +988,14 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
       continue;
     }
     const rawBytes = await readFile(file.repoPath);
+
+    // JSON-key entries deep-merge their stored subtree into the live file rather
+    // than replacing it (never routed through materialize/smart-merge/binary).
+    if (file.jsonKey) {
+      await applyJsonKeyEntry(file, rawBytes, tuckDir, dryRun, result);
+      result.appliedCount++;
+      continue;
+    }
 
     // Binary (non-UTF-8) files that are neither templated nor encrypted must be
     // copied byte-for-byte — the text pipeline below would UTF-8 round-trip them

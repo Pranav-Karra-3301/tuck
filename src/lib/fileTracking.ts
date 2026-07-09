@@ -22,6 +22,7 @@ import { encryptFileContent } from './crypto/fileEncryption.js';
 import { keystorePassphrase } from './materialize.js';
 import { EncryptionError } from '../errors.js';
 import { isJsonMode } from './jsonOutput.js';
+import { extractSubtree } from './jsonKey.js';
 
 export interface FileToTrack {
   path: string;
@@ -55,6 +56,12 @@ export interface FileToTrack {
   source?: string;
   /** Relative manifest destination to store verbatim (repo scope only). */
   destination?: string;
+  /**
+   * Dot-delimited JSON key path when tracking only a subtree of a JSON file
+   * (e.g. `mcpServers`). The repo copy holds the extracted subtree — NOT the
+   * whole file — and apply/restore deep-merge it back into the live file.
+   */
+  jsonKey?: string;
 }
 
 export interface FileTrackingOptions {
@@ -170,6 +177,18 @@ export const trackFilesWithProgress = async (
       'The symlink strategy cannot be combined with --encrypt/--template: these files are copied (and decrypted/rendered on apply), not linked.'
     );
   }
+
+  // JSON-key files store only an extracted subtree in the repo and are
+  // deep-merged back on apply/restore — they can never be symlinked (a symlink
+  // would expose the subtree AS the whole live file) or encrypted (the repo copy
+  // must stay plain JSON for merging). Reject the combinations up front.
+  const hasJsonKey = files.some((f) => f.jsonKey);
+  if (hasJsonKey && strategy === 'symlink') {
+    throw new Error('The symlink strategy cannot be combined with --key: JSON-subtree files are copied and deep-merged, not linked.');
+  }
+  if (hasJsonKey && encrypt) {
+    throw new Error('--encrypt cannot be combined with --key: the repo copy of a JSON subtree must stay plain JSON.');
+  }
   const total = files.length;
   const errors: Array<{ path: string; error: Error }> = [];
   const sensitiveFiles: string[] = [];
@@ -279,6 +298,12 @@ export const trackFilesWithProgress = async (
           // caller records it and the user is never told this silently "worked".
           throw symlinkError;
         }
+      } else if (file.jsonKey) {
+        // JSON-key: store ONLY the extracted subtree in the repo (never the whole
+        // file). extractSubtree canonicalizes (sorted keys) so the repo copy —
+        // and its checksum — is stable regardless of the live file's ordering.
+        const content = await readFile(expandedPath, 'utf8');
+        await writeFile(destination, extractSubtree(content, file.jsonKey));
       } else if (encrypt) {
         // Encrypt at rest: store TCKE1 ciphertext in the repo (decrypted on apply).
         const passphrase = await keystorePassphrase();
@@ -318,8 +343,13 @@ export const trackFilesWithProgress = async (
         added: now,
         modified: now,
         checksum,
-        ...statCache,
+        // The recorded checksum for a JSON-key file is of the extracted SUBTREE,
+        // not the whole live file, so the live-file mtime+size short-circuit must
+        // NOT be recorded (it would let a stale whole-file stat mask real subtree
+        // drift). Whole-file entries keep the git/make short-circuit cache.
+        ...(file.jsonKey ? {} : statCache),
         bundle: file.bundle ?? 'default',
+        ...(file.jsonKey ? { jsonKey: file.jsonKey } : {}),
         ...(isRepo
           ? {
               scope: 'repo' as const,
