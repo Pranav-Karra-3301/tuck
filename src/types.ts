@@ -147,6 +147,12 @@ export interface AddOptions extends CommonOptions {
   repo?: string | boolean;
   /** Explicit repoKey override (advanced; default derives from the remote). */
   repoKey?: string;
+  /**
+   * Track a curated AI-agent config preset instead of explicit paths, e.g.
+   * `--preset claude-code`. Enumerates the agent's safe-to-track allowlist and
+   * hard-excludes local/credential/history files.
+   */
+  preset?: string;
 }
 
 export interface RemoveOptions extends CommonOptions {

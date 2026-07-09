@@ -21,6 +21,7 @@ import { getFileChecksum } from './files.js';
 import { getAllTrackedFiles } from './manifest.js';
 import { resolveLiveTarget } from './repoScope.js';
 import { materializeForLive, keystorePassphrase, buildMaterializeCtx } from './materialize.js';
+import { getStoredValueMap, getRedactedChecksum } from './secrets/redactor.js';
 import type { TemplateContext } from './template.js';
 import type { TrackedFileOutput } from '../schemas/manifest.schema.js';
 
@@ -105,7 +106,11 @@ export const computeFileState = async (
   tuckDir: string,
   id: string,
   file: TrackedFileOutput,
-  ctx?: TemplateContext
+  ctx?: TemplateContext,
+  // Stored-secret value map (issue #100). Threaded from computeStateModel so it
+  // is built ONCE per run; single-file callers may omit it and it is loaded
+  // lazily (only when a plain entry is classified drift-local).
+  valueMap?: Map<string, string>
 ): Promise<FileStateEntry> => {
   const repoAbs = join(tuckDir, file.destination);
   const repoChecksum = (await pathExists(repoAbs)) ? await getFileChecksum(repoAbs) : null;
@@ -167,7 +172,25 @@ export const computeFileState = async (
   }
 
   const liveChecksum = await computeLiveChecksum(sourceAbs, file);
-  return entry(classifyFileState(liveChecksum, repoChecksum, file.checksum), liveChecksum, repoChecksum);
+  let state = classifyFileState(liveChecksum, repoChecksum, file.checksum);
+
+  // Placeholder-aware reclassification (issue #100): a plain file whose repo copy
+  // holds redacted secrets ALWAYS reads live≠repo (drift-local) because the live
+  // file keeps its real secrets. Re-hash the live file AS IF its known secrets
+  // were redacted; if that matches the repo copy, the only difference is the
+  // placeholder substitution — reclassify as `ok`, or `drift-repo` when the repo
+  // copy itself has drifted from the manifest.
+  if (state === 'drift-local' && liveChecksum !== null && repoChecksum !== null) {
+    const map = valueMap ?? (await getStoredValueMap(tuckDir));
+    if (map.size > 0) {
+      const redactedLive = await getRedactedChecksum(sourceAbs, map);
+      if (redactedLive === repoChecksum) {
+        state = repoChecksum !== file.checksum ? 'drift-repo' : 'ok';
+      }
+    }
+  }
+
+  return entry(state, liveChecksum, repoChecksum);
 };
 
 /** Compute the state of every tracked file in the manifest. */
@@ -176,8 +199,11 @@ export const computeStateModel = async (tuckDir: string): Promise<FileStateEntry
   // Build the template context ONCE (built-in vars + config.templates.variables)
   // and reuse it across every materialized-file comparison.
   const ctx = await buildMaterializeCtx(tuckDir);
+  // Build the stored-secret value map ONCE and thread it through every file's
+  // placeholder-aware comparison (issue #100).
+  const valueMap = await getStoredValueMap(tuckDir);
   return Promise.all(
-    Object.entries(files).map(([id, file]) => computeFileState(tuckDir, id, file, ctx))
+    Object.entries(files).map(([id, file]) => computeFileState(tuckDir, id, file, ctx, valueMap))
   );
 };
 

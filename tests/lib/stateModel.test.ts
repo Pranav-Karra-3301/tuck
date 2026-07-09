@@ -187,6 +187,65 @@ describe('computeStateModel', () => {
     expect(model[0].state).toBe('drift-local');
   });
 
+  // ── Placeholder-aware drift detection (issue #100) ──────────────────────
+  // tuck redacts ONLY the repo copy: the live file keeps its real secret, the
+  // repo copy holds {{PLACEHOLDER}}, and the manifest checksum is of the redacted
+  // repo content. Raw live vs repo therefore ALWAYS differs and would report
+  // perpetual `drift-local`. The state model must checksum the live file AS IF
+  // its known secrets were redacted before deciding.
+  describe('secret-placeholder awareness (issue #100)', () => {
+    const SECRET = 'S3CRET-abc-123';
+
+    it('reports ok when the live file differs from the repo copy ONLY by redaction', async () => {
+      const { setSecret } = await import('../../src/lib/secrets/store.js');
+      await setSecret(TUCK, 'TOK', SECRET);
+      vol.writeFileSync('/test-home/.zshrc', `token=${SECRET}\n`);
+      vol.writeFileSync(`${TUCK}/files/shell/zshrc`, 'token={{TOK}}\n');
+      const { getFileChecksum } = await import('../../src/lib/files.js');
+      const repoChecksum = await getFileChecksum(`${TUCK}/files/shell/zshrc`);
+      writeManifest({
+        source: '~/.zshrc', destination: 'files/shell/zshrc', category: 'shell',
+        strategy: 'copy', checksum: repoChecksum, added: ts, modified: ts,
+      });
+
+      const model = await computeStateModel(TUCK);
+      expect(model[0].state).toBe('ok');
+    });
+
+    it('still reports drift-local for a real non-secret edit to the live file', async () => {
+      const { setSecret } = await import('../../src/lib/secrets/store.js');
+      await setSecret(TUCK, 'TOK', SECRET);
+      // Live has the secret AND an extra edited line — a genuine change.
+      vol.writeFileSync('/test-home/.zshrc', `token=${SECRET}\nexport EXTRA=1\n`);
+      vol.writeFileSync(`${TUCK}/files/shell/zshrc`, 'token={{TOK}}\n');
+      const { getFileChecksum } = await import('../../src/lib/files.js');
+      const repoChecksum = await getFileChecksum(`${TUCK}/files/shell/zshrc`);
+      writeManifest({
+        source: '~/.zshrc', destination: 'files/shell/zshrc', category: 'shell',
+        strategy: 'copy', checksum: repoChecksum, added: ts, modified: ts,
+      });
+
+      const model = await computeStateModel(TUCK);
+      expect(model[0].state).toBe('drift-local');
+    });
+
+    it('reclassifies to drift-repo when the repo copy was edited out-of-band', async () => {
+      const { setSecret } = await import('../../src/lib/secrets/store.js');
+      await setSecret(TUCK, 'TOK', SECRET);
+      vol.writeFileSync('/test-home/.zshrc', `token=${SECRET}\n`);
+      // Repo copy matches the redacted live file, but the manifest holds a STALE
+      // checksum (repo was changed after it was recorded) → restore territory.
+      vol.writeFileSync(`${TUCK}/files/shell/zshrc`, 'token={{TOK}}\n');
+      writeManifest({
+        source: '~/.zshrc', destination: 'files/shell/zshrc', category: 'shell',
+        strategy: 'copy', checksum: 'stale-manifest-checksum', added: ts, modified: ts,
+      });
+
+      const model = await computeStateModel(TUCK);
+      expect(model[0].state).toBe('drift-repo');
+    });
+  });
+
   it('reports unknown-repo for a repo-scoped file whose repo is not bound here', async () => {
     vol.mkdirSync(`${TUCK}/files/repos/proj-xyz`, { recursive: true });
     vol.writeFileSync(`${TUCK}/files/repos/proj-xyz/a.txt`, 'x');

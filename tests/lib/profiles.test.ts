@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { vol } from 'memfs';
 import { writeFile, mkdir, readFile } from 'fs/promises';
-import { TEST_TUCK_DIR, TEST_HOME } from '../setup.js';
+import { join } from 'path';
+import { TEST_TUCK_DIR, TEST_HOME, TEST_HOME_NATIVE } from '../setup.js';
 import { loadManifest, clearManifestCache } from '../../src/lib/manifest.js';
 import {
   isValidProfileName,
@@ -210,7 +211,7 @@ describe('machine-local binding', () => {
 
     // The binding file lives under the off-repo state dir, not the tuck repo.
     expect(getProfileBindingPath()).not.toContain(TEST_TUCK_DIR);
-    expect(getProfileBindingPath().startsWith(TEST_HOME)).toBe(true);
+    expect(getProfileBindingPath().startsWith(TEST_HOME_NATIVE)).toBe(true);
 
     const removed = await unbindProfile();
     expect(removed).toBe(true);
@@ -253,7 +254,7 @@ describe('cross-profile leak detection', () => {
     expect(leaks).toHaveLength(1);
     expect(leaks[0].id).toBe('workgit');
     expect(leaks[0].tags).toEqual(['work']);
-    expect(leaks[0].livePath).toBe(`${TEST_HOME}/.work-gitconfig`);
+    expect(leaks[0].livePath).toBe(join(TEST_HOME_NATIVE, '.work-gitconfig'));
   });
 
   it('does not flag a foreign file that is NOT on disk (latent, not leaked)', async () => {

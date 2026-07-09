@@ -39,6 +39,8 @@ const mkMatch = (value: string, placeholder: string, line = 1): SecretMatch => (
   column: 0,
   context: '',
   placeholder,
+  start: 0,
+  end: value.length,
 });
 
 describe('placeholder helpers', () => {
