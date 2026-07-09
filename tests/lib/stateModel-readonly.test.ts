@@ -112,4 +112,25 @@ describe('stateModel read-only guarantee', () => {
     const edited = await computeFileState(TUCK, 'f1', file);
     expect(edited.state).toBe('drift-local');
   });
+  it('unknown-fingerprint branch still reports drift-repo (free repo-vs-manifest compare)', async () => {
+    const { file } = await setupEncrypted();
+    // Manifest pins a DIFFERENT checksum than the repo copy (e.g. a git pull
+    // advanced the repo file). No cache entry exists (cold cache), so the
+    // fingerprint compare is 'unknown' — the repo drift must still surface.
+    const stale = { ...file, checksum: '0'.repeat(64) };
+    enterReadOnlyMode();
+    const state = await computeFileState(TUCK, 'secretrc', stale);
+    expect(state.state).toBe('drift-repo');
+  });
+
+  it('degrades (never crashes) when the live path is a directory in read-only mode', async () => {
+    const { file } = await setupEncrypted();
+    vol.rmSync(`${HOME}/.secretrc`);
+    vol.mkdirSync(`${HOME}/.secretrc`);
+    enterReadOnlyMode();
+    // EISDIR on the live read must not escape as UNEXPECTED_ERROR.
+    const state = await computeFileState(TUCK, 'secretrc', file);
+    expect(['ok', 'drift-local', 'modified']).toContain(state.state);
+  });
 });
+

@@ -155,15 +155,19 @@ export const computeFileState = async (
     // touch no secret and are cheap to render, so they fall through to the
     // materialize path below even in read-only mode.
     if (isReadOnlyMode() && file.encrypted) {
-      const liveBytes = await readFile(sourceAbs);
-      const cmp = await compareLiveToCache(id, liveBytes, repoChecksum);
-      if (cmp === 'mismatch') return entry('drift-local', liveChecksum, repoChecksum);
-      if (cmp === 'match') {
+      try {
+        const liveBytes = await readFile(sourceAbs);
+        const cmp = await compareLiveToCache(id, liveBytes, repoChecksum);
+        if (cmp === 'mismatch') return entry('drift-local', liveChecksum, repoChecksum);
+        // The repo-vs-manifest comparison is free (no decryption) — apply it on
+        // BOTH the 'match' and 'unknown' branches so a pulled repo change is
+        // still reported when the live fingerprint pin has been invalidated.
+        return entry(repoChecksum !== file.checksum ? 'drift-repo' : 'ok', liveChecksum, repoChecksum);
+      } catch {
+        // Unreadable live path (EISDIR, permissions): degrade to the same
+        // ok-by-presence fallback as the materialize path, never crash status.
         return entry(repoChecksum !== file.checksum ? 'drift-repo' : 'ok', liveChecksum, repoChecksum);
       }
-      // 'unknown': no usable fingerprint yet — degrade to ok-by-presence. A full
-      // command (`tuck verify`/`tuck apply`) warms the cache for next time.
-      return entry('ok', liveChecksum, repoChecksum);
     }
 
     try {

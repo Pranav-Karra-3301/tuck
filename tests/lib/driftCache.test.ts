@@ -97,6 +97,30 @@ describe('driftCache', () => {
     });
   });
 
+  describe('concurrency (single-flight key, serialized writes)', () => {
+    it('concurrent first-warm getDriftKey(true) callers all receive the SAME key', async () => {
+      const [a, b, ...rest] = await Promise.all(
+        Array.from({ length: 6 }, () => getDriftKey(true))
+      );
+      expect(a).not.toBeNull();
+      for (const k of [b, ...rest]) {
+        expect(k?.equals(a as Buffer)).toBe(true);
+      }
+    });
+
+    it('concurrent recordDriftEntry calls never lose entries', async () => {
+      await Promise.all(
+        Array.from({ length: 8 }, (_, i) =>
+          recordDriftEntry(`file-${i}`, `plaintext-${i}`, `repo-${i}`)
+        )
+      );
+      const cache = await readDriftCache();
+      for (let i = 0; i < 8; i++) {
+        expect(cache.entries[`file-${i}`]).toBeDefined();
+      }
+    });
+  });
+
   describe('readDriftCache', () => {
     it('returns an empty cache when none exists', async () => {
       const cache = await readDriftCache();

@@ -93,11 +93,64 @@ export const getDriftKey = async (create = false): Promise<Buffer | null> => {
     return null;
   }
 
-  const key = randomBytes(32);
-  await writeFileSecure(keyPath, key.toString('base64'));
-  keyCache = key;
-  return key;
+  // Single-flight: concurrent first-warm callers (computeStateModel records
+  // entries via Promise.all) must all receive the SAME key — two generated
+  // keys would leave some entries HMAC'd under a lost key, which later compare
+  // as 'mismatch' and emit the false drift signal this module promises never
+  // to produce.
+  if (!keyCreationInFlight) {
+    keyCreationInFlight = (async (): Promise<Buffer | null> => {
+      const freshKey = randomBytes(32);
+      try {
+        await mkdir(dirname(keyPath), { recursive: true });
+        // 'wx' (O_EXCL): lose the cross-process race gracefully — whoever
+        // creates the file wins, everyone else re-reads it.
+        await writeFile(keyPath, freshKey.toString('base64'), { mode: 0o600, flag: 'wx' });
+        // A brand-new key invalidates every existing entry (they were HMAC'd
+        // under a key that no longer exists — e.g. the corrupt-key path).
+        await clearDriftEntries();
+        keyCache = freshKey;
+        return freshKey;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+          try {
+            const raw = (await readFile(keyPath, 'utf-8')).trim();
+            const buf = Buffer.from(raw, 'base64');
+            if (buf.length >= 32) {
+              keyCache = buf;
+              return buf;
+            }
+          } catch {
+            // fall through
+          }
+        }
+        keyCache = null;
+        return null;
+      } finally {
+        keyCreationInFlight = null;
+      }
+    })();
+  }
+  return keyCreationInFlight;
 };
+
+/** In-flight key generation, shared by concurrent callers (single-flight). */
+let keyCreationInFlight: Promise<Buffer | null> | null = null;
+
+/** Drop every cache entry (the key changed; old HMACs are meaningless). */
+const clearDriftEntries = async (): Promise<void> => {
+  try {
+    await writeFileSecure(getDriftCachePath(), JSON.stringify(emptyCache(), null, 2));
+  } catch {
+    // Best-effort.
+  }
+};
+
+/**
+ * Serialize read-modify-write cycles on the cache file: concurrent
+ * recordDriftEntry calls would otherwise lose each other's entries.
+ */
+let cacheWriteQueue: Promise<void> = Promise.resolve();
 
 /** Keyed HMAC-SHA256 (hex) of `plaintext` under the given key. */
 export const computePlaintextHmac = (plaintext: Buffer | string, key: Buffer): string =>
@@ -144,13 +197,20 @@ export const recordDriftEntry = async (
   try {
     const key = await getDriftKey(true);
     if (!key) return;
-    const cache = await readDriftCache();
-    cache.entries[fileId] = {
-      plaintextHmac: computePlaintextHmac(plaintext, key),
-      repoChecksum,
-      updated: new Date().toISOString(),
-    };
-    await writeFileSecure(getDriftCachePath(), JSON.stringify(cache, null, 2));
+    const hmac = computePlaintextHmac(plaintext, key);
+    // Queue the read-modify-write so concurrent recorders (Promise.all in
+    // computeStateModel) never clobber each other's entries.
+    const task = cacheWriteQueue.then(async () => {
+      const cache = await readDriftCache();
+      cache.entries[fileId] = {
+        plaintextHmac: hmac,
+        repoChecksum,
+        updated: new Date().toISOString(),
+      };
+      await writeFileSecure(getDriftCachePath(), JSON.stringify(cache, null, 2));
+    });
+    cacheWriteQueue = task.catch(() => undefined);
+    await task;
   } catch {
     // Best-effort cache; never surface to the caller.
   }
@@ -186,4 +246,5 @@ export const compareLiveToCache = async (
 /** Reset the in-process key cache. For tests. */
 export const resetDriftKeyCache = (): void => {
   keyCache = undefined;
+  keyCreationInFlight = null;
 };
