@@ -46,8 +46,27 @@ export const trackedFileSchema = z
     repoKey: z.string().optional(),
     /** POSIX path of the file relative to the repo root. */
     repoRelative: z.string().optional(),
+    /**
+     * JSON-key-scoped tracking. ABSENT (undefined) means the whole file is
+     * tracked, exactly as before (this field is `.optional()`, never
+     * `.default()`, so legacy manifests parse byte-identical). When present it
+     * is a dot-delimited key path (e.g. `mcpServers`): the repo copy holds ONLY
+     * that JSON subtree, and on apply/restore it is deep-merged back into the
+     * live file, leaving every other key untouched. Mutually exclusive with
+     * template/encrypted (the repo copy is a plain JSON subtree, not a
+     * rendered/ciphertext artifact).
+     */
+    jsonKey: z.string().optional(),
   })
   .superRefine((file, ctx) => {
+    if (file.jsonKey !== undefined) {
+      if (file.jsonKey.trim() === '') {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['jsonKey'], message: 'jsonKey must be a non-empty key path' });
+      }
+      if (file.template || file.encrypted) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['jsonKey'], message: 'jsonKey cannot be combined with template or encrypted' });
+      }
+    }
     if (file.scope === 'repo') {
       if (!file.repoKey) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['repoKey'], message: 'repoKey is required for repo-scoped files' });
