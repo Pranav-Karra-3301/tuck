@@ -207,18 +207,36 @@ export interface TrackOptions {
   template?: boolean;
   /** Extra template variables. */
   variables?: Record<string, string>;
+  /**
+   * Consent gate for removing a variant orphaned by dropping its tool on
+   * re-track. Return true to delete. Omitted → non-interactive: orphans are left
+   * in place unless {@link TrackOptions.force} is set.
+   */
+  confirmRemove?: (liveTarget: string) => Promise<boolean>;
+  /** Remove orphaned variants without confirming (non-interactive `--yes`). */
+  force?: boolean;
+}
+
+export interface TrackResult {
+  id: string;
+  set: RuleSet;
+  /** Live targets removed because their tool was dropped on re-track. */
+  orphansRemoved: string[];
+  /** Live targets left in place (foreign/hand-edited or consent declined). */
+  orphansSkipped: string[];
 }
 
 /**
  * Track (or update) a canonical rules file. Records the set in rules.json but
  * writes NO tool variants — that is `tuck rules apply`, which has its own
- * consent + snapshot flow.
+ * consent + snapshot flow. Re-tracking that DROPS a tool cleans up that tool's
+ * previously fanned-out variant (consent-gated) so it does not silently orphan.
  */
 export const trackRuleSet = async (
   tuckDir: string,
   inputPath: string,
   opts: TrackOptions = {}
-): Promise<{ id: string; set: RuleSet }> => {
+): Promise<TrackResult> => {
   // expandPath handles ~, absolute, and relative inputs WITHOUT stamping the
   // host drive letter onto drive-less absolute paths the way win32 resolve()
   // does (D:\test-home\... breaking home confinement checks on Windows).
@@ -251,6 +269,26 @@ export const trackRuleSet = async (
   }
   const tools: RuleTool[] = toolNames.map((tool) => ({ tool, strategy }));
 
+  // Reject any tool whose resolved write destination IS the canonical source —
+  // regardless of how the tool was selected (explicit --tool bypassed the
+  // default self-target guard). Fanning `agents` onto AGENTS.md would, on apply,
+  // either symlink the source to itself (ELOOP, content destroyed) or overwrite
+  // it with rendered output (template markers stripped).
+  const srcResolved = resolve(absPath);
+  for (const tool of tools) {
+    const targetAbs = resolve(join(root, toolRelativePath(tool)));
+    if (targetAbs === srcResolved) {
+      throw new TuckError(
+        `Tool "${tool.tool}" would fan out onto the canonical source itself (${collapsePath(absPath)})`,
+        'RULES_SELF_TARGET',
+        [
+          `Drop "${tool.tool}" from --tool — its destination is the source file.`,
+          'Fanning a tool onto its own source would destroy the canonical content.',
+        ]
+      );
+    }
+  }
+
   const now = new Date().toISOString();
   const set: RuleSet = {
     source,
@@ -266,9 +304,93 @@ export const trackRuleSet = async (
 
   const manifest = await loadRulesManifest(tuckDir);
   const existing = manifest.sets[id];
+
+  // Re-tracking replaces the tool list wholesale; a tool present before but
+  // absent now would otherwise leave its generated variant orphaned on disk
+  // (invisible to `list` and `untrack --clean`). Clean those up, consent-gated.
+  let orphansRemoved: string[] = [];
+  let orphansSkipped: string[] = [];
+  if (existing) {
+    const stillTracked = (t: RuleTool): boolean =>
+      tools.some((n) => n.tool === t.tool && (n.path ?? '') === (t.path ?? ''));
+    const dropped = existing.tools.filter((t) => !stillTracked(t));
+    const cleanup = await cleanupOrphanedVariants(tuckDir, existing, dropped, opts);
+    orphansRemoved = cleanup.removed;
+    orphansSkipped = cleanup.skipped;
+  }
+
   manifest.sets[id] = existing ? { ...set, added: existing.added } : set;
   await saveRulesManifest(tuckDir, manifest);
-  return { id, set: manifest.sets[id] };
+  return { id, set: manifest.sets[id], orphansRemoved, orphansSkipped };
+};
+
+/**
+ * Remove the on-disk variants for tools dropped from a set on re-track. A variant
+ * that is foreign/hand-edited (per {@link toolStatus}) is never deleted; others
+ * require consent (`confirmRemove` or `force`). Everything removed is snapshotted
+ * first so `tuck undo` can bring it back.
+ */
+const cleanupOrphanedVariants = async (
+  tuckDir: string,
+  oldSet: RuleSet,
+  dropped: RuleTool[],
+  opts: TrackOptions
+): Promise<{ removed: string[]; skipped: string[] }> => {
+  const removed: string[] = [];
+  const skipped: string[] = [];
+  if (dropped.length === 0) return { removed, skipped };
+
+  const base = await buildRulesContext(tuckDir);
+  const srcAbs = sourceAbsolute(oldSet);
+  const sourceExists = await pathExists(srcAbs);
+  const sourceText = sourceExists ? await readFile(srcAbs, 'utf-8').catch(() => '') : '';
+
+  const toRemove: { writeTarget: string; liveTarget: string }[] = [];
+  for (const tool of dropped) {
+    const writeTarget = toolWriteTarget(oldSet, tool);
+    const liveTarget = toolLiveTarget(oldSet, tool);
+    if (!(await lstatExists(writeTarget))) continue;
+    const status = await toolStatus(
+      oldSet,
+      tool,
+      writeTarget,
+      srcAbs,
+      sourceText,
+      sourceExists,
+      base
+    );
+    if (status === 'foreign') {
+      // Not a file we generated — never delete a hand-edited/foreign file.
+      skipped.push(liveTarget);
+      continue;
+    }
+    const allowed = opts.force
+      ? true
+      : opts.confirmRemove
+        ? await opts.confirmRemove(liveTarget)
+        : false;
+    if (!allowed) {
+      skipped.push(liveTarget);
+      continue;
+    }
+    toRemove.push({ writeTarget, liveTarget });
+  }
+
+  if (toRemove.length > 0) {
+    await createSnapshot(
+      toRemove.map((t) => t.writeTarget),
+      `Pre rules-retrack cleanup: ${oldSet.source}`
+    ).catch(() => undefined);
+    for (const t of toRemove) {
+      try {
+        await removeVariantPath(t.writeTarget);
+        removed.push(t.liveTarget);
+      } catch {
+        skipped.push(t.liveTarget);
+      }
+    }
+  }
+  return { removed, skipped };
 };
 
 /** Remove a tracked set. Returns the removed set (or null if absent). */
@@ -379,7 +501,10 @@ const toolStatus = async (
   if (link !== null) return 'foreign'; // a symlink where a real file is expected
   if (!sourceExists) return 'drift';
   const expected = renderToolContent(sourceText, set, tool.tool, base);
-  const actual = await readFile(target, 'utf-8');
+  // A directory or an unreadable file (EISDIR/EACCES) at the variant path is not
+  // something we generated — report it as foreign rather than crashing `list`.
+  const actual = await readFile(target, 'utf-8').catch(() => null);
+  if (actual === null) return 'foreign';
   return actual === expected ? 'in-sync' : 'drift';
 };
 
@@ -397,6 +522,12 @@ export interface ApplyToolResult {
 export interface ApplySetResult {
   id: string;
   applied: ApplyToolResult[];
+  /**
+   * Set-level failure (missing source, unusable repoRoot, unexpected error).
+   * Present iff the set could NOT be applied; `applied` is then empty. One failed
+   * set never blocks the others — the caller reports errors and exits non-zero.
+   */
+  error?: string;
 }
 
 export interface ApplyRulesOptions {
@@ -436,17 +567,76 @@ export const applyRuleSets = async (
     }
   }
 
-  // Register repo roots so repo-scoped writes pass destination validation.
-  const repoRoots = entries
-    .map(([, s]) => s.repoRoot)
+  // Validate each set's repoRoot BEFORE trusting it into the write sandbox. A
+  // hostile rules.json could name repoRoot "/" (plus a relative override) to
+  // create files anywhere writable; and a repo-scoped set whose absolute root
+  // simply doesn't exist on THIS machine must be skipped, not crash the run.
+  interface Decision {
+    id: string;
+    set: RuleSet;
+    error?: string;
+  }
+  const decisions: Decision[] = [];
+  for (const [id, set] of entries) {
+    if (set.scope === 'repo') {
+      const why = await repoRootRejection(set.repoRoot);
+      if (why) {
+        decisions.push({ id, set, error: why });
+        continue;
+      }
+    }
+    decisions.push({ id, set });
+  }
+
+  // Register ONLY the validated repo roots so repo-scoped writes pass
+  // destination validation — never an unvalidated manifest-supplied root.
+  const repoRoots = decisions
+    .filter((d) => !d.error && d.set.scope === 'repo')
+    .map((d) => d.set.repoRoot)
     .filter((r): r is string => typeof r === 'string');
   if (repoRoots.length > 0) addKnownRepoRoots(repoRoots);
 
+  // Per-set isolation: a failed set (missing source, bad repoRoot, thrown error)
+  // is recorded and reported, but never blocks the remaining sets.
   const results: ApplySetResult[] = [];
-  for (const [id, set] of entries) {
-    results.push(await applyOneSet(id, set, opts));
+  for (const d of decisions) {
+    if (d.error) {
+      results.push({ id: d.id, applied: [], error: d.error });
+      continue;
+    }
+    try {
+      results.push(await applyOneSet(d.id, d.set, opts));
+    } catch (err) {
+      results.push({
+        id: d.id,
+        applied: [],
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
   return results;
+};
+
+/**
+ * Reason a manifest-supplied repoRoot must NOT be trusted, or null if it is a
+ * genuine, present git repository on this machine. Rejects the filesystem root
+ * and the user's home directory outright (a `.git` there would still be far too
+ * broad a write scope), anything that is not an existing directory, and anything
+ * without a `.git` entry.
+ */
+const repoRootRejection = async (repoRoot: string | undefined): Promise<string | null> => {
+  if (!repoRoot) return 'repo-scoped set has no repoRoot';
+  const abs = resolve(expandPath(repoRoot));
+  if (abs === resolve('/') || abs === resolve(expandPath('~'))) {
+    return `refusing repoRoot "${repoRoot}": filesystem root / home is too broad a write scope`;
+  }
+  if (!(await isDirectory(abs))) {
+    return `repoRoot "${repoRoot}" is not a directory on this machine (skipped)`;
+  }
+  if (!(await pathExists(join(abs, '.git')))) {
+    return `repoRoot "${repoRoot}" is not a git repository (no .git) — skipped`;
+  }
+  return null;
 };
 
 const applyOneSet = async (
@@ -523,43 +713,60 @@ const applyOneTool = async (
     }
   }
 
+  const mk = (
+    action: ApplyToolResult['action'],
+    reason?: string
+  ): ApplyToolResult => ({ tool: tool.tool, target: liveTarget, action, reason });
+
   if (tool.strategy === 'symlink') {
     const desired = resolve(srcAbs);
     if (exists && isLink && linkDest !== null && resolve(dirname(writeTarget), linkDest) === desired) {
-      return { tool: tool.tool, target: liveTarget, action: 'skipped', reason: 'already linked' };
+      return mk('skipped', 'already linked');
     }
-    if (exists && !(await allowOverwrite(liveTarget, opts))) {
-      return { tool: tool.tool, target: liveTarget, action: 'skipped', reason: 'exists (declined)' };
+    if (exists) {
+      // Replacing an existing entry is a change. Dry-run must NEVER prompt:
+      // report what WOULD happen instead of calling the consent gate.
+      if (opts.dryRun) {
+        return opts.force
+          ? mk('symlinked', 'dry-run')
+          : mk('skipped', opts.confirmOverwrite ? 'would prompt to overwrite' : 'exists (declined)');
+      }
+      if (!(await allowOverwrite(liveTarget, opts))) {
+        return mk('skipped', 'exists (declined)');
+      }
+    } else if (opts.dryRun) {
+      return mk('symlinked', 'dry-run');
     }
-    if (opts.dryRun) return { tool: tool.tool, target: liveTarget, action: 'symlinked', reason: 'dry-run' };
     await createSymlink(collapsePath(srcAbs), writeTarget, { overwrite: true });
-    return { tool: tool.tool, target: liveTarget, action: 'symlinked' };
+    return mk('symlinked');
   }
 
   // materialize
   const content = expected ?? '';
   if (exists && !isLink) {
     const actual = await readFile(writeTarget, 'utf-8').catch(() => null);
-    if (actual === content) {
-      return { tool: tool.tool, target: liveTarget, action: 'skipped', reason: 'up to date' };
-    }
-    if (!(await allowOverwrite(liveTarget, opts))) {
-      return { tool: tool.tool, target: liveTarget, action: 'skipped', reason: 'differs (declined)' };
-    }
-  } else if (exists && isLink) {
-    // A symlink where we want a real file — replacing it is a change; gate it.
-    if (!(await allowOverwrite(liveTarget, opts))) {
-      return { tool: tool.tool, target: liveTarget, action: 'skipped', reason: 'symlink (declined)' };
-    }
-    if (!opts.dryRun) await deleteFileOrDir(writeTarget);
+    if (actual === content) return mk('skipped', 'up to date');
   }
 
-  if (opts.dryRun) {
-    return { tool: tool.tool, target: liveTarget, action: exists ? 'updated' : 'created', reason: 'dry-run' };
+  if (exists) {
+    // Existing entry differs (real file) or is a symlink to replace — a change.
+    const declineReason = isLink ? 'symlink (declined)' : 'differs (declined)';
+    if (opts.dryRun) {
+      return opts.force
+        ? mk('updated', 'dry-run')
+        : mk('skipped', opts.confirmOverwrite ? 'would prompt to overwrite' : declineReason);
+    }
+    if (!(await allowOverwrite(liveTarget, opts))) {
+      return mk('skipped', declineReason);
+    }
+    if (isLink) await deleteFileOrDir(writeTarget);
+  } else if (opts.dryRun) {
+    return mk('created', 'dry-run');
   }
+
   await ensureDirectory(dirname(writeTarget));
   await atomicWriteFile(writeTarget, content);
-  return { tool: tool.tool, target: liveTarget, action: exists ? 'updated' : 'created' };
+  return mk(exists ? 'updated' : 'created');
 };
 
 /** Consent gate for overwriting an existing variant. */
@@ -598,18 +805,47 @@ export const listExistingToolVariants = async (set: RuleSet): Promise<string[]> 
   return out;
 };
 
+/**
+ * Delete a single variant path. `recursive` handles a directory that landed at
+ * the variant location; `force` swallows a not-found race but NOT real errors
+ * (EACCES), which propagate so the caller can report the failure. On a symlink,
+ * `rm` removes the link itself (never follows it).
+ */
+const removeVariantPath = async (writeTarget: string): Promise<void> => {
+  await rm(writeTarget, { force: true, recursive: true });
+};
+
+export interface RemoveVariantsResult {
+  /** Live targets that were actually removed (or would be, on dry-run). */
+  removed: string[];
+  /** Live targets whose deletion failed (surfaced to the user). */
+  failed: string[];
+}
+
 export const removeToolVariants = async (
   set: RuleSet,
   opts: { dryRun?: boolean } = {}
-): Promise<string[]> => {
+): Promise<RemoveVariantsResult> => {
   const removed: string[] = [];
+  const failed: string[] = [];
   for (const tool of set.tools) {
     const writeTarget = toolWriteTarget(set, tool);
+    const liveTarget = toolLiveTarget(set, tool);
     if (!(await lstatExists(writeTarget))) continue;
-    removed.push(toolLiveTarget(set, tool));
-    if (!opts.dryRun) await rm(writeTarget, { force: true }).catch(() => undefined);
+    if (opts.dryRun) {
+      removed.push(liveTarget);
+      continue;
+    }
+    // Only report a path as removed once the delete actually succeeds; a swallowed
+    // rm error must not masquerade as a successful cleanup.
+    try {
+      await removeVariantPath(writeTarget);
+      removed.push(liveTarget);
+    } catch {
+      failed.push(liveTarget);
+    }
   }
-  return removed;
+  return { removed, failed };
 };
 
 /** Build the render context once per command (machine vars + config vars). */

@@ -13,6 +13,7 @@ import {
   trackRuleSet,
   untrackRuleSet,
   loadRulesManifest,
+  saveRulesManifest,
   applyRuleSets,
   computeSetStatus,
   removeToolVariants,
@@ -23,6 +24,7 @@ import {
   TOOL_TARGETS,
   ALL_TOOLS,
 } from '../../src/lib/rulesFanout.js';
+import type { RuleSet } from '../../src/schemas/rules.schema.js';
 import { defaultTemplateContext } from '../../src/lib/template.js';
 import { resetWriteContext } from '../../src/lib/writeContext.js';
 import { rulesManifestSchema } from '../../src/schemas/rules.schema.js';
@@ -396,7 +398,7 @@ describe('untrackRuleSet / removeToolVariants', () => {
     const id = await trackHome('# R\n', { tools: ['claude', 'gemini'] });
     await applyRuleSets(TEST_TUCK_DIR, { context: ctx, force: true, id });
     const manifest = await loadRulesManifest(TEST_TUCK_DIR);
-    const removed = await removeToolVariants(manifest.sets[id]);
+    const { removed } = await removeToolVariants(manifest.sets[id]);
     expect(removed).toHaveLength(2);
     expect(vol.existsSync(join(TEST_HOME, 'CLAUDE.md'))).toBe(false);
     expect(vol.existsSync(join(TEST_HOME, 'GEMINI.md'))).toBe(false);
@@ -404,6 +406,189 @@ describe('untrackRuleSet / removeToolVariants', () => {
 
   it('untrack returns null for an unknown id', async () => {
     expect(await untrackRuleSet(TEST_TUCK_DIR, 'ghost')).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regression: verified code-review findings
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('trackRuleSet self-target rejection (explicit --tool)', () => {
+  it('rejects materializing a tool onto its own canonical source', async () => {
+    vol.writeFileSync(join(TEST_HOME, 'AGENTS.md'), '# canonical\n');
+    // `agents` maps to AGENTS.md — fanning it onto AGENTS.md would clobber it.
+    await expect(
+      trackRuleSet(TEST_TUCK_DIR, join(TEST_HOME, 'AGENTS.md'), { tools: ['agents'] })
+    ).rejects.toThrow(/canonical source itself/);
+    // Nothing tracked, source untouched.
+    expect(vol.existsSync(join(TEST_TUCK_DIR, 'rules.json'))).toBe(false);
+    expect(vol.readFileSync(join(TEST_HOME, 'AGENTS.md'), 'utf-8')).toBe('# canonical\n');
+  });
+
+  it('rejects symlinking a tool onto its own canonical source', async () => {
+    vol.writeFileSync(join(TEST_HOME, 'CLAUDE.md'), '# canonical\n');
+    await expect(
+      trackRuleSet(TEST_TUCK_DIR, join(TEST_HOME, 'CLAUDE.md'), {
+        tools: ['claude'],
+        strategy: 'symlink',
+      })
+    ).rejects.toThrow(/canonical source itself/);
+    // The source is not turned into a self-referencing symlink.
+    expect(vol.lstatSync(join(TEST_HOME, 'CLAUDE.md')).isSymbolicLink()).toBe(false);
+    expect(vol.readFileSync(join(TEST_HOME, 'CLAUDE.md'), 'utf-8')).toBe('# canonical\n');
+  });
+});
+
+describe('re-track cleans up variants of dropped tools', () => {
+  it('removes the dropped tool variant when consent is given (force)', async () => {
+    const id = await trackHome('# R\n', { tools: ['claude', 'gemini'] });
+    await applyRuleSets(TEST_TUCK_DIR, { context: ctx, force: true, id });
+    expect(vol.existsSync(join(TEST_HOME, 'CLAUDE.md'))).toBe(true);
+    expect(vol.existsSync(join(TEST_HOME, 'GEMINI.md'))).toBe(true);
+
+    const res = await trackRuleSet(TEST_TUCK_DIR, join(TEST_HOME, 'AGENTS.md'), {
+      tools: ['claude'],
+      force: true,
+    });
+    expect(res.orphansRemoved).toHaveLength(1);
+    expect(res.orphansSkipped).toHaveLength(0);
+    // Dropped tool's variant gone; retained tool's variant untouched.
+    expect(vol.existsSync(join(TEST_HOME, 'GEMINI.md'))).toBe(false);
+    expect(vol.existsSync(join(TEST_HOME, 'CLAUDE.md'))).toBe(true);
+  });
+
+  it('leaves the orphan in place (reported) when non-interactive without consent', async () => {
+    const id = await trackHome('# R\n', { tools: ['claude', 'gemini'] });
+    await applyRuleSets(TEST_TUCK_DIR, { context: ctx, force: true, id });
+
+    const res = await trackRuleSet(TEST_TUCK_DIR, join(TEST_HOME, 'AGENTS.md'), {
+      tools: ['claude'],
+    });
+    expect(res.orphansRemoved).toHaveLength(0);
+    expect(res.orphansSkipped).toHaveLength(1);
+    expect(vol.existsSync(join(TEST_HOME, 'GEMINI.md'))).toBe(true);
+  });
+
+  it('never deletes a foreign variant of a dropped tool, even with consent', async () => {
+    await trackHome('# R\n', { tools: ['claude', 'gemini'] });
+    // A symlink where a materialized GEMINI.md is expected → status 'foreign'
+    // (clearly not a file tuck generated), so cleanup must preserve it.
+    vol.writeFileSync(join(TEST_HOME, 'other.md'), '# elsewhere\n');
+    vol.symlinkSync(join(TEST_HOME, 'other.md'), join(TEST_HOME, 'GEMINI.md'));
+    const res = await trackRuleSet(TEST_TUCK_DIR, join(TEST_HOME, 'AGENTS.md'), {
+      tools: ['claude'],
+      force: true, // even WITH consent, a foreign entry is preserved
+    });
+    expect(res.orphansRemoved).toHaveLength(0);
+    expect(res.orphansSkipped).toContain(join(TEST_HOME, 'GEMINI.md'));
+    expect(vol.lstatSync(join(TEST_HOME, 'GEMINI.md')).isSymbolicLink()).toBe(true);
+  });
+});
+
+describe('applyRuleSets per-set error isolation', () => {
+  const injectBadRepoSet = async (id: string, repoRoot: string): Promise<void> => {
+    const manifest = await loadRulesManifest(TEST_TUCK_DIR);
+    const bad: RuleSet = {
+      source: join(repoRoot, 'AGENTS.md'),
+      scope: 'repo',
+      repoRoot,
+      template: true,
+      tools: [{ tool: 'gemini', strategy: 'materialize' }],
+      variables: {},
+      added: 'n',
+      modified: 'n',
+    };
+    manifest.sets[id] = bad;
+    await saveRulesManifest(TEST_TUCK_DIR, manifest);
+  };
+
+  it('applies a valid home set even when another set has a missing repoRoot', async () => {
+    await trackHome('# home\n', { tools: ['claude'] });
+    await injectBadRepoSet('repo__missing', '/no/such/repo');
+
+    const results = await applyRuleSets(TEST_TUCK_DIR, { context: ctx, force: true });
+    const home = results.find((r) => r.id === 'home__agents.md');
+    const bad = results.find((r) => r.id === 'repo__missing');
+    expect(home?.applied[0]?.action).toBe('created');
+    expect(bad?.error).toBeTruthy();
+    expect(vol.existsSync(join(TEST_HOME, 'CLAUDE.md'))).toBe(true);
+  });
+
+  it('rejects repoRoot "/" and a non-git directory, writing nothing for them', async () => {
+    await trackHome('# home\n', { tools: ['claude'] });
+    await injectBadRepoSet('repo__root', '/');
+    vol.mkdirSync(join(TEST_HOME, 'plaindir'), { recursive: true });
+    await injectBadRepoSet('repo__nogit', join(TEST_HOME, 'plaindir'));
+
+    const results = await applyRuleSets(TEST_TUCK_DIR, { context: ctx, force: true });
+    const rootSet = results.find((r) => r.id === 'repo__root');
+    const nogit = results.find((r) => r.id === 'repo__nogit');
+    expect(rootSet?.error).toMatch(/too broad|root/i);
+    expect(nogit?.error).toMatch(/git/i);
+    // No variant leaked into "/" or the non-git dir; the valid set still applied.
+    expect(vol.existsSync(join(TEST_HOME, 'plaindir', 'GEMINI.md'))).toBe(false);
+    expect(vol.existsSync(join(TEST_HOME, 'CLAUDE.md'))).toBe(true);
+  });
+
+  it('accepts a genuine git repoRoot', async () => {
+    const repo = join(TEST_HOME, 'proj');
+    vol.mkdirSync(join(repo, '.git'), { recursive: true });
+    vol.writeFileSync(join(repo, 'AGENTS.md'), '# repo\n');
+    const { id } = await trackRuleSet(TEST_TUCK_DIR, join(repo, 'AGENTS.md'), {
+      tools: ['gemini'],
+    });
+    const results = await applyRuleSets(TEST_TUCK_DIR, { context: ctx, force: true, id });
+    expect(results[0].error).toBeUndefined();
+    expect(vol.existsSync(join(repo, 'GEMINI.md'))).toBe(true);
+  });
+});
+
+describe('applyRuleSets dry-run never prompts', () => {
+  it('does not call confirmOverwrite for a differing materialize variant', async () => {
+    await trackHome('# NEW\n', { tools: ['claude'] });
+    vol.writeFileSync(join(TEST_HOME, 'CLAUDE.md'), '# OLD\n');
+    let prompted = false;
+    const results = await applyRuleSets(TEST_TUCK_DIR, {
+      context: ctx,
+      dryRun: true,
+      confirmOverwrite: async () => {
+        prompted = true;
+        return true;
+      },
+    });
+    expect(prompted).toBe(false);
+    expect(results[0].applied[0].action).toBe('skipped');
+    expect(results[0].applied[0].reason).toBe('would prompt to overwrite');
+    expect(vol.readFileSync(join(TEST_HOME, 'CLAUDE.md'), 'utf-8')).toBe('# OLD\n');
+  });
+
+  it('does not call confirmOverwrite for a symlink variant replacing a real file', async () => {
+    await trackHome('# R\n', { tools: ['claude'], strategy: 'symlink' });
+    vol.writeFileSync(join(TEST_HOME, 'CLAUDE.md'), '# real\n');
+    let prompted = false;
+    const results = await applyRuleSets(TEST_TUCK_DIR, {
+      context: ctx,
+      dryRun: true,
+      confirmOverwrite: async () => {
+        prompted = true;
+        return true;
+      },
+    });
+    expect(prompted).toBe(false);
+    expect(results[0].applied[0].action).toBe('skipped');
+    expect(results[0].applied[0].reason).toBe('would prompt to overwrite');
+    expect(vol.readFileSync(join(TEST_HOME, 'CLAUDE.md'), 'utf-8')).toBe('# real\n');
+  });
+});
+
+describe('computeSetStatus survives an unreadable variant', () => {
+  it('reports a directory at the variant path as foreign instead of throwing', async () => {
+    const id = await trackHome('# R\n', { tools: ['claude'] });
+    // A directory where a materialized file is expected → readFile would EISDIR.
+    vol.mkdirSync(join(TEST_HOME, 'CLAUDE.md'), { recursive: true });
+    const manifest = await loadRulesManifest(TEST_TUCK_DIR);
+    const status = await computeSetStatus(manifest.sets[id], ctx);
+    expect(status.tools[0].status).toBe('foreign');
   });
 });
 

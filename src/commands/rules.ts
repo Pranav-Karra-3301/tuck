@@ -87,6 +87,7 @@ interface TrackOpts {
   symlink?: boolean;
   template?: boolean; // commander `--no-template` sets this false
   var?: string[];
+  yes?: boolean;
 }
 
 const trackAction = async (pathArg: string, opts: TrackOpts): Promise<void> => {
@@ -94,11 +95,23 @@ const trackAction = async (pathArg: string, opts: TrackOpts): Promise<void> => {
   const tuckDir = getTuckDir();
   await ensureInitialized(tuckDir);
 
-  const { id, set } = await trackRuleSet(tuckDir, pathArg, {
+  // Re-tracking with a smaller tool list orphans the dropped tools' variants.
+  // Deleting them is destructive: prompt interactively, require --yes when
+  // non-interactive; otherwise leave the orphan in place and just report it.
+  const nonInteractive = isJsonMode() || opts.yes || !process.stdout.isTTY;
+  const { id, set, orphansRemoved, orphansSkipped } = await trackRuleSet(tuckDir, pathArg, {
     tools: parseTools(opts.tool),
     strategy: opts.symlink ? 'symlink' : 'materialize',
     template: opts.template,
     variables: parseVars(opts.var),
+    force: opts.yes,
+    confirmRemove: nonInteractive
+      ? undefined
+      : async (target: string) =>
+          prompts.confirm(
+            `Remove stale variant ${collapsePath(target)} (its tool is no longer a fan-out target)?`,
+            false
+          ),
   });
 
   if (isJsonMode()) {
@@ -109,6 +122,8 @@ const trackAction = async (pathArg: string, opts: TrackOpts): Promise<void> => {
       repoRoot: set.repoRoot,
       template: set.template,
       tools: set.tools.map((t) => ({ tool: t.tool, strategy: t.strategy, path: t.path })),
+      orphansRemoved: orphansRemoved.map((p) => collapsePath(p)),
+      orphansSkipped: orphansSkipped.map((p) => collapsePath(p)),
     });
     return;
   }
@@ -116,6 +131,12 @@ const trackAction = async (pathArg: string, opts: TrackOpts): Promise<void> => {
   logger.success(`Tracking rules source: ${set.source}`);
   logger.dim(`  id=${id}  scope=${set.scope}${set.repoRoot ? `  repo=${collapsePath(set.repoRoot)}` : ''}`);
   logger.dim(`  fan-out → ${set.tools.map((t) => t.tool).join(', ')} (${set.tools[0]?.strategy})`);
+  if (orphansRemoved.length > 0) {
+    logger.dim(`  removed ${orphansRemoved.length} stale variant(s) for dropped tool(s)`);
+  }
+  for (const p of orphansSkipped) {
+    logger.warning(`Left stale variant in place (foreign or not confirmed): ${collapsePath(p)}`);
+  }
   logger.blank();
   logger.info('Run `tuck rules apply` to write the tool variants.');
 };
@@ -218,6 +239,9 @@ const applyAction = async (opts: ApplyOpts): Promise<void> => {
   });
 
   const flat = results.flatMap((r) => r.applied.map((a) => ({ id: r.id, ...a })));
+  // Per-set failures are isolated: valid sets still applied. Report the failures
+  // and exit non-zero so callers/CI notice, without discarding the good work.
+  const failures = results.filter((r) => r.error).map((r) => ({ id: r.id, error: r.error! }));
 
   if (isJsonMode()) {
     emitJsonOk({
@@ -230,11 +254,13 @@ const applyAction = async (opts: ApplyOpts): Promise<void> => {
         action: a.action,
         reason: a.reason,
       })),
+      errors: failures,
     });
+    if (failures.length > 0) process.exitCode = 1;
     return;
   }
 
-  if (flat.length === 0) {
+  if (flat.length === 0 && failures.length === 0) {
     logger.info('No tracked rule sets to apply.');
     logger.dim('Run `tuck rules track <path>` first.');
     return;
@@ -249,6 +275,9 @@ const applyAction = async (opts: ApplyOpts): Promise<void> => {
           : c.green(a.action);
     console.log(`  ${a.tool.padEnd(11)} ${c.dim(collapsePath(a.target))} — ${label}`);
   }
+  for (const f of failures) {
+    logger.warning(`Set ${f.id} skipped: ${f.error}`);
+  }
   logger.blank();
   const changed = flat.filter((a) => a.action !== 'skipped').length;
   if (opts.dryRun) {
@@ -256,6 +285,12 @@ const applyAction = async (opts: ApplyOpts): Promise<void> => {
   } else {
     logger.success(`Fanned out ${changed} variant${changed !== 1 ? 's' : ''}.`);
     if (changed > 0) logger.dim('To undo: tuck undo --latest');
+  }
+  if (failures.length > 0) {
+    logger.warning(
+      `${failures.length} set${failures.length !== 1 ? 's' : ''} could not be applied (see above).`
+    );
+    process.exitCode = 1;
   }
 };
 
@@ -283,6 +318,7 @@ const untrackAction = async (idArg: string, opts: UntrackOpts): Promise<void> =>
   }
 
   let cleaned: string[] = [];
+  let failed: string[] = [];
   if (opts.clean) {
     // --clean permanently deletes generated files: non-interactive callers
     // must OPT IN with --yes (a redirected stdout or --json alone is not
@@ -309,22 +345,34 @@ const untrackAction = async (idArg: string, opts: UntrackOpts): Promise<void> =>
     if (deletable.length > 0) {
       await createSnapshot(deletable, `Pre rules-untrack clean: ${set.source}`);
     }
-    cleaned = await removeToolVariants(set);
+    const result = await removeToolVariants(set);
+    cleaned = result.removed;
+    failed = result.failed;
     if (cleaned.length > 0 && !isJsonMode()) {
       logger.dim('  Restore them with `tuck undo --latest`');
+    }
+    for (const p of failed) {
+      logger.warning(`Could not remove ${collapsePath(p)}`);
     }
   }
 
   await untrackRuleSet(tuckDir, idArg);
 
   if (isJsonMode()) {
-    emitJsonOk({ id: idArg, removed: true, cleaned: cleaned.map((p) => collapsePath(p)) });
+    emitJsonOk({
+      id: idArg,
+      removed: true,
+      cleaned: cleaned.map((p) => collapsePath(p)),
+      failed: failed.map((p) => collapsePath(p)),
+    });
+    if (failed.length > 0) process.exitCode = 1;
     return;
   }
   logger.success(`Untracked rules source: ${set.source}`);
   if (cleaned.length > 0) {
     logger.dim(`  removed ${cleaned.length} generated variant(s)`);
   }
+  if (failed.length > 0) process.exitCode = 1;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -352,6 +400,7 @@ export const createRulesCommand = (): Command =>
       .option('--symlink', 'Symlink each variant to the source instead of materializing')
       .option('--no-template', 'Do not render the source as a template on apply')
       .option('--var <key=value...>', 'Extra template variable (repeatable)')
+      .option('-y, --yes', 'Auto-confirm deleting variants orphaned by dropped tools')
       .option('--json', 'Emit JSON envelope to stdout')
       .action(trackAction)
   )

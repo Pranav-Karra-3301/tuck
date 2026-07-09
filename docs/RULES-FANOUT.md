@@ -149,11 +149,29 @@ disk (confirmed unless `--yes`).
 }
 ```
 
-Repo-scoped sets additionally store the absolute `repoRoot` and identify the set
-by a machine-independent key, so the same manifest works across machines.
+Repo-scoped sets additionally store the **absolute** `repoRoot`, and their set id
+embeds that absolute path. This means repo-scoped sets are **machine-dependent**:
+the manifest is portable text, but a repo-scoped set only applies on a machine
+where the same absolute `repoRoot` exists and is a real git checkout. On apply,
+each repo-scoped set's `repoRoot` is validated (it must be an existing directory
+containing a `.git` entry, and may never be the filesystem root or your home
+directory); a set whose `repoRoot` fails validation — e.g. because that path does
+not exist on this machine — is **skipped with a warning**, and `tuck rules apply`
+exits non-zero while still applying every other valid set. Home-scoped sets are
+machine-independent (they resolve against `$HOME`). Cross-machine repo-scoped
+fan-out (identifying repos by a stable, path-independent key) is a follow-up.
 
 ## Notes & limitations
 
+- Applying is **per-set isolated**: one set failing (missing source, unusable
+  `repoRoot`) never blocks the others. Failures are reported and the command
+  exits non-zero.
+- A tool whose destination would be the canonical source itself (e.g. tracking
+  `AGENTS.md` and asking for the `agents` tool) is **rejected at track time** —
+  it would otherwise destroy the source on apply.
+- Re-tracking a set with a **smaller** tool list cleans up the variants for the
+  dropped tools (confirmed unless `--yes`; foreign/hand-edited files are left in
+  place).
 - `tuck rules apply` is its own explicit step. Wiring rule fan-out into the
   top-level `tuck apply` flow is a planned follow-up.
 - A tool's destination can be overridden per set with a `path` field in

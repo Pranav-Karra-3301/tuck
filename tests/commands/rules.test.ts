@@ -161,6 +161,40 @@ describe('tuck rules apply --json', () => {
     expect(env.ok).toBe(true);
     expect((env.data as { applied: unknown[] }).applied).toEqual([]);
   });
+
+  it('isolates a bad set: applies the good one and reports the failure', async () => {
+    await runJson('track', AGENTS, '--tool', 'claude');
+    // Inject a repo-scoped set whose repoRoot does not exist on this machine.
+    const raw = JSON.parse(
+      vol.readFileSync(join(TEST_TUCK_DIR, 'rules.json'), 'utf-8') as string
+    );
+    raw.sets['repo__missing'] = {
+      source: '/no/such/repo/AGENTS.md',
+      scope: 'repo',
+      repoRoot: '/no/such/repo',
+      template: true,
+      tools: [{ tool: 'gemini', strategy: 'materialize' }],
+      variables: {},
+      added: 'n',
+      modified: 'n',
+    };
+    vol.writeFileSync(join(TEST_TUCK_DIR, 'rules.json'), JSON.stringify(raw));
+
+    const prevExit = process.exitCode;
+    try {
+      const env = await runJson('apply', '--yes', '--force');
+      const data = env.data as {
+        applied: { id: string; action: string }[];
+        errors: { id: string }[];
+      };
+      expect(data.applied.some((a) => a.id === 'home__agents.md')).toBe(true);
+      expect(data.errors.map((e) => e.id)).toContain('repo__missing');
+      expect(vol.existsSync(join(TEST_HOME, 'CLAUDE.md'))).toBe(true);
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = prevExit;
+    }
+  });
 });
 
 describe('tuck rules list --json', () => {
