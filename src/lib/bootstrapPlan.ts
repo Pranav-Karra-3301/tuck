@@ -68,7 +68,7 @@ export const buildBootstrapPlan = (
   manifest: TuckManifestOutput,
   options: BuildPlanOptions = {}
 ): BootstrapPlan => {
-  const { requirements, invalid } = collectRequirements(manifest);
+  const { requirements, invalid } = collectRequirements(manifest, options.bundle);
 
   // Build a dependency graph: every package is a node, and every file that
   // declares requirements is a node depending on those packages. Topologically
@@ -83,6 +83,9 @@ export const buildBootstrapPlan = (
     nodes.push({ id: pkgId(req.raw), deps: [] });
   }
   for (const [id, file] of Object.entries(manifest.files)) {
+    // Same bundle filter as collectRequirements: files outside the selected
+    // bundle contribute neither packages nor dependency edges to the plan.
+    if (options.bundle && (file.bundle ?? 'default') !== options.bundle) continue;
     const deps = (file.requires ?? [])
       .map((spec) => byRaw.get(parseRawSafe(spec))?.raw)
       .filter((raw): raw is string => raw !== undefined)

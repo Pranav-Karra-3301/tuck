@@ -60,6 +60,39 @@ describe('buildBootstrapPlan', () => {
     expect(buildBootstrapPlan(manifest).fileCount).toBe(2);
   });
 
+  it('scopes packages to the selected bundle, not just the file count', () => {
+    const manifest = createMockManifest({
+      files: {
+        workrc: createMockTrackedFile({
+          source: '~/.workrc',
+          bundle: 'work',
+          requires: ['brew:work-tool'],
+        }),
+        personalrc: createMockTrackedFile({
+          source: '~/.personalrc',
+          bundle: 'personal',
+          requires: ['brew:personal-tool'],
+        }),
+        // Legacy entry with no bundle belongs to "default".
+        zshrc: createMockTrackedFile({ source: '~/.zshrc', requires: ['brew:starship'] }),
+      },
+    });
+
+    const work = buildBootstrapPlan(manifest, { bundle: 'work' });
+    expect(work.packages.map((p) => p.raw)).toEqual(['brew:work-tool']);
+    expect(work.fileCount).toBe(1);
+
+    const fallback = buildBootstrapPlan(manifest, { bundle: 'default' });
+    expect(fallback.packages.map((p) => p.raw)).toEqual(['brew:starship']);
+
+    // Unscoped plan still installs everything.
+    expect(buildBootstrapPlan(manifest).packages.map((p) => p.raw)).toEqual([
+      'brew:work-tool',
+      'brew:personal-tool',
+      'brew:starship',
+    ]);
+  });
+
   it('surfaces invalid requirement specs without failing', () => {
     const manifest = createMockManifest({
       files: {

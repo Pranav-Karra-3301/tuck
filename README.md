@@ -92,6 +92,43 @@ tuck init --from github.com/you/dotfiles
 tuck restore --all
 ```
 
+### Onto a remote box (SSH)
+
+Push the configs this machine already tracks — your agent configs (`.claude`,
+`.cursor`, `.codex`), shell, git, editor — onto a remote server over ssh/scp.
+tuck prints a plan first and asks before transferring anything.
+
+```bash
+# Push everything you track to a remote box (a plan is shown first)
+tuck apply --target ssh://me@server.example.com
+
+# Shorthand, a non-standard port, and a preview-only run
+tuck apply --ssh me@server.example.com --port 2222
+tuck apply --ssh server --dry-run
+
+# Only push a single bundle (e.g. your agent configs)
+tuck apply --ssh server --bundle agents
+```
+
+Each tracked file lands at the same home-relative path on the remote
+(`~/.zshrc` → remote `~/.zshrc`). Only regular home-scoped files are pushed;
+repo-scoped and directory entries are skipped and reported. Nothing runs through
+a shell on your side, and the ssh host/user/port and every remote path are
+validated before use.
+
+**No local push? Bootstrap the remote instead.** Print a one-liner that installs
+tuck and applies a source on a fresh box:
+
+```bash
+tuck apply you/dotfiles --print-bootstrap
+# → npm install -g @prnv/tuck && tuck apply you/dotfiles --yes
+# run it over ssh:
+ssh server 'npm install -g @prnv/tuck && tuck apply you/dotfiles --yes'
+```
+
+Requires `ssh` and `scp` on your machine and SSH access to the remote (key-based
+auth recommended). `tuck` does not need to be installed on the remote for a push.
+
 ## Commands
 
 ### Essential (what you'll use 99% of the time)
@@ -104,13 +141,14 @@ tuck restore --all
 
 ### Managing Files
 
-| Command               | Description                        |
-| --------------------- | ---------------------------------- |
-| `tuck add <paths>`    | Manually track specific files      |
-| `tuck remove <paths>` | Stop tracking files                |
-| `tuck scan`           | Discover dotfiles without syncing  |
-| `tuck list`           | List all tracked files by category |
-| `tuck diff [file]`    | Show what's changed                |
+| Command                     | Description                                           |
+| --------------------------- | ----------------------------------------------------- |
+| `tuck add <paths>`          | Manually track specific files                         |
+| `tuck add --preset <agent>` | Track an AI agent's safe config allowlist (see below) |
+| `tuck remove <paths>`       | Stop tracking files                                   |
+| `tuck scan`                 | Discover dotfiles without syncing                     |
+| `tuck list`                 | List all tracked files by category                    |
+| `tuck diff [file]`          | Show what's changed                                   |
 
 ### Syncing
 
@@ -121,12 +159,13 @@ tuck restore --all
 
 ### Restoring
 
-| Command                 | Description                                                                        |
-| ----------------------- | ---------------------------------------------------------------------------------- |
-| `tuck bootstrap <repo>` | One-command machine setup: install packages, apply dotfiles, run doctor (idempotent) |
-| `tuck apply <user>`     | Apply dotfiles from a GitHub user (with smart merging)                              |
-| `tuck restore`          | Restore dotfiles from repo to system                                               |
-| `tuck undo`             | Restore from Time Machine backup snapshots                                         |
+| Command                     | Description                                                                          |
+| --------------------------- | ------------------------------------------------------------------------------------ |
+| `tuck bootstrap <repo>`     | One-command machine setup: install packages, apply dotfiles, run doctor (idempotent) |
+| `tuck apply <user>`         | Apply dotfiles from a GitHub user (with smart merging)                               |
+| `tuck apply --target <uri>` | Push your locally-tracked configs onto a remote box over SSH                         |
+| `tuck restore`              | Restore dotfiles from repo to system                                                 |
+| `tuck undo`                 | Restore from Time Machine backup snapshots                                           |
 
 `tuck bootstrap` flags:
 - `--yes` / `--force`: Non-interactive (skip the plan confirmation)
@@ -154,38 +193,38 @@ tuck bootstrap you/dotfiles --yes
 ```
 
 Supported managers: `brew`, `apt`, `dnf`, `pacman`, `winget`, `scoop`, `cargo`, `npm`, `pnpm`, `pipx`, `go`, `gem`.
-
 ### Configuration
 
-| Command              | Description                                  |
-| -------------------- | -------------------------------------------- |
-| `tuck config`        | Interactive config menu (includes a setup wizard option) |
-| `tuck config remote` | Configure git provider (GitHub/GitLab/local) |
-| `tuck config get/set/list/edit/reset` | Read or change individual settings |
+| Command                               | Description                                              |
+| ------------------------------------- | -------------------------------------------------------- |
+| `tuck config`                         | Interactive config menu (includes a setup wizard option) |
+| `tuck config remote`                  | Configure git provider (GitHub/GitLab/local)             |
+| `tuck config get/set/list/edit/reset` | Read or change individual settings                       |
 
 ### Diagnostics & Verification
 
-| Command         | Description                                          |
-| --------------- | ---------------------------------------------------- |
-| `tuck doctor`   | Run repository health and safety diagnostics         |
-| `tuck verify`   | Verify the live system, repo, and manifest agree (add `--exit-code` as a CI gate) |
+| Command       | Description                                                                       |
+| ------------- | --------------------------------------------------------------------------------- |
+| `tuck doctor` | Run repository health and safety diagnostics                                      |
+| `tuck verify` | Verify the live system, repo, and manifest agree (add `--exit-code` as a CI gate) |
 
 `tuck doctor` flags:
+
 - `--json`: Machine-readable output for CI
 - `--strict`: Treat warnings as non-zero exit
 - `-c, --category <env|repo|manifest|security|hooks|sandboxing>`: Run one check group
 
 ### Advanced
 
-| Command             | Description                                                       |
-| ------------------- | ---------------------------------------------------------------- |
-| `tuck bundle`       | Manage bundles — logical groups of tracked files                 |
-| `tuck encryption`   | Manage at-rest backup encryption (AES-256-GCM, password-based)   |
-| `tuck secrets`      | Manage local secrets / placeholder replacement                   |
-| `tuck context`      | Track AI agent configs across home and per-repo scopes           |
-| `tuck preset`       | Apply or publish curated bundles of dotfiles & agent configs     |
-| `tuck repo`         | Manage machine-local repo bindings (for repo-scoped tracking)    |
-| `tuck mcp`          | Run the Model Context Protocol server (expose tuck to AI agents) |
+| Command           | Description                                                      |
+| ----------------- | ---------------------------------------------------------------- |
+| `tuck bundle`     | Manage bundles — logical groups of tracked files                 |
+| `tuck encryption` | Manage at-rest backup encryption (AES-256-GCM, password-based)   |
+| `tuck secrets`    | Manage local secrets / placeholder replacement                   |
+| `tuck context`    | Track AI agent configs across home and per-repo scopes           |
+| `tuck preset`     | Apply or publish curated bundles of dotfiles & agent configs     |
+| `tuck repo`       | Manage machine-local repo bindings (for repo-scoped tracking)    |
+| `tuck mcp`        | Run the Model Context Protocol server (expose tuck to AI agents) |
 
 ## How It Works
 
@@ -214,16 +253,57 @@ tuck stores your dotfiles in `~/.tuck`, organized by category:
 
 Run `tuck sync` anytime to detect changes and push. On a new machine, run `tuck apply username` to grab anyone's dotfiles.
 
+## AI Agent Configs
+
+tuck knows exactly which files under each AI agent's home directory are safe to
+version-control — and which are credentials, history, or session state that must
+never leave your machine. One command tracks the safe set:
+
+```bash
+tuck add --preset claude-code   # CLAUDE.md, settings.json, commands/, skills/, agents/, hooks/, rules/
+tuck add --preset cursor        # user settings, keybindings, snippets, ~/.cursor rules
+tuck add --preset codex         # AGENTS.md, config.toml, prompts/
+tuck add --preset gemini        # GEMINI.md, settings.json, commands/
+tuck add --preset copilot       # GitHub Copilot CLI config (non-credential)
+```
+
+Each preset **hard-excludes** local/credential/history/session files
+(`settings.local.json`, `.credentials.json`, `sessions/`, `projects/`, …). Files
+that are found but deliberately skipped are reported so you know they were left
+alone, and tuck's secret scanner still runs on everything actually tracked.
+
+Preview without tracking anything:
+
+```bash
+tuck add --preset claude-code --plan --json
+```
+
+### Cross-agent translation
+
+Keep one canonical instructions file and materialize it for every agent you use.
+`tuck preset translate` writes the same source into each agent's global
+instruction path (default: Claude Code's `~/.claude/CLAUDE.md` and Codex's
+`~/.codex/AGENTS.md`):
+
+```bash
+tuck preset translate ~/dotfiles/AGENTS.md          # copy into Claude + Codex
+tuck preset translate ~/dotfiles/AGENTS.md --link   # symlink instead of copy
+tuck preset translate ~/dotfiles/AGENTS.md --to claude-code,codex,gemini
+```
+
+Existing files are snapshotted before being overwritten (`tuck undo` rolls it
+back), and translation refuses to clobber non-interactively without `--yes`.
+
 ## Git Providers
 
 tuck supports multiple git hosting providers, detected automatically during setup:
 
-| Provider | CLI Required | Features |
-|----------|--------------|----------|
-| **GitHub** | `gh` | Auto-create repos, full integration |
-| **GitLab** | `glab` | Auto-create repos, self-hosted support |
-| **Local** | None | No remote sync, local git only |
-| **Custom** | None | Any git URL (Bitbucket, Gitea, etc.) |
+| Provider   | CLI Required | Features                               |
+| ---------- | ------------ | -------------------------------------- |
+| **GitHub** | `gh`         | Auto-create repos, full integration    |
+| **GitLab** | `glab`       | Auto-create repos, self-hosted support |
+| **Local**  | None         | No remote sync, local git only         |
+| **Custom** | None         | Any git URL (Bitbucket, Gitea, etc.)   |
 
 ### Switching Providers
 
@@ -279,14 +359,14 @@ tuck fully supports Windows with platform-specific handling:
 
 ### Detected Windows Dotfiles
 
-| Category | Files |
-|----------|-------|
-| **Shell** | PowerShell profiles (`Microsoft.PowerShell_profile.ps1`) |
-| **Terminal** | Windows Terminal settings, ConEmu/Cmder configs |
-| **Editors** | VS Code, Cursor, Neovim (in `%LOCALAPPDATA%`) |
-| **Git** | `.gitconfig`, `.gitignore_global` |
-| **SSH** | SSH config in `%USERPROFILE%\.ssh` |
-| **Misc** | WSL config (`.wslconfig`), Docker, Kubernetes |
+| Category     | Files                                                    |
+| ------------ | -------------------------------------------------------- |
+| **Shell**    | PowerShell profiles (`Microsoft.PowerShell_profile.ps1`) |
+| **Terminal** | Windows Terminal settings, ConEmu/Cmder configs          |
+| **Editors**  | VS Code, Cursor, Neovim (in `%LOCALAPPDATA%`)            |
+| **Git**      | `.gitconfig`, `.gitignore_global`                        |
+| **SSH**      | SSH config in `%USERPROFILE%\.ssh`                       |
+| **Misc**     | WSL config (`.wslconfig`), Docker, Kubernetes            |
 
 ### Windows-Specific Behavior
 
@@ -334,6 +414,29 @@ tuck secrets scan
 # Set a secret value locally
 tuck secrets set API_KEY
 ```
+
+### MCP secrets extraction
+
+MCP clients (Claude Desktop, Claude Code, Cursor, VS Code) often store API keys
+and tokens as plaintext inside `mcpServers[...].env` blocks. `tuck secrets
+extract` rewrites those inline credentials into placeholders and stores the real
+values in your configured secret backend, so nothing sensitive is committed:
+
+```bash
+# Scan known MCP config files, preview changes, then extract
+tuck secrets extract --mcp --dry-run
+tuck secrets extract --mcp
+
+# Or target specific files, and use client-native ${env:NAME} references
+tuck secrets extract ./.cursor/mcp.json --format env
+```
+
+Known locations that `--mcp` inspects: Claude Desktop (`claude_desktop_config.json`),
+`~/.claude.json`, `~/.cursor/mcp.json`, `~/.mcp.json`, `.mcp.json` / `mcp.json`
+(project), and `.vscode/mcp.json`. A pre-change snapshot is always taken (revert
+with `tuck undo`). With the default `--format placeholder`, `tuck apply`
+re-injects the values from the backend on each machine; with `--format env` you
+export the matching env vars yourself.
 
 ## Hooks
 

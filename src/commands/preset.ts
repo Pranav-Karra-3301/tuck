@@ -25,12 +25,12 @@
  */
 
 import { Command } from 'commander';
-import { readFile, writeFile, mkdir, readdir, stat } from 'fs/promises';
+import { readFile, writeFile, mkdir, readdir, stat, symlink, rm, realpath } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, isAbsolute, resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { homedir } from 'os';
-import { collapsePath, pathExists, validateSafeDestinationPath } from '../lib/paths.js';
+import { expandPath, collapsePath, pathExists, validateSafeDestinationPath } from '../lib/paths.js';
 import { resolveWriteTarget, allowedRoots } from '../lib/writeContext.js';
 import { copyFileOrDir, setFilePermissions } from '../lib/files.js';
 import { logger, prompts, colors as c } from '../ui/index.js';
@@ -38,6 +38,11 @@ import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import { TuckError } from '../errors.js';
 import { renderTemplate } from '../lib/template.js';
 import { createPreApplySnapshot } from '../lib/timemachine.js';
+import {
+  listInstructionTargets,
+  getInstructionTarget,
+  DEFAULT_TRANSLATION_AGENTS,
+} from '../lib/agentPresets.js';
 
 interface PresetFile {
   source: string;
@@ -93,11 +98,9 @@ const loadPresetFile = async (path: string): Promise<Preset> => {
   // require presets to ship as JSON. YAML is supported only via conversion at
   // publish time (preset publish converts YAML→JSON). See open question in
   // implementation-notes.html.
-  throw new TuckError(
-    `Unsupported preset format: ${path}`,
-    'PRESET_FORMAT',
-    ['Presets must be JSON in v1. Convert YAML to JSON with a tool of your choice.']
-  );
+  throw new TuckError(`Unsupported preset format: ${path}`, 'PRESET_FORMAT', [
+    'Presets must be JSON in v1. Convert YAML to JSON with a tool of your choice.',
+  ]);
 };
 
 const resolvePreset = async (nameOrPath: string): Promise<{ path: string; preset: Preset }> => {
@@ -116,11 +119,10 @@ const resolvePreset = async (nameOrPath: string): Promise<{ path: string; preset
   if (await pathExists(manifest)) {
     return { path: manifest, preset: await loadPresetFile(manifest) };
   }
-  throw new TuckError(
-    `Preset not found: ${nameOrPath}`,
-    'PRESET_NOT_FOUND',
-    ['Run `tuck preset list` to see available presets', 'Or pass a path to a preset.json']
-  );
+  throw new TuckError(`Preset not found: ${nameOrPath}`, 'PRESET_NOT_FOUND', [
+    'Run `tuck preset list` to see available presets',
+    'Or pass a path to a preset.json',
+  ]);
 };
 
 const renderIfTemplate = async (
@@ -352,6 +354,200 @@ const publishAction = async (
   logger.dim(`Pack with: tar -czf ${out} -C ${dir} .`);
 };
 
+/**
+ * Resolve the canonical instructions file for `preset translate`. An explicit
+ * source wins; otherwise fall back to the first existing known instruction
+ * file (Claude Code's CLAUDE.md, then Codex's AGENTS.md, then Gemini's).
+ */
+const resolveTranslationSource = async (source?: string): Promise<string> => {
+  if (source) {
+    const abs = expandPath(source);
+    if (!(await pathExists(abs))) {
+      throw new TuckError(`Source not found: ${collapsePath(abs)}`, 'PRESET_SOURCE_MISSING', [
+        'Pass a readable canonical instructions file.',
+      ]);
+    }
+    if ((await stat(abs)).isDirectory()) {
+      throw new TuckError(
+        `Source must be a file, not a directory: ${collapsePath(abs)}`,
+        'VALIDATION_ERROR'
+      );
+    }
+    return abs;
+  }
+  for (const t of listInstructionTargets()) {
+    const abs = expandPath(t.path);
+    if (await pathExists(abs)) return abs;
+  }
+  throw new TuckError('No canonical instructions file found', 'PRESET_SOURCE_MISSING', [
+    'Pass a source path, e.g. tuck preset translate ~/.claude/CLAUDE.md',
+  ]);
+};
+
+/**
+ * True when `a` and `b` resolve — through any symlinks — to the same real file
+ * on disk. Returns false when either path cannot be resolved (e.g. the target
+ * does not exist yet, or is a broken symlink), since a missing target cannot be
+ * clobbered.
+ *
+ * A lexical `resolve()` compare is not enough for the translation self-target
+ * guard: if a target is a symlink pointing at the source (e.g. the user ran
+ * `ln -s ~/.codex/AGENTS.md ~/.claude/CLAUDE.md`), the two paths differ
+ * lexically but reference one file. Translating with `--link` would then `rm`
+ * the real source and create a circular symlink, leaving both instruction files
+ * unreadable (ELOOP) while reporting success — a silent data-loss bug.
+ */
+const sameRealFile = async (a: string, b: string): Promise<boolean> => {
+  try {
+    return resolve(await realpath(a)) === resolve(await realpath(b));
+  } catch {
+    return false;
+  }
+};
+
+interface TranslateEntry {
+  agent: string;
+  label: string;
+  target: string;
+}
+
+/**
+ * Cross-agent instructions translation (IDEAS 1.8 v1). Materialize one
+ * canonical instructions file into each target agent's global instruction path
+ * (default: Claude Code's CLAUDE.md and Codex's AGENTS.md). Copies by default;
+ * `--link` symlinks each target at the source instead. Reuses the same safety
+ * machinery as `preset apply`: home-confined targets, snapshot-before-overwrite,
+ * and a non-interactive overwrite refusal.
+ */
+export const translateAction = async (
+  source: string | undefined,
+  opts: {
+    json?: boolean;
+    yes?: boolean;
+    plan?: boolean;
+    dryRun?: boolean;
+    to?: string;
+    link?: boolean;
+  }
+): Promise<void> => {
+  if (opts.json) setJsonMode(true, 'tuck preset translate');
+
+  const sourcePath = await resolveTranslationSource(source);
+
+  const agentIds = (opts.to ?? DEFAULT_TRANSLATION_AGENTS.join(','))
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const entries: TranslateEntry[] = [];
+  for (const agent of agentIds) {
+    const target = getInstructionTarget(agent);
+    if (!target) {
+      throw new TuckError(`Unknown translation target: ${agent}`, 'UNKNOWN_TRANSLATION_TARGET', [
+        `Valid targets: ${listInstructionTargets()
+          .map((t) => t.agent)
+          .join(', ')}`,
+      ]);
+    }
+    // Confine + redirect under --root (no-op when not sandboxed).
+    const resolved = resolveWriteTarget(target.path);
+    // Never translate a file onto itself (source may already be one target).
+    if (resolve(resolved) === resolve(sourcePath)) continue;
+    // Also skip when the target resolves to the source *through symlinks* — a
+    // lexical compare misses `~/.claude/CLAUDE.md -> ~/.codex/AGENTS.md`, and
+    // `--link` would otherwise rm the real source and create a circular symlink.
+    if (await sameRealFile(resolved, sourcePath)) continue;
+    entries.push({ agent: target.agent, label: target.label, target: resolved });
+  }
+
+  if (entries.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ source: collapsePath(sourcePath), translated: 0, targets: [] });
+      return;
+    }
+    logger.info('Nothing to translate — the source is the only requested target.');
+    return;
+  }
+
+  if (opts.plan || opts.dryRun) {
+    if (isJsonMode()) {
+      emitJsonOk({
+        source: collapsePath(sourcePath),
+        mode: opts.link ? 'symlink' : 'copy',
+        plan: entries.map((e) => ({ agent: e.agent, target: e.target })),
+      });
+      return;
+    }
+    console.log(
+      c.bold(`Translate ${collapsePath(sourcePath)} → (${opts.link ? 'symlink' : 'copy'}):`)
+    );
+    for (const e of entries) console.log(`  ${e.label}: ${collapsePath(e.target)}`);
+    return;
+  }
+
+  // Safety gate 1: refuse to write anywhere outside $HOME before any mkdir/write.
+  assertPresetTargetsSafe(entries);
+
+  // Safety gate 2: never silently clobber. Snapshot + consent.
+  const existing: string[] = [];
+  for (const e of entries) {
+    if (await pathExists(e.target)) existing.push(e.target);
+  }
+  const nonInteractive = isJsonMode() || !process.stdout.isTTY;
+  const decision = decidePresetOverwrite(existing.length, { yes: opts.yes, nonInteractive });
+
+  if (decision === 'refuse') {
+    throw new TuckError(
+      `Translating would overwrite ${existing.length} existing file(s). Re-run with --yes to confirm.`,
+      'PRESET_OVERWRITE_REFUSED',
+      ['Pass --yes to overwrite (a snapshot is taken first so you can `tuck undo`).']
+    );
+  }
+  if (decision === 'confirm') {
+    logger.warning(`This will overwrite ${existing.length} existing file(s):`);
+    for (const t of existing) logger.dim(`  ${collapsePath(t)}`);
+    const confirmed = await prompts.confirm(
+      `Translate ${collapsePath(sourcePath)} into these files?`,
+      false
+    );
+    if (!confirmed) {
+      logger.info('Aborted — no files changed.');
+      return;
+    }
+  }
+
+  if (existing.length > 0) {
+    await createPreApplySnapshot(existing, 'preset:translate');
+  }
+
+  const content = await readFile(sourcePath);
+  for (const e of entries) {
+    await mkdir(dirname(e.target), { recursive: true });
+    if (opts.link) {
+      // Replace any existing target with a symlink to the canonical source.
+      if (await pathExists(e.target)) await rm(e.target, { force: true });
+      await symlink(sourcePath, e.target);
+    } else {
+      await writeFile(e.target, content);
+    }
+  }
+
+  if (isJsonMode()) {
+    emitJsonOk({
+      source: collapsePath(sourcePath),
+      mode: opts.link ? 'symlink' : 'copy',
+      translated: entries.length,
+      targets: entries.map((e) => ({ agent: e.agent, target: e.target })),
+    });
+    return;
+  }
+  logger.success(
+    `Translated ${collapsePath(sourcePath)} into ${entries.length} agent file(s)` +
+      `${opts.link ? ' (symlinked)' : ''}`
+  );
+  for (const e of entries) logger.dim(`  ${e.label}: ${collapsePath(e.target)}`);
+};
+
 export const presetCommand = new Command('preset')
   .description('Apply or publish curated bundles of dotfiles & agent configs')
   .addCommand(
@@ -362,7 +558,7 @@ export const presetCommand = new Command('preset')
   )
   .addCommand(
     new Command('show')
-      .description('Show a preset\'s contents')
+      .description("Show a preset's contents")
       .argument('<name>', 'Preset name or path')
       .option('--json', 'Emit JSON envelope')
       .action(showAction)
@@ -384,4 +580,23 @@ export const presetCommand = new Command('preset')
       .option('--json', 'Emit JSON envelope')
       .option('-o, --out <path>', 'Output archive path')
       .action(publishAction)
+  )
+  .addCommand(
+    new Command('translate')
+      .description('Materialize one canonical instructions file for multiple agents')
+      .argument(
+        '[source]',
+        'Canonical instructions file (defaults to an existing CLAUDE.md/AGENTS.md)'
+      )
+      .option(
+        '--to <agents>',
+        'Comma-separated target agents',
+        DEFAULT_TRANSLATION_AGENTS.join(',')
+      )
+      .option('--link', 'Symlink each target to the source instead of copying')
+      .option('--json', 'Emit JSON envelope')
+      .option('-y, --yes', 'Auto-confirm prompts')
+      .option('--plan', 'Print the operation plan and exit')
+      .option('--dry-run', 'Print the operation as text and exit (no JSON)')
+      .action(translateAction)
   );

@@ -126,15 +126,21 @@ export const parseRequirementList = (input: string): string[] => {
  * authored on another machine (or hand-edited) must still be inspectable, so the
  * caller decides whether an unknown manager is a warning (bootstrap: skip it) or
  * a hard error. Valid requirements are returned parsed.
+ *
+ * When `bundle` is given, only requirements declared by files in that bundle are
+ * collected — a scoped bootstrap must not install packages the user filtered out.
+ * A file with no bundle belongs to "default", mirroring how files are applied.
  */
 export const collectRequirements = (
-  manifest: TuckManifestOutput
+  manifest: TuckManifestOutput,
+  bundle?: string
 ): { requirements: Requirement[]; invalid: string[] } => {
   const seen = new Set<string>();
   const requirements: Requirement[] = [];
   const invalid: string[] = [];
 
   for (const file of Object.values(manifest.files)) {
+    if (bundle && (file.bundle ?? 'default') !== bundle) continue;
     for (const spec of file.requires ?? []) {
       let req: Requirement;
       try {

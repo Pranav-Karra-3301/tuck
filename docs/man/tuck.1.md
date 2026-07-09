@@ -21,11 +21,11 @@ tuck is a modern dotfiles manager that provides a beautiful CLI for managing you
 * **list**: List all tracked files
 * **diff**: Show differences between system and repository
 * **config**: Manage tuck configuration
-* **apply**: Apply dotfiles from a repository to this machine
+* **apply**: Apply dotfiles from a repository to this machine, or push locally-tracked configs onto a remote box with **--target ssh://[user@]host** (or **--ssh host**); **--print-bootstrap** prints a remote install-and-apply one-liner
 * **bootstrap**: One-command, idempotent machine setup (install packages, apply dotfiles, run doctor)
 * **undo**: Restore files from a Time Machine backup snapshot
 * **scan**: Scan the system for dotfiles and select which to track
-* **secrets**: Manage local secrets for placeholder replacement
+* **secrets**: Manage local secrets for placeholder replacement (incl. `secrets extract --mcp` to pull inline credentials out of MCP config files)
 * **encryption**: Manage backup encryption (AES-256-GCM, password-based)
 * **doctor**: Run repository health and safety diagnostics
 * **verify**: Verify that the live system, repo, and manifest agree
