@@ -13,9 +13,13 @@
  * - The remote destination is derived from the tracked file's home-relative
  *   source (`~/.zshrc` → `.zshrc`) and is always placed under the remote $HOME.
  *   Absolute / out-of-home / traversal paths are refused.
- * - The remote `mkdir -p` command and the scp remote spec ARE interpreted by the
- *   remote shell, so remote paths are single-quoted and validated to contain no
- *   single quote or control character before use.
+ * - The remote `mkdir -p` command IS interpreted by the remote shell, so its path
+ *   is single-quoted and validated to contain no single quote or control
+ *   character before use. The scp destination path is NOT shell-interpreted:
+ *   since OpenSSH 9.0 scp speaks the SFTP protocol and takes the path verbatim,
+ *   so it is passed UNQUOTED (quoting it would create a file whose name literally
+ *   contains the quotes). The same no-quote/no-control-char validation is kept as
+ *   defense-in-depth.
  * - ssh host/user/port components are strictly validated (no leading dash, no
  *   shell metacharacters) so a hostile value cannot be smuggled in as an ssh flag.
  */
@@ -271,9 +275,16 @@ export const buildSshCommand = (target: SshTarget, remoteCommand: string): strin
 
 /**
  * Build the argv for an `scp` upload of a single local file to a remote
- * home-relative path. The port flag for scp is `-P` (capital). The remote path
- * is single-quoted so spaces and shell-special characters are inert; the caller
- * has already validated it contains no single quote.
+ * home-relative path. The port flag for scp is `-P` (capital).
+ *
+ * The remote path is passed UNQUOTED. Since OpenSSH 9.0 (the default on all
+ * modern macOS/Linux) scp uses the SFTP protocol, where the remote path is taken
+ * verbatim rather than expanded by a remote shell — there is no shell on the
+ * execFile→scp→sftp-server path. Single-quoting it (as the legacy SCP protocol
+ * required) would create a remote file whose name literally contains the quote
+ * characters, silently writing to the wrong destination. `remoteRelative` has
+ * already been validated (no single quote, no control character) as
+ * defense-in-depth.
  */
 export const buildScpCommand = (
   target: SshTarget,
@@ -282,7 +293,7 @@ export const buildScpCommand = (
 ): string[] => {
   const args: string[] = [];
   if (target.port) args.push('-P', String(target.port));
-  args.push(localPath, `${sshDestination(target)}:'${remoteRelative}'`);
+  args.push(localPath, `${sshDestination(target)}:${remoteRelative}`);
   return args;
 };
 

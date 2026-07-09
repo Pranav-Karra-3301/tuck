@@ -130,12 +130,21 @@ describe('sshDestination / buildSshCommand / buildScpCommand', () => {
     expect(buildSshCommand(noUser, 'mkdir -p x')).toEqual(['box', 'mkdir -p x']);
   });
 
-  it('builds scp argv with the -P port flag and a single-quoted remote path', () => {
+  it('builds scp argv with the -P port flag and an UNQUOTED remote path', () => {
+    // scp uses the SFTP protocol (OpenSSH 9.0+) and takes the remote path
+    // verbatim — quoting it would create a file literally named "'.zshrc'".
     expect(buildScpCommand(withUser, '/local/zshrc', '.zshrc')).toEqual([
       '-P',
       '2222',
       '/local/zshrc',
-      "me@box:'.zshrc'",
+      'me@box:.zshrc',
+    ]);
+  });
+
+  it('does not quote a nested remote path', () => {
+    expect(buildScpCommand(noUser, '/local/init.lua', '.config/nvim/init.lua')).toEqual([
+      '/local/init.lua',
+      'box:.config/nvim/init.lua',
     ]);
   });
 });
@@ -158,11 +167,13 @@ describe('pushEntryToRemote', () => {
     await pushEntryToRemote(target, entry, runner);
 
     expect(calls[0].cmd).toBe('ssh');
+    // The mkdir command IS remote-shell-interpreted, so its path stays quoted.
     expect(calls[0].args).toEqual(['box', "mkdir -p '.config/nvim'"]);
     expect(calls[1].cmd).toBe('scp');
+    // The scp destination is verbatim (SFTP), so its path is UNQUOTED.
     expect(calls[1].args).toEqual([
       '/tuck/files/editor/nvim/init.lua',
-      "box:'.config/nvim/init.lua'",
+      'box:.config/nvim/init.lua',
     ]);
   });
 
@@ -178,7 +189,7 @@ describe('pushEntryToRemote', () => {
     await pushEntryToRemote(target, entry, runner);
 
     expect(runner).toHaveBeenCalledTimes(1);
-    expect(runner).toHaveBeenCalledWith('scp', ['/tuck/files/shell/zshrc', "box:'.zshrc'"]);
+    expect(runner).toHaveBeenCalledWith('scp', ['/tuck/files/shell/zshrc', 'box:.zshrc']);
   });
 });
 
