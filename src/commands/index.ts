@@ -18,3 +18,4 @@ export { doctorCommand } from './doctor.js';
 export { bundleCommand } from './bundle.js';
 export { verifyCommand } from './verify.js';
 export { repoCommand } from './repo.js';
+export { bootstrapCommand } from './bootstrap.js';

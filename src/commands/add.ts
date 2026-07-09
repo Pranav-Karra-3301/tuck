@@ -13,6 +13,7 @@ import {
   type PreparedTrackFile,
   type TrackPathCandidate,
 } from '../lib/trackPipeline.js';
+import { parseRequirementList } from '../lib/requires.js';
 
 type FileToAdd = PreparedTrackFile;
 
@@ -40,6 +41,13 @@ const addFiles = async (
     await ensureBundle(tuckDir, options.bundle);
   }
 
+  // Parse --requires ONCE (fail fast on a bad spec before any file is tracked).
+  // The validated specs apply to every file added in this invocation.
+  const requires =
+    options.requires && options.requires.trim().length > 0
+      ? parseRequirementList(options.requires)
+      : undefined;
+
   const filesToTrack: FileToTrack[] = filesToAdd.map((f) => {
     const isRepo = f.scope === 'repo';
     const trackedFile: FileToTrack = {
@@ -55,6 +63,10 @@ const addFiles = async (
 
     if (options.bundle) {
       trackedFile.bundle = options.bundle;
+    }
+
+    if (requires && requires.length > 0) {
+      trackedFile.requires = requires;
     }
 
     // Carry the repo-only redaction plan across (issue #100 RC5): applied to the
@@ -492,6 +504,10 @@ export const addCommand = new Command('add')
   )
   .option('-f, --force', 'Skip secret scanning (not recommended)')
   .option('-b, --bundle <name>', 'Bundle to assign the file to (defaults to "default")')
+  .option(
+    '--requires <specs>',
+    'Declare package dependencies for this file, e.g. "brew:starship,apt:zsh" (installed first by `tuck bootstrap`)'
+  )
   .option('--json', 'Emit JSON envelope to stdout (non-interactive)')
   .option('-y, --yes', 'Auto-confirm prompts (use with --json for full automation)')
   .option('--plan', 'Print the planned tracking operation as JSON and exit')
