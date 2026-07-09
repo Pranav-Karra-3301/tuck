@@ -96,7 +96,7 @@ export {
 
 import { loadConfig } from '../config.js';
 import { scanFiles, type ScanSummary, type FileScanResult } from './scanner.js';
-import { setSecret, ensureSecretsGitignored } from './store.js';
+import { setSecret, ensureSecretsGitignored, getAllSecrets } from './store.js';
 import { createCustomPattern, type SecretPattern } from './patterns.js';
 import type { CustomPattern } from '../../schemas/secrets.schema.js';
 import { scanWithScanner, isGitleaksInstalled, isTrufflehogInstalled, type ExternalScanner } from './external.js';
@@ -163,6 +163,16 @@ export const processSecretsForRedaction = async (
   // Track used placeholders to ensure uniqueness
   const usedPlaceholders = new Set<string>();
 
+  // Seed reuse from the persisted store: same value -> same placeholder across
+  // runs. With repo-only redaction the live file keeps its secrets, so the same
+  // values are re-detected on every future scan; without seeding, each run would
+  // mint API_KEY_1, API_KEY_2, ... and orphan the earlier names.
+  const existing = await getAllSecrets(tuckDir);
+  const valueToExisting = new Map<string, string>();
+  for (const [name, value] of Object.entries(existing)) valueToExisting.set(value, name);
+  // Reserve every stored name so a NEW distinct value can't steal it.
+  for (const name of Object.keys(existing)) usedPlaceholders.add(name);
+
   for (const result of results) {
     const placeholderMap = new Map<string, string>();
 
@@ -173,6 +183,12 @@ export const processSecretsForRedaction = async (
       // First check the current file's map to avoid duplicates within the same file
       if (placeholderMap.has(match.value)) {
         existingPlaceholder = placeholderMap.get(match.value);
+      } else if (valueToExisting.has(match.value)) {
+        // Then reuse a name already committed to the store for this exact value.
+        // If the scanner now derives a nicer identifier-based placeholder than the
+        // stored one, we deliberately keep the STORED name: stability of the
+        // placeholder committed to the repo copy wins over nicer naming.
+        existingPlaceholder = valueToExisting.get(match.value);
       } else {
         // Then check previous files
         for (const map of fileRedactionMaps.values()) {
