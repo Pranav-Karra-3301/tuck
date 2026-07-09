@@ -82,8 +82,15 @@ export class FileAlreadyTrackedError extends TuckError {
 }
 
 export class GitError extends TuckError {
-  constructor(message: string, gitError?: string) {
-    super(`Git operation failed: ${message}`, 'GIT_ERROR', gitError ? [gitError] : undefined);
+  /** Raw git stderr/stdout, preserved for debugging even when tailored suggestions are supplied. */
+  public readonly gitOutput?: string;
+
+  constructor(message: string, gitError?: string, suggestions?: string[]) {
+    // When callers provide contextual `suggestions` (see `describeGitError` in
+    // lib/git.ts), use them as the actionable next steps. Otherwise fall back to
+    // surfacing the raw git output as a single suggestion (legacy behavior).
+    super(`Git operation failed: ${message}`, 'GIT_ERROR', suggestions ?? (gitError ? [gitError] : undefined));
+    this.gitOutput = gitError;
   }
 }
 
