@@ -525,8 +525,12 @@ export const GENERIC_PATTERNS: SecretPattern[] = [
   {
     id: 'password-url',
     name: 'Password in URL',
-    // Security: Upper bounds to prevent ReDoS
-    pattern: /:\/\/[^:]{1,100}:([^@]{8,200})@/g,
+    // Security: Upper bounds to prevent ReDoS.
+    // RFC 3986 userinfo cannot contain whitespace or '/'; excluding them keeps
+    // the match on a single line. `[^:]`/`[^@]` matched newlines, so URLs on
+    // consecutive comment lines were reported as one multi-line "password" and
+    // redaction spliced the lines together (issue #100).
+    pattern: /:\/\/[^:/\s]{1,100}:([^@/\s]{8,200})@/g,
     severity: 'critical',
     description: 'Password embedded in URL',
     placeholder: 'URL_PASSWORD',
@@ -536,7 +540,9 @@ export const GENERIC_PATTERNS: SecretPattern[] = [
   {
     id: 'api-key-assignment',
     name: 'API Key Assignment',
-    pattern: /(?:api[_-]?key|apikey)\s*[=:]\s*(?:['"]([A-Za-z0-9_-]{16,256})['"]|([A-Za-z0-9_-]{16,256}))/gi,
+    // '.' is allowed in the value: dotted keys (e.g. `part1.part2`) otherwise
+    // match only up to the dot, leaving the tail in cleartext (issue #100).
+    pattern: /(?:api[_-]?key|apikey)\s*[=:]\s*(?:['"]([A-Za-z0-9_.-]{16,256})['"]|([A-Za-z0-9_.-]{16,256}))/gi,
     severity: 'high',
     description: 'API key assigned in configuration',
     placeholder: 'API_KEY',
@@ -556,7 +562,8 @@ export const GENERIC_PATTERNS: SecretPattern[] = [
   {
     id: 'secret-assignment',
     name: 'Secret Assignment',
-    pattern: /(?:secret|client[_-]?secret|app[_-]?secret|secret[_-]?key)\s*[=:]\s*(?:['"]([A-Za-z0-9_-]{16,256})['"]|([A-Za-z0-9_-]{16,256}))/gi,
+    // '.' allowed in the value for the same reason as api-key-assignment.
+    pattern: /(?:secret|client[_-]?secret|app[_-]?secret|secret[_-]?key)\s*[=:]\s*(?:['"]([A-Za-z0-9_.-]{16,256})['"]|([A-Za-z0-9_.-]{16,256}))/gi,
     severity: 'high',
     description: 'Secret assigned in configuration',
     placeholder: 'SECRET',
@@ -583,11 +590,14 @@ export const GENERIC_PATTERNS: SecretPattern[] = [
   },
 
   // Database connection strings
-  // Security: All patterns have length limits to prevent ReDoS
+  // Security: All patterns have length limits to prevent ReDoS.
+  // User/password classes exclude whitespace so a URL on one line can never
+  // pair with an '@' on a later line (same newline-spanning defect as
+  // password-url, issue #100).
   {
     id: 'postgres-connection',
     name: 'PostgreSQL Connection String',
-    pattern: /postgres(?:ql)?:\/\/[^:]{1,100}:[^@]{1,200}@[^\s'"]{1,500}/gi,
+    pattern: /postgres(?:ql)?:\/\/[^:\s]{1,100}:[^@\s]{1,200}@[^\s'"]{1,500}/gi,
     severity: 'critical',
     description: 'PostgreSQL connection string with credentials',
     placeholder: 'DATABASE_URL',
@@ -595,7 +605,7 @@ export const GENERIC_PATTERNS: SecretPattern[] = [
   {
     id: 'mysql-connection',
     name: 'MySQL Connection String',
-    pattern: /mysql:\/\/[^:]{1,100}:[^@]{1,200}@[^\s'"]{1,500}/gi,
+    pattern: /mysql:\/\/[^:\s]{1,100}:[^@\s]{1,200}@[^\s'"]{1,500}/gi,
     severity: 'critical',
     description: 'MySQL connection string with credentials',
     placeholder: 'DATABASE_URL',
@@ -603,7 +613,7 @@ export const GENERIC_PATTERNS: SecretPattern[] = [
   {
     id: 'mongodb-connection',
     name: 'MongoDB Connection String',
-    pattern: /mongodb(?:\+srv)?:\/\/[^:]{1,100}:[^@]{1,200}@[^\s'"]{1,500}/gi,
+    pattern: /mongodb(?:\+srv)?:\/\/[^:\s]{1,100}:[^@\s]{1,200}@[^\s'"]{1,500}/gi,
     severity: 'critical',
     description: 'MongoDB connection string with credentials',
     placeholder: 'MONGODB_URI',
@@ -611,7 +621,7 @@ export const GENERIC_PATTERNS: SecretPattern[] = [
   {
     id: 'redis-connection',
     name: 'Redis Connection String',
-    pattern: /redis:\/\/[^:]{1,100}:[^@]{1,200}@[^\s'"]{1,500}/gi,
+    pattern: /redis:\/\/[^:\s]{1,100}:[^@\s]{1,200}@[^\s'"]{1,500}/gi,
     severity: 'critical',
     description: 'Redis connection string with credentials',
     placeholder: 'REDIS_URL',

@@ -69,6 +69,37 @@ describe('track pipeline secret gate', () => {
     ).rejects.toBeInstanceOf(SecretsDetectedError);
   });
 
+  it('redact action records the redacted live paths and restores them after tracking (issue #100)', async () => {
+    selectMock.mockResolvedValue('redact');
+    await initTestTuck();
+
+    const file = join(TEST_HOME, '.testrc');
+    const original = 'export MY_API_KEY=secret_0123456789abcdef0123456789abcdef\n';
+    vol.writeFileSync(file, original);
+
+    const { preparePathsForTracking, restoreRedactedLiveFiles } = await import(
+      '../../src/lib/trackPipeline.js'
+    );
+
+    const prepared = await preparePathsForTracking([{ path: file }], TEST_TUCK_DIR, {
+      secretHandling: 'interactive',
+    });
+    expect(prepared).toHaveLength(1);
+
+    // The live file is redacted for the upcoming copy into the repo — but the
+    // variable name must survive (only the VALUE is a secret), and the pipeline
+    // must remember which live paths it rewrote.
+    const redacted = vol.readFileSync(file, 'utf-8') as string;
+    expect(redacted).toContain('MY_API_KEY={{');
+    expect(redacted).not.toContain('secret_0123456789');
+    expect(prepared[0].redactedLivePaths).toEqual([file]);
+
+    // After the repo copy exists, the caller restores the live file so the
+    // user's actual config keeps working.
+    await restoreRedactedLiveFiles(prepared, TEST_TUCK_DIR);
+    expect(vol.readFileSync(file, 'utf-8')).toBe(original);
+  });
+
   it('excludes a repo-scoped file from tracking when the user chooses the .tuckignore action', async () => {
     selectMock.mockResolvedValue('ignore');
     await initTestTuck();

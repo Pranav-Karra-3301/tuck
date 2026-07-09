@@ -21,6 +21,7 @@ import { getFileChecksum } from './files.js';
 import { getAllTrackedFiles } from './manifest.js';
 import { resolveLiveTarget } from './repoScope.js';
 import { materializeForLive, keystorePassphrase, buildMaterializeCtx } from './materialize.js';
+import { liveMatchesRestoredRepo } from './secrets/redactor.js';
 import type { TemplateContext } from './template.js';
 import type { TrackedFileOutput } from '../schemas/manifest.schema.js';
 
@@ -167,7 +168,17 @@ export const computeFileState = async (
   }
 
   const liveChecksum = await computeLiveChecksum(sourceAbs, file);
-  return entry(classifyFileState(liveChecksum, repoChecksum, file.checksum), liveChecksum, repoChecksum);
+  let state = classifyFileState(liveChecksum, repoChecksum, file.checksum);
+
+  // Secret-redacted files: the repo copy holds `{{PLACEHOLDER}}` while the live
+  // file keeps the real values, so their checksums differ FOREVER. Like the
+  // template/encrypted comparison above, the live form of a redacted file is
+  // restore(repo, secrets) — if the live file matches that, it is not drift.
+  if (state === 'drift-local' && (await liveMatchesRestoredRepo(sourceAbs, repoAbs, tuckDir))) {
+    state = repoChecksum !== file.checksum ? 'drift-repo' : 'ok';
+  }
+
+  return entry(state, liveChecksum, repoChecksum);
 };
 
 /** Compute the state of every tracked file in the manifest. */

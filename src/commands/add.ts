@@ -9,6 +9,7 @@ import type { AddOptions } from '../types.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import {
   preparePathsForTracking,
+  restoreRedactedLiveFiles,
   type PreparedTrackFile,
   type TrackPathCandidate,
 } from '../lib/trackPipeline.js';
@@ -77,6 +78,10 @@ const addFiles = async (
     template: options.template,
     actionVerb: 'Tracking',
   });
+
+  // The redacted copies are in the repo now — put the original values back in
+  // the LIVE files so the user's actual config keeps working (issue #100).
+  await restoreRedactedLiveFiles(filesToAdd, tuckDir);
 };
 
 const runInteractiveAdd = async (tuckDir: string, options: AddOptions = {}): Promise<void> => {

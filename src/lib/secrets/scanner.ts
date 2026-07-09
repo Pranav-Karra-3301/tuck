@@ -261,8 +261,14 @@ export const scanContent = (content: string, options: ScanOptions = {}): SecretM
         break;
       }
 
-      // Extract the captured value (prefer capture group 1 if exists)
-      const value = match[1] || match[0];
+      // Extract the captured value: the FIRST DEFINED capture group, falling
+      // back to the whole match only for patterns with no groups. Several
+      // generic patterns put the secret in group 2 (the unquoted alternative);
+      // `match[1] || match[0]` fell back to the whole match there, so redaction
+      // replaced the `KEY=` context too — corrupting the file and orphaning the
+      // rest of the line (issue #100).
+      const captured = match.slice(1).find((group) => group !== undefined);
+      const value = captured ?? match[0];
 
       // Skip empty or very short matches
       if (!value || value.length < 4) {

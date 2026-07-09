@@ -93,6 +93,7 @@ vi.mock('../../src/lib/fileTracking.js', () => ({
 
 vi.mock('../../src/lib/trackPipeline.js', () => ({
   preparePathsForTracking: preparePathsForTrackingMock,
+  restoreRedactedLiveFiles: vi.fn().mockResolvedValue(undefined),
 }));
 
 describe('scan command behavior', () => {

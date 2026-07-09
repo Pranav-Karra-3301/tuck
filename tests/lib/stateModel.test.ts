@@ -111,6 +111,43 @@ describe('computeStateModel', () => {
     expect(model[0].state).toBe('ok');
   });
 
+  it('reports ok for a secret-redacted repo copy whose live file holds the restored values (issue #100)', async () => {
+    // Live keeps the real secret; the repo copy holds the placeholder. That is
+    // the CORRECT post-redaction state, not drift.
+    const { setSecret } = await import('../../src/lib/secrets/store.js');
+    await setSecret(TUCK, 'API_KEY', 'secret_0123456789abcdef0123456789abcdef');
+    vol.writeFileSync('/test-home/.zshrc', 'export MY_API_KEY=secret_0123456789abcdef0123456789abcdef\n');
+    vol.writeFileSync(`${TUCK}/files/shell/zshrc`, 'export MY_API_KEY={{API_KEY}}\n');
+    const { getFileChecksum } = await import('../../src/lib/files.js');
+    const repoChecksum = await getFileChecksum(`${TUCK}/files/shell/zshrc`);
+    writeManifest({
+      source: '~/.zshrc', destination: 'files/shell/zshrc', category: 'shell',
+      strategy: 'copy', checksum: repoChecksum, added: ts, modified: ts,
+    });
+
+    const model = await computeStateModel(TUCK);
+    expect(model[0].state).toBe('ok');
+  });
+
+  it('reports drift-local when a secret-redacted live file was genuinely edited', async () => {
+    const { setSecret } = await import('../../src/lib/secrets/store.js');
+    await setSecret(TUCK, 'API_KEY', 'secret_0123456789abcdef0123456789abcdef');
+    vol.writeFileSync(
+      '/test-home/.zshrc',
+      'export MY_API_KEY=secret_0123456789abcdef0123456789abcdef\nalias new="thing"\n'
+    );
+    vol.writeFileSync(`${TUCK}/files/shell/zshrc`, 'export MY_API_KEY={{API_KEY}}\n');
+    const { getFileChecksum } = await import('../../src/lib/files.js');
+    const repoChecksum = await getFileChecksum(`${TUCK}/files/shell/zshrc`);
+    writeManifest({
+      source: '~/.zshrc', destination: 'files/shell/zshrc', category: 'shell',
+      strategy: 'copy', checksum: repoChecksum, added: ts, modified: ts,
+    });
+
+    const model = await computeStateModel(TUCK);
+    expect(model[0].state).toBe('drift-local');
+  });
+
   it('reports drift-local for a hand-edited template live file (needs apply)', async () => {
     vol.writeFileSync('/test-home/.zshrc', 'HAND EDITED');
     vol.writeFileSync(`${TUCK}/files/shell/zshrc`, 'os={{os}}');

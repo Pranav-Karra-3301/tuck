@@ -65,7 +65,7 @@ import { CATEGORIES } from '../constants.js';
 import { defaultConfig } from '../schemas/config.schema.js';
 import type { InitOptions } from '../types.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
-import { preparePathsForTracking } from '../lib/trackPipeline.js';
+import { preparePathsForTracking, restoreRedactedLiveFiles } from '../lib/trackPipeline.js';
 import { errorToMessage } from '../lib/validation.js';
 import { REPO_RUNTIME_GITIGNORE_PATTERNS, ensureRuntimeArtifactsGitignored } from '../lib/state.js';
 
@@ -120,6 +120,10 @@ const trackFilesWithProgressInit = async (
     showCategory: true,
     actionVerb: 'Tracking',
   });
+
+  // The redacted copies are in the repo now — put the original values back in
+  // the LIVE files so the user's actual config keeps working (issue #100).
+  await restoreRedactedLiveFiles(prepared, tuckDir);
 
   return result.succeeded;
 };

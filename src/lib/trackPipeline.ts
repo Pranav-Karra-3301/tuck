@@ -32,6 +32,7 @@ import {
   isSecretScanningEnabled,
   processSecretsForRedaction,
   redactFile,
+  restoreLiveFilesAfterRedaction,
   scanForSecrets,
   shouldBlockOnSecrets,
   type ScanSummary,
@@ -96,6 +97,13 @@ export interface PreparedTrackFile {
   remoteUrl?: string;
   /** Absolute live path to copy FROM (repo scope only). */
   liveSource?: string;
+  /**
+   * LIVE paths this candidate owns that were redacted in place so the repo
+   * copy gets placeholders. After tracking (i.e. after the copy), callers must
+   * restore these via restoreRedactedLiveFiles — a live rc/config file left
+   * with `{{PLACEHOLDER}}` in it is broken config (issue #100).
+   */
+  redactedLivePaths?: string[];
 }
 
 export interface PreparePathsForTrackingOptions {
@@ -315,6 +323,14 @@ const applySecretPolicy = async (
       if (placeholderMap && placeholderMap.size > 0) {
         const redactionResult = await redactFile(result.path, result.matches, placeholderMap);
         totalRedacted += redactionResult.replacements.length;
+
+        // Remember which LIVE path was rewritten (on its owning candidate —
+        // for a directory candidate the redacted path is an inner file) so the
+        // caller can restore it once the redacted copy is in the repo.
+        const owner = ownerByScanPath.get(result.path);
+        if (owner) {
+          (owner.redactedLivePaths ??= []).push(result.path);
+        }
       }
     }
 
@@ -366,6 +382,50 @@ const applySecretPolicy = async (
 
   logger.warning('Proceeding with secrets - be careful not to push to a public repository!');
   return files;
+};
+
+/**
+ * Restore the original secret values to LIVE paths that were redacted in
+ * place. Call this AFTER the (redacted) content has been copied into the
+ * repo: placeholders belong in the repo copy only — the live file must keep
+ * working config (issue #100: a `{{PLACEHOLDER}}` left in ~/.zshrc makes zsh
+ * abort sourcing it).
+ */
+export const restoreRedactedLivePaths = async (
+  paths: string[],
+  tuckDir: string
+): Promise<void> => {
+  if (paths.length === 0) {
+    return;
+  }
+
+  const { restoredFiles, skippedSymlinks } = await restoreLiveFilesAfterRedaction(paths, tuckDir);
+
+  if (restoredFiles > 0) {
+    logger.success(
+      `Restored original values to ${restoredFiles} live file(s) — placeholders remain only in the tuck repository`
+    );
+  }
+  for (const skipped of skippedSymlinks) {
+    logger.warning(
+      `${collapsePath(skipped)} is a symlink into the repository — original values NOT restored ` +
+        '(that would write the secrets back into git). The live file still contains placeholders.'
+    );
+  }
+};
+
+/**
+ * Convenience wrapper over restoreRedactedLivePaths for the prepared files
+ * returned by preparePathsForTracking.
+ */
+export const restoreRedactedLiveFiles = async (
+  files: PreparedTrackFile[],
+  tuckDir: string
+): Promise<void> => {
+  await restoreRedactedLivePaths(
+    files.flatMap((file) => file.redactedLivePaths ?? []),
+    tuckDir
+  );
 };
 
 export const preparePathsForTracking = async (

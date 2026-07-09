@@ -5,7 +5,7 @@
  * and restoring them from the local secrets store.
  */
 
-import { readFile, writeFile, rename, unlink, stat } from 'fs/promises';
+import { readFile, writeFile, rename, unlink, stat, lstat } from 'fs/promises';
 import { randomBytes } from 'crypto';
 import { dirname, basename, join } from 'path';
 import { expandPath, pathExists } from '../paths.js';
@@ -345,6 +345,94 @@ export const restoreFiles = async (
     filesModified,
     allUnresolved: [...allUnresolved],
   };
+};
+
+/**
+ * Restore LIVE files that were redacted in place so their tracked copy could be
+ * written with placeholders. A live rc/config file containing `{{PLACEHOLDER}}`
+ * is broken config (a shell reads it literally — see issue #100), so once the
+ * redacted copy is safely in the repo the live original must get its values
+ * back.
+ *
+ * Symlinks are skipped: a symlink-strategy live path points INTO the tuck
+ * repo, and restoring through it would write the secrets straight back into
+ * the git-tracked copy.
+ */
+export const restoreLiveFilesAfterRedaction = async (
+  filepaths: string[],
+  tuckDir: string
+): Promise<{ restoredFiles: number; skippedSymlinks: string[] }> => {
+  const secrets = await getAllSecrets(tuckDir);
+  let restoredFiles = 0;
+  const skippedSymlinks: string[] = [];
+
+  for (const filepath of filepaths) {
+    const expandedPath = expandPath(filepath);
+
+    let stats;
+    try {
+      stats = await lstat(expandedPath);
+    } catch {
+      continue; // Vanished since redaction — nothing to restore.
+    }
+
+    if (stats.isSymbolicLink()) {
+      skippedSymlinks.push(filepath);
+      continue;
+    }
+    if (stats.isDirectory()) {
+      continue;
+    }
+
+    const content = await readFile(expandedPath, 'utf-8');
+    const result = restoreContent(content, secrets);
+
+    if (result.restored > 0) {
+      // Security: Use atomic write to prevent data loss from race conditions
+      await atomicWriteFile(expandedPath, result.restoredContent);
+      restoredFiles++;
+    }
+  }
+
+  return { restoredFiles, skippedSymlinks };
+};
+
+/**
+ * Whether a LIVE file is exactly the repo copy with its secret placeholders
+ * restored — i.e. the correct post-redaction state, not real drift.
+ *
+ * After "Replace with placeholders" the repo copy holds `{{NAME}}` while the
+ * live file keeps the actual values (issue #100), so their checksums always
+ * differ. Change detection uses this to avoid reporting that as a perpetual
+ * "modified" (which would re-prompt about the same secrets on every sync).
+ * Analogous to how template/encrypted files compare live against
+ * materialize(repo) instead of the raw repo bytes.
+ */
+export const liveMatchesRestoredRepo = async (
+  livePath: string,
+  repoPath: string,
+  tuckDir: string
+): Promise<boolean> => {
+  try {
+    const expandedRepo = expandPath(repoPath);
+    const expandedLive = expandPath(livePath);
+
+    if ((await stat(expandedRepo)).isDirectory()) return false;
+    if ((await stat(expandedLive)).isDirectory()) return false;
+
+    const repoContent = await readFile(expandedRepo, 'utf-8');
+    if (!hasPlaceholders(repoContent)) return false;
+
+    const secrets = await getAllSecrets(tuckDir);
+    const result = restoreContent(repoContent, secrets);
+    if (result.restored === 0) return false;
+
+    const liveContent = await readFile(expandedLive, 'utf-8');
+    return liveContent === result.restoredContent;
+  } catch {
+    // Missing, binary, or unreadable on either side: treat as real drift.
+    return false;
+  }
 };
 
 /**

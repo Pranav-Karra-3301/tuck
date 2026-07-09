@@ -70,6 +70,8 @@ export {
   hasPlaceholders,
   countPlaceholders,
   restoreFiles,
+  restoreLiveFilesAfterRedaction,
+  liveMatchesRestoredRepo,
   previewRestoration,
   // Resolver-based functions (password manager integration)
   restoreFileWithResolver,

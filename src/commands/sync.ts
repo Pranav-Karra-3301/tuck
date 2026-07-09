@@ -50,8 +50,13 @@ import { setJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
 import type { SyncOptions, FileChange } from '../types.js';
 import { detectDotfiles, DETECTION_CATEGORIES, type DetectedFile } from '../lib/detect.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
-import { preparePathsForTracking } from '../lib/trackPipeline.js';
-import { scanForSecrets, isSecretScanningEnabled, shouldBlockOnSecrets, processSecretsForRedaction, redactFile } from '../lib/secrets/index.js';
+import {
+  preparePathsForTracking,
+  restoreRedactedLiveFiles,
+  restoreRedactedLivePaths,
+  type PreparedTrackFile,
+} from '../lib/trackPipeline.js';
+import { scanForSecrets, isSecretScanningEnabled, shouldBlockOnSecrets, processSecretsForRedaction, redactFile, liveMatchesRestoredRepo } from '../lib/secrets/index.js';
 import { displayScanResults } from './secrets.js';
 import { logForceSecretBypass } from '../lib/audit.js';
 
@@ -149,6 +154,14 @@ const detectChanges = async (tuckDir: string): Promise<TrackedFileChange[]> => {
     try {
       const sourceChecksum = await getFileChecksum(sourcePath);
       if (sourceChecksum !== file.checksum) {
+        // Secret-redacted files: the repo copy holds `{{PLACEHOLDER}}` while
+        // the live file keeps the real values, so their checksums differ
+        // FOREVER. If the live file is exactly the repo copy with secrets
+        // restored, that is the correct state — not a modification (otherwise
+        // every sync would re-flag the same secrets, issue #100).
+        if (await liveMatchesRestoredRepo(sourcePath, join(tuckDir, file.destination), tuckDir)) {
+          continue;
+        }
         changes.push({
           path: file.source,
           status: 'modified',
@@ -578,14 +591,21 @@ const syncFiles = async (
 };
 
 /**
- * Scan modified files for secrets and handle user interaction
- * Returns true if sync should continue, false if aborted
+ * Scan modified files for secrets and handle user interaction.
+ * Returns whether sync should continue, plus the LIVE paths the redact action
+ * rewrote — the caller must restore those via restoreRedactedLivePaths once
+ * the redacted content has been copied into the repo (issue #100).
  */
+interface SecretScanOutcome {
+  proceed: boolean;
+  redactedLivePaths: string[];
+}
+
 const scanAndHandleSecrets = async (
   tuckDir: string,
   changes: FileChange[],
   options: SyncOptions
-): Promise<boolean> => {
+): Promise<SecretScanOutcome> => {
   // Skip if force flag is set (but require confirmation first)
   if (options.force) {
     const confirmed = await prompts.confirmDangerous(
@@ -595,18 +615,18 @@ const scanAndHandleSecrets = async (
     );
     if (!confirmed) {
       logger.info('Sync cancelled');
-      return false;
+      return { proceed: false, redactedLivePaths: [] };
     }
     logger.warning('Secret scanning bypassed with --force');
     // Audit log for security tracking
     await logForceSecretBypass('tuck sync --force', changes.length);
-    return true;
+    return { proceed: true, redactedLivePaths: [] };
   }
 
   // Check if scanning is enabled in config
   const scanningEnabled = await isSecretScanningEnabled(tuckDir);
   if (!scanningEnabled) {
-    return true;
+    return { proceed: true, redactedLivePaths: [] };
   }
 
   // Resolve modified changes to their LIVE paths (repo-scoped entries via the
@@ -615,7 +635,7 @@ const scanAndHandleSecrets = async (
   const targets = await resolveModifiedChangeTargets(tuckDir, changes);
 
   if (targets.length === 0) {
-    return true;
+    return { proceed: true, redactedLivePaths: [] };
   }
 
   const modifiedPaths = targets.map((t) => t.live);
@@ -627,7 +647,7 @@ const scanAndHandleSecrets = async (
   spinner.stop('Scan complete');
 
   if (summary.totalSecrets === 0) {
-    return true;
+    return { proceed: true, redactedLivePaths: [] };
   }
 
   // Display results
@@ -643,13 +663,14 @@ const scanAndHandleSecrets = async (
 
   if (action === 'abort') {
     prompts.cancel('Sync aborted - secrets detected');
-    return false;
+    return { proceed: false, redactedLivePaths: [] };
   }
 
   if (action === 'redact') {
     // Store secrets and replace them with placeholders in the source files
     const spinner = prompts.spinner();
     spinner.start('Redacting secrets...');
+    const redactedLivePaths: string[] = [];
 
     try {
       // Process secrets: store them and get placeholder mappings
@@ -662,6 +683,9 @@ const scanAndHandleSecrets = async (
         if (placeholderMap && placeholderMap.size > 0) {
           await redactFile(result.path, result.matches, placeholderMap);
           redactedCount++;
+          // The LIVE file was rewritten; the caller must restore it after the
+          // redacted content has been copied into the repo (issue #100).
+          redactedLivePaths.push(result.path);
         }
       }
 
@@ -671,10 +695,13 @@ const scanAndHandleSecrets = async (
     } catch (error) {
       spinner.stop('Redaction failed');
       prompts.log.error(error instanceof Error ? error.message : String(error));
-      return false;
+      // Restore whatever was already rewritten — aborting must not leave the
+      // user's live config broken.
+      await restoreRedactedLivePaths(redactedLivePaths, tuckDir);
+      return { proceed: false, redactedLivePaths: [] };
     }
 
-    return true;
+    return { proceed: true, redactedLivePaths };
   }
 
   if (action === 'ignore') {
@@ -705,14 +732,14 @@ const scanAndHandleSecrets = async (
 
     if (changes.length === 0) {
       prompts.log.info('No remaining changes to sync');
-      return false;
+      return { proceed: false, redactedLivePaths: [] };
     }
-    return true;
+    return { proceed: true, redactedLivePaths: [] };
   }
 
   // proceed - continue with warning
   prompts.log.warning('Proceeding with secrets - make sure your repo is private!');
-  return true;
+  return { proceed: true, redactedLivePaths: [] };
 };
 
 const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): Promise<void> => {
@@ -747,11 +774,13 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
   changeSpinner.stop(`Found ${changes.length} changed file${changes.length !== 1 ? 's' : ''}`);
 
   // ========== STEP 2.5: Scan modified files for secrets ==========
+  let redactedLivePaths: string[] = [];
   if (changes.length > 0) {
-    const shouldContinue = await scanAndHandleSecrets(tuckDir, changes, options);
-    if (!shouldContinue) {
+    const outcome = await scanAndHandleSecrets(tuckDir, changes, options);
+    if (!outcome.proceed) {
       return;
     }
+    redactedLivePaths = outcome.redactedLivePaths;
   }
 
   // ========== STEP 3: Scan for new dotfiles (if enabled) ==========
@@ -944,11 +973,12 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
   }
 
   // ========== STEP 8: Track new files ==========
+  let preparedNewFiles: PreparedTrackFile[] = [];
   if (filesToTrackCandidates.length > 0) {
-    const prepared = await preparePathsForTracking(filesToTrackCandidates, tuckDir, {
+    preparedNewFiles = await preparePathsForTracking(filesToTrackCandidates, tuckDir, {
       secretHandling: 'interactive',
     });
-    filesToTrack = prepared.map((file) => ({
+    filesToTrack = preparedNewFiles.map((file) => ({
       path: file.source,
       category: file.category,
     }));
@@ -965,6 +995,10 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
       showCategory: true,
       actionVerb: 'Tracking',
     });
+
+    // The redacted copies are in the repo now — put the original values back
+    // in the LIVE files so the user's actual config keeps working (issue #100).
+    await restoreRedactedLiveFiles(preparedNewFiles, tuckDir);
   }
 
   // ========== STEP 9: Sync changes to tracked files ==========
@@ -991,7 +1025,14 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
     );
     console.log();
 
-    result = await syncFiles(tuckDir, changes, { ...options, message });
+    try {
+      result = await syncFiles(tuckDir, changes, { ...options, message });
+    } finally {
+      // The redacted content has been copied into the repo (or sync failed and
+      // will be retried) — either way, put the original values back in the
+      // LIVE files so the user's actual config keeps working (issue #100).
+      await restoreRedactedLivePaths(redactedLivePaths, tuckDir);
+    }
   } else if (filesToTrack.length > 0) {
     // Only new files were added, commit them
     if (!options.noCommit) {
