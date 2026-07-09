@@ -179,11 +179,17 @@ jobs:
 
       - name: Run Semantic Release
         id: semantic
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          # Fail the step if any command in a pipeline (e.g. the pipe to tee)
+          # fails, so a semantic-release failure is never masked by tee's exit
+          # code. `shell: bash` already enables -eo pipefail, but be explicit.
+          set -eo pipefail
+
           # Run semantic-release and capture output
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             echo "Running semantic-release in dry-run mode..."
@@ -193,19 +199,30 @@ jobs:
             echo "Dry run completed - no release published"
           else
             echo "Running semantic-release..."
+
+            # Record the current tag BEFORE releasing so we can detect whether
+            # semantic-release actually created a NEW tag. Comparing before/after
+            # avoids mis-reporting a stale tag (e.g. after an npm publish failure)
+            # as a fresh release.
+            git fetch --tags --force
+            TAG_BEFORE=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+            echo "Tag before release: ${TAG_BEFORE:-<none>}"
+
             npx semantic-release 2>&1 | tee semantic-release-output.txt
-            
-            # Get the latest tag created by semantic-release
-            git fetch --tags
-            LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-            if [ -n "$LATEST_TAG" ]; then
-              VERSION="${LATEST_TAG#v}"
+
+            # Get the latest tag after semantic-release ran
+            git fetch --tags --force
+            TAG_AFTER=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+            echo "Tag after release: ${TAG_AFTER:-<none>}"
+
+            if [ -n "$TAG_AFTER" ] && [ "$TAG_AFTER" != "$TAG_BEFORE" ]; then
+              VERSION="${TAG_AFTER#v}"
               echo "new_release_version=$VERSION" >> $GITHUB_OUTPUT
               echo "new_release_published=true" >> $GITHUB_OUTPUT
               echo "Released version: $VERSION"
             else
               echo "new_release_published=false" >> $GITHUB_OUTPUT
-              echo "No release published"
+              echo "No new release published (tag unchanged: ${TAG_AFTER:-<none>})"
             fi
           fi
 
@@ -314,12 +331,20 @@ jobs:
       - name: Download npm tarball and compute SHA256
         if: steps.version.outputs.skip != 'true'
         id: sha
+        shell: bash
         run: |
+          set -eo pipefail
           VERSION="${{ steps.version.outputs.version }}"
-          # Wait a bit for npm to propagate
-          sleep 30
-          # Download the tarball from npm (scoped package URL format)
-          curl -sL "https://registry.npmjs.org/@prnv/tuck/-/tuck-${VERSION}.tgz" -o tuck.tgz
+          # Download the tarball from npm (scoped package URL format).
+          # -f fails on HTTP errors (e.g. 404 before npm propagation) instead of
+          # saving the error body; retries cover npm propagation delays.
+          curl -fsSL --retry 5 --retry-delay 15 --retry-all-errors \
+            "https://registry.npmjs.org/@prnv/tuck/-/tuck-${VERSION}.tgz" -o tuck.tgz
+          # Sanity-check we downloaded a real gzip tarball before hashing it
+          if ! tar -tzf tuck.tgz > /dev/null; then
+            echo "::error::Downloaded tuck-${VERSION}.tgz is not a valid gzip tarball - refusing to compute SHA256"
+            exit 1
+          fi
           # Compute SHA256
           SHA256=$(sha256sum tuck.tgz | awk '{print $1}')
           echo "sha256=$SHA256" >> $GITHUB_OUTPUT
