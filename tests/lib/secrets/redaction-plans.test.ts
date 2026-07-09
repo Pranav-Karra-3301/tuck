@@ -75,6 +75,32 @@ describe('processSecretsForRedaction store-seeded reuse', () => {
     expect(plan.get('/test-home/b')!.get('valueBBBBBBBBBBBBBBBB')).toBe('API_KEY_1');
   });
 
+  it('a NEW value in a later run cannot steal a stored placeholder (gets _1 suffix)', async () => {
+    const tuckDir = TEST_TUCK_DIR;
+    const valueA = 'valueAAAAAAAAAAAAAAAA';
+    const valueB = 'valueBBBBBBBBBBBBBBBB';
+
+    // Run 1: stores API_KEY -> valueA.
+    await processSecretsForRedaction(
+      [makeResult('/test-home/a', [makeMatch(valueA, 'API_KEY')])],
+      tuckDir
+    );
+
+    // Run 2: a DIFFERENT value in a different file derives the same placeholder.
+    // The stored name is reserved via usedPlaceholders seeding, so valueB must
+    // be suffixed instead of stealing API_KEY.
+    const plan = await processSecretsForRedaction(
+      [makeResult('/test-home/b', [makeMatch(valueB, 'API_KEY')])],
+      tuckDir
+    );
+    expect(plan.get('/test-home/b')!.get(valueB)).toBe('API_KEY_1');
+
+    // Store keeps API_KEY -> valueA untouched, with valueB under the suffix.
+    const stored = await getAllSecrets(tuckDir);
+    expect(stored['API_KEY']).toBe(valueA);
+    expect(stored['API_KEY_1']).toBe(valueB);
+  });
+
   it('reuses the stored name even when the scanner now derives a different placeholder', async () => {
     const tuckDir = TEST_TUCK_DIR;
     const value = 'stable_value_1234567890abcdef';
