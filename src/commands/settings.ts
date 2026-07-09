@@ -341,7 +341,10 @@ const applyAction = async (opts: ApplyCliOptions): Promise<void> => {
     return;
   }
 
-  if (!opts.yes && process.stdout.isTTY) {
+  if (!opts.yes) {
+    // Never write OS settings on the strength of a redirected stdout or --json
+    // alone: prompts.confirm throws OPERATION_CANCELLED on non-TTY stdin, so a
+    // non-interactive apply without --yes fails fast instead of proceeding.
     const ok = await prompts.confirm('Apply these settings to this machine?', false);
     if (!ok) {
       logger.info('Aborted — no settings changed.');

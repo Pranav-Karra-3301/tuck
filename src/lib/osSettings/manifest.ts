@@ -12,6 +12,7 @@ import { join } from 'path';
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { pathExists } from '../paths.js';
 import { getStateDir } from '../state.js';
+import { TuckError } from '../../errors.js';
 import {
   osSettingsManifestSchema,
   osSettingsStateSchema,
@@ -37,20 +38,50 @@ export const osSettingsManifestPath = (tuckDir: string): string =>
   join(tuckDir, OS_SETTINGS_MANIFEST);
 
 /**
- * Load and validate the shared settings manifest. A missing file yields an
- * empty manifest; a corrupt/invalid one also degrades to empty rather than
- * throwing, so a bad manifest never bricks the command (callers that need to
- * distinguish can check the file's existence).
+ * Load and validate the shared settings manifest. A MISSING file yields an
+ * empty manifest (first use). A file that exists but cannot be parsed or fails
+ * schema validation throws instead: every mutator does load→mutate→save, so
+ * degrading a corrupt or newer-version manifest to empty would make the next
+ * capture/remove silently WIPE all tracked settings.
  */
 export const loadOsSettingsManifest = async (tuckDir: string): Promise<OsSettingsManifest> => {
   const p = osSettingsManifestPath(tuckDir);
   if (!(await pathExists(p))) return emptyManifest();
+  let raw: string;
   try {
-    const parsed = osSettingsManifestSchema.safeParse(JSON.parse(await readFile(p, 'utf-8')));
-    return parsed.success ? parsed.data : emptyManifest();
+    raw = await readFile(p, 'utf-8');
   } catch {
-    return emptyManifest();
+    throw new TuckError(
+      'Could not read the OS-settings manifest',
+      'OS_SETTINGS_MANIFEST_ERROR',
+      [`Check permissions on ${p}`]
+    );
   }
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    throw new TuckError(
+      'The OS-settings manifest is not valid JSON',
+      'OS_SETTINGS_MANIFEST_ERROR',
+      [
+        `Inspect ${p} and fix or remove it`,
+        'Restore it from git history: git -C ~/.tuck checkout -- os-settings.json',
+      ]
+    );
+  }
+  const parsed = osSettingsManifestSchema.safeParse(json);
+  if (!parsed.success) {
+    throw new TuckError(
+      'The OS-settings manifest failed validation (corrupt, or written by a newer tuck)',
+      'OS_SETTINGS_MANIFEST_ERROR',
+      [
+        'Upgrade tuck if this repo was written by a newer version (tuck upgrade)',
+        `Inspect ${p}: ${parsed.error.issues[0]?.message ?? 'schema mismatch'}`,
+      ]
+    );
+  }
+  return parsed.data;
 };
 
 export const saveOsSettingsManifest = async (
