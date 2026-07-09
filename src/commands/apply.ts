@@ -27,6 +27,7 @@ import { CATEGORIES } from '../constants.js';
 import { type TuckManifestOutput } from '../schemas/manifest.schema.js';
 import { loadManifestFile } from '../lib/manifestFile.js';
 import { clearManifestCache, loadManifest } from '../lib/manifest.js';
+import { fileMatchesProfile, resolveEffectiveProfile } from '../lib/profiles.js';
 import { findPlaceholders, restoreContent, restoreFiles as restoreSecrets, getAllSecrets, getSecretCount } from '../lib/secrets/index.js';
 import { createResolver } from '../lib/secretBackends/index.js';
 import { loadConfig } from '../lib/config.js';
@@ -310,6 +311,12 @@ export interface ApplyOptions {
   json?: boolean;
   /** Scope applied files to a single bundle. */
   bundle?: string;
+  /**
+   * Scope applied files to a single profile (work, personal, server, agent, …).
+   * When unset, falls back to this machine's bound profile; when neither is set,
+   * every file applies (legacy behavior).
+   */
+  profile?: string;
   /** Bind an as-yet-unknown repo to this root before applying repo-scoped files. */
   repoRoot?: string;
   /** Remote apply target as an `ssh://[user@]host[:port]` URI (or bare host). */
@@ -675,7 +682,8 @@ const registerKnownRepoRoots = async (manifest: TuckManifestOutput): Promise<voi
 export const prepareFilesToApply = async (
   repoDir: string,
   manifest: TuckManifestOutput,
-  bundle?: string
+  bundle?: string,
+  profile?: string
 ): Promise<{ files: ApplyFile[]; skipped: string[]; unsafe: string[] }> => {
   const files: ApplyFile[] = [];
   const skipped: string[] = [];
@@ -685,6 +693,13 @@ export const prepareFilesToApply = async (
     // Scope to a single bundle when requested. Treat missing/legacy bundle
     // values as "default" so legacy manifests stay applicable.
     if (bundle && (file.bundle ?? 'default') !== bundle) {
+      continue;
+    }
+
+    // Scope to a single profile when requested. Universal (untagged) files match
+    // every profile; tagged files match only when they carry `profile`. Legacy
+    // manifests have no tags, so every file is universal and applies as before.
+    if (!fileMatchesProfile(file, profile)) {
       continue;
     }
 
@@ -1208,8 +1223,21 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
     }
     await registerKnownRepoRoots(manifest);
 
+    // Resolve the effective profile: explicit --profile wins, else this
+    // machine's bound profile, else none (apply every file — legacy behavior).
+    const activeProfile = await resolveEffectiveProfile(options.profile);
+    if (activeProfile) {
+      const src = options.profile ? 'flag' : 'machine binding';
+      prompts.log.info(`Applying profile "${activeProfile}" (${src}).`);
+    }
+
     // Prepare files to apply
-    const { files, skipped, unsafe } = await prepareFilesToApply(repoDir, manifest, options.bundle);
+    const { files, skipped, unsafe } = await prepareFilesToApply(
+      repoDir,
+      manifest,
+      options.bundle,
+      activeProfile ?? undefined
+    );
 
     // Surface unsafe/skipped manifest entries here (prepareFilesToApply no longer
     // logs them itself, so it stays silent when reused by the MCP apply_plan tool).
@@ -1224,7 +1252,10 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
     }
 
     if (files.length === 0) {
-      const scope = options.bundle ? ` in bundle "${options.bundle}"` : '';
+      const scope = [
+        options.bundle ? ` in bundle "${options.bundle}"` : '',
+        activeProfile ? ` for profile "${activeProfile}"` : '',
+      ].join('');
       prompts.log.warning(`No files to apply${scope}`);
       return;
     }
@@ -1406,8 +1437,17 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
     // Register bound repo roots so out-of-home repo writes pass the copy guard.
     await registerKnownRepoRoots(manifest);
 
+    // Resolve the effective profile: explicit --profile wins, else this
+    // machine's bound profile, else none (apply every file — legacy behavior).
+    const activeProfile = await resolveEffectiveProfile(options.profile);
+
     // Prepare files to apply
-    const { files, skipped, unsafe } = await prepareFilesToApply(repoDir, manifest, options.bundle);
+    const { files, skipped, unsafe } = await prepareFilesToApply(
+      repoDir,
+      manifest,
+      options.bundle,
+      activeProfile ?? undefined
+    );
 
     // Surface unsafe manifest entries: into the JSON envelope in --json mode, or
     // as a human warning otherwise (logger is JSON-gated, so it never corrupts
@@ -1419,10 +1459,13 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
 
     if (files.length === 0) {
       if (isJsonMode()) {
-        emitJsonOk({ applied: 0, source, skipped });
+        emitJsonOk({ applied: 0, source, skipped, profile: activeProfile ?? undefined });
         return;
       }
-      const scope = options.bundle ? ` in bundle "${options.bundle}"` : '';
+      const scope = [
+        options.bundle ? ` in bundle "${options.bundle}"` : '',
+        activeProfile ? ` for profile "${activeProfile}"` : '',
+      ].join('');
       logger.warning(`No files to apply${scope}`);
       if (skipped.length > 0) {
         logger.warning(
@@ -1471,6 +1514,7 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
         source,
         dryRun: !!options.dryRun,
         skipped: allSkipped,
+        profile: activeProfile ?? undefined,
       });
       return;
     }
@@ -1814,6 +1858,10 @@ export const applyCommand = new Command('apply')
   .option('-y, --yes', 'Assume yes to all prompts')
   .option('--json', 'Emit JSON envelope to stdout')
   .option('-b, --bundle <name>', 'Only apply files in the named bundle')
+  .option(
+    '-p, --profile <name>',
+    'Only apply files for the named profile (work, personal, server, agent, …); defaults to this machine\'s bound profile'
+  )
   .option(
     '--repo-root <dir>',
     'Bind an as-yet-unlinked repo to this checkout before applying repo-scoped files'

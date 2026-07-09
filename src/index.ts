@@ -19,6 +19,7 @@ import {
   encryptionCommand,
   doctorCommand,
   bundleCommand,
+  profileCommand,
   verifyCommand,
   bootstrapCommand,
 } from './commands/index.js';
@@ -78,6 +79,7 @@ program.addCommand(secretsCommand);
 program.addCommand(encryptionCommand);
 program.addCommand(doctorCommand);
 program.addCommand(bundleCommand);
+program.addCommand(profileCommand);
 program.addCommand(verifyCommand);
 program.addCommand(contextCommand);
 program.addCommand(mcpCommand);

@@ -41,6 +41,11 @@ export interface FileToTrack {
   /** Bundle to assign the tracked file to. Defaults to "default". */
   bundle?: string;
   /**
+   * Profile tags to attach to the tracked file (work, personal, server, agent,
+   * …). Empty/absent = universal (applies under every profile). Defaults to [].
+   */
+  tags?: string[];
+  /**
    * Glob patterns (relative to a tracked DIRECTORY) to exclude from the copy
    * into the repo — carried from a detection pattern's `exclude` list so
    * ephemeral/sensitive subpaths (e.g. ~/.claude's conversation transcripts and
@@ -402,6 +407,7 @@ export const trackFilesWithProgress = async (
         checksum,
         ...statCache,
         bundle: file.bundle ?? 'default',
+        tags: file.tags && file.tags.length > 0 ? [...file.tags].sort() : [],
         // Only serialize `requires` when non-empty so entries without declared
         // dependencies stay byte-identical to legacy manifests.
         ...(file.requires && file.requires.length > 0 ? { requires: file.requires } : {}),
