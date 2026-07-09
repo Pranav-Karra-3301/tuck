@@ -16,10 +16,12 @@ import {
   getSafeRepoPathFromDestination,
 } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
+import { getBoundProfile, detectProfileLeaks } from '../lib/profiles.js';
 import { getStatus, hasRemote, getRemoteUrl, getCurrentBranch } from '../lib/git.js';
 import { computeStateModel, type FileState } from '../lib/stateModel.js';
 import { setJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import { loadTuckignore } from '../lib/tuckignore.js';
+import { enterReadOnlyMode } from '../lib/readOnlyMode.js';
 import { NotInitializedError } from '../errors.js';
 import { VERSION } from '../constants.js';
 import type { StatusOptions, FileChange } from '../types.js';
@@ -38,6 +40,10 @@ interface TuckStatus {
   trackedCount: number;
   categoryCounts: Record<string, number>;
   changes: FileChange[];
+  /** Profile this machine is bound to, if any (machine-local). */
+  boundProfile?: string;
+  /** Files that belong to OTHER profiles but are present on this machine. */
+  leaks: Array<{ source: string; tags: string[]; livePath: string }>;
   gitChanges: {
     staged: string[];
     modified: string[];
@@ -140,6 +146,17 @@ const getFullStatus = async (tuckDir: string): Promise<TuckStatus> => {
     categoryCounts[file.category] = (categoryCounts[file.category] || 0) + 1;
   }
 
+  // Profile: show this machine's bound profile and flag any files that leaked in
+  // from other profiles (present on disk but belonging to a different profile).
+  const boundProfile = (await getBoundProfile()) ?? undefined;
+  const leaks = boundProfile
+    ? (await detectProfileLeaks(tuckDir, boundProfile)).map((l) => ({
+        source: l.source,
+        tags: l.tags,
+        livePath: l.livePath,
+      }))
+    : [];
+
   return {
     tuckDir,
     branch,
@@ -150,6 +167,8 @@ const getFullStatus = async (tuckDir: string): Promise<TuckStatus> => {
     trackedCount: Object.keys(manifest.files).length,
     categoryCounts,
     changes: fileChanges,
+    boundProfile,
+    leaks,
     gitChanges: {
       staged: gitStatus.staged,
       modified: gitStatus.modified,
@@ -241,6 +260,26 @@ const printStatus = (status: TuckStatus): void => {
     console.log(c.muted(indent() + categoryLine));
   }
 
+  // Bound profile + cross-profile leaks
+  if (status.boundProfile) {
+    console.log();
+    console.log(`${c.bold('Profile:')} ${c.brand(status.boundProfile)}`);
+    if (status.leaks.length > 0) {
+      console.log(
+        c.warning(
+          `${indent()}${logSymbols.warning} ${status.leaks.length} file${status.leaks.length === 1 ? '' : 's'} leaked from other profiles:`
+        )
+      );
+      for (const leak of status.leaks) {
+        console.log(
+          c.warning(
+            `${indent()}${indent()}${collapsePath(leak.livePath)} ${c.muted(`(${leak.tags.join(', ')})`)}`
+          )
+        );
+      }
+    }
+  }
+
   // File changes
   if (status.changes.length > 0) {
     console.log();
@@ -321,6 +360,13 @@ const printShortStatus = (status: TuckStatus): void => {
 
   parts.push(c.muted(`(${status.trackedCount} tracked)`));
 
+  if (status.boundProfile) {
+    parts.push(c.brand(`@${status.boundProfile}`));
+  }
+  if (status.leaks.length > 0) {
+    parts.push(c.warning(`${figures.warning}${status.leaks.length}`));
+  }
+
   console.log(parts.join(' '));
 };
 
@@ -334,6 +380,9 @@ const printJsonStatus = (status: TuckStatus): void => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const runStatus = async (options: StatusOptions): Promise<void> => {
+  // status is a read-only inspection command: it must never unlock the keystore
+  // or touch a secret backend. This guarantees zero prompts (see lib/readOnlyMode).
+  enterReadOnlyMode();
   const tuckDir = getTuckDir();
 
   try {

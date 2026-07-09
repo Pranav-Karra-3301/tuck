@@ -392,6 +392,8 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn
               column: 1,
               context: 'test',
               placeholder: 'TEST_SECRET',
+              start: 0,
+              end: 'secret-value'.length,
             },
           ],
           criticalCount: 0,
@@ -425,6 +427,8 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn
               column: 1,
               context: 'test',
               placeholder: 'SECRET',
+              start: 0,
+              end: 'same-secret'.length,
             },
           ],
           criticalCount: 0,
@@ -448,6 +452,8 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn
               column: 1,
               context: 'test',
               placeholder: 'SECRET',
+              start: 0,
+              end: 'same-secret'.length,
             },
           ],
           criticalCount: 0,
@@ -462,5 +468,19 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn
 
       expect(secretsMap.size).toBe(1);
     });
+  });
+});
+
+describe('unquoted generic assignment capture (value-encryption regression)', () => {
+  it('captures only the value, never the KEY= prefix, for unquoted assignments', async () => {
+    const { scanContent } = await import('../../src/lib/secrets/scanner.js');
+    const line = 'GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789';
+    const matches = scanContent(line);
+    expect(matches.length).toBeGreaterThanOrEqual(1);
+    for (const m of matches) {
+      // A whole-span fallback would include the key text; rewriting that span
+      // (redaction or value encryption) would destroy the `GITHUB_TOKEN=` key.
+      expect(m.value).not.toContain('GITHUB_TOKEN=');
+    }
   });
 });

@@ -65,6 +65,39 @@ describe('Full Workflow Integration', () => {
     expect(tracked?.file.destination).toContain('files/shell');
   });
 
+  it('records --requires on the tracked file and surfaces it in the bootstrap plan', async () => {
+    await initTestTuck();
+    createTestDotfile('.zshrc', 'export PATH=$PATH:/usr/local/bin');
+
+    const added = await addFilesFromPaths(['~/.zshrc'], {
+      force: true,
+      requires: 'brew:starship, apt:zsh',
+    });
+    const manifest = await loadManifest(TEST_TUCK_DIR);
+    const tracked = await getTrackedFileBySource(TEST_TUCK_DIR, '~/.zshrc');
+
+    expect(added).toBe(1);
+    expect(tracked?.file.requires).toEqual(['brew:starship', 'apt:zsh']);
+
+    // The declared dependencies flow into the plan the packages phase installs.
+    const { buildBootstrapPlan } = await import('../../src/lib/bootstrapPlan.js');
+    const plan = buildBootstrapPlan(manifest);
+    expect(plan.packages.map((p) => p.raw)).toEqual(['brew:starship', 'apt:zsh']);
+    expect(plan.phases.map((p) => p.id)).toEqual(['packages', 'files']);
+  });
+
+  it('rejects an invalid --requires spec before tracking anything', async () => {
+    await initTestTuck();
+    createTestDotfile('.zshrc', 'export OK=1');
+
+    await expect(
+      addFilesFromPaths(['~/.zshrc'], { force: true, requires: 'brew:starship, bogus' })
+    ).rejects.toThrow(/Invalid dependency requirement/);
+
+    const manifest = await loadManifest(TEST_TUCK_DIR);
+    expect(Object.keys(manifest.files)).toHaveLength(0);
+  });
+
   it('detects source changes and syncs updated content into repository copy', async () => {
     await initTestTuck();
     const sourcePath = createTestDotfile('.zshrc', 'export ORIGINAL=1');

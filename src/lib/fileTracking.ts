@@ -7,13 +7,24 @@ import {
   getRelativeDestinationFromSource,
   generateFileId,
   detectCategory,
+  validatePathWithinRoot,
+  pathExists,
 } from './paths.js';
+import { logger } from '../ui/index.js';
+import { redactFile, type SecretMatch } from './secrets/index.js';
 import { addFileToManifest, loadManifest } from './manifest.js';
-import { copyFileOrDir, createSymlink, getFileChecksum, getFileInfo, getSourceStatCache } from './files.js';
+import {
+  copyFileOrDir,
+  createSymlink,
+  deleteFileOrDir,
+  getFileChecksum,
+  getFileInfo,
+  getSourceStatCache,
+} from './files.js';
 import { loadConfig } from './config.js';
 import { CATEGORIES } from '../constants.js';
 import { ensureDir } from 'fs-extra';
-import { dirname, join } from 'path';
+import { dirname, join, relative } from 'path';
 import type { FileStrategy } from '../types.js';
 import { toPosixPath } from './platform.js';
 import { bindRepo } from './repoScope.js';
@@ -29,6 +40,11 @@ export interface FileToTrack {
   name?: string;
   /** Bundle to assign the tracked file to. Defaults to "default". */
   bundle?: string;
+  /**
+   * Profile tags to attach to the tracked file (work, personal, server, agent,
+   * …). Empty/absent = universal (applies under every profile). Defaults to [].
+   */
+  tags?: string[];
   /**
    * Glob patterns (relative to a tracked DIRECTORY) to exclude from the copy
    * into the repo — carried from a detection pattern's `exclude` list so
@@ -55,6 +71,20 @@ export interface FileToTrack {
   source?: string;
   /** Relative manifest destination to store verbatim (repo scope only). */
   destination?: string;
+  /**
+   * Declarative dependencies to record on this entry (IDEAS 2.3): validated
+   * `<manager>:<package>` specs installed before this file is applied. Omitted
+   * (undefined) when the caller declared none, keeping the manifest byte-stable.
+   */
+  requires?: string[];
+  /** Redaction plans for secret-bearing files: applied to the REPO copy after
+   *  the copy step; the live file is never modified (issue #100 RC5). For a
+   *  tracked DIRECTORY, livePath points at the inner file that holds the secret. */
+  redactions?: Array<{
+    livePath: string;
+    matches: SecretMatch[];
+    placeholderMap: Map<string, string>;
+  }>;
 }
 
 export interface FileTrackingOptions {
@@ -242,9 +272,20 @@ export const trackFilesWithProgress = async (
       // (no fields) for directories — they are never short-circuited.
       const statCache = await getSourceStatCache(expandedPath);
 
+      // A symlinked live file IS the repo copy (same inode): redacting the repo
+      // copy would rewrite the user's live config — exactly what issue #100
+      // forbids. Downgrade this file to copy strategy and say so.
+      let effectiveStrategy = strategy;
+      if (strategy === 'symlink' && file.redactions?.length) {
+        effectiveStrategy = 'copy';
+        logger.warning(
+          `${collapsePath(file.path)}: tracked as a copy (not symlink) — placeholder redaction cannot apply to a symlinked file`
+        );
+      }
+
       // Copy or symlink based on strategy. Repo-scoped tracking is copy-only:
       // the live file stays put inside its repo checkout (never symlinked).
-      if (strategy === 'symlink' && !isRepo) {
+      if (effectiveStrategy === 'symlink' && !isRepo) {
         // Symlink strategy keeps the repository as source of truth. Order is
         // safety-critical:
         //   1) Copy source into the repo FIRST so a durable copy exists before
@@ -297,6 +338,52 @@ export const trackFilesWithProgress = async (
         });
       }
 
+      // Apply redaction plans to the REPO copy only (issue #100 RC5). Runs before
+      // the checksum so the manifest records the redacted content. Symlink strategy
+      // is downgraded per-file above; encrypted repo copies are ciphertext (already
+      // at-rest-protected) so plans are skipped for them.
+      if (file.redactions?.length && !encrypt) {
+        try {
+          for (const plan of file.redactions) {
+            const liveAbs = expandPath(plan.livePath);
+            const repoTarget =
+              liveAbs === expandedPath
+                ? destination
+                : join(destination, relative(expandedPath, liveAbs));
+            validatePathWithinRoot(repoTarget, tuckDir, 'redaction target');
+            // An inner file excluded from the directory copy never reached the
+            // repo: there is no repo copy to redact and its secret was never
+            // written. Skip the plan; only real failures below are fatal.
+            if (!(await pathExists(repoTarget))) {
+              logger.debug(
+                `Skipping redaction plan for ${collapsePath(plan.livePath)}: no repo copy at ${repoTarget} (excluded from copy)`
+              );
+              continue;
+            }
+            await redactFile(repoTarget, plan.matches, plan.placeholderMap);
+          }
+        } catch (redactionError) {
+          // A failed plan must never leave the already-copied destination in the
+          // repo working tree: it still holds CLEARTEXT secrets, has no manifest
+          // entry, and sync's stageAll would commit it. Delete it before
+          // rethrowing so the per-file catch records the error with no orphan.
+          try {
+            await deleteFileOrDir(destination);
+          } catch (cleanupError) {
+            const redactMsg =
+              redactionError instanceof Error ? redactionError.message : String(redactionError);
+            const cleanupMsg =
+              cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+            throw new Error(
+              `Redaction of the repository copy failed (${redactMsg}) and removing the ` +
+                `cleartext copy also failed (${cleanupMsg}). Remove ${destination} manually ` +
+                `before running 'tuck sync'.`
+            );
+          }
+          throw redactionError;
+        }
+      }
+
       // Get file info
       const checksum = await getFileChecksum(destination);
       const info = await getFileInfo(expandedPath);
@@ -311,7 +398,7 @@ export const trackFilesWithProgress = async (
         destination: relativeDestination,
         category,
         // Repo scope is copy-only regardless of the configured global strategy.
-        strategy: isRepo ? 'copy' : strategy,
+        strategy: isRepo ? 'copy' : effectiveStrategy,
         encrypted: encrypt,
         template,
         permissions: info.permissions,
@@ -320,6 +407,10 @@ export const trackFilesWithProgress = async (
         checksum,
         ...statCache,
         bundle: file.bundle ?? 'default',
+        tags: file.tags && file.tags.length > 0 ? [...file.tags].sort() : [],
+        // Only serialize `requires` when non-empty so entries without declared
+        // dependencies stay byte-identical to legacy manifests.
+        ...(file.requires && file.requires.length > 0 ? { requires: file.requires } : {}),
         ...(isRepo
           ? {
               scope: 'repo' as const,

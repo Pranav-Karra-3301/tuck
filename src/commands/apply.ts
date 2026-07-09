@@ -26,15 +26,33 @@ import { smartMerge, isShellFile, generateMergePreview } from '../lib/merge.js';
 import { CATEGORIES } from '../constants.js';
 import { type TuckManifestOutput } from '../schemas/manifest.schema.js';
 import { loadManifestFile } from '../lib/manifestFile.js';
-import { clearManifestCache } from '../lib/manifest.js';
+import { clearManifestCache, loadManifest } from '../lib/manifest.js';
+import { fileMatchesProfile, resolveEffectiveProfile } from '../lib/profiles.js';
 import { findPlaceholders, restoreContent, restoreFiles as restoreSecrets, getAllSecrets, getSecretCount } from '../lib/secrets/index.js';
 import { createResolver } from '../lib/secretBackends/index.js';
 import { loadConfig } from '../lib/config.js';
 import { IS_WINDOWS } from '../lib/platform.js';
-import { RepositoryNotFoundError, MaterializeError } from '../errors.js';
+import { RepositoryNotFoundError, MaterializeError, InvalidManifestError, NotInitializedError, ValidationError, RemoteApplyError } from '../errors.js';
+import {
+  parseSshTarget,
+  buildRemotePlan,
+  pushEntryToRemote,
+  buildBootstrapOneLiner,
+  defaultRemoteRunner,
+  type SshTarget,
+  type RemotePlan,
+  type RemoteRunner,
+} from '../lib/sshApply.js';
 import { getProvider, type ProviderMode, type RemoteConfig as ProviderRemoteConfig } from '../lib/providers/index.js';
 import { setJsonMode, isJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
 import { materializeForLive, keystorePassphrase, buildMaterializeCtx } from '../lib/materialize.js';
+import {
+  summarizeApplyDiff,
+  formatApplyDiffLine,
+  type ApplyDiffItem,
+  type ApplyDiffSummary,
+} from '../lib/applyDiff.js';
+import { undoBreadcrumb, UNDO_BREADCRUMB_TITLE } from '../lib/undoHint.js';
 
 // Track if Windows permission warning has been shown this session
 let windowsPermissionWarningShown = false;
@@ -300,8 +318,22 @@ export interface ApplyOptions {
   json?: boolean;
   /** Scope applied files to a single bundle. */
   bundle?: string;
+  /**
+   * Scope applied files to a single profile (work, personal, server, agent, …).
+   * When unset, falls back to this machine's bound profile; when neither is set,
+   * every file applies (legacy behavior).
+   */
+  profile?: string;
   /** Bind an as-yet-unknown repo to this root before applying repo-scoped files. */
   repoRoot?: string;
+  /** Remote apply target as an `ssh://[user@]host[:port]` URI (or bare host). */
+  target?: string;
+  /** Remote apply target shorthand: `[user@]host`. */
+  ssh?: string;
+  /** Override/supply the SSH port for remote apply. */
+  port?: string;
+  /** Print the documented remote bootstrap one-liner for <source> and exit. */
+  printBootstrap?: boolean;
 }
 
 export interface ApplyFile {
@@ -343,6 +375,38 @@ interface ApplyResult {
 }
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Resolve the new/modify status of every file about to be applied by checking
+ * whether its live destination already exists. Feeds the pre-apply diff summary
+ * (IDEAS 2.4) shown before anything is touched.
+ */
+const buildApplyDiffItems = async (files: ApplyFile[]): Promise<ApplyDiffItem[]> =>
+  Promise.all(
+    files.map(async (file) => ({
+      destination: collapsePath(file.destination),
+      category: file.category,
+      status: (await pathExists(file.destination)) ? ('modify' as const) : ('new' as const),
+    }))
+  );
+
+/**
+ * Print the full pre-apply diff summary to the human (non-JSON) logger: a
+ * per-file new/update listing grouped by category, followed by a one-line count.
+ * Shown BEFORE the snapshot and before any write, so a fresh-machine apply
+ * always reveals exactly what it is about to change.
+ */
+const printApplyDiffSummary = (summary: ApplyDiffSummary): void => {
+  logger.heading('Changes to apply:');
+  for (const item of summary.items) {
+    const label =
+      item.status === 'new'
+        ? `${item.destination} ${c.green('(new)')}`
+        : `${item.destination} ${c.yellow('(update)')}`;
+    logger.file(item.status === 'new' ? 'add' : 'modify', label);
+  }
+  logger.info(formatApplyDiffLine(summary));
+};
 
 export type ApplySourceKind = 'provider-prefixed' | 'git-url' | 'local' | 'repo-id' | 'username';
 
@@ -390,9 +454,9 @@ const buildProviderCloneUrl = (
  *   the CLI is present, otherwise a github URL BUILT via provider.buildRepoUrl
  *   (never a hard-coded literal) cloned through git.ts.
  */
-type CloneTransport = 'custom' | 'git' | 'github-repo-id';
+export type CloneTransport = 'custom' | 'git' | 'github-repo-id';
 
-interface ResolvedSource {
+export interface ResolvedSource {
   repoId: string;
   isUrl: boolean;
   local?: 'dir' | 'tarball';
@@ -403,7 +467,7 @@ interface ResolvedSource {
 /**
  * Resolve a source (username or repo URL) to a full repository identifier
  */
-const resolveSource = async (source: string): Promise<ResolvedSource> => {
+export const resolveSource = async (source: string): Promise<ResolvedSource> => {
   const configuredRemote = (await loadConfig(getTuckDir()))?.remote ?? { mode: 'local' as const };
   const providerPrefixMatch = source.match(/^(github|gitlab|custom):(.*)$/u);
 
@@ -533,7 +597,7 @@ const resolveSource = async (source: string): Promise<ResolvedSource> => {
  * capped clone instead of any github code path, and a bare owner/repo never
  * builds a hard-coded `https://github.com/...` literal.
  */
-const cloneSource = async (resolved: ResolvedSource): Promise<string> => {
+export const cloneSource = async (resolved: ResolvedSource): Promise<string> => {
   const { repoId, isUrl, local, cloneVia } = resolved;
   const tempDir = join(tmpdir(), `tuck-apply-${Date.now()}`);
   await ensureDir(tempDir);
@@ -582,7 +646,7 @@ const cloneSource = async (resolved: ResolvedSource): Promise<string> => {
 /**
  * Read the manifest from a cloned repository
  */
-const readClonedManifest = async (repoDir: string): Promise<TuckManifestOutput | null> => {
+export const readClonedManifest = async (repoDir: string): Promise<TuckManifestOutput | null> => {
   const manifestPath = join(repoDir, '.tuckmanifest.json');
 
   if (!(await fsPathExists(manifestPath))) {
@@ -657,7 +721,8 @@ const registerKnownRepoRoots = async (manifest: TuckManifestOutput): Promise<voi
 export const prepareFilesToApply = async (
   repoDir: string,
   manifest: TuckManifestOutput,
-  bundle?: string
+  bundle?: string,
+  profile?: string
 ): Promise<{ files: ApplyFile[]; skipped: string[]; unsafe: string[] }> => {
   const files: ApplyFile[] = [];
   const skipped: string[] = [];
@@ -667,6 +732,13 @@ export const prepareFilesToApply = async (
     // Scope to a single bundle when requested. Treat missing/legacy bundle
     // values as "default" so legacy manifests stay applicable.
     if (bundle && (file.bundle ?? 'default') !== bundle) {
+      continue;
+    }
+
+    // Scope to a single profile when requested. Universal (untagged) files match
+    // every profile; tagged files match only when they carry `profile`. Legacy
+    // manifests have no tags, so every file is universal and applies as before.
+    if (!fileMatchesProfile(file, profile)) {
       continue;
     }
 
@@ -1056,7 +1128,7 @@ const displayPlaceholderWarnings = (
  * Attempt to restore secrets from local store for files with placeholders
  * Returns info about what was restored
  */
-const tryRestoreSecretsFromLocalStore = async (
+export const tryRestoreSecretsFromLocalStore = async (
   filesWithPlaceholders: ApplyResult['filesWithPlaceholders'],
   interactive: boolean
 ): Promise<{ restored: number; unresolved: string[] }> => {
@@ -1190,8 +1262,21 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
     }
     await registerKnownRepoRoots(manifest);
 
+    // Resolve the effective profile: explicit --profile wins, else this
+    // machine's bound profile, else none (apply every file — legacy behavior).
+    const activeProfile = await resolveEffectiveProfile(options.profile);
+    if (activeProfile) {
+      const src = options.profile ? 'flag' : 'machine binding';
+      prompts.log.info(`Applying profile "${activeProfile}" (${src}).`);
+    }
+
     // Prepare files to apply
-    const { files, skipped, unsafe } = await prepareFilesToApply(repoDir, manifest, options.bundle);
+    const { files, skipped, unsafe } = await prepareFilesToApply(
+      repoDir,
+      manifest,
+      options.bundle,
+      activeProfile ?? undefined
+    );
 
     // Surface unsafe/skipped manifest entries here (prepareFilesToApply no longer
     // logs them itself, so it stays silent when reused by the MCP apply_plan tool).
@@ -1206,13 +1291,18 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
     }
 
     if (files.length === 0) {
-      const scope = options.bundle ? ` in bundle "${options.bundle}"` : '';
+      const scope = [
+        options.bundle ? ` in bundle "${options.bundle}"` : '',
+        activeProfile ? ` for profile "${activeProfile}"` : '',
+      ].join('');
       prompts.log.warning(`No files to apply${scope}`);
       return;
     }
 
-    // Show what will be applied
-    prompts.log.info(`Found ${files.length} file(s) to apply:`);
+    // Full diff summary — always shown before anything is touched (IDEAS 2.4).
+    const diffSummary = summarizeApplyDiff(await buildApplyDiffItems(files));
+
+    prompts.log.info(`Found ${files.length} file(s) to apply (${formatApplyDiffLine(diffSummary)}):`);
     console.log();
 
     // Group by category
@@ -1224,12 +1314,16 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
       byCategory[file.category].push(file);
     }
 
+    const statusByDestination = new Map(
+      diffSummary.items.map((item) => [item.destination, item.status])
+    );
+
     for (const [category, categoryFiles] of Object.entries(byCategory)) {
       const categoryConfig = CATEGORIES[category] || { icon: '📄' };
       console.log(c.bold(`  ${categoryConfig.icon} ${category}`));
       for (const file of categoryFiles) {
-        const exists = await pathExists(file.destination);
-        const status = exists ? c.yellow('(will update)') : c.green('(new)');
+        const isNew = statusByDestination.get(collapsePath(file.destination)) === 'new';
+        const status = isNew ? c.green('(new)') : c.yellow('(will update)');
         console.log(c.dim(`    ${collapsePath(file.destination)} ${status}`));
       }
     }
@@ -1296,10 +1390,12 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
     // returning the system to its true pre-apply state.
     const snapshotPaths = files.map((f) => f.destination);
 
+    let snapshotId: string | undefined;
     if (snapshotPaths.length > 0 && !options.dryRun) {
       const spinner = prompts.spinner();
       spinner.start('Creating backup snapshot...');
       const snapshot = await createPreApplySnapshot(snapshotPaths, repoId);
+      snapshotId = snapshot.id;
       spinner.stop(`Backup created: ${snapshot.id}`);
       console.log();
     }
@@ -1338,8 +1434,8 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
     if (!options.dryRun) {
       console.log();
       prompts.note(
-        'To undo this apply, run:\n  tuck undo --latest\n\nTo see all backups:\n  tuck undo --list',
-        'Undo'
+        `${undoBreadcrumb(snapshotId)}\n\nTo see all backups:\n  tuck undo --list`,
+        UNDO_BREADCRUMB_TITLE
       );
     }
 
@@ -1388,8 +1484,17 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
     // Register bound repo roots so out-of-home repo writes pass the copy guard.
     await registerKnownRepoRoots(manifest);
 
+    // Resolve the effective profile: explicit --profile wins, else this
+    // machine's bound profile, else none (apply every file — legacy behavior).
+    const activeProfile = await resolveEffectiveProfile(options.profile);
+
     // Prepare files to apply
-    const { files, skipped, unsafe } = await prepareFilesToApply(repoDir, manifest, options.bundle);
+    const { files, skipped, unsafe } = await prepareFilesToApply(
+      repoDir,
+      manifest,
+      options.bundle,
+      activeProfile ?? undefined
+    );
 
     // Surface unsafe manifest entries: into the JSON envelope in --json mode, or
     // as a human warning otherwise (logger is JSON-gated, so it never corrupts
@@ -1401,10 +1506,13 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
 
     if (files.length === 0) {
       if (isJsonMode()) {
-        emitJsonOk({ applied: 0, source, skipped });
+        emitJsonOk({ applied: 0, source, skipped, profile: activeProfile ?? undefined });
         return;
       }
-      const scope = options.bundle ? ` in bundle "${options.bundle}"` : '';
+      const scope = [
+        options.bundle ? ` in bundle "${options.bundle}"` : '',
+        activeProfile ? ` for profile "${activeProfile}"` : '',
+      ].join('');
       logger.warning(`No files to apply${scope}`);
       if (skipped.length > 0) {
         logger.warning(
@@ -1417,16 +1525,28 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
     // Determine strategy
     const strategy = options.replace ? 'replace' : 'merge';
 
+    // Full diff summary — shown BEFORE the snapshot and before any write so even
+    // the non-interactive path reveals exactly what it will change (IDEAS 2.4).
+    // Suppressed in JSON mode (the envelope is the machine-readable contract) and
+    // in dry-run (the apply loop already lists every file below).
+    if (!options.dryRun && !isJsonMode()) {
+      const diffSummary = summarizeApplyDiff(await buildApplyDiffItems(files));
+      printApplyDiffSummary(diffSummary);
+      logger.blank();
+    }
+
     // Create backup if not dry run. Snapshot EVERY destination (not just existing
     // ones) so `tuck undo` can also delete files this apply newly created —
     // createSnapshot records missing paths as existed:false and restoreSnapshot
     // removes them on undo.
+    let snapshotId: string | undefined;
     if (!options.dryRun) {
       const snapshotPaths = files.map((f) => f.destination);
 
       if (snapshotPaths.length > 0) {
         if (!isJsonMode()) logger.info('Creating backup snapshot...');
         const snapshot = await createPreApplySnapshot(snapshotPaths, source);
+        snapshotId = snapshot.id;
         if (!isJsonMode()) logger.success(`Backup created: ${snapshot.id}`);
       }
     }
@@ -1453,6 +1573,7 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
         source,
         dryRun: !!options.dryRun,
         skipped: allSkipped,
+        profile: activeProfile ?? undefined,
       });
       return;
     }
@@ -1486,7 +1607,7 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
     }
 
     if (!options.dryRun) {
-      logger.info('To undo: tuck undo --latest');
+      logger.info(undoBreadcrumb(snapshotId));
     }
   } finally {
     // Clean up temp directory
@@ -1498,11 +1619,296 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
   }
 };
 
+/** Structured result of {@link applyRepoDir} — no I/O, for composition. */
+export interface ApplyRepoResult {
+  applied: number;
+  /** repo-scoped sources skipped because their repo is unbound on this machine. */
+  skipped: string[];
+  /** Files whose secret placeholders could not be resolved from a backend. */
+  filesWithPlaceholders: ApplyResult['filesWithPlaceholders'];
+  /** Unsafe manifest entries that were refused (traversal, out-of-repo). */
+  unsafe: string[];
+  strategy: 'merge' | 'replace';
+}
+
+/**
+ * Apply an ALREADY-CLONED tuck repo directory, returning structured data with
+ * NO stdout/JSON emission of its own.
+ *
+ * This is the reusable apply core for callers that own their own output
+ * envelope — notably `tuck bootstrap`, which folds the result into a single
+ * combined JSON/human report. It deliberately reuses the SAME security-sensitive
+ * helpers as the interactive/CLI apply paths (`prepareFilesToApply`, the
+ * merge/replace write loops, the pre-apply snapshot) so the safety guarantees do
+ * not diverge; only the thin sequencing lives here. A pre-apply Time Machine
+ * snapshot is still taken (unless `dryRun`) so `tuck undo` can revert a bootstrap.
+ *
+ * @throws {InvalidManifestError} if the repo has no readable tuck manifest.
+ */
+export const applyRepoDir = async (
+  repoDir: string,
+  source: string,
+  options: ApplyOptions
+): Promise<ApplyRepoResult> => {
+  const manifest = await readClonedManifest(repoDir);
+  if (!manifest) {
+    throw new InvalidManifestError();
+  }
+
+  if (options.repoRoot) {
+    await bindReposFromOption(manifest, options.repoRoot);
+  }
+  await registerKnownRepoRoots(manifest);
+
+  const { files, skipped, unsafe } = await prepareFilesToApply(repoDir, manifest, options.bundle);
+  const strategy: 'merge' | 'replace' = options.replace ? 'replace' : 'merge';
+
+  if (files.length === 0) {
+    return { applied: 0, skipped, filesWithPlaceholders: [], unsafe, strategy };
+  }
+
+  if (!options.dryRun) {
+    const snapshotPaths = files.map((f) => f.destination);
+    if (snapshotPaths.length > 0) {
+      await createPreApplySnapshot(snapshotPaths, source);
+    }
+  }
+
+  const applyResult =
+    strategy === 'merge'
+      ? await applyWithMerge(files, options.dryRun || false)
+      : await applyWithReplace(files, options.dryRun || false);
+
+  return {
+    applied: applyResult.appliedCount,
+    skipped: [...skipped, ...applyResult.skippedUnboundRepos],
+    filesWithPlaceholders: applyResult.filesWithPlaceholders,
+    unsafe,
+    strategy,
+  };
+};
+
+/**
+ * Merge the CLI `--port` override onto a parsed SSH target. Commander hands the
+ * value over as a string; it is validated to a 1–65535 integer before use.
+ */
+const applyPortOverride = (target: SshTarget, portOption?: string): SshTarget => {
+  if (portOption === undefined) return target;
+  if (!/^\d+$/.test(portOption)) {
+    throw new ValidationError('ssh port', `${portOption} is not a valid port`);
+  }
+  const port = Number(portOption);
+  if (port < 1 || port > 65535) {
+    throw new ValidationError('ssh port', `${portOption} is out of range (1-65535)`);
+  }
+  const display =
+    (target.user ? `${target.user}@` : '') + target.host + `:${port}`;
+  return { ...target, port, display };
+};
+
+/** Human-readable one-line summary of everything the remote plan skipped. */
+const summarizeSkips = (plan: RemotePlan): string[] => {
+  const notes: string[] = [];
+  if (plan.skippedRepoScoped.length > 0) {
+    notes.push(
+      `${plan.skippedRepoScoped.length} repo-scoped file(s) (no portable remote home path)`
+    );
+  }
+  if (plan.skippedDirectories.length > 0) {
+    notes.push(`${plan.skippedDirectories.length} directory entr(y/ies) (v1 pushes files only)`);
+  }
+  if (plan.skippedUnsafe.length > 0) {
+    notes.push(`${plan.skippedUnsafe.length} non-home file(s)`);
+  }
+  if (plan.missing.length > 0) {
+    notes.push(`${plan.missing.length} file(s) missing from the repo copy`);
+  }
+  return notes;
+};
+
+/**
+ * Print the remote-apply plan (grouped by category) so the operator sees exactly
+ * what will be written to which remote path before anything is transferred.
+ */
+const displayRemotePlan = (target: SshTarget, plan: RemotePlan): void => {
+  console.log();
+  console.log(c.bold(`Plan for ${target.display}:`));
+  console.log();
+
+  const byCategory: Record<string, typeof plan.entries> = {};
+  for (const entry of plan.entries) {
+    (byCategory[entry.category] ??= []).push(entry);
+  }
+  for (const [category, categoryEntries] of Object.entries(byCategory)) {
+    const categoryConfig = CATEGORIES[category] || { icon: '📄' };
+    console.log(c.bold(`  ${categoryConfig.icon} ${category}`));
+    for (const entry of categoryEntries) {
+      console.log(c.dim(`    ${entry.source}  →  ~/${entry.remoteRelative}`));
+    }
+  }
+  console.log();
+
+  const skips = summarizeSkips(plan);
+  if (skips.length > 0) {
+    console.log(c.dim(`  Skipping: ${skips.join(', ')}`));
+    console.log();
+  }
+};
+
+/**
+ * Print the documented remote bootstrap one-liner for a source, then return.
+ * Users copy this onto a fresh box (or `ssh host '<one-liner>'`) to install
+ * tuck and apply a dotfiles source without a local push.
+ */
+export const runBootstrap = (source: string, options: ApplyOptions): void => {
+  if (options.json) setJsonMode(true, 'tuck apply');
+  const oneLiner = buildBootstrapOneLiner(source);
+
+  if (isJsonMode()) {
+    emitJsonOk({ bootstrap: oneLiner, source });
+    return;
+  }
+
+  console.log();
+  console.log(c.bold('Remote bootstrap one-liner:'));
+  console.log();
+  console.log(`  ${oneLiner}`);
+  console.log();
+  console.log(c.dim('Run it on the remote host, or over ssh:'));
+  console.log(c.dim(`  ssh <host> '${oneLiner}'`));
+  console.log();
+};
+
+/**
+ * Push the locally-tracked home configs onto a remote box over ssh/scp.
+ *
+ * A plan is ALWAYS shown first. In an interactive TTY the operator confirms
+ * before any transfer; `--yes`/`--force`/`--json` skip the prompt. `--dry-run`
+ * prints the plan and stops. The transfer runner is injectable so tests exercise
+ * the flow without touching the network.
+ */
+export const runSshApply = async (
+  options: ApplyOptions,
+  runner: RemoteRunner = defaultRemoteRunner
+): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck apply');
+
+  const targetInput = options.target ?? options.ssh;
+  if (!targetInput) {
+    throw new ValidationError('ssh target', 'no --target or --ssh value provided');
+  }
+  const target = applyPortOverride(parseSshTarget(targetInput), options.port);
+
+  // Read the LOCAL manifest — the files this machine tracks are what we push.
+  const tuckDir = getTuckDir();
+  let manifest: TuckManifestOutput;
+  try {
+    manifest = await loadManifest(tuckDir);
+  } catch {
+    throw new NotInitializedError();
+  }
+
+  const plan = await buildRemotePlan(manifest, tuckDir, options.bundle);
+
+  if (plan.entries.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ applied: 0, target: target.display, skipped: skipCounts(plan) });
+      return;
+    }
+    const scope = options.bundle ? ` in bundle "${options.bundle}"` : '';
+    logger.warning(`No files to push${scope}`);
+    for (const note of summarizeSkips(plan)) logger.warning(`Skipped: ${note}`);
+    return;
+  }
+
+  // JSON / non-interactive: no plan UI, no prompt; honor --dry-run.
+  const interactive =
+    !options.force && !options.yes && !options.json && !!process.stdout.isTTY;
+
+  if (!isJsonMode()) {
+    displayRemotePlan(target, plan);
+  }
+
+  if (options.dryRun) {
+    if (isJsonMode()) {
+      emitJsonOk({
+        applied: 0,
+        target: target.display,
+        dryRun: true,
+        planned: plan.entries.length,
+        skipped: skipCounts(plan),
+      });
+      return;
+    }
+    logger.info(`Dry run - would push ${plan.entries.length} file(s) to ${target.display}`);
+    return;
+  }
+
+  if (interactive) {
+    const confirmed = await prompts.confirm(
+      `Push ${plan.entries.length} file(s) to ${target.display}?`,
+      true
+    );
+    if (!confirmed) {
+      prompts.cancel('Remote apply cancelled');
+      return;
+    }
+    console.log();
+  }
+
+  let pushed = 0;
+  const failed: Array<{ source: string; error: string }> = [];
+  for (const entry of plan.entries) {
+    try {
+      await pushEntryToRemote(target, entry, runner);
+      pushed++;
+      if (!isJsonMode()) logger.file('add', `~/${entry.remoteRelative}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      failed.push({ source: entry.source, error: message });
+      if (!isJsonMode()) logger.warning(`Failed to push ${entry.source}: ${message}`);
+    }
+  }
+
+  // Escalate any transfer failure into a non-zero exit. Returning normally here
+  // (as a warning) makes `tuck apply --ssh box --json` emit {ok:true, applied:0}
+  // and exit 0 even when every push failed — invisible to CI/scripts. Throwing a
+  // RemoteApplyError still preserves the partial outcome in its JSON envelope.
+  if (failed.length > 0) {
+    if (!isJsonMode()) {
+      logger.blank();
+      logger.warning(`Pushed ${pushed} file(s), ${failed.length} failed`);
+    }
+    throw new RemoteApplyError(target.display, pushed, failed, skipCounts(plan));
+  }
+
+  if (isJsonMode()) {
+    emitJsonOk({
+      applied: pushed,
+      target: target.display,
+      failed: [],
+      skipped: skipCounts(plan),
+    });
+    return;
+  }
+
+  logger.blank();
+  logger.success(`Pushed ${pushed} file(s) to ${target.display}`);
+};
+
+/** Structured skip counts for the JSON envelope. */
+const skipCounts = (plan: RemotePlan): Record<string, number> => ({
+  repoScoped: plan.skippedRepoScoped.length,
+  directories: plan.skippedDirectories.length,
+  unsafe: plan.skippedUnsafe.length,
+  missing: plan.missing.length,
+});
+
 export const applyCommand = new Command('apply')
-  .description('Apply dotfiles from a repository to this machine')
+  .description('Apply dotfiles from a repository to this machine (or push to a remote over SSH)')
   .argument(
-    '<source>',
-    'username, user/repo, provider:user/repo, a full git URL, or a local directory/tarball path'
+    '[source]',
+    'username, user/repo, provider:user/repo, a full git URL, or a local directory/tarball path (omit for --target/--ssh)'
   )
   .option('-m, --merge', 'Merge with existing files (preserve local customizations)')
   .option('-r, --replace', 'Replace existing files completely')
@@ -1512,10 +1918,47 @@ export const applyCommand = new Command('apply')
   .option('--json', 'Emit JSON envelope to stdout')
   .option('-b, --bundle <name>', 'Only apply files in the named bundle')
   .option(
+    '-p, --profile <name>',
+    'Only apply files for the named profile (work, personal, server, agent, …); defaults to this machine\'s bound profile'
+  )
+  .option(
     '--repo-root <dir>',
     'Bind an as-yet-unlinked repo to this checkout before applying repo-scoped files'
   )
-  .action(async (source: string, options: ApplyOptions) => {
+  .option(
+    '--target <uri>',
+    'Push locally-tracked configs to a remote box: ssh://[user@]host[:port] (or a bare host)'
+  )
+  .option('--ssh <host>', 'Push locally-tracked configs to a remote box: [user@]host (shorthand for --target)')
+  .option('--port <n>', 'SSH port for --target/--ssh (overrides a port in the URI)')
+  .option('--print-bootstrap', 'Print the remote bootstrap one-liner for <source> and exit')
+  .action(async (source: string | undefined, options: ApplyOptions) => {
+    // --print-bootstrap is a pure informational path: it needs a <source> to
+    // build the "install tuck and apply this" one-liner and touches nothing.
+    if (options.printBootstrap) {
+      if (!source) {
+        throw new ValidationError('source', '--print-bootstrap requires a <source> to bootstrap');
+      }
+      runBootstrap(source, options);
+      return;
+    }
+
+    // Remote apply pushes THIS machine's tracked files; a repo source is not used.
+    if (options.target || options.ssh) {
+      if (source) {
+        throw new ValidationError(
+          'source',
+          '--target/--ssh pushes your locally-tracked files; omit the <source> argument'
+        );
+      }
+      await runSshApply(options);
+      return;
+    }
+
+    if (!source) {
+      throw new ValidationError('source', 'a <source> is required (or use --target/--ssh)');
+    }
+
     // Determine if we should run interactive mode
     const isInteractive = !options.force && !options.yes && !options.json && process.stdout.isTTY;
 
