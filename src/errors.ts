@@ -421,6 +421,16 @@ export class ScanLimitError extends TuckError {
   }
 }
 
+export class JsonKeyError extends TuckError {
+  constructor(message: string, suggestions?: string[]) {
+    super(message, 'JSON_KEY_ERROR', suggestions || [
+      'Pass a dot-delimited key path present in the file (e.g. --key mcpServers)',
+      'JSON-key tracking requires a strict-JSON file with a top-level object',
+      'Run `tuck list` to see how a file is tracked',
+    ]);
+  }
+}
+
 export class ValidationError extends TuckError {
   constructor(field: string, message: string) {
     super(`Invalid ${field}: ${message}`, 'VALIDATION_ERROR', ['Check your input and try again']);

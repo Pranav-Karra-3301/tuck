@@ -50,6 +50,7 @@ This document lists all error codes used by tuck for programmatic error handling
 | `SETTINGS_ERROR` | `SettingsError` | OS-settings operation failed | Missing capture flags, no TTY for interactive capture | Follow the message; pass `--domain/--key/--type/--value` for non-interactive capture |
 | `SETTING_NOT_FOUND` | `SettingNotFoundError` | No tracked setting/manual step with that id | Wrong id passed to `remove`/`manual done` | Run `tuck settings list` to see valid ids |
 | `READ_ONLY_VIOLATION` | `ReadOnlyViolationError` | A read-only command (status/diff/list) attempted a secret/keystore operation | Bug — these commands guarantee zero prompts | Use `tuck apply`/`tuck sync`/`tuck verify` for operations that need secrets |
+| `JSON_KEY_ERROR` | `JsonKeyError` | JSON-key tracking (`--key`) could not extract/merge a subtree | Non-JSON file, missing key path, malformed path, non-object top level | Pass a dot-delimited key path present in a strict-JSON object file |
 | `RULES_MANIFEST_CORRUPT` | `TuckError` | `rules.json` is not valid JSON | Hand-edit corrupted the rules fan-out manifest | Fix or delete `~/.tuck/rules.json` and re-run `tuck rules track` |
 | `RULES_MANIFEST_INVALID` | `TuckError` | `rules.json` failed schema validation | Unsafe path override or missing repo root | Correct the manifest per the message |
 | `RULES_SET_NOT_FOUND` | `TuckError` | No tracked rule set with the given id | Wrong `--id` / untrack id | Run `tuck rules list` to see tracked sets |

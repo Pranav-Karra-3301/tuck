@@ -80,3 +80,29 @@ describe('trackedFileSchema repo scope', () => {
     expect(trackedFileSchema.safeParse({ ...homeEntry, repoKey: 'k' }).success).toBe(false);
   });
 });
+
+describe('trackedFileSchema jsonKey', () => {
+  it('does not inject a jsonKey key into a legacy entry', () => {
+    const parsed = trackedFileSchema.parse(homeEntry);
+    expect('jsonKey' in parsed).toBe(false);
+    expect(JSON.stringify(parsed)).not.toContain('"jsonKey"');
+  });
+
+  it('parses a valid JSON-key entry', () => {
+    const parsed = trackedFileSchema.parse({ ...homeEntry, jsonKey: 'mcpServers' });
+    expect(parsed.jsonKey).toBe('mcpServers');
+  });
+
+  it('rejects an empty jsonKey', () => {
+    expect(trackedFileSchema.safeParse({ ...homeEntry, jsonKey: '   ' }).success).toBe(false);
+  });
+
+  it('rejects jsonKey combined with template or encrypted', () => {
+    expect(
+      trackedFileSchema.safeParse({ ...homeEntry, jsonKey: 'a', template: true }).success
+    ).toBe(false);
+    expect(
+      trackedFileSchema.safeParse({ ...homeEntry, jsonKey: 'a', encrypted: true }).success
+    ).toBe(false);
+  });
+});
