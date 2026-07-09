@@ -44,9 +44,19 @@ const BINDING_MODE = 0o600;
 // Name validation
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Names composed solely of dots (`.`, `..`, `...`). Although the base grammar
+ * allows dots, a dot-only name is a path-traversal footgun: `.` and `..` are the
+ * current/parent directory on every filesystem, so a profile named `..` must
+ * never be treated as valid even though it matches `PROFILE_NAME_PATTERN`.
+ */
+const DOT_ONLY_PATTERN = /^\.+$/u;
+
 /** Whether `name` is a syntactically valid profile/tag name. */
 export const isValidProfileName = (name: string): boolean =>
-  typeof name === 'string' && PROFILE_NAME_PATTERN.test(name);
+  typeof name === 'string' &&
+  PROFILE_NAME_PATTERN.test(name) &&
+  !DOT_ONLY_PATTERN.test(name);
 
 /** Throw a consistent, actionable error for a malformed profile name. */
 export const assertValidProfileName = (name: string): void => {

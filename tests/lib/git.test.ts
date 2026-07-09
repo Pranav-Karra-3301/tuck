@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { vol } from 'memfs';
 import { join } from 'path';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
+import { GitError } from '../../src/errors.js';
 
 // Create mock git object that can be accessed across tests
 const createMockGit = () => ({
@@ -135,6 +136,66 @@ describe('git', () => {
         expect.objectContaining({ maxBuffer: expect.any(Number) }),
         expect.any(Function)
       );
+    });
+
+    it('performs a full clone (no --depth) when no depth is given', async () => {
+      const destDir = join(TEST_HOME, 'full-clone');
+      await cloneRepo('https://github.com/user/repo.git', destDir);
+
+      const args = execFileMock.mock.calls[0][1] as string[];
+      expect(args).not.toContain('--depth');
+    });
+
+    it('passes --depth <n> in order before the url when a positive depth is given', async () => {
+      const destDir = join(TEST_HOME, 'shallow-clone');
+      await cloneRepo('https://github.com/user/repo.git', destDir, { depth: 1 });
+
+      expect(execFileMock).toHaveBeenCalledWith(
+        'git',
+        ['clone', '--depth', '1', 'https://github.com/user/repo.git', destDir],
+        expect.objectContaining({ maxBuffer: expect.any(Number) }),
+        expect.any(Function)
+      );
+    });
+
+    it('ignores a non-positive / non-integer depth and falls back to a full clone', async () => {
+      const destDir = join(TEST_HOME, 'bad-depth-clone');
+      await cloneRepo('https://github.com/user/repo.git', destDir, { depth: 0 });
+      await cloneRepo('https://github.com/user/repo.git', destDir, { depth: -5 });
+      await cloneRepo('https://github.com/user/repo.git', destDir, {
+        depth: 1.5,
+      });
+
+      for (const call of execFileMock.mock.calls) {
+        expect(call[1]).not.toContain('--depth');
+      }
+    });
+
+    it('applies the clone timeout and maxBuffer bounds', async () => {
+      const destDir = join(TEST_HOME, 'bounded-clone');
+      await cloneRepo('https://github.com/user/repo.git', destDir, { depth: 1 });
+
+      const opts = execFileMock.mock.calls[0][2] as {
+        timeout: number;
+        maxBuffer: number;
+      };
+      expect(opts.timeout).toBeGreaterThan(0);
+      expect(opts.maxBuffer).toBeGreaterThan(0);
+    });
+
+    it('scrubs credentials from the error when the clone fails', async () => {
+      execFileMock.mockImplementation((_cmd, _args, opts, cb) => {
+        const callback = typeof opts === 'function' ? opts : cb;
+        callback?.(new Error('fatal: could not read from https://user:secret@github.com/x.git'));
+      });
+      const destDir = join(TEST_HOME, 'failed-clone');
+      const err = await cloneRepo('https://user:secret@github.com/x.git', destDir).catch(
+        (e: unknown) => e
+      );
+      expect(err).toBeInstanceOf(GitError);
+      // The raw token must not survive into the thrown error message/output.
+      expect(JSON.stringify(err)).not.toContain('secret');
+      expect((err as Error).message).not.toContain('secret');
     });
   });
 

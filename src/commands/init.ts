@@ -665,7 +665,10 @@ const promptForManualRepoUrl = async (
 
   const repoUrl = await prompts.text('Paste the repository URL:', {
     placeholder: exampleUrl,
-    validate: validateGitHubUrl,
+    // Route through the provider-aware validator (github mode here) so the init
+    // remote-URL prompts share ONE validation funnel instead of hard-coding the
+    // GitHub-only check inline. See validateRemoteUrlForMode.
+    validate: (value) => validateRemoteUrlForMode('github', value),
   });
 
   // Add remote
@@ -1874,7 +1877,9 @@ const runInteractiveInit = async (): Promise<void> => {
         if (useManual) {
           const manualUrl = await prompts.text('Paste your GitHub repository URL:', {
             placeholder: `git@github.com:${user?.login || 'user'}/${suggestedName}.git`,
-            validate: validateGitHubUrl,
+            // Provider-aware validator (github mode) — same funnel as the other
+            // manual remote-URL prompt so validation lives in one place.
+            validate: (value) => validateRemoteUrlForMode('github', value),
           });
 
           if (manualUrl) {

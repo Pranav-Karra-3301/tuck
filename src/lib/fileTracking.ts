@@ -9,6 +9,7 @@ import {
   detectCategory,
   validatePathWithinRoot,
   pathExists,
+  destinationsCollideCaseInsensitively,
 } from './paths.js';
 import { logger } from '../ui/index.js';
 import { redactFile, type SecretMatch } from './secrets/index.js';
@@ -26,7 +27,6 @@ import { CATEGORIES } from '../constants.js';
 import { ensureDir } from 'fs-extra';
 import { dirname, join, relative } from 'path';
 import type { FileStrategy } from '../types.js';
-import { toPosixPath } from './platform.js';
 import { bindRepo } from './repoScope.js';
 import { readFile, writeFile } from 'fs/promises';
 import { encryptFileContent } from './crypto/fileEncryption.js';
@@ -198,12 +198,20 @@ export const trackFilesWithProgress = async (
   const total = files.length;
   const errors: Array<{ path: string; error: Error }> = [];
   const sensitiveFiles: string[] = [];
-  const trackedDestinations = new Map<string, string>();
+  // Every destination claimed so far (existing manifest entries + files tracked
+  // earlier in this batch). Collision detection is case-INSENSITIVE: on
+  // macOS/Windows `files/misc/config` and `files/misc/Config` resolve to ONE
+  // physical repo file, so tracking both must be rejected before the second
+  // write silently clobbers the first.
+  const trackedDestinations: Array<{ destination: string; source: string }> = [];
   let succeeded = 0;
 
   const manifest = await loadManifest(tuckDir);
   for (const existingFile of Object.values(manifest.files)) {
-    trackedDestinations.set(toPosixPath(existingFile.destination), existingFile.source);
+    trackedDestinations.push({
+      destination: existingFile.destination,
+      source: existingFile.source,
+    });
   }
 
   // In --json mode stdout must carry exactly one JSON envelope (emitted by the
@@ -234,8 +242,14 @@ export const trackFilesWithProgress = async (
       isRepo && file.destination
         ? file.destination
         : getRelativeDestinationFromSource(category, expandedPath, file.name);
-    const normalizedDestination = toPosixPath(relativeDestination);
-    const existingSource = trackedDestinations.get(normalizedDestination);
+    // A destination collides when a DIFFERENT source already claims a path that
+    // is equal case-insensitively (separators normalized). Same-source retracks
+    // are not collisions.
+    const existingCollision = trackedDestinations.find(
+      (entry) =>
+        entry.source !== sourcePath &&
+        destinationsCollideCaseInsensitively(entry.destination, relativeDestination)
+    );
 
     // Show spinner while processing
     const spinner = ora({
@@ -246,9 +260,9 @@ export const trackFilesWithProgress = async (
     }).start();
 
     try {
-      if (existingSource && existingSource !== sourcePath) {
+      if (existingCollision) {
         throw new Error(
-          `Destination collision detected: ${relativeDestination} is already used by ${existingSource}`
+          `Destination collision detected: ${relativeDestination} is already used by ${existingCollision.source}`
         );
       }
 
@@ -445,7 +459,7 @@ export const trackFilesWithProgress = async (
         sensitiveFiles.push(file.path);
       }
 
-      trackedDestinations.set(normalizedDestination, sourcePath);
+      trackedDestinations.push({ destination: relativeDestination, source: sourcePath });
 
       succeeded++;
 

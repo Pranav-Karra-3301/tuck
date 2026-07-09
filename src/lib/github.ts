@@ -1094,9 +1094,6 @@ export const testStoredCredentials = async (): Promise<{
 
   // Test credentials against GitHub API /user endpoint (requires authentication)
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
-
     // Prefer Bearer token auth when the "password" looks like a GitHub token,
     // but fall back to Basic auth for traditional username/password credentials.
     const headers: Record<string, string> = {
@@ -1116,14 +1113,14 @@ export const testStoredCredentials = async (): Promise<{
       headers.Authorization = `Basic ${auth}`;
     }
 
-    try {
+    {
       const response = await fetch('https://api.github.com/user', {
         method: 'GET',
         headers,
-        signal: controller.signal,
+        // AbortSignal.timeout auto-fires and self-unrefs on settle, so there is
+        // no timer to clear and no leak risk from a forgotten clearTimeout.
+        signal: AbortSignal.timeout(API_REQUEST_TIMEOUT_MS),
       });
-
-      clearTimeout(timeoutId);
 
       // 200 OK means credentials are valid
       if (response.status === 200) {
@@ -1163,9 +1160,6 @@ export const testStoredCredentials = async (): Promise<{
 
       // Other status codes are unexpected
       return { valid: false, reason: 'unknown', username: metadata.username };
-    } catch (fetchError) {
-      clearTimeout(timeoutId);
-      throw fetchError;
     }
   } catch (error) {
     const errorStr = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();

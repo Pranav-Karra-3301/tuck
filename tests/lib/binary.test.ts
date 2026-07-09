@@ -274,6 +274,47 @@ describe('binary', () => {
     });
   });
 
+  describe('isBinaryBuffer', () => {
+    beforeEach(() => {
+      mockIsWindows.mockReturnValue(false);
+    });
+
+    it('detects a known executable magic number (Buffer.equals prefix path)', async () => {
+      const { isBinaryBuffer } = await import('../../src/lib/binary.js');
+      // ELF magic followed by non-NUL bytes, so only the prefix match can fire.
+      expect(isBinaryBuffer(Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x01, 0x02, 0x03]))).toBe(true);
+      // Mach-O 64-bit magic.
+      expect(isBinaryBuffer(Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x01]))).toBe(true);
+      // PE ("MZ") magic.
+      expect(isBinaryBuffer(Buffer.from([0x4d, 0x5a, 0x90]))).toBe(true);
+    });
+
+    it('does not treat a buffer shorter than the magic as a match', async () => {
+      const { isBinaryBuffer } = await import('../../src/lib/binary.js');
+      // Only the first ELF byte — subarray/equals must not over-read into a match.
+      expect(isBinaryBuffer(Buffer.from([0x7f]))).toBe(false);
+    });
+
+    it('detects a NUL byte within the scan window (Buffer.includes path)', async () => {
+      const { isBinaryBuffer } = await import('../../src/lib/binary.js');
+      const buf = Buffer.from('plain text\x00more', 'latin1');
+      expect(isBinaryBuffer(buf)).toBe(true);
+    });
+
+    it('returns false for NUL-free UTF-8 text', async () => {
+      const { isBinaryBuffer } = await import('../../src/lib/binary.js');
+      expect(isBinaryBuffer(Buffer.from('alias g=git\nexport PATH=$PATH\n', 'utf8'))).toBe(false);
+      expect(isBinaryBuffer(Buffer.alloc(0))).toBe(false);
+    });
+
+    it('ignores a NUL byte that falls beyond the 8000-byte scan window', async () => {
+      const { isBinaryBuffer } = await import('../../src/lib/binary.js');
+      const buf = Buffer.concat([Buffer.alloc(8000, 0x41), Buffer.from([0x00])]);
+      // The lone NUL is at index 8000, outside the bounded scan → not flagged.
+      expect(isBinaryBuffer(buf)).toBe(false);
+    });
+  });
+
   describe('magic number detection', () => {
     beforeEach(() => {
       mockIsWindows.mockReturnValue(false);

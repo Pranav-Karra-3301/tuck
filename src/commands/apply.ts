@@ -453,6 +453,25 @@ const printApplyDiffSummary = (summary: ApplyDiffSummary): void => {
 /** True for tar archives we know how to extract. */
 export const isTarballPath = (p: string): boolean => /\.(tar\.gz|tgz|tar)$/i.test(p);
 
+/**
+ * True only for gzip-compressed tar archives (`.tar.gz` / `.tgz`). A plain
+ * `.tar` is uncompressed, so forcing `tar -z` on it makes GNU tar fail with
+ * "not in gzip format". {@link tarExtractArgs} uses this to decide the flags.
+ */
+export const isGzipTarball = (p: string): boolean => /\.(tar\.gz|tgz)$/i.test(p);
+
+/**
+ * Build the argv for extracting a tar archive into `dest`, decompressing with
+ * `-z` only for gzip archives so an uncompressed `.tar` (which
+ * {@link isTarballPath} deliberately accepts) still extracts.
+ */
+export const tarExtractArgs = (archivePath: string, dest: string): string[] => [
+  isGzipTarball(archivePath) ? '-xzf' : '-xf',
+  archivePath,
+  '-C',
+  dest,
+];
+
 const buildProviderCloneUrl = (
   providerMode: Extract<ProviderMode, 'github' | 'gitlab'>,
   repoId: string,
@@ -637,7 +656,9 @@ export const cloneSource = async (resolved: ResolvedSource): Promise<string> => 
 
   if (local === 'tarball') {
     // Extract the archive into the temp dir (tar ships on macOS/Linux/Win10+).
-    await execFileAsync('tar', ['-xzf', repoId, '-C', tempDir]);
+    // Decompress with -z only for gzip archives; a plain .tar (which
+    // isTarballPath accepts) would otherwise fail GNU tar's gzip check.
+    await execFileAsync('tar', tarExtractArgs(repoId, tempDir));
     return tempDir;
   }
 

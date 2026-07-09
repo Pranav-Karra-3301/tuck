@@ -42,7 +42,7 @@ import {
   emitJsonOk,
 } from '../lib/jsonOutput.js';
 import { logger, prompts, colors as c } from '../ui/index.js';
-import simpleGit from 'simple-git';
+import { cloneRepo } from '../lib/git.js';
 
 interface ContextEntry {
   /** Absolute or `~/`-prefixed home-scoped source */
@@ -495,8 +495,10 @@ const applyAction = async (
     const tmp = join(getTuckDir(), '.tmp-context', `${user}-${repoName}`);
     try {
       await mkdir(dirname(tmp), { recursive: true });
-      const git = simpleGit();
-      await git.clone(`https://github.com/${user}/${repoName}.git`, tmp, ['--depth', '1']);
+      // Route through the hardened cloneRepo helper so this inherits the clone
+      // timeout, output cap, non-interactive git env, and credential scrubbing
+      // instead of a bare simpleGit().clone() that has none of those guards.
+      await cloneRepo(`https://github.com/${user}/${repoName}.git`, tmp, { depth: 1 });
       await importContextFromDir(tmp);
     } finally {
       // Always remove the temp clone, even on failure.

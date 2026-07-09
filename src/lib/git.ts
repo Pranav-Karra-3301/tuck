@@ -89,7 +89,20 @@ export const initRepo = async (dir: string): Promise<void> => {
   }
 };
 
-export const cloneRepo = async (url: string, dir: string): Promise<void> => {
+export interface CloneOptions {
+  /**
+   * Create a shallow clone truncated to the given number of commits
+   * (`git clone --depth <n>`). Must be a positive integer; anything else is
+   * ignored so a full clone is performed.
+   */
+  depth?: number;
+}
+
+export const cloneRepo = async (
+  url: string,
+  dir: string,
+  options: CloneOptions = {}
+): Promise<void> => {
   try {
     // Bound the clone: a hung or hostile remote must never let `tuck init` /
     // `tuck apply` hang forever, nor buffer unbounded output into memory.
@@ -100,7 +113,14 @@ export const cloneRepo = async (url: string, dir: string): Promise<void> => {
     // `timeout.block` is honored, so the memory bound would silently be a no-op.
     // `execFile`'s own `timeout` kills the process and `maxBuffer` caps output.
     const env = buildNonInteractiveGitEnv();
-    await execFileAsync('git', ['clone', url, dir], {
+    const args = ['clone'];
+    // Only honor a sane positive integer depth; otherwise fall back to a full
+    // clone rather than passing git a malformed `--depth` argument.
+    if (Number.isInteger(options.depth) && (options.depth as number) > 0) {
+      args.push('--depth', String(options.depth));
+    }
+    args.push(url, dir);
+    await execFileAsync('git', args, {
       timeout: GIT_OPERATION_TIMEOUTS.CLONE,
       maxBuffer: CLONE_MAX_BUFFER,
       // In non-interactive mode a clone against a private remote must fail fast
