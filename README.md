@@ -77,7 +77,14 @@ tuck sync
 ### On a new machine
 
 ```bash
-# Apply dotfiles from any GitHub user
+# One command sets up the whole machine: install packages, apply dotfiles,
+# run health checks — idempotent, so re-running just converges.
+tuck bootstrap username
+
+# Or install tuck AND bootstrap in a single curl (no tuck required yet):
+curl -fsSL https://raw.githubusercontent.com/Pranav-Karra-3301/tuck/main/install.sh | bash -s -- username --yes
+
+# Just the dotfiles (no packages, no doctor):
 tuck apply username
 
 # Or clone your own and restore
@@ -114,11 +121,39 @@ tuck restore --all
 
 ### Restoring
 
-| Command             | Description                                            |
-| ------------------- | ------------------------------------------------------ |
-| `tuck apply <user>` | Apply dotfiles from a GitHub user (with smart merging) |
-| `tuck restore`      | Restore dotfiles from repo to system                   |
-| `tuck undo`         | Restore from Time Machine backup snapshots             |
+| Command                 | Description                                                                        |
+| ----------------------- | ---------------------------------------------------------------------------------- |
+| `tuck bootstrap <repo>` | One-command machine setup: install packages, apply dotfiles, run doctor (idempotent) |
+| `tuck apply <user>`     | Apply dotfiles from a GitHub user (with smart merging)                              |
+| `tuck restore`          | Restore dotfiles from repo to system                                               |
+| `tuck undo`             | Restore from Time Machine backup snapshots                                         |
+
+`tuck bootstrap` flags:
+- `--yes` / `--force`: Non-interactive (skip the plan confirmation)
+- `--dry-run`: Show the plan and what would change without touching the machine
+- `--skip-packages`: Apply dotfiles only, don't install declared packages
+- `--skip-doctor`: Skip the final health check
+- `-m, --merge` / `-r, --replace`: Conflict strategy for existing files (merge is the default)
+- `-b, --bundle <name>`: Only bootstrap files in the named bundle
+- `--json`: Emit a single machine-readable envelope
+
+#### Declarative dependencies (`requires:`)
+
+Tracked files can declare the packages they need with `<manager>:<package>` specs.
+`tuck bootstrap` installs them (topologically ordered, packages before files) and
+shows the plan first. Installation is idempotent — already-present packages are
+detected and skipped, and a package manager that isn't available is skipped, not
+fatal.
+
+```bash
+# Record dependencies when tracking a file
+tuck add ~/.zshrc --requires "brew:starship,apt:zsh"
+
+# Bootstrap installs starship/zsh (as available) before applying ~/.zshrc
+tuck bootstrap you/dotfiles --yes
+```
+
+Supported managers: `brew`, `apt`, `dnf`, `pacman`, `winget`, `scoop`, `cargo`, `npm`, `pnpm`, `pipx`, `go`, `gem`.
 
 ### Configuration
 

@@ -37,6 +37,9 @@ This document lists all error codes used by tuck for programmatic error handling
 | `SECRETS_STORE_ERROR` | `SecretsStoreError` | Local secrets store operation failed | Corrupted store, permissions | Check the secrets store file and permissions |
 | `SCAN_LIMIT_ERROR` | `ScanLimitError` | Too many files to scan | Directory exceeds the scan limit | Narrow the scan scope or raise the limit |
 | `VALIDATION_ERROR` | `ValidationError` | Input failed validation | Invalid flag/field value | Correct the input per the message |
+| `INVALID_REQUIREMENT` | `InvalidRequirementError` | A `requires:` dependency spec is malformed | Missing `<manager>:` prefix or unknown manager | Use `<manager>:<package>` (e.g. `brew:starship`) |
+| `CYCLIC_DEPENDENCY` | `CyclicDependencyError` | The `requires:` graph contains a cycle | A package/file dependency loops back on itself | Remove one edge so dependencies form a DAG |
+| `BOOTSTRAP_ERROR` | `BootstrapError` | `tuck bootstrap` could not complete a phase | Missing git, unclonable repo, or no manifest | Follow the error's suggestions and re-run (idempotent) |
 | `KEYSTORE_ERROR` | `KeystoreError` | OS keystore operation failed | Keychain/secret-service unavailable | Check the OS keystore or use the fallback |
 
 ---
