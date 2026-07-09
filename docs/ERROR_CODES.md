@@ -38,6 +38,7 @@ This document lists all error codes used by tuck for programmatic error handling
 | `SCAN_LIMIT_ERROR` | `ScanLimitError` | Too many files to scan | Directory exceeds the scan limit | Narrow the scan scope or raise the limit |
 | `VALIDATION_ERROR` | `ValidationError` | Input failed validation | Invalid flag/field value | Correct the input per the message |
 | `KEYSTORE_ERROR` | `KeystoreError` | OS keystore operation failed | Keychain/secret-service unavailable | Check the OS keystore or use the fallback |
+| `READ_ONLY_VIOLATION` | `ReadOnlyViolationError` | A read-only command (status/diff/list) attempted a secret/keystore operation | Bug — these commands guarantee zero prompts | Use `tuck apply`/`tuck sync`/`tuck verify` for operations that need secrets |
 
 ---
 

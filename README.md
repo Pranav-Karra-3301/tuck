@@ -291,6 +291,7 @@ tuck is designed with security in mind:
 - **External-first secrets** — `security.secretBackend` defaults to `auto`, preferring external password managers before local fallback
 - **Local fallback secrets** — Store actual values in `secrets.local.json` when needed; it is gitignored by default
 - **Runtime state isolation** — Audit logs, snapshots, and fallback keystore data live outside the tracked tuck repo
+- **Read-only commands never prompt** — `tuck status`, `tuck diff`, and `tuck list` are guaranteed never to unlock the keystore or contact a secret backend. Drift in encrypted files is detected with a machine-local keyed HMAC (zero decryptions), and the commands that do need the key unlock it **once per session**. See [docs/TEMPLATES-AND-ENCRYPTION.md](docs/TEMPLATES-AND-ENCRYPTION.md#read-only-commands-never-prompt).
 
 ```bash
 # Scan tracked files for secrets
