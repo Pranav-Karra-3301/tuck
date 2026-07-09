@@ -69,10 +69,19 @@ export const materializeForLive = async (
  * The single per-OS keystore "encryption password" used for TCKE1 file
  * encryption. Returns null when none is set (the caller decides whether that is
  * fatal — it is for an encrypted file, harmless otherwise).
+ *
+ * Access is routed through the session key cache so the keystore is unlocked AT
+ * MOST ONCE per process (one prompt per session, even when apply/restore decrypt
+ * many files), and so read-only commands (status/diff/list) never trigger a
+ * keystore unlock: in read-only mode this returns a value already cached in the
+ * process, or null, without ever touching the keystore.
  */
 export const keystorePassphrase = async (): Promise<string | null> => {
-  const { getKeystore, TUCK_SERVICE, TUCK_ACCOUNT } = await import('./crypto/keystore/index.js');
-  return (await getKeystore()).retrieve(TUCK_SERVICE, TUCK_ACCOUNT);
+  const { getCachedKeystorePassphrase } = await import('./crypto/sessionKeyCache.js');
+  return getCachedKeystorePassphrase(async () => {
+    const { getKeystore, TUCK_SERVICE, TUCK_ACCOUNT } = await import('./crypto/keystore/index.js');
+    return (await getKeystore()).retrieve(TUCK_SERVICE, TUCK_ACCOUNT);
+  });
 };
 
 /**

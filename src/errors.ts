@@ -393,6 +393,25 @@ export class KeystoreError extends TuckError {
   }
 }
 
+/**
+ * Raised when a read-only inspection command (status/diff/list) attempts an
+ * operation that would touch a secret backend or unlock the OS keystore. These
+ * commands guarantee zero prompts and zero backend access; hitting this error
+ * means that guarantee was about to be broken (a bug), not a user misconfig.
+ */
+export class ReadOnlyViolationError extends TuckError {
+  constructor(operation: string) {
+    super(
+      `Read-only command attempted a secret operation: ${operation}`,
+      'READ_ONLY_VIOLATION',
+      [
+        'status, diff, and list never unlock secrets — this indicates a bug',
+        'Run `tuck apply`, `tuck sync`, or `tuck verify` for operations that need secrets',
+      ]
+    );
+  }
+}
+
 // ============================================================================
 // Error Handler
 // ============================================================================
