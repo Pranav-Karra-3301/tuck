@@ -25,16 +25,19 @@ import {
   PrivateKeyError,
   SecretsDetectedError,
 } from '../errors.js';
-import { logForceSecretBypass } from './audit.js';
+import { logForceSecretBypass, logSecretAllowlisted } from './audit.js';
 import { isJsonMode } from './jsonOutput.js';
 import {
   getSecretsPath,
+  getAllowlistPath,
   isSecretScanningEnabled,
   processSecretsForRedaction,
-  redactFile,
   scanForSecrets,
   shouldBlockOnSecrets,
+  addAllowlistEntryByFingerprint,
+  computeFingerprint,
   type ScanSummary,
+  type SecretMatch,
 } from './secrets/index.js';
 
 const PRIVATE_KEY_PATTERNS = [
@@ -96,6 +99,14 @@ export interface PreparedTrackFile {
   remoteUrl?: string;
   /** Absolute live path to copy FROM (repo scope only). */
   liveSource?: string;
+  /** Redaction plans for secret-bearing files: applied to the REPO copy after
+   *  the copy step; the live file is never modified (issue #100 RC5). For a
+   *  tracked DIRECTORY, livePath points at the inner file that holds the secret. */
+  redactions?: Array<{
+    livePath: string;
+    matches: SecretMatch[];
+    placeholderMap: Map<string, string>;
+  }>;
 }
 
 export interface PreparePathsForTrackingOptions {
@@ -105,6 +116,13 @@ export interface PreparePathsForTrackingOptions {
   allowAlreadyTracked?: boolean;
   secretHandling?: 'interactive' | 'strict';
   forceBypassCommand?: string;
+  /**
+   * The batch is destined for at-rest encryption (`tuck add --encrypt`).
+   * Redaction plans are skipped for encrypted repo copies (they store
+   * ciphertext), so the redact action's messaging must not promise
+   * placeholders that will never be written.
+   */
+  encrypt?: boolean;
   /**
    * Track candidates as REPO-scoped. `true` (or an empty string) means
    * "auto-detect the enclosing git root from each path"; a string is an
@@ -295,7 +313,12 @@ const applySecretPolicy = async (
     {
       value: 'redact',
       label: 'Replace with placeholders',
-      hint: 'Store originals in secrets.local.json (never committed)',
+      hint: 'Repo copy gets placeholders; live file untouched. Originals in secrets.local.json (never committed)',
+    },
+    {
+      value: 'allow',
+      label: 'Mark as safe (allowlist)',
+      hint: 'False positive? Record in secrets.allow.json and track',
     },
     { value: 'ignore', label: 'Add files to .tuckignore', hint: 'Skip these files permanently' },
     { value: 'proceed', label: 'Proceed anyway', hint: 'Track files with secrets (dangerous!)' },
@@ -306,22 +329,79 @@ const applySecretPolicy = async (
     return [];
   }
 
-  if (action === 'redact') {
-    const redactionMaps = await processSecretsForRedaction(summary.results, tuckDir);
-    let totalRedacted = 0;
+  if (action === 'allow') {
+    const reason = await prompts.text(
+      'Why are these findings safe? (recorded in the allowlist)',
+      { placeholder: 'e.g. example values from docs, not real secrets' }
+    );
+    if (!reason || reason.trim().length === 0) {
+      logger.info('Operation aborted (a reason is required to allowlist)');
+      return [];
+    }
+    let allowlisted = 0;
+    for (const result of summary.results) {
+      if (!result.hasSecrets) continue;
+      for (const match of result.matches) {
+        const entry = await addAllowlistEntryByFingerprint(
+          tuckDir,
+          computeFingerprint(match.value),
+          { reason: reason.trim(), pattern: match.patternId, path: result.collapsedPath }
+        );
+        await logSecretAllowlisted(entry.fingerprint, entry.reason, {
+          pattern: entry.pattern,
+          path: entry.path,
+        });
+        allowlisted++;
+      }
+    }
+    console.log();
+    logger.success(`Allowlisted ${allowlisted} finding${allowlisted === 1 ? '' : 's'} as safe`);
+    logger.dim(`Recorded in ${collapsePath(getAllowlistPath(tuckDir))} (commit it to share)`);
+    console.log();
+    return files;
+  }
 
+  if (action === 'redact') {
+    // Repo-only redaction (issue #100 RC5): store the secrets and attach a
+    // redaction PLAN to each owning candidate. The plan is applied to the
+    // repository copy AFTER it is copied (in fileTracking) — the live file in
+    // $HOME is never rewritten, so the user's shell/config keeps working.
+    const redactionMaps = await processSecretsForRedaction(summary.results, tuckDir);
+    let planned = 0;
     for (const result of summary.results) {
       const placeholderMap = redactionMaps.get(result.path);
-      if (placeholderMap && placeholderMap.size > 0) {
-        const redactionResult = await redactFile(result.path, result.matches, placeholderMap);
-        totalRedacted += redactionResult.replacements.length;
+      if (!placeholderMap || placeholderMap.size === 0) continue;
+      const owner = ownerByScanPath.get(result.path);
+      if (!owner) {
+        // A dropped plan means the file would be tracked with its secrets in
+        // CLEARTEXT — never let that happen silently.
+        logger.warning(
+          `No tracking candidate matched scan result ${collapsePath(result.path)} — its secrets will NOT be redacted`
+        );
+        continue;
       }
+      (owner.redactions ??= []).push({
+        livePath: result.path,
+        matches: result.matches,
+        placeholderMap,
+      });
+      // Count actual planned replacements, not raw matches (overlapping or
+      // unmapped matches carry no placeholder and are never rewritten).
+      planned += result.matches.filter((match) => placeholderMap.has(match.value)).length;
     }
 
     console.log();
-    logger.success(`Replaced ${totalRedacted} secret(s) with placeholders`);
+    if (options.encrypt) {
+      // Encrypted repo copies are ciphertext — redaction plans are skipped for
+      // them (fileTracking), so do not promise placeholders here.
+      logger.success(`Stored ${planned} secret(s) in the local secrets store`);
+      logger.dim('Encrypted files store ciphertext in the repo — placeholders are not applied');
+      logger.dim('Your live files are left untouched');
+    } else {
+      logger.success(`Will replace ${planned} secret(s) with placeholders in the repository copy`);
+      logger.dim('Your live files are left untouched');
+    }
     logger.dim(`Secrets stored in: ${collapsePath(getSecretsPath(tuckDir))} (never committed)`);
-    logger.dim("Run 'tuck secrets list' to see stored secrets");
     console.log();
     return files;
   }

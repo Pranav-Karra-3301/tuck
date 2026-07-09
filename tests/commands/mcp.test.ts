@@ -339,6 +339,13 @@ describe('mcp dispatch', () => {
     expect(payload.count).toBe(1);
     expect(payload.files[0].source).toBe('~/.zshrc');
     expect(text).not.toContain('SECRET_LINE'); // contents are not exposed
+    // The handler builds the stored-secret value map ONCE and threads it into
+    // every getFileDiff call (issue #100) — never the per-file lazy path.
+    expect(getFileDiffMock).toHaveBeenCalledWith(
+      expect.any(String),
+      '~/.zshrc',
+      expect.any(Map)
+    );
   });
 
   it('diff tool rejects a non-array `paths` argument (B2 optional type-check)', async () => {

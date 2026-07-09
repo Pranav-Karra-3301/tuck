@@ -13,11 +13,14 @@
  *   tuck secrets test          - Test backend connectivity
  */
 
+import { readFile } from 'fs/promises';
 import { Command } from 'commander';
 import { prompts, logger, colors as c } from '../ui/index.js';
-import { getTuckDir, expandPath, pathExists } from '../lib/paths.js';
+import { getTuckDir, expandPath, collapsePath, pathExists } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import { loadConfig, saveConfig } from '../lib/config.js';
+import { atomicWriteFile } from '../lib/files.js';
+import { createSnapshot } from '../lib/timemachine.js';
 import {
   listSecrets,
   setSecret,
@@ -26,7 +29,18 @@ import {
   isValidSecretName,
   normalizeSecretName,
   scanForSecrets,
+  redactSecret,
+  discoverMcpConfigFiles,
+  extractMcpSecrets,
   type ScanSummary,
+  type McpExtraction,
+  type McpReferenceFormat,
+  computeFingerprint,
+  addAllowlistEntryByFingerprint,
+  removeAllowlistEntries,
+  listAllowlistEntries,
+  getAllowlistPath,
+  type AllowlistEntry,
 } from '../lib/secrets/index.js';
 import {
   createResolver,
@@ -35,7 +49,8 @@ import {
   CONFIGURABLE_BACKEND_NAMES,
   type ConfiguredBackendName,
 } from '../lib/secretBackends/index.js';
-import { NotInitializedError, TuckError } from '../errors.js';
+import { NotInitializedError, TuckError, ValidationError } from '../errors.js';
+import { logSecretAllowlisted, logSecretAllowlistRemoved } from '../lib/audit.js';
 import { getLog } from '../lib/git.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 
@@ -939,6 +954,644 @@ const runTest = async (options: TestOptions): Promise<void> => {
 };
 
 // ============================================================================
+// Extract Command (MCP secrets)
+// ============================================================================
+
+interface ExtractOptions {
+  mcp?: boolean;
+  format?: string;
+  dryRun?: boolean;
+  yes?: boolean;
+  json?: boolean;
+}
+
+/** A single file's extraction outcome (kept together for reporting). */
+interface FileExtraction {
+  path: string; // expanded
+  collapsedPath: string;
+  rewritten: string;
+  original: string;
+  extractions: McpExtraction[];
+}
+
+const isReferenceFormat = (value: string): value is McpReferenceFormat =>
+  value === 'placeholder' || value === 'env';
+
+/**
+ * Resolve the set of files to scan for MCP secrets.
+ *
+ * Explicit paths are always included; `--mcp` adds every known MCP config file
+ * that currently exists on disk.
+ */
+const resolveExtractTargets = async (
+  explicitPaths: string[],
+  useMcp: boolean
+): Promise<string[]> => {
+  const targets = new Set<string>();
+
+  for (const p of explicitPaths) {
+    targets.add(expandPath(p));
+  }
+
+  if (useMcp) {
+    const discovered = await discoverMcpConfigFiles();
+    for (const target of discovered) {
+      targets.add(target.expandedPath);
+    }
+  }
+
+  return [...targets];
+};
+
+export const runExtract = async (paths: string[], options: ExtractOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets extract');
+
+  const tuckDir = getTuckDir();
+
+  try {
+    await loadManifest(tuckDir);
+  } catch {
+    throw new NotInitializedError();
+  }
+
+  // Only MCP extraction is supported today; require --mcp (or explicit paths)
+  // so the flag stays meaningful as more extractors are added.
+  const useMcp = options.mcp === true;
+  if (!useMcp && paths.length === 0) {
+    if (isJsonMode()) {
+      throw new TuckError(
+        'Nothing to extract',
+        'EXTRACT_NO_TARGET',
+        ['Pass --mcp to scan known MCP config files, or provide explicit paths']
+      );
+    }
+    logger.error('Nothing to extract');
+    logger.dim('Pass --mcp to scan known MCP config files, or provide explicit file paths.');
+    return;
+  }
+
+  const format: McpReferenceFormat = (() => {
+    const raw = options.format ?? 'placeholder';
+    if (!isReferenceFormat(raw)) {
+      throw new TuckError(`Invalid --format: ${raw}`, 'EXTRACT_BAD_FORMAT', [
+        'Valid formats: placeholder (tuck {{NAME}}), env (${env:NAME})',
+      ]);
+    }
+    return raw;
+  })();
+
+  const targetFiles = await resolveExtractTargets(paths, useMcp);
+
+  if (targetFiles.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ files: [], totalExtracted: 0, changed: false });
+      return;
+    }
+    logger.info('No MCP config files found');
+    logger.dim('Checked known locations (Claude Desktop, ~/.claude.json, .cursor/mcp.json, …).');
+    return;
+  }
+
+  // Analyze each file. A shared placeholder set keeps names unique across files.
+  //
+  // SAFETY: seed the set with the names of secrets that are ALREADY stored and
+  // with existing mapping names so a generated placeholder can never collide
+  // with — and silently overwrite — a pre-existing stored value. The secrets
+  // store is the only cleartext copy of those values and is not covered by the
+  // pre-extract snapshot, so a collision would be unrecoverable. Colliding names
+  // get the `_1`, `_2`, … suffix instead (e.g. `GITHUB_TOKEN` → `GITHUB_TOKEN_1`).
+  const existingPlaceholders = new Set<string>();
+  for (const secret of await listSecrets(tuckDir)) {
+    existingPlaceholders.add(secret.name);
+  }
+  for (const mappingName of Object.keys(await listMappings(tuckDir))) {
+    existingPlaceholders.add(mappingName);
+  }
+  const fileResults: FileExtraction[] = [];
+  let totalExtracted = 0;
+  let totalSkipped = 0;
+
+  for (const expandedPath of targetFiles) {
+    if (!(await pathExists(expandedPath))) {
+      if (!isJsonMode()) logger.warning(`File not found: ${collapsePath(expandedPath)}`);
+      continue;
+    }
+
+    let content: string;
+    try {
+      content = await readFile(expandedPath, 'utf-8');
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (!isJsonMode()) logger.warning(`Cannot read ${collapsePath(expandedPath)}: ${msg}`);
+      continue;
+    }
+
+    let result;
+    try {
+      result = extractMcpSecrets(content, { format, existingPlaceholders }, collapsePath(expandedPath));
+    } catch (error) {
+      // Invalid JSON (McpConfigError) — skip the file but keep going.
+      const msg = error instanceof Error ? error.message : String(error);
+      if (!isJsonMode()) logger.warning(msg);
+      continue;
+    }
+
+    for (const extraction of result.extractions) {
+      existingPlaceholders.add(extraction.placeholder);
+    }
+
+    totalSkipped += result.skipped.length;
+
+    // Warn about credentials tuck detected but could NOT locate verbatim in the
+    // source (JSON escape variants re-encode differently). These are left in the
+    // file as-is and are NOT stored/mapped/reported as extracted — surfacing the
+    // plaintext secret is exactly what this command exists to prevent.
+    if (result.skipped.length > 0 && !isJsonMode()) {
+      logger.warning(
+        `Could not rewrite ${result.skipped.length} credential(s) in ${collapsePath(expandedPath)} ` +
+          `(the value uses a JSON encoding tuck cannot match). Left untouched — the plaintext ` +
+          `secret is still in the file. Re-save the value without escape sequences and re-run.`
+      );
+      for (const ex of result.skipped) {
+        logger.dim(`  skipped: ${ex.server}.${ex.field}.${ex.key}`);
+      }
+    }
+
+    if (result.extractions.length > 0) {
+      totalExtracted += result.extractions.length;
+      fileResults.push({
+        path: expandedPath,
+        collapsedPath: collapsePath(expandedPath),
+        rewritten: result.rewritten,
+        original: result.original,
+        extractions: result.extractions,
+      });
+    }
+  }
+
+  if (totalExtracted === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ files: [], totalExtracted: 0, totalSkipped, changed: false });
+      return;
+    }
+    if (totalSkipped > 0) {
+      // Everything detected was left untouched (unmatchable encoding). Do NOT
+      // claim the files are clean — the plaintext is still there.
+      logger.warning(
+        `Detected ${totalSkipped} credential(s) but could not safely rewrite any of them.`
+      );
+      logger.dim('The plaintext values remain in place — see the warnings above.');
+      return;
+    }
+    logger.success('No inline MCP credentials found');
+    logger.dim('Your MCP config files are already free of plaintext secrets.');
+    return;
+  }
+
+  // ---- Preview (redacted) ----
+  if (!isJsonMode()) {
+    console.log();
+    console.log(
+      c.bold.cyan(
+        `Found ${totalExtracted} inline credential(s) in ${fileResults.length} MCP config file(s)`
+      )
+    );
+    console.log(c.dim('─'.repeat(60)));
+    for (const file of fileResults) {
+      console.log();
+      console.log(c.cyan(file.collapsedPath));
+      for (const ex of file.extractions) {
+        console.log(
+          `  ${c.dim(`${ex.server}.${ex.field}.${ex.key}`)} → ${c.green(ex.reference)} ${c.dim(
+            redactSecret(ex.value)
+          )}`
+        );
+      }
+    }
+    console.log();
+  }
+
+  // ---- Dry-run stops here ----
+  if (options.dryRun) {
+    if (isJsonMode()) {
+      emitJsonOk({
+        dryRun: true,
+        changed: true,
+        totalExtracted,
+        totalSkipped,
+        files: fileResults.map((f) => buildRedactedExtractionSummary(f)),
+      });
+      return;
+    }
+    logger.info('Dry run: no files were modified and no secrets were stored.');
+    logger.dim('Re-run without --dry-run to apply the changes.');
+    return;
+  }
+
+  // ---- Confirm (interactive only) ----
+  if (!isJsonMode() && !options.yes) {
+    logger.warning('This will rewrite the files above and store the extracted values.');
+    const confirmed = await prompts.confirm(
+      `Extract ${totalExtracted} credential(s) into ${format === 'env' ? '${env:…}' : 'tuck placeholders'}?`,
+      false
+    );
+    if (!confirmed) {
+      logger.info('Extraction cancelled — no changes made.');
+      return;
+    }
+  }
+
+  // ---- Snapshot backup before any mutation ----
+  const snapshot = await createSnapshot(
+    fileResults.map((f) => f.path),
+    'Pre-extract backup before tuck secrets extract'
+  );
+
+  // ---- Store secrets + record mappings, then rewrite files ----
+  const storedPlaceholders = new Set<string>();
+  for (const file of fileResults) {
+    for (const ex of file.extractions) {
+      if (storedPlaceholders.has(ex.placeholder)) continue;
+      storedPlaceholders.add(ex.placeholder);
+
+      // Store the real value locally (0600, gitignored) so `tuck apply` can
+      // inject it, and record a committed `local` mapping so other machines
+      // know the placeholder exists.
+      await setSecret(tuckDir, ex.placeholder, ex.value, {
+        description: `MCP credential (${ex.server}.${ex.key})`,
+        source: file.collapsedPath,
+      });
+      await setMapping(tuckDir, ex.placeholder, 'local', true);
+    }
+
+    // Only write when the content actually changed.
+    if (file.rewritten !== file.original) {
+      await atomicWriteFile(file.path, file.rewritten);
+    }
+  }
+
+  if (isJsonMode()) {
+    emitJsonOk({
+      changed: true,
+      totalExtracted,
+      totalSkipped,
+      snapshotId: snapshot.id,
+      backend: 'local',
+      format,
+      files: fileResults.map((f) => buildRedactedExtractionSummary(f)),
+    });
+    return;
+  }
+
+  logger.success(
+    `Extracted ${totalExtracted} credential(s) from ${fileResults.length} file(s)`
+  );
+  console.log();
+  logger.dim(`Snapshot saved: ${snapshot.id} (run 'tuck undo' to revert)`);
+  console.log();
+  prompts.note(
+    [
+      `Track the rewritten file(s) so 'tuck apply' can re-inject the values:`,
+      ...fileResults.map((f) => `  tuck add ${f.collapsedPath}`),
+      ...(format === 'env'
+        ? ['', 'Using ${env:…}: export the matching env vars before launching the client.']
+        : ['', "Values are stored locally. Run 'tuck apply' on a new machine to inject them."]),
+      '',
+      'To move a value into an external backend (1Password/pass):',
+      '  tuck secrets map <NAME> --1password "op://vault/item/field"',
+    ].join('\n'),
+    'Next steps'
+  );
+};
+
+/**
+ * Build a REDACTED per-file summary for JSON output.
+ *
+ * SECURITY-CRITICAL: never include the raw credential value. Only emit the
+ * placeholder/reference metadata and location.
+ */
+const buildRedactedExtractionSummary = (file: FileExtraction) => ({
+  path: file.collapsedPath,
+  extracted: file.extractions.length,
+  credentials: file.extractions.map((ex) => ({
+    server: ex.server,
+    scope: ex.scope,
+    field: ex.field,
+    key: ex.key,
+    placeholder: ex.placeholder,
+    reference: ex.reference,
+  })),
+});
+
+// ============================================================================
+// Allowlist Commands
+// ============================================================================
+
+const SHORT_FINGERPRINT_LENGTH = 12;
+
+const isFingerprint = (value: string): boolean => /^[a-f0-9]{64}$/i.test(value);
+
+const formatAllowEntry = (entry: AllowlistEntry): void => {
+  console.log(`  ${c.green(entry.fingerprint.slice(0, SHORT_FINGERPRINT_LENGTH))}${c.dim('…')}`);
+  console.log(`    ${c.dim('Reason:')} ${entry.reason}`);
+  if (entry.pattern) console.log(`    ${c.dim('Pattern:')} ${entry.pattern}`);
+  if (entry.path) console.log(`    ${c.dim('Path:')} ${entry.path}`);
+  if (entry.addedBy) console.log(`    ${c.dim('Added by:')} ${entry.addedBy}`);
+  console.log(`    ${c.dim('Added:')} ${new Date(entry.addedAt).toLocaleDateString()}`);
+  console.log();
+};
+
+const requireInitialized = async (tuckDir: string): Promise<void> => {
+  try {
+    await loadManifest(tuckDir);
+  } catch {
+    throw new NotInitializedError();
+  }
+};
+
+const runAllowList = async (options: JsonOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets allow list');
+  const tuckDir = getTuckDir();
+  await requireInitialized(tuckDir);
+
+  const entries = await listAllowlistEntries(tuckDir);
+
+  if (isJsonMode()) {
+    // SECURITY: the allowlist already contains only fingerprints (no raw
+    // values), so it is safe to emit verbatim.
+    emitJsonOk({ entries });
+    return;
+  }
+
+  if (entries.length === 0) {
+    logger.info('No allowlisted findings');
+    console.log();
+    logger.dim(`Allowlist file: ${collapsePath(getAllowlistPath(tuckDir))}`);
+    logger.dim('Mark a scanner false-positive as safe with: tuck secrets allow add --file <path>');
+    return;
+  }
+
+  console.log();
+  console.log(c.bold.cyan(`Allowlisted Findings (${entries.length})`));
+  console.log(c.dim('─'.repeat(50)));
+  console.log();
+  for (const entry of entries) {
+    formatAllowEntry(entry);
+  }
+  logger.dim(`Allowlist file: ${collapsePath(getAllowlistPath(tuckDir))} (committed & auditable)`);
+};
+
+interface AllowRemoveOptions extends JsonOptions {}
+
+const runAllowRemove = async (
+  fingerprint: string,
+  options: AllowRemoveOptions = {}
+): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets allow remove');
+  const tuckDir = getTuckDir();
+  await requireInitialized(tuckDir);
+
+  const prefix = fingerprint.trim().toLowerCase();
+  if (prefix.length === 0 || !/^[a-f0-9]+$/.test(prefix)) {
+    throw new ValidationError('fingerprint', 'must be a hex fingerprint (or prefix)');
+  }
+
+  const removed = await removeAllowlistEntries(tuckDir, prefix);
+  if (removed.length > 0) {
+    await logSecretAllowlistRemoved(removed.map((entry) => entry.fingerprint));
+  }
+
+  if (isJsonMode()) {
+    emitJsonOk({ removed: removed.length, fingerprints: removed.map((e) => e.fingerprint) });
+    return;
+  }
+
+  if (removed.length === 0) {
+    logger.warning(`No allowlist entry matching: ${fingerprint}`);
+    logger.dim('Run `tuck secrets allow list` to see fingerprints');
+    return;
+  }
+  logger.success(
+    `Removed ${removed.length} allowlist entr${removed.length === 1 ? 'y' : 'ies'}`
+  );
+};
+
+interface AllowAddOptions extends JsonOptions {
+  reason?: string;
+  file?: string;
+  pattern?: string;
+  fingerprint?: string;
+  yes?: boolean;
+}
+
+/**
+ * Add scanner findings to the centralized allowlist.
+ *
+ * Three input modes (none of which put a raw secret on the command line):
+ *  - `--fingerprint <hash>`: allowlist a known fingerprint directly.
+ *  - `--file <path>` [+ `--pattern <id>`]: re-scan the file and allowlist the
+ *    matching findings by fingerprint (value never leaves the process).
+ *  - interactive (TTY, no --file/--fingerprint): scan tracked files and let the
+ *    user pick which findings to mark safe.
+ */
+const runAllowAdd = async (options: AllowAddOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets allow add');
+  const tuckDir = getTuckDir();
+  await requireInitialized(tuckDir);
+
+  const nonInteractive = isJsonMode() || options.yes === true || !process.stdout.isTTY;
+
+  // Unscoped bulk allowlisting (no --file/--pattern/--fingerprint) permanently
+  // disarms the secret gate for EVERY current finding — never do that on the
+  // strength of a redirected stdout alone. Explicit --yes is required.
+  if (
+    nonInteractive &&
+    options.yes !== true &&
+    !options.file &&
+    !options.pattern &&
+    !options.fingerprint
+  ) {
+    throw new TuckError(
+      'Refusing to allowlist ALL findings non-interactively',
+      'ALLOW_ALL_REQUIRES_YES',
+      [
+        'Pass --yes to explicitly allowlist every finding across all tracked files',
+        'Or scope the operation with --file <path>, --pattern <id>, or --fingerprint <fp>',
+      ]
+    );
+  }
+
+  // ---- Resolve a reason (required, keeps the allowlist auditable) ----
+  const resolveReason = async (): Promise<string> => {
+    if (options.reason && options.reason.trim().length > 0) return options.reason.trim();
+    if (nonInteractive) {
+      throw new TuckError('A reason is required', 'ALLOW_REASON_REQUIRED', [
+        'Pass --reason "<why this value is safe>"',
+      ]);
+    }
+    const reason = await prompts.text('Why is this value safe? (recorded in the allowlist)', {
+      placeholder: 'e.g. example value from docs, not a real key',
+    });
+    if (!reason || reason.trim().length === 0) {
+      throw new TuckError('A reason is required', 'ALLOW_REASON_REQUIRED');
+    }
+    return reason.trim();
+  };
+
+  // ---- Mode 1: direct fingerprint ----
+  if (options.fingerprint) {
+    const fp = options.fingerprint.trim().toLowerCase();
+    if (!isFingerprint(fp)) {
+      throw new ValidationError('fingerprint', 'must be a 64-char SHA-256 hex digest');
+    }
+    const reason = await resolveReason();
+    const entry = await addAllowlistEntryByFingerprint(tuckDir, fp, {
+      reason,
+      pattern: options.pattern,
+    });
+    await logSecretAllowlisted(entry.fingerprint, entry.reason, {
+      pattern: entry.pattern,
+      path: entry.path,
+    });
+    if (isJsonMode()) {
+      emitJsonOk({ added: 1, entries: [entry] });
+      return;
+    }
+    logger.success(`Allowlisted ${entry.fingerprint.slice(0, SHORT_FINGERPRINT_LENGTH)}…`);
+    return;
+  }
+
+  // ---- Determine which files to scan ----
+  let scanPaths: string[];
+  if (options.file) {
+    const expanded = expandPath(options.file);
+    if (!(await pathExists(expanded))) {
+      throw new TuckError(`File not found: ${options.file}`, 'FILE_NOT_FOUND', [
+        'Check the path and try again',
+      ]);
+    }
+    scanPaths = [expanded];
+  } else {
+    scanPaths = Array.from(
+      new Set(
+        Object.values(await getAllTrackedFiles(tuckDir)).map((file) => expandPath(file.source))
+      )
+    );
+  }
+
+  if (scanPaths.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ added: 0, entries: [] });
+      return;
+    }
+    logger.warning('No files to scan');
+    return;
+  }
+
+  // Run the SAME config-aware scan the secret gate runs (same scanner choice,
+  // custom patterns, and pattern ids — recorded scopes must match the gate),
+  // but without the allowlist filter, which would hide the very matches the
+  // user wants to add here.
+  const summary = await scanForSecrets(scanPaths, tuckDir, { includeAllowlisted: true });
+
+  if (summary.filesWithSecrets === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ added: 0, entries: [] });
+      return;
+    }
+    logger.info('No findings to allowlist');
+    return;
+  }
+
+  // Flatten to candidate findings (deduped by fingerprint+pattern+path).
+  interface Candidate {
+    value: string;
+    fingerprint: string;
+    patternId: string;
+    patternName: string;
+    collapsedPath: string;
+    line: number;
+    context: string;
+  }
+  const candidates: Candidate[] = [];
+  const seen = new Set<string>();
+  for (const result of summary.results) {
+    for (const match of result.matches) {
+      if (options.pattern && match.patternId !== options.pattern) continue;
+      const fingerprint = computeFingerprint(match.value);
+      const key = `${fingerprint}:${match.patternId}:${result.collapsedPath}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      candidates.push({
+        value: match.value,
+        fingerprint,
+        patternId: match.patternId,
+        patternName: match.patternName,
+        collapsedPath: result.collapsedPath,
+        line: match.line,
+        context: match.context,
+      });
+    }
+  }
+
+  if (candidates.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ added: 0, entries: [] });
+      return;
+    }
+    logger.info('No findings matched the given filters');
+    return;
+  }
+
+  // ---- Choose which candidates to allowlist ----
+  let chosen: Candidate[];
+  if (nonInteractive || options.file || options.pattern) {
+    // Non-interactive / scoped: allowlist every matching finding.
+    chosen = candidates;
+  } else {
+    const selected = await prompts.multiselect<string>(
+      'Select findings to mark as safe (allowlist):',
+      candidates.map((candidate, i) => ({
+        value: String(i),
+        label: `${candidate.patternName} — ${candidate.collapsedPath}:${candidate.line}`,
+        hint: candidate.context,
+      }))
+    );
+    if (!selected || selected.length === 0) {
+      logger.info('Nothing selected');
+      return;
+    }
+    const indices = new Set(selected.map((s) => parseInt(s, 10)));
+    chosen = candidates.filter((_, i) => indices.has(i));
+  }
+
+  const reason = await resolveReason();
+  const added: AllowlistEntry[] = [];
+  for (const candidate of chosen) {
+    const entry = await addAllowlistEntryByFingerprint(tuckDir, candidate.fingerprint, {
+      reason,
+      pattern: candidate.patternId,
+      path: candidate.collapsedPath,
+    });
+    await logSecretAllowlisted(entry.fingerprint, entry.reason, {
+      pattern: entry.pattern,
+      path: entry.path,
+    });
+    added.push(entry);
+  }
+
+  if (isJsonMode()) {
+    emitJsonOk({ added: added.length, entries: added });
+    return;
+  }
+
+  logger.success(
+    `Allowlisted ${added.length} finding${added.length === 1 ? '' : 's'}`
+  );
+  logger.dim(`Allowlist file: ${collapsePath(getAllowlistPath(tuckDir))} (commit it to share)`);
+};
+
+// ============================================================================
 // Command Definition
 // ============================================================================
 
@@ -981,6 +1634,54 @@ export const secretsCommand = new Command('secrets')
       .argument('[paths...]', 'Files to scan')
       .option('--json', 'Emit JSON envelope to stdout')
       .action(runScanFiles)
+  )
+  // Centralized, auditable allowlist (replaces inline ignore comments)
+  .addCommand(
+    new Command('allow')
+      .description('Manage the centralized secret allowlist (mark findings as safe)')
+      .option('--json', 'Emit JSON envelope to stdout')
+      .action((options: JsonOptions) => runAllowList(options))
+      .addCommand(
+        new Command('list')
+          .description('List allowlisted findings')
+          .option('--json', 'Emit JSON envelope to stdout')
+          .action((options: JsonOptions) => runAllowList(options))
+      )
+      .addCommand(
+        new Command('add')
+          .description('Add scanner finding(s) to the allowlist')
+          .option('--file <path>', 'Scan this file and allowlist its findings')
+          .option('--pattern <id>', 'Only allowlist findings from this pattern id')
+          .option('--fingerprint <hash>', 'Allowlist a known SHA-256 fingerprint directly')
+          .option('--reason <text>', 'Why the value is safe (required non-interactively)')
+          .option('--json', 'Emit JSON envelope to stdout')
+          .option('-y, --yes', 'Non-interactive: allowlist all matching findings')
+          .action((options: AllowAddOptions) => runAllowAdd(options))
+      )
+      .addCommand(
+        new Command('remove')
+          .description('Remove an allowlist entry by fingerprint (or prefix)')
+          .argument('<fingerprint>', 'Fingerprint or unique prefix to remove')
+          .option('--json', 'Emit JSON envelope to stdout')
+          .action((fingerprint: string, options: AllowRemoveOptions) =>
+            runAllowRemove(fingerprint, options)
+          )
+      )
+  )
+  .addCommand(
+    new Command('extract')
+      .description('Rewrite inline credentials into tuck placeholders (MCP config files)')
+      .argument('[paths...]', 'Explicit files to extract from')
+      .option('--mcp', 'Scan known MCP config files (Claude Desktop, ~/.claude.json, .cursor/mcp.json, …)')
+      .option(
+        '--format <format>',
+        'Reference format: placeholder (tuck {{NAME}}) or env (${env:NAME})',
+        'placeholder'
+      )
+      .option('--dry-run', 'Preview changes without writing files or storing secrets')
+      .option('-y, --yes', 'Non-interactive: skip the confirmation prompt')
+      .option('--json', 'Emit JSON envelope to stdout (values are never included)')
+      .action((paths: string[], options: ExtractOptions) => runExtract(paths, options))
   )
   .addCommand(
     new Command('scan-history')

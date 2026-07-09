@@ -6,18 +6,26 @@
 import * as p from '@clack/prompts';
 import { colors as c } from './theme.js';
 import { isJsonMode } from '../lib/jsonOutput.js';
+import { isNonInteractive, isNonInteractiveFlagSet } from '../lib/agentMode.js';
 import { OperationCancelledError } from '../errors.js';
 
 /**
- * Refuse to prompt when stdin is not a TTY (agent/CI/piped). Without this the
+ * Refuse to prompt when the CLI is running non-interactively: an explicit
+ * `--non-interactive`, `--json` (a prompt would corrupt the envelope), or a
+ * non-TTY stdin (agent/CI/piped — no human to answer). Without this the
  * underlying clack prompt would read EOF and silently cancel — historically
  * exiting 0 (a false "success"). Throwing a structured error gives a non-zero
  * exit and a JSON error envelope in JSON mode.
  */
 const ensureInteractive = (): void => {
-  if (!process.stdin.isTTY) {
+  if (isNonInteractive()) {
+    const why = isNonInteractiveFlagSet()
+      ? '--non-interactive was set'
+      : isJsonMode()
+        ? '--json implies non-interactive'
+        : 'stdin is not a TTY';
     throw new OperationCancelledError(
-      'a prompt was required but stdin is not a TTY — pass the needed flags (e.g. --yes) to run non-interactively'
+      `a prompt was required but ${why} — pass the needed flags (e.g. --yes) to run non-interactively`
     );
   }
 };
@@ -236,7 +244,7 @@ export const prompts = {
    */
   confirmDangerous: async (message: string, confirmWord = 'yes'): Promise<boolean> => {
     // In non-interactive mode, don't allow dangerous operations without explicit CI flag
-    if (!process.stdout.isTTY) {
+    if (isNonInteractive() || !process.stdout.isTTY) {
       if (process.env.TUCK_FORCE_DANGEROUS === 'true') {
         return true;
       }

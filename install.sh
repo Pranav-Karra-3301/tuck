@@ -1,7 +1,18 @@
 #!/usr/bin/env bash
 
 # tuck installer script
-# Usage: curl -fsSL https://raw.githubusercontent.com/Pranav-Karra-3301/tuck/main/install.sh | bash
+#
+# Install only:
+#   curl -fsSL https://raw.githubusercontent.com/Pranav-Karra-3301/tuck/main/install.sh | bash
+#
+# Install AND bootstrap a machine from a dotfiles repo in one shot (idempotent —
+# safe to re-run; it converges instead of erroring):
+#   curl -fsSL https://raw.githubusercontent.com/Pranav-Karra-3301/tuck/main/install.sh | bash -s -- <user-or-repo> [tuck bootstrap flags...]
+#
+# Examples:
+#   ... | bash -s -- octocat                 # find octocat's dotfiles and set up this machine
+#   ... | bash -s -- octocat/dotfiles --yes  # non-interactive
+#   ... | bash -s -- octocat --skip-packages # dotfiles only, no package installs
 
 set -euo pipefail
 
@@ -163,8 +174,49 @@ check_path() {
     fi
 }
 
+# Resolve the tuck executable after install (freshly-installed dir may not be on
+# the current shell's PATH yet), preferring the location we just wrote to.
+resolve_tuck_bin() {
+    if [[ -x "${INSTALL_DIR}/tuck" ]]; then
+        echo "${INSTALL_DIR}/tuck"
+    elif command -v tuck >/dev/null 2>&1; then
+        command -v tuck
+    else
+        echo ""
+    fi
+}
+
+# Run `tuck bootstrap <repo>` after a successful install. Accepts the repo as the
+# first argument and forwards any remaining arguments to `tuck bootstrap`.
+run_bootstrap() {
+    local repo="$1"
+    shift
+
+    local tuck_bin
+    tuck_bin="$(resolve_tuck_bin)"
+    if [[ -z "$tuck_bin" ]]; then
+        error "Could not locate the tuck executable after install; open a new shell and run: tuck bootstrap ${repo}"
+    fi
+
+    echo ""
+    info "Bootstrapping this machine from ${repo}..."
+    echo ""
+    # Re-runnable by design: `tuck bootstrap` converges on repeat runs.
+    "$tuck_bin" bootstrap "$repo" "$@"
+}
+
 # Main installation logic
 main() {
+    # First positional argument (if any) is the dotfiles repo to bootstrap from;
+    # everything after it is forwarded verbatim to `tuck bootstrap`.
+    local bootstrap_repo=""
+    local -a bootstrap_args=()
+    if [[ $# -gt 0 ]]; then
+        bootstrap_repo="$1"
+        shift
+        bootstrap_args=("$@")
+    fi
+
     echo ""
     echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║       ${GREEN}tuck${CYAN} - Dotfiles Manager          ║${NC}"
@@ -184,6 +236,9 @@ main() {
             check_path
             echo ""
             success "Installation complete! Run 'tuck --help' to get started."
+            if [[ -n "$bootstrap_repo" ]]; then
+                run_bootstrap "$bootstrap_repo" ${bootstrap_args[@]+"${bootstrap_args[@]}"}
+            fi
             return 0
         else
             warn "Binary download failed, falling back to npm..."
@@ -197,6 +252,10 @@ main() {
 
     echo ""
     success "Installation complete! Run 'tuck --help' to get started."
+
+    if [[ -n "$bootstrap_repo" ]]; then
+        run_bootstrap "$bootstrap_repo" ${bootstrap_args[@]+"${bootstrap_args[@]}"}
+    fi
 }
 
 main "$@"

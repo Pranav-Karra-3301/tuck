@@ -23,6 +23,8 @@ const makeMatch = (value: string, placeholder: string): SecretMatch => ({
   column: 0,
   context: '',
   placeholder,
+  start: 0,
+  end: value.length,
 });
 
 describe('redactor round-trip with overlapping (short ⊂ long) secrets', () => {
