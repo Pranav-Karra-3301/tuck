@@ -67,19 +67,33 @@ describe('Permissions Security', () => {
     }
   });
 
-  it('exposes and applies permission helpers without crashing', async () => {
-    const filePath = join(TEST_HOME, 'permissions.txt');
-    vol.writeFileSync(filePath, 'secret');
+  // setFilePermissions is a documented no-op on Windows (Unix modes don't
+  // apply), so the observable-change assertion is only meaningful elsewhere.
+  it.skipIf(process.platform === 'win32')(
+    'exposes and applies permission helpers without crashing',
+    async () => {
+      const filePath = join(TEST_HOME, 'permissions.txt');
+      vol.writeFileSync(filePath, 'secret');
 
-    // Seed a known, non-644 mode so the change made below is actually
-    // observable. If setFilePermissions were a no-op the final assertion would
-    // still see 600 and fail, instead of passing vacuously.
-    await setFilePermissions(filePath, '600');
-    const before = (await getFileInfo(filePath)).permissions;
-    expect(before).toBe('600');
+      // Seed a known, non-644 mode so the change made below is actually
+      // observable. If setFilePermissions were a no-op the final assertion would
+      // still see 600 and fail, instead of passing vacuously.
+      await setFilePermissions(filePath, '600');
+      const before = (await getFileInfo(filePath)).permissions;
+      expect(before).toBe('600');
 
-    await expect(setFilePermissions(filePath, '644')).resolves.not.toThrow();
-    const after = (await getFileInfo(filePath)).permissions;
-    expect(after).toBe('644');
-  });
+      await expect(setFilePermissions(filePath, '644')).resolves.not.toThrow();
+      const after = (await getFileInfo(filePath)).permissions;
+      expect(after).toBe('644');
+    }
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'setFilePermissions is a graceful no-op on Windows',
+    async () => {
+      const filePath = join(TEST_HOME, 'permissions.txt');
+      vol.writeFileSync(filePath, 'secret');
+      await expect(setFilePermissions(filePath, '600')).resolves.not.toThrow();
+    }
+  );
 });

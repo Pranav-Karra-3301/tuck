@@ -143,9 +143,12 @@ describe('tuck secrets extract --mcp', () => {
     const { listSnapshots } = await import('../../src/lib/timemachine.js');
     const snapshots = await listSnapshots();
     expect(snapshots.length).toBeGreaterThan(0);
+    // originalPath is stored expanded, which uses backslashes on Windows —
+    // compare resolved paths so the lookup is separator-agnostic.
+    const { resolve } = await import('path');
     const backedUp = snapshots
       .flatMap((s) => s.files)
-      .find((f) => f.originalPath === MCP_PATH);
+      .find((f) => resolve(f.originalPath) === resolve(MCP_PATH));
     expect(backedUp, 'the MCP file must be recorded in the snapshot').toBeDefined();
     expect(backedUp?.existed).toBe(true);
     const backedUpContent = vol.readFileSync(backedUp!.backupPath, 'utf-8') as string;

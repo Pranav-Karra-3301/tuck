@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { vol } from 'memfs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { Command } from 'commander';
 import {
   assertContextWriteSafe,
@@ -278,11 +278,12 @@ describe('context apply <user/repo> (github clone routing)', () => {
     await runApplyYes('u/r');
 
     expect(cloneMock).toHaveBeenCalledTimes(1);
-    expect(cloneMock).toHaveBeenCalledWith(
-      'https://github.com/u/r.git',
-      CLONE,
-      { depth: 1 }
-    );
+    // The clone dir is built with path.join (backslashes on Windows) —
+    // compare resolved paths instead of exact strings.
+    const [url, dir, opts] = cloneMock.mock.calls[0];
+    expect(url).toBe('https://github.com/u/r.git');
+    expect(resolve(dir)).toBe(resolve(CLONE));
+    expect(opts).toEqual({ depth: 1 });
   });
 
   it('removes the temp clone dir after a successful apply', async () => {
