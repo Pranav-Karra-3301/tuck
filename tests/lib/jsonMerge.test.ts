@@ -161,6 +161,131 @@ describe('mergeJsonValues — key additions and deletions', () => {
   });
 });
 
+describe('mergeJsonValues — base-aware array union (revocation safety)', () => {
+  it('honors a locally-revoked permission instead of resurrecting it', () => {
+    // base grants Read, Bash, WebFetch. Ours revokes Bash. Theirs adds Glob.
+    const base = { allow: ['Read', 'Bash', 'WebFetch'] };
+    const ours = { allow: ['Read', 'WebFetch'] };
+    const theirs = { allow: ['Read', 'Bash', 'WebFetch', 'Glob'] };
+    const { merged, conflicts } = mergeJsonValues(base, ours, theirs, union);
+    // Bash stays revoked (deletion wins); Glob is a genuine addition.
+    expect(merged).toEqual({ allow: ['Read', 'WebFetch', 'Glob'] });
+    expect(conflicts).toHaveLength(0);
+  });
+
+  it('honors a remotely-revoked item even though ours still carries it', () => {
+    const base = { allow: ['Read', 'Bash', 'WebFetch'] };
+    const ours = { allow: ['Read', 'Bash', 'WebFetch'] };
+    const theirs = { allow: ['Read', 'WebFetch'] };
+    const { merged } = mergeJsonValues(base, ours, theirs, union);
+    expect(merged).toEqual({ allow: ['Read', 'WebFetch'] });
+  });
+
+  it('keeps genuine additions from both sides while honoring a deletion', () => {
+    const base = { allow: ['A', 'B'] };
+    const ours = { allow: ['A', 'OurAdd'] }; // dropped B, added OurAdd
+    const theirs = { allow: ['A', 'B', 'TheirAdd'] }; // kept B, added TheirAdd
+    const { merged } = mergeJsonValues(base, ours, theirs, union);
+    // B was deleted by ours → stays gone; both additions survive.
+    expect(merged).toEqual({ allow: ['A', 'OurAdd', 'TheirAdd'] });
+  });
+
+  it('drops an item deleted by both sides', () => {
+    const base = { allow: ['A', 'B', 'C'] };
+    const ours = { allow: ['A', 'C'] };
+    const theirs = { allow: ['A'] };
+    const { merged } = mergeJsonValues(base, ours, theirs, union);
+    expect(merged).toEqual({ allow: ['A'] });
+  });
+
+  it('treats a delete-vs-modify on an array item as delete-old + add-new', () => {
+    // Union arrays have no element identity: base "Bash" is deleted by ours and
+    // "modified" to "Bash(git:*)" by theirs. Old value drops; new value is added.
+    const base = { allow: ['Read', 'Bash'] };
+    const ours = { allow: ['Read'] }; // deleted Bash
+    const theirs = { allow: ['Read', 'Bash(git:*)'] }; // modified Bash
+    const { merged } = mergeJsonValues(base, ours, theirs, union);
+    expect(merged).toEqual({ allow: ['Read', 'Bash(git:*)'] });
+  });
+
+  it('base-aware union works for arrays of objects', () => {
+    const base = { servers: [{ name: 'a' }, { name: 'b' }] };
+    const ours = { servers: [{ name: 'a' }] }; // dropped b
+    const theirs = { servers: [{ name: 'a' }, { name: 'b' }, { name: 'c' }] };
+    const { merged } = mergeJsonValues(base, ours, theirs, union);
+    // b was revoked locally → stays gone; c is a new addition.
+    expect(merged).toEqual({ servers: [{ name: 'a' }, { name: 'c' }] });
+  });
+});
+
+describe('mergeJsonValues — prototype-shadowing keys', () => {
+  const parse = (text: string): JsonValue => JSON.parse(text) as JsonValue;
+
+  it('keeps theirs-only keys named toString / constructor / valueOf', () => {
+    const base = parse('{}');
+    const ours = parse('{"keep": 1}');
+    const theirs = parse('{"toString": "t", "constructor": "c", "valueOf": "v"}');
+    const { merged } = mergeJsonValues(base, ours, theirs, union) as {
+      merged: { [k: string]: JsonValue };
+    };
+    expect(Object.hasOwn(merged, 'toString')).toBe(true);
+    expect(Object.hasOwn(merged, 'constructor')).toBe(true);
+    expect(Object.hasOwn(merged, 'valueOf')).toBe(true);
+    expect(merged.toString).toBe('t');
+    expect(merged.constructor).toBe('c');
+    expect(merged.valueOf).toBe('v');
+    // And they serialize.
+    const round = JSON.parse(JSON.stringify(merged)) as { [k: string]: JsonValue };
+    expect(round.toString).toBe('t');
+    expect(round.constructor).toBe('c');
+    expect(round.valueOf).toBe('v');
+  });
+
+  it('keeps a theirs-only __proto__ key without hijacking the prototype', () => {
+    const base = parse('{}');
+    const ours = parse('{"a": 1}');
+    // JSON.parse creates __proto__ as an OWN data property.
+    const theirs = parse('{"__proto__": {"polluted": true}}');
+    const { merged } = mergeJsonValues(base, ours, theirs, union) as {
+      merged: object;
+    };
+    // No prototype hijack: nothing leaked onto the merged object's chain, and
+    // a plain object's prototype is untouched (contained, no global pollution).
+    expect(('polluted' in ({} as Record<string, unknown>))).toBe(false);
+    expect(Object.hasOwn(merged, '__proto__')).toBe(true);
+    // The __proto__ key survives serialization as a plain data property.
+    const serialized = JSON.stringify(merged);
+    expect(serialized).toContain('__proto__');
+    const round = JSON.parse(serialized) as { [k: string]: JsonValue };
+    expect(Object.hasOwn(round, '__proto__')).toBe(true);
+  });
+
+  it('does not let an own __proto__ on ours hijack the merged prototype', () => {
+    const base = parse('{}');
+    const ours = parse('{"__proto__": {"a": 1}, "keep": 1}');
+    const theirs = parse('{"other": 2}');
+    const { merged } = mergeJsonValues(base, ours, theirs, union) as {
+      merged: { [k: string]: JsonValue };
+    };
+    expect(Object.hasOwn(merged, '__proto__')).toBe(true);
+    expect(merged.keep).toBe(1);
+    expect(merged.other).toBe(2);
+    // The __proto__ key is preserved in serialized output.
+    expect(JSON.stringify(merged)).toContain('__proto__');
+  });
+
+  it('merges a hasOwnProperty key changed on both sides as a normal leaf', () => {
+    const base = parse('{"hasOwnProperty": 1}');
+    const ours = parse('{"hasOwnProperty": 2}');
+    const theirs = parse('{"hasOwnProperty": 1}');
+    const { merged } = mergeJsonValues(base, ours, theirs, union) as {
+      merged: { [k: string]: JsonValue };
+    };
+    // Only ours changed → ours wins; the shadowing key is not dropped.
+    expect(merged.hasOwnProperty).toBe(2);
+  });
+});
+
 describe('threeWayMergeJsonText', () => {
   it('re-serializes with the local file indentation and trailing newline', () => {
     const base = '{\n  "allow": ["Read"]\n}\n';

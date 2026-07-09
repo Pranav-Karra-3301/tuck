@@ -119,8 +119,24 @@ const asValue = (slot: Slot): JsonValue | undefined => (slot === MISSING ? undef
 /**
  * Merge two arrays that have both diverged from their common ancestor.
  * `replace` is handled by the caller (it degrades to a scalar conflict).
+ *
+ * `union` is **base-aware**: an item present in `base` but dropped by one side
+ * was deliberately deleted, and that deletion is honored even if the other side
+ * still carries it (e.g. a locally-revoked `permissions.allow` entry is not
+ * silently re-granted just because the incoming copy still lists it). Concretely
+ * an item is kept iff either:
+ *   - it is a genuine addition — absent from `base` and present on at least one
+ *     side (unioned), or
+ *   - it survived on **both** sides — present in `base`, `ours`, and `theirs`.
+ * An item in `base` that is missing from either side is treated as deleted.
+ *
+ * Because union arrays have no element identity beyond canonical value equality,
+ * a "modification" of a base item reads as delete-old + add-new: the old value
+ * (gone from both sides) drops out and the new value (absent from base) is added.
+ * Ordering is stable — `ours` order first, then new `theirs` additions.
  */
 const mergeArrays = (
+  base: Slot,
   ours: JsonValue[],
   theirs: JsonValue[],
   strategy: ArrayMergeStrategy
@@ -128,13 +144,27 @@ const mergeArrays = (
   if (strategy === 'concat') {
     return [...ours, ...theirs];
   }
-  // union: keep ours in order, then append theirs entries not already present.
-  const seen = new Set<string>();
+  // union: three-way set merge keyed by canonical value.
+  const baseKeys = new Set<string>(
+    (isArray(base) ? base : []).map(canonicalize)
+  );
+  const oursKeys = new Set<string>(ours.map(canonicalize));
+  const theirsKeys = new Set<string>(theirs.map(canonicalize));
+
+  const keep = (key: string): boolean =>
+    baseKeys.has(key)
+      ? // Present in base: retained only if neither side deleted it.
+        oursKeys.has(key) && theirsKeys.has(key)
+      : // Absent from base: a genuine addition from whichever side has it.
+        true;
+
+  const emitted = new Set<string>();
   const result: JsonValue[] = [];
   for (const item of [...ours, ...theirs]) {
     const key = canonicalize(item);
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (emitted.has(key)) continue;
+    if (!keep(key)) continue;
+    emitted.add(key);
     result.push(item);
   }
   return result;
@@ -163,7 +193,7 @@ const mergeSlot = (
   }
 
   if (isArray(ours) && isArray(theirs) && policy.arrays !== 'replace') {
-    return mergeArrays(ours, theirs, policy.arrays);
+    return mergeArrays(base, ours, theirs, policy.arrays);
   }
 
   // Irreconcilable leaf (scalar/type mismatch, or array under `replace`).
@@ -179,13 +209,22 @@ const mergeObjects = (
   conflicts: JsonMergeConflict[]
 ): { [key: string]: JsonValue } => {
   const baseObj = isPlainObject(base) ? base : undefined;
-  const result: { [key: string]: JsonValue } = {};
+  // Null-prototype result so a merged "__proto__" key is stored as a plain own
+  // data property instead of tripping the Object.prototype setter (which would
+  // hijack the prototype and drop the key from serialization). JSON.stringify
+  // still serializes every own enumerable key, "__proto__" included.
+  const result: { [key: string]: JsonValue } = Object.create(null) as {
+    [key: string]: JsonValue;
+  };
 
+  // Object.hasOwn (never the inherited `in`) so keys shadowing Object.prototype
+  // members — toString, constructor, valueOf, hasOwnProperty, __proto__ — are
+  // classified by their real presence and never silently dropped.
   const keys = new Set<string>([...Object.keys(ours), ...Object.keys(theirs)]);
   // Iterate ours-first, then theirs-only keys, for stable, intuitive ordering.
   const orderedKeys = [
     ...Object.keys(ours),
-    ...Object.keys(theirs).filter((k) => !(k in ours)),
+    ...Object.keys(theirs).filter((k) => !Object.hasOwn(ours, k)),
   ];
 
   for (const key of orderedKeys) {
@@ -193,9 +232,9 @@ const mergeObjects = (
     keys.delete(key);
 
     const childPath = path ? `${path}.${key}` : key;
-    const ourSlot: Slot = key in ours ? ours[key] : MISSING;
-    const theirSlot: Slot = key in theirs ? theirs[key] : MISSING;
-    const baseSlot: Slot = baseObj && key in baseObj ? baseObj[key] : MISSING;
+    const ourSlot: Slot = Object.hasOwn(ours, key) ? ours[key] : MISSING;
+    const theirSlot: Slot = Object.hasOwn(theirs, key) ? theirs[key] : MISSING;
+    const baseSlot: Slot = baseObj && Object.hasOwn(baseObj, key) ? baseObj[key] : MISSING;
 
     const merged = mergeSlot(baseSlot, ourSlot, theirSlot, policy, childPath, conflicts);
     if (merged !== MISSING) {
