@@ -9,7 +9,7 @@
  * overriding the platform + home without touching the filesystem.
  */
 
-import { join } from 'path';
+import path from 'path';
 import { expandPath } from '../paths.js';
 import { MCP_CLIENT_IDS, type McpClientId } from '../../schemas/mcpServers.schema.js';
 
@@ -35,10 +35,11 @@ export const listClients = (): McpClientInfo[] =>
 export const clientDisplayName = (id: McpClientId): string => CLIENT_DISPLAY_NAMES[id];
 
 /** Resolve `%APPDATA%` on Windows, falling back to the conventional location. */
-const windowsAppData = (home: string): string =>
-  process.env.APPDATA && process.env.APPDATA.length > 0
-    ? process.env.APPDATA
-    : join(home, 'AppData', 'Roaming');
+const windowsAppData = (
+  home: string,
+  join: typeof path.win32.join,
+  appData: string | undefined
+): string => (appData && appData.length > 0 ? appData : join(home, 'AppData', 'Roaming'));
 
 /**
  * Compute a client's config path for a given platform + home directory.
@@ -46,18 +47,26 @@ const windowsAppData = (home: string): string =>
  * Exposed with explicit `platform`/`home` params (rather than reading globals)
  * so tests can assert every OS branch deterministically. `resolveClientConfigPath`
  * wraps it for real use with the current process platform and `expandPath('~')`.
+ *
+ * The path separator is chosen from `platform` (not the host OS) so that a
+ * Windows CI runner still produces posix `darwin`/`linux` paths and vice versa.
+ * `%APPDATA%` is injected (defaulting from `process.env`) to keep this function
+ * pure and free of global mutation in tests.
  */
 export const clientConfigPathFor = (
   id: McpClientId,
   platform: ClientPlatform,
-  home: string
+  home: string,
+  appData: string | undefined = process.env.APPDATA
 ): string => {
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+
   switch (id) {
     case 'claude-desktop':
       if (platform === 'darwin')
         return join(home, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
       if (platform === 'win32')
-        return join(windowsAppData(home), 'Claude', 'claude_desktop_config.json');
+        return join(windowsAppData(home, join, appData), 'Claude', 'claude_desktop_config.json');
       return join(home, '.config', 'Claude', 'claude_desktop_config.json');
 
     case 'claude-code':
@@ -73,7 +82,8 @@ export const clientConfigPathFor = (
     case 'vscode':
       if (platform === 'darwin')
         return join(home, 'Library', 'Application Support', 'Code', 'User', 'mcp.json');
-      if (platform === 'win32') return join(windowsAppData(home), 'Code', 'User', 'mcp.json');
+      if (platform === 'win32')
+        return join(windowsAppData(home, join, appData), 'Code', 'User', 'mcp.json');
       return join(home, '.config', 'Code', 'User', 'mcp.json');
 
     default: {
