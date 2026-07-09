@@ -12,7 +12,7 @@ import {
   pathExists,
   collapsePath,
 } from '../lib/paths.js';
-import { saveConfig } from '../lib/config.js';
+import { saveConfig, loadConfig } from '../lib/config.js';
 import { createManifest, clearManifestCache } from '../lib/manifest.js';
 import { loadManifestFile } from '../lib/manifestFile.js';
 import type { TuckManifest, RemoteConfig } from '../types.js';
@@ -1230,6 +1230,349 @@ const initFromRemote = async (tuckDir: string, remoteUrl: string): Promise<void>
   }
 };
 
+/**
+ * How the user wants to start an interactive init.
+ *
+ * `adopt` (scan the machine and track existing dotfiles) is deliberately the
+ * FIRST, recommended option: a fresh machine should be guided into the safe,
+ * scan-based "adopt existing dotfiles" path before any provider/remote setup,
+ * with zero templating concepts (IDEAS 2.4). `clone` restores from an existing
+ * repo; `fresh` keeps the provider-first flow for users who want to configure a
+ * remote up front.
+ */
+export type InitStartPath = 'adopt' | 'clone' | 'fresh';
+
+/** Ordered start-path menu for interactive init — adopt-existing listed first. */
+export const buildInitStartChoices = (): Array<{
+  value: InitStartPath;
+  label: string;
+  hint: string;
+}> => [
+  {
+    value: 'adopt',
+    label: 'Adopt the dotfiles already on this machine',
+    hint: 'Recommended — scan and track your existing configs',
+  },
+  {
+    value: 'clone',
+    label: 'Clone an existing dotfiles repository',
+    hint: 'Restore dotfiles from a repo you already have',
+  },
+  {
+    value: 'fresh',
+    label: 'Start fresh / configure a remote first',
+    hint: 'Set up a Git provider, then add files',
+  },
+];
+
+/**
+ * Scan the system for dotfiles and interactively track a selection of them.
+ * Returns the number of files actually tracked. Shared by the adopt-first path
+ * and the tail of the fresh-init flow so both behave identically.
+ */
+const scanAndTrackLocalDotfiles = async (tuckDir: string): Promise<number> => {
+  const scanSpinner = prompts.spinner();
+  scanSpinner.start('Scanning for dotfiles...');
+  const detectedFiles = await detectDotfiles();
+  const nonSensitiveFiles = detectedFiles.filter((f) => !f.sensitive);
+  const sensitiveFiles = detectedFiles.filter((f) => f.sensitive);
+  scanSpinner.stop(`Found ${detectedFiles.length} dotfiles on your system`);
+
+  let trackedCount = 0;
+
+  // Handle non-sensitive files
+  if (nonSensitiveFiles.length > 0) {
+    // Group by category and show summary
+    const grouped: Record<string, DetectedFile[]> = {};
+    for (const file of nonSensitiveFiles) {
+      if (!grouped[file.category]) grouped[file.category] = [];
+      grouped[file.category].push(file);
+    }
+
+    console.log();
+    const categoryOrder = ['shell', 'git', 'editors', 'terminal', 'ssh', 'misc'];
+    const sortedCategories = Object.keys(grouped).sort((a, b) => {
+      const aIdx = categoryOrder.indexOf(a);
+      const bIdx = categoryOrder.indexOf(b);
+      if (aIdx === -1 && bIdx === -1) return a.localeCompare(b);
+      if (aIdx === -1) return 1;
+      if (bIdx === -1) return -1;
+      return aIdx - bIdx;
+    });
+
+    for (const category of sortedCategories) {
+      const files = grouped[category];
+      const config = DETECTION_CATEGORIES[category] || { icon: '-', name: category };
+      console.log(`  ${config.icon} ${config.name}: ${files.length} files`);
+    }
+    console.log();
+
+    const trackNow = await prompts.confirm('Would you like to track some of these now?', true);
+
+    if (trackNow) {
+      // Show multiselect with all files PRE-SELECTED by default
+      const options = nonSensitiveFiles.map((f) => ({
+        value: f.path,
+        label: `${collapsePath(f.path)}`,
+        hint: f.category,
+      }));
+
+      // Pre-select all non-sensitive files
+      const initialValues = nonSensitiveFiles.map((f) => f.path);
+
+      const selectedFiles = await prompts.multiselect(
+        'Select files to track (all pre-selected; use space to toggle selection):',
+        options,
+        { initialValues }
+      );
+
+      // Handle sensitive files with individual prompts
+      const filesToTrack = [...selectedFiles];
+
+      if (sensitiveFiles.length > 0) {
+        console.log();
+        prompts.log.warning(`Found ${sensitiveFiles.length} sensitive file(s):`);
+
+        for (const sf of sensitiveFiles) {
+          console.log(c.warning(`  ! ${collapsePath(sf.path)} - ${sf.description || sf.category}`));
+        }
+
+        console.log();
+        const trackSensitive = await prompts.confirm(
+          'Would you like to review sensitive files? (Ensure your repo is PRIVATE)',
+          false
+        );
+
+        if (trackSensitive) {
+          for (const sf of sensitiveFiles) {
+            const track = await prompts.confirm(`Track ${collapsePath(sf.path)}?`, false);
+            if (track) {
+              filesToTrack.push(sf.path);
+            }
+          }
+        }
+      }
+
+      if (filesToTrack.length > 0) {
+        // Track files with beautiful progress display
+        trackedCount = await trackFilesWithProgressInit(filesToTrack, tuckDir);
+      }
+    } else {
+      prompts.log.info("Run 'tuck scan' later to interactively add files");
+    }
+  }
+
+  // Handle case where only sensitive files were found
+  if (nonSensitiveFiles.length === 0 && sensitiveFiles.length > 0) {
+    console.log();
+    prompts.log.warning(`Found ${sensitiveFiles.length} sensitive file(s):`);
+
+    for (const sf of sensitiveFiles) {
+      console.log(c.warning(`  ! ${collapsePath(sf.path)} - ${sf.description || sf.category}`));
+    }
+
+    console.log();
+    const trackSensitive = await prompts.confirm(
+      'Would you like to review these sensitive files? (Ensure your repo is PRIVATE)',
+      false
+    );
+
+    if (trackSensitive) {
+      const filesToTrack: string[] = [];
+      for (const sf of sensitiveFiles) {
+        const track = await prompts.confirm(`Track ${collapsePath(sf.path)}?`, false);
+        if (track) {
+          filesToTrack.push(sf.path);
+        }
+      }
+
+      if (filesToTrack.length > 0) {
+        // Track files with beautiful progress display
+        trackedCount = await trackFilesWithProgressInit(filesToTrack, tuckDir);
+      }
+    } else {
+      prompts.log.info("Run 'tuck scan' later to interactively add files");
+    }
+  }
+
+  // Handle case where no files were found
+  if (detectedFiles.length === 0) {
+    console.log();
+    prompts.log.info('No dotfiles detected on your system');
+    prompts.log.info("Run 'tuck add <path>' to manually track files");
+  }
+
+  return trackedCount;
+};
+
+/**
+ * After tracking, offer to commit (and push, when a remote is configured) the
+ * newly-tracked dotfiles. Shared by the adopt-first path and the fresh-init flow.
+ */
+const commitAndOfferPush = async (
+  tuckDir: string,
+  trackedCount: number,
+  remoteUrl: string | null
+): Promise<void> => {
+  if (trackedCount <= 0) {
+    return;
+  }
+
+  console.log();
+
+  if (remoteUrl) {
+    // Remote is configured - offer to commit AND push
+    const action = await prompts.select('Your files are tracked. What would you like to do?', [
+      {
+        value: 'commit-push',
+        label: 'Commit and push to remote',
+        hint: 'Recommended - sync your dotfiles now',
+      },
+      {
+        value: 'commit-only',
+        label: 'Commit only',
+        hint: "Save locally, push later with 'tuck push'",
+      },
+      {
+        value: 'skip',
+        label: 'Skip for now',
+        hint: "Run 'tuck sync' later",
+      },
+    ]);
+
+    if (action !== 'skip') {
+      const commitSpinner = prompts.spinner();
+      commitSpinner.start('Committing changes...');
+
+      await stageAll(tuckDir);
+      const commitHash = await commit(tuckDir, `Add ${trackedCount} dotfiles via tuck init`);
+
+      commitSpinner.stop(`Committed: ${commitHash.slice(0, 7)}`);
+
+      if (action === 'commit-push') {
+        const pushSpinner = prompts.spinner();
+        pushSpinner.start('Pushing to remote...');
+
+        try {
+          await push(tuckDir, { remote: 'origin', branch: 'main', setUpstream: true });
+          pushSpinner.stop('Pushed successfully!');
+
+          // Show success with URL
+          let viewUrl = remoteUrl;
+          if (viewUrl.startsWith('git@github.com:')) {
+            viewUrl = viewUrl
+              .replace('git@github.com:', 'https://github.com/')
+              .replace('.git', '');
+          } else if (viewUrl.startsWith('https://github.com/')) {
+            viewUrl = viewUrl.replace('.git', '');
+          }
+
+          console.log();
+          prompts.note(
+            `Your dotfiles are now live at:\n${viewUrl}\n\n` +
+              `On a new machine, run:\n  tuck init --from ${viewUrl}`,
+            'Success!'
+          );
+        } catch (error) {
+          pushSpinner.stop('Push failed');
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          prompts.log.warning(`Could not push: ${errorMsg}`);
+          prompts.log.info("Run 'tuck push' to try again");
+        }
+      } else {
+        prompts.log.info("Run 'tuck push' when you're ready to upload to remote");
+      }
+    }
+  } else {
+    // No remote configured
+    const shouldCommit = await prompts.confirm('Commit these changes locally?', true);
+
+    if (shouldCommit) {
+      const commitSpinner = prompts.spinner();
+      commitSpinner.start('Committing...');
+
+      await stageAll(tuckDir);
+      const commitHash = await commit(tuckDir, `Add ${trackedCount} dotfiles via tuck init`);
+
+      commitSpinner.stop(`Committed: ${commitHash.slice(0, 7)}`);
+      prompts.log.info("Set up a remote with 'tuck push' to backup your dotfiles");
+    }
+  }
+};
+
+/**
+ * Clone an existing dotfiles repository from a URL and optionally restore it.
+ * Returns true when the clone path fully handled init (the caller should stop).
+ */
+const cloneFromUrlFlow = async (tuckDir: string): Promise<void> => {
+  const repoUrl = await prompts.text('Enter repository URL:', {
+    placeholder: 'git@host:user/dotfiles.git or https://host/user/dotfiles.git',
+    validate: validateGitUrl,
+  });
+
+  await initFromRemote(tuckDir, repoUrl);
+
+  prompts.log.success('Repository cloned successfully!');
+
+  const shouldRestore = await prompts.confirm('Would you like to restore dotfiles now?', true);
+
+  if (shouldRestore) {
+    console.log();
+    // Dynamically import and run restore
+    const { runRestore } = await import('./restore.js');
+    await runRestore({ all: true });
+  }
+
+  prompts.outro('Tuck initialized successfully!');
+  nextSteps([`View status: tuck status`, `Add files:   tuck add ~/.zshrc`, `Sync:        tuck sync`]);
+};
+
+/**
+ * Adopt-first init path: scan and track the dotfiles already on this machine,
+ * then optionally connect a remote and commit/push. No provider setup happens
+ * until the user has decided what to track, so the fastest path to a working
+ * tuck repo has zero remote/templating concepts (IDEAS 2.4).
+ */
+const runAdoptExistingInit = async (tuckDir: string): Promise<void> => {
+  // Create a local repo to track into. Remote (if any) is configured afterwards.
+  await initFromScratch(tuckDir, { remoteConfig: buildRemoteConfig('local') });
+
+  // Scan the machine and track a selection FIRST — the headline of this path.
+  const trackedCount = await scanAndTrackLocalDotfiles(tuckDir);
+
+  // Offer to connect a remote AFTER the user has chosen what to track.
+  let remoteUrl: string | null = null;
+  const connectRemote = await prompts.confirm(
+    'Back up your dotfiles to a Git remote now?',
+    true
+  );
+
+  if (connectRemote) {
+    const providerResult = await setupProvider();
+    if (providerResult) {
+      // Persist the chosen provider over the local default written above.
+      const existingConfig = await loadConfig(tuckDir);
+      await saveConfig({ ...existingConfig, remote: providerResult.config }, tuckDir);
+      console.log();
+      prompts.log.info(`Provider: ${describeProviderConfig(providerResult.config)}`);
+
+      if (providerResult.remoteUrl) {
+        await addRemote(tuckDir, 'origin', providerResult.remoteUrl);
+        remoteUrl = providerResult.remoteUrl;
+      } else if (providerResult.mode === 'github') {
+        // GitHub auto-create / manual repo setup wizard.
+        const ghResult = await setupGitHubRepo(tuckDir);
+        remoteUrl = ghResult.remoteUrl;
+      }
+    }
+  }
+
+  await commitAndOfferPush(tuckDir, trackedCount, remoteUrl);
+
+  prompts.outro('Tuck initialized successfully!');
+  nextSteps([`View status: tuck status`, `Add files:   tuck add ~/.zshrc`, `Sync:        tuck sync`]);
+};
+
 const runInteractiveInit = async (): Promise<void> => {
   banner();
   prompts.intro('tuck init');
@@ -1246,6 +1589,27 @@ const runInteractiveInit = async (): Promise<void> => {
     prompts.outro('Use `tuck status` to see current state');
     return;
   }
+
+  // ========== START: How do you want to begin? ==========
+  // Adopt-existing (scan the machine) is offered FIRST so a fresh machine takes
+  // the safe, zero-config path before any provider/remote setup (IDEAS 2.4).
+  console.log();
+  const startPath = await prompts.select(
+    'How would you like to start with tuck?',
+    buildInitStartChoices()
+  );
+
+  if (startPath === 'adopt') {
+    await runAdoptExistingInit(tuckDir);
+    return;
+  }
+
+  if (startPath === 'clone') {
+    await cloneFromUrlFlow(tuckDir);
+    return;
+  }
+
+  // startPath === 'fresh': continue with the provider-first flow below.
 
   // ========== STEP 0: Provider Selection ==========
   console.log();
@@ -1532,220 +1896,10 @@ const runInteractiveInit = async (): Promise<void> => {
   }
 
   // ========== STEP 2: Detect and Select Files ==========
-  const scanSpinner = prompts.spinner();
-  scanSpinner.start('Scanning for dotfiles...');
-  const detectedFiles = await detectDotfiles();
-  const nonSensitiveFiles = detectedFiles.filter((f) => !f.sensitive);
-  const sensitiveFiles = detectedFiles.filter((f) => f.sensitive);
-  scanSpinner.stop(`Found ${detectedFiles.length} dotfiles on your system`);
-
-  let trackedCount = 0;
-
-  // Handle non-sensitive files
-  if (nonSensitiveFiles.length > 0) {
-    // Group by category and show summary
-    const grouped: Record<string, DetectedFile[]> = {};
-    for (const file of nonSensitiveFiles) {
-      if (!grouped[file.category]) grouped[file.category] = [];
-      grouped[file.category].push(file);
-    }
-
-    console.log();
-    const categoryOrder = ['shell', 'git', 'editors', 'terminal', 'ssh', 'misc'];
-    const sortedCategories = Object.keys(grouped).sort((a, b) => {
-      const aIdx = categoryOrder.indexOf(a);
-      const bIdx = categoryOrder.indexOf(b);
-      if (aIdx === -1 && bIdx === -1) return a.localeCompare(b);
-      if (aIdx === -1) return 1;
-      if (bIdx === -1) return -1;
-      return aIdx - bIdx;
-    });
-
-    for (const category of sortedCategories) {
-      const files = grouped[category];
-      const config = DETECTION_CATEGORIES[category] || { icon: '-', name: category };
-      console.log(`  ${config.icon} ${config.name}: ${files.length} files`);
-    }
-    console.log();
-
-    const trackNow = await prompts.confirm('Would you like to track some of these now?', true);
-
-    if (trackNow) {
-      // Show multiselect with all files PRE-SELECTED by default
-      const options = nonSensitiveFiles.map((f) => ({
-        value: f.path,
-        label: `${collapsePath(f.path)}`,
-        hint: f.category,
-      }));
-
-      // Pre-select all non-sensitive files
-      const initialValues = nonSensitiveFiles.map((f) => f.path);
-
-      const selectedFiles = await prompts.multiselect(
-        'Select files to track (all pre-selected; use space to toggle selection):',
-        options,
-        { initialValues }
-      );
-
-      // Handle sensitive files with individual prompts
-      const filesToTrack = [...selectedFiles];
-
-      if (sensitiveFiles.length > 0) {
-        console.log();
-        prompts.log.warning(`Found ${sensitiveFiles.length} sensitive file(s):`);
-
-        for (const sf of sensitiveFiles) {
-          console.log(c.warning(`  ! ${collapsePath(sf.path)} - ${sf.description || sf.category}`));
-        }
-
-        console.log();
-        const trackSensitive = await prompts.confirm(
-          'Would you like to review sensitive files? (Ensure your repo is PRIVATE)',
-          false
-        );
-
-        if (trackSensitive) {
-          for (const sf of sensitiveFiles) {
-            const track = await prompts.confirm(`Track ${collapsePath(sf.path)}?`, false);
-            if (track) {
-              filesToTrack.push(sf.path);
-            }
-          }
-        }
-      }
-
-      if (filesToTrack.length > 0) {
-        // Track files with beautiful progress display
-        trackedCount = await trackFilesWithProgressInit(filesToTrack, tuckDir);
-      }
-    } else {
-      prompts.log.info("Run 'tuck scan' later to interactively add files");
-    }
-  }
-
-  // Handle case where only sensitive files were found
-  if (nonSensitiveFiles.length === 0 && sensitiveFiles.length > 0) {
-    console.log();
-    prompts.log.warning(`Found ${sensitiveFiles.length} sensitive file(s):`);
-
-    for (const sf of sensitiveFiles) {
-      console.log(c.warning(`  ! ${collapsePath(sf.path)} - ${sf.description || sf.category}`));
-    }
-
-    console.log();
-    const trackSensitive = await prompts.confirm(
-      'Would you like to review these sensitive files? (Ensure your repo is PRIVATE)',
-      false
-    );
-
-    if (trackSensitive) {
-      const filesToTrack: string[] = [];
-      for (const sf of sensitiveFiles) {
-        const track = await prompts.confirm(`Track ${collapsePath(sf.path)}?`, false);
-        if (track) {
-          filesToTrack.push(sf.path);
-        }
-      }
-
-      if (filesToTrack.length > 0) {
-        // Track files with beautiful progress display
-        trackedCount = await trackFilesWithProgressInit(filesToTrack, tuckDir);
-      }
-    } else {
-      prompts.log.info("Run 'tuck scan' later to interactively add files");
-    }
-  }
-
-  // Handle case where no files were found
-  if (detectedFiles.length === 0) {
-    console.log();
-    prompts.log.info('No dotfiles detected on your system');
-    prompts.log.info("Run 'tuck add <path>' to manually track files");
-  }
+  const trackedCount = await scanAndTrackLocalDotfiles(tuckDir);
 
   // ========== STEP 3: Commit and Push ==========
-  if (trackedCount > 0) {
-    console.log();
-
-    if (remoteUrl) {
-      // Remote is configured - offer to commit AND push
-      const action = await prompts.select('Your files are tracked. What would you like to do?', [
-        {
-          value: 'commit-push',
-          label: 'Commit and push to remote',
-          hint: 'Recommended - sync your dotfiles now',
-        },
-        {
-          value: 'commit-only',
-          label: 'Commit only',
-          hint: "Save locally, push later with 'tuck push'",
-        },
-        {
-          value: 'skip',
-          label: 'Skip for now',
-          hint: "Run 'tuck sync' later",
-        },
-      ]);
-
-      if (action !== 'skip') {
-        const commitSpinner = prompts.spinner();
-        commitSpinner.start('Committing changes...');
-
-        await stageAll(tuckDir);
-        const commitHash = await commit(tuckDir, `Add ${trackedCount} dotfiles via tuck init`);
-
-        commitSpinner.stop(`Committed: ${commitHash.slice(0, 7)}`);
-
-        if (action === 'commit-push') {
-          const pushSpinner = prompts.spinner();
-          pushSpinner.start('Pushing to remote...');
-
-          try {
-            await push(tuckDir, { remote: 'origin', branch: 'main', setUpstream: true });
-            pushSpinner.stop('Pushed successfully!');
-
-            // Show success with URL
-            let viewUrl = remoteUrl;
-            if (viewUrl.startsWith('git@github.com:')) {
-              viewUrl = viewUrl
-                .replace('git@github.com:', 'https://github.com/')
-                .replace('.git', '');
-            } else if (viewUrl.startsWith('https://github.com/')) {
-              viewUrl = viewUrl.replace('.git', '');
-            }
-
-            console.log();
-            prompts.note(
-              `Your dotfiles are now live at:\n${viewUrl}\n\n` +
-                `On a new machine, run:\n  tuck init --from ${viewUrl}`,
-              'Success!'
-            );
-          } catch (error) {
-            pushSpinner.stop('Push failed');
-            const errorMsg = error instanceof Error ? error.message : String(error);
-            prompts.log.warning(`Could not push: ${errorMsg}`);
-            prompts.log.info("Run 'tuck push' to try again");
-          }
-        } else {
-          prompts.log.info("Run 'tuck push' when you're ready to upload to remote");
-        }
-      }
-    } else {
-      // No remote configured
-      const shouldCommit = await prompts.confirm('Commit these changes locally?', true);
-
-      if (shouldCommit) {
-        const commitSpinner = prompts.spinner();
-        commitSpinner.start('Committing...');
-
-        await stageAll(tuckDir);
-        const commitHash = await commit(tuckDir, `Add ${trackedCount} dotfiles via tuck init`);
-
-        commitSpinner.stop(`Committed: ${commitHash.slice(0, 7)}`);
-        prompts.log.info("Set up a remote with 'tuck push' to backup your dotfiles");
-      }
-    }
-  }
+  await commitAndOfferPush(tuckDir, trackedCount, remoteUrl);
 
   prompts.outro('Tuck initialized successfully!');
 
