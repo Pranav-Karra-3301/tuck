@@ -609,6 +609,7 @@ tuck is designed with security in mind:
 - **Fix, don't just block** — When a secret is flagged at `tuck add`/`tuck sync` time, choose to redact-and-store it (rewriting the tracked copy as a template) or mark a false positive as safe — no more disabling the whole check
 - **Centralized allowlist** — Mark scanner false positives once with `tuck secrets allow`; entries are stored (as fingerprints, never raw values) in a committed, reviewable `secrets.allow.json` instead of scattered inline ignore comments
 - **Runtime state isolation** — Audit logs, snapshots, and fallback keystore data live outside the tracked tuck repo
+- **Read-only commands never prompt** — `tuck status`, `tuck diff`, and `tuck list` are guaranteed never to unlock the keystore or contact a secret backend. Drift in encrypted files is detected with a machine-local keyed HMAC (zero decryptions), and the commands that do need the key unlock it **once per session**. See [docs/TEMPLATES-AND-ENCRYPTION.md](docs/TEMPLATES-AND-ENCRYPTION.md#read-only-commands-never-prompt).
 
 ```bash
 # Scan tracked files for secrets

@@ -4,6 +4,7 @@ import { prompts, logger, formatCount, colors as c } from '../ui/index.js';
 import { getTuckDir } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import { NotInitializedError } from '../errors.js';
+import { enterReadOnlyMode } from '../lib/readOnlyMode.js';
 import { setJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import { CATEGORIES } from '../constants.js';
 import type { ListOptions } from '../types.js';
@@ -108,6 +109,9 @@ const printJson = (groups: CategoryGroup[]): void => {
 };
 
 const runList = async (options: ListOptions): Promise<void> => {
+  // list is a read-only inspection command: it must never unlock the keystore or
+  // touch a secret backend. This guarantees zero prompts (see lib/readOnlyMode).
+  enterReadOnlyMode();
   const tuckDir = getTuckDir();
 
   // Verify tuck is initialized

@@ -22,6 +22,8 @@ import { getAllTrackedFiles } from './manifest.js';
 import { resolveLiveTarget } from './repoScope.js';
 import { materializeForLive, keystorePassphrase, buildMaterializeCtx } from './materialize.js';
 import { extractSubtree, hasSubtree } from './jsonKey.js';
+import { isReadOnlyMode } from './readOnlyMode.js';
+import { compareLiveToCache, recordDriftEntry } from './crypto/driftCache.js';
 import { getStoredValueMap, getRedactedChecksum } from './secrets/redactor.js';
 import type { TemplateContext } from './template.js';
 import type { TrackedFileOutput } from '../schemas/manifest.schema.js';
@@ -181,11 +183,40 @@ export const computeFileState = async (
     if (liveChecksum === null && repoChecksum === null) return entry('missing-both', liveChecksum, repoChecksum);
     if (liveChecksum === null) return entry('missing-live', liveChecksum, repoChecksum);
     if (repoChecksum === null) return entry('missing-repo', liveChecksum, repoChecksum);
+
+    // Read-only + ENCRYPTED: never decrypt (that would unlock the keystore and
+    // could prompt). Detect drift from the keyed-HMAC cache instead — comparing
+    // the live bytes against the last-known-good plaintext fingerprint recorded
+    // by a previous full command (verify/apply). Pure (non-encrypted) templates
+    // touch no secret and are cheap to render, so they fall through to the
+    // materialize path below even in read-only mode.
+    if (isReadOnlyMode() && file.encrypted) {
+      try {
+        const liveBytes = await readFile(sourceAbs);
+        const cmp = await compareLiveToCache(id, liveBytes, repoChecksum);
+        if (cmp === 'mismatch') return entry('drift-local', liveChecksum, repoChecksum);
+        // The repo-vs-manifest comparison is free (no decryption) — apply it on
+        // BOTH the 'match' and 'unknown' branches so a pulled repo change is
+        // still reported when the live fingerprint pin has been invalidated.
+        return entry(repoChecksum !== file.checksum ? 'drift-repo' : 'ok', liveChecksum, repoChecksum);
+      } catch {
+        // Unreadable live path (EISDIR, permissions): degrade to the same
+        // ok-by-presence fallback as the materialize path, never crash status.
+        return entry(repoChecksum !== file.checksum ? 'drift-repo' : 'ok', liveChecksum, repoChecksum);
+      }
+    }
+
     try {
       const useCtx = ctx ?? (await buildMaterializeCtx(tuckDir));
       const raw = await readFile(repoAbs);
       const expected = await materializeForLive(raw, file, useCtx, { getPassphrase: keystorePassphrase });
       const expectedChecksum = createHash('sha256').update(Buffer.from(expected, 'utf8')).digest('hex');
+      // We just materialized the plaintext in a non-read-only run — record its
+      // keyed-HMAC fingerprint so future read-only status/diff can detect drift
+      // in this encrypted file WITHOUT decrypting. Best-effort; never throws.
+      if (file.encrypted) {
+        await recordDriftEntry(id, expected, repoChecksum);
+      }
       // live ≠ materialize(repo) → stale/edited (remedy: `tuck apply`, since sync
       // skips these files). Otherwise raw repo vs manifest distinguishes drift-repo.
       const state: FileState =

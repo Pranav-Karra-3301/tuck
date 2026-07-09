@@ -21,6 +21,7 @@ import { getStatus, hasRemote, getRemoteUrl, getCurrentBranch } from '../lib/git
 import { computeStateModel, type FileState } from '../lib/stateModel.js';
 import { setJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import { loadTuckignore } from '../lib/tuckignore.js';
+import { enterReadOnlyMode } from '../lib/readOnlyMode.js';
 import { NotInitializedError } from '../errors.js';
 import { VERSION } from '../constants.js';
 import type { StatusOptions, FileChange } from '../types.js';
@@ -379,6 +380,9 @@ const printJsonStatus = (status: TuckStatus): void => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const runStatus = async (options: StatusOptions): Promise<void> => {
+  // status is a read-only inspection command: it must never unlock the keystore
+  // or touch a secret backend. This guarantees zero prompts (see lib/readOnlyMode).
+  enterReadOnlyMode();
   const tuckDir = getTuckDir();
 
   try {

@@ -21,6 +21,7 @@ import { BitwardenBackend } from './bitwarden.js';
 import { PassBackend } from './pass.js';
 import { SecretCache, getGlobalCache } from './cache.js';
 import { getBackendPath, listMappings } from './mappings.js';
+import { assertNotReadOnly } from '../readOnlyMode.js';
 import { BackendNotAvailableError, BackendAuthenticationError, UnresolvedSecretsError } from '../../errors.js';
 
 /**
@@ -202,6 +203,12 @@ export class SecretResolver {
         };
       }
     }
+
+    // Read-only guarantee: a cache HIT above is fine (no backend access), but
+    // actually reaching out to a secret backend from a read-only command
+    // (status/diff/list) would break the "never prompt" promise. Fail loudly so a
+    // regression is caught in tests instead of nagging the user in production.
+    assertNotReadOnly(`resolve secret "${name}"`);
 
     // Determine which backend to use
     const backendName = options?.backend || (await this.getEffectiveBackendName());
