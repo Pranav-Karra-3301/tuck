@@ -66,6 +66,21 @@ export const trackedFileSchema = z
     repoKey: z.string().optional(),
     /** POSIX path of the file relative to the repo root. */
     repoRelative: z.string().optional(),
+    /**
+     * Declarative dependencies for this entry (IDEAS 2.3). Each value is a
+     * `<manager>:<package>` spec (e.g. `brew:starship`, `apt:zsh`) that must be
+     * installed BEFORE this file is applied. `tuck bootstrap`/`tuck apply`
+     * topologically order packages → files → hooks from these declarations.
+     *
+     * `.optional()` (never `.default()`) so legacy manifests parse
+     * byte-identical: an entry with no requirements omits the field entirely
+     * rather than serializing an empty array. Consumers treat `undefined` as an
+     * empty requirement list. The manifest stores the raw specs verbatim; format
+     * validation lives in `lib/requires.ts` so a manifest carrying an unknown
+     * manager still LOADS (it is surfaced as a warning at plan time, never a
+     * hard load failure).
+     */
+    requires: z.array(z.string()).optional(),
   })
   .superRefine((file, ctx) => {
     if (file.scope === 'repo') {

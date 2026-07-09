@@ -77,7 +77,14 @@ tuck sync
 ### On a new machine
 
 ```bash
-# Apply dotfiles from any GitHub user
+# One command sets up the whole machine: install packages, apply dotfiles,
+# run health checks — idempotent, so re-running just converges.
+tuck bootstrap username
+
+# Or install tuck AND bootstrap in a single curl (no tuck required yet):
+curl -fsSL https://raw.githubusercontent.com/Pranav-Karra-3301/tuck/main/install.sh | bash -s -- username --yes
+
+# Just the dotfiles (no packages, no doctor):
 tuck apply username
 
 # Or clone your own and restore
@@ -152,13 +159,40 @@ auth recommended). `tuck` does not need to be installed on the remote for a push
 
 ### Restoring
 
-| Command                     | Description                                                     |
-| --------------------------- | --------------------------------------------------------------- |
-| `tuck apply <user>`         | Apply dotfiles from a GitHub user (with smart merging)          |
-| `tuck apply --target <uri>` | Push your locally-tracked configs onto a remote box over SSH    |
-| `tuck restore`              | Restore dotfiles from repo to system                            |
-| `tuck undo`                 | Restore from Time Machine backup snapshots                      |
+| Command                     | Description                                                                          |
+| --------------------------- | ------------------------------------------------------------------------------------ |
+| `tuck bootstrap <repo>`     | One-command machine setup: install packages, apply dotfiles, run doctor (idempotent) |
+| `tuck apply <user>`         | Apply dotfiles from a GitHub user (with smart merging)                               |
+| `tuck apply --target <uri>` | Push your locally-tracked configs onto a remote box over SSH                         |
+| `tuck restore`              | Restore dotfiles from repo to system                                                 |
+| `tuck undo`                 | Restore from Time Machine backup snapshots                                           |
 
+`tuck bootstrap` flags:
+- `--yes` / `--force`: Non-interactive (skip the plan confirmation)
+- `--dry-run`: Show the plan and what would change without touching the machine
+- `--skip-packages`: Apply dotfiles only, don't install declared packages
+- `--skip-doctor`: Skip the final health check
+- `-m, --merge` / `-r, --replace`: Conflict strategy for existing files (merge is the default)
+- `-b, --bundle <name>`: Only bootstrap files in the named bundle
+- `--json`: Emit a single machine-readable envelope
+
+#### Declarative dependencies (`requires:`)
+
+Tracked files can declare the packages they need with `<manager>:<package>` specs.
+`tuck bootstrap` installs them (topologically ordered, packages before files) and
+shows the plan first. Installation is idempotent — already-present packages are
+detected and skipped, and a package manager that isn't available is skipped, not
+fatal.
+
+```bash
+# Record dependencies when tracking a file
+tuck add ~/.zshrc --requires "brew:starship,apt:zsh"
+
+# Bootstrap installs starship/zsh (as available) before applying ~/.zshrc
+tuck bootstrap you/dotfiles --yes
+```
+
+Supported managers: `brew`, `apt`, `dnf`, `pacman`, `winget`, `scoop`, `cargo`, `npm`, `pnpm`, `pipx`, `go`, `gem`.
 ### Configuration
 
 | Command                               | Description                                              |
@@ -191,7 +225,38 @@ auth recommended). `tuck` does not need to be installed on the remote for a push
 | `tuck context`      | Track AI agent configs across home and per-repo scopes           |
 | `tuck preset`       | Apply or publish curated bundles of dotfiles & agent configs     |
 | `tuck repo`         | Manage machine-local repo bindings (for repo-scoped tracking)    |
-| `tuck mcp`          | Run the Model Context Protocol server (expose tuck to AI agents) |
+| `tuck mcp`          | Run the MCP server + manage your MCP fleet (define once, render per client) |
+
+### MCP fleet — define servers once, render per client
+
+MCP client config formats diverge: Claude Desktop uses one JSON shape, Cursor
+another, VS Code a third. Declare each MCP server once in your tuck repo and let
+`tuck mcp apply` project it into every client's native format, injecting
+credentials from your secret backends at apply time.
+
+```bash
+# Declare a server once (credentials stay as {{PLACEHOLDER}} references)
+tuck mcp add github \
+  --command npx \
+  --arg -y --arg @modelcontextprotocol/server-github \
+  --env GITHUB_TOKEN={{GITHUB_TOKEN}}
+
+# A remote (http/sse) server, scoped to specific clients
+tuck mcp add linear --transport sse --url https://mcp.linear.app/sse --client cursor --client vscode
+
+tuck mcp list                 # show the fleet
+tuck mcp clients              # supported clients + their config paths
+tuck mcp render --client cursor   # preview (secrets NOT injected by default)
+tuck mcp apply --dry-run      # show what would change
+tuck mcp apply                # write configs (backs up existing files first)
+```
+
+The fleet lives in `mcp-servers.json` in your tuck repo and is safe to commit —
+it only ever holds placeholders, never real secrets. On apply, `{{PLACEHOLDER}}`
+values are resolved from the same secret backends tuck uses for dotfiles; if any
+can't be resolved, apply refuses to write rather than leak an unresolved token.
+Supported clients: Claude Desktop, Claude Code, Cursor, Windsurf, VS Code.
+
 
 ## How It Works
 

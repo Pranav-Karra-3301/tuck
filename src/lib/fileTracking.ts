@@ -71,6 +71,12 @@ export interface FileToTrack {
   source?: string;
   /** Relative manifest destination to store verbatim (repo scope only). */
   destination?: string;
+  /**
+   * Declarative dependencies to record on this entry (IDEAS 2.3): validated
+   * `<manager>:<package>` specs installed before this file is applied. Omitted
+   * (undefined) when the caller declared none, keeping the manifest byte-stable.
+   */
+  requires?: string[];
   /** Redaction plans for secret-bearing files: applied to the REPO copy after
    *  the copy step; the live file is never modified (issue #100 RC5). For a
    *  tracked DIRECTORY, livePath points at the inner file that holds the secret. */
@@ -402,6 +408,9 @@ export const trackFilesWithProgress = async (
         ...statCache,
         bundle: file.bundle ?? 'default',
         tags: file.tags && file.tags.length > 0 ? [...file.tags].sort() : [],
+        // Only serialize `requires` when non-empty so entries without declared
+        // dependencies stay byte-identical to legacy manifests.
+        ...(file.requires && file.requires.length > 0 ? { requires: file.requires } : {}),
         ...(isRepo
           ? {
               scope: 'repo' as const,

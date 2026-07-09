@@ -44,6 +44,9 @@ Manage tuck configuration
 .B apply
 Apply dotfiles from a repository to this machine, or push locally-tracked configs onto a remote box with \-\-target ssh://[user@]host (or \-\-ssh host); \-\-print\-bootstrap prints a remote install\-and\-apply one\-liner
 .TP
+.B bootstrap
+One-command, idempotent machine setup (install packages, apply dotfiles, run doctor)
+.TP
 .B undo
 Restore files from a Time Machine backup snapshot
 .TP
@@ -69,7 +72,7 @@ Manage bundles \(em logical groups of tracked files
 Track AI agent configs across home and per-repo scopes
 .TP
 .B mcp
-Model Context Protocol server \(em expose tuck to AI agents
+Model Context Protocol server, plus MCP fleet management (declare servers once with \fBmcp add\fR, render each client's config with \fBmcp apply\fR)
 .TP
 .B preset
 Apply or publish curated bundles of dotfiles & agent configs

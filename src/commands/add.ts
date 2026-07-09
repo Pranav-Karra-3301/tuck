@@ -14,6 +14,7 @@ import {
   type PreparedTrackFile,
   type TrackPathCandidate,
 } from '../lib/trackPipeline.js';
+import { parseRequirementList } from '../lib/requires.js';
 
 type FileToAdd = PreparedTrackFile;
 
@@ -66,6 +67,12 @@ const addFiles = async (
   for (const tag of tags) {
     await ensureProfile(tuckDir, tag);
   }
+  // Parse --requires ONCE (fail fast on a bad spec before any file is tracked).
+  // The validated specs apply to every file added in this invocation.
+  const requires =
+    options.requires && options.requires.trim().length > 0
+      ? parseRequirementList(options.requires)
+      : undefined;
 
   const filesToTrack: FileToTrack[] = filesToAdd.map((f) => {
     const isRepo = f.scope === 'repo';
@@ -86,6 +93,10 @@ const addFiles = async (
 
     if (tags.length > 0) {
       trackedFile.tags = tags;
+    }
+
+    if (requires && requires.length > 0) {
+      trackedFile.requires = requires;
     }
 
     // Carry the repo-only redaction plan across (issue #100 RC5): applied to the
@@ -529,6 +540,10 @@ export const addCommand = new Command('add')
   .option(
     '-t, --tag <name...>',
     'Profile tag(s) to attach (work, personal, server, agent, …); repeatable or comma-separated'
+  )
+  .option(
+    '--requires <specs>',
+    'Declare package dependencies for this file, e.g. "brew:starship,apt:zsh" (installed first by `tuck bootstrap`)'
   )
   .option('--json', 'Emit JSON envelope to stdout (non-interactive)')
   .option('-y, --yes', 'Auto-confirm prompts (use with --json for full automation)')

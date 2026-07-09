@@ -21,6 +21,7 @@ import {
   bundleCommand,
   profileCommand,
   verifyCommand,
+  bootstrapCommand,
 } from './commands/index.js';
 import { handleError } from './errors.js';
 import { VERSION, DESCRIPTION } from './constants.js';
@@ -71,6 +72,7 @@ program.addCommand(listCommand);
 program.addCommand(diffCommand);
 program.addCommand(configCommand);
 program.addCommand(applyCommand);
+program.addCommand(bootstrapCommand);
 program.addCommand(undoCommand);
 program.addCommand(scanCommand);
 program.addCommand(secretsCommand);

@@ -19,3 +19,4 @@ export { bundleCommand } from './bundle.js';
 export { profileCommand } from './profile.js';
 export { verifyCommand } from './verify.js';
 export { repoCommand } from './repo.js';
+export { bootstrapCommand } from './bootstrap.js';

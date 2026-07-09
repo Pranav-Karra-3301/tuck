@@ -140,6 +140,12 @@ export interface AddOptions extends CommonOptions {
    */
   tag?: string[];
   /**
+   * Comma/whitespace-separated `<manager>:<package>` dependency specs recorded
+   * on the tracked file(s), e.g. "brew:starship,apt:zsh". Installed before the
+   * file by `tuck bootstrap` (IDEAS 2.3).
+   */
+  requires?: string;
+  /**
    * Track the file as REPO-scoped: it lives inside a git repo (optionally at
    * the given dir; auto-detected from the path otherwise) whose absolute path
    * differs per machine. Stored by stable (repoKey, repoRelative).
@@ -232,6 +238,22 @@ export interface ApplyOptions extends CommonOptions {
 export interface DoctorOptions extends CommonOptions {
   strict?: boolean;
   category?: 'env' | 'repo' | 'manifest' | 'security' | 'hooks';
+}
+
+export interface BootstrapOptions extends CommonOptions {
+  /** Apply strategy: preserve local customizations (default) vs overwrite. */
+  merge?: boolean;
+  replace?: boolean;
+  /** Skip the declared-package install phase. */
+  skipPackages?: boolean;
+  /** Skip the final `tuck doctor` health check. */
+  skipDoctor?: boolean;
+  /** Bind an as-yet-unlinked repo to this checkout before applying repo-scoped files. */
+  repoRoot?: string;
+  /** Only bootstrap files in the named bundle. */
+  bundle?: string;
+  /** Proceed without the interactive plan confirmation (implied by --yes/--json). */
+  force?: boolean;
 }
 
 export interface FileChange {

@@ -32,7 +32,7 @@ import { findPlaceholders, restoreContent, restoreFiles as restoreSecrets, getAl
 import { createResolver } from '../lib/secretBackends/index.js';
 import { loadConfig } from '../lib/config.js';
 import { IS_WINDOWS } from '../lib/platform.js';
-import { RepositoryNotFoundError, MaterializeError, NotInitializedError, ValidationError, RemoteApplyError } from '../errors.js';
+import { RepositoryNotFoundError, MaterializeError, InvalidManifestError, NotInitializedError, ValidationError, RemoteApplyError } from '../errors.js';
 import {
   parseSshTarget,
   buildRemotePlan,
@@ -415,9 +415,9 @@ const buildProviderCloneUrl = (
  *   the CLI is present, otherwise a github URL BUILT via provider.buildRepoUrl
  *   (never a hard-coded literal) cloned through git.ts.
  */
-type CloneTransport = 'custom' | 'git' | 'github-repo-id';
+export type CloneTransport = 'custom' | 'git' | 'github-repo-id';
 
-interface ResolvedSource {
+export interface ResolvedSource {
   repoId: string;
   isUrl: boolean;
   local?: 'dir' | 'tarball';
@@ -428,7 +428,7 @@ interface ResolvedSource {
 /**
  * Resolve a source (username or repo URL) to a full repository identifier
  */
-const resolveSource = async (source: string): Promise<ResolvedSource> => {
+export const resolveSource = async (source: string): Promise<ResolvedSource> => {
   const configuredRemote = (await loadConfig(getTuckDir()))?.remote ?? { mode: 'local' as const };
   const providerPrefixMatch = source.match(/^(github|gitlab|custom):(.*)$/u);
 
@@ -558,7 +558,7 @@ const resolveSource = async (source: string): Promise<ResolvedSource> => {
  * capped clone instead of any github code path, and a bare owner/repo never
  * builds a hard-coded `https://github.com/...` literal.
  */
-const cloneSource = async (resolved: ResolvedSource): Promise<string> => {
+export const cloneSource = async (resolved: ResolvedSource): Promise<string> => {
   const { repoId, isUrl, local, cloneVia } = resolved;
   const tempDir = join(tmpdir(), `tuck-apply-${Date.now()}`);
   await ensureDir(tempDir);
@@ -607,7 +607,7 @@ const cloneSource = async (resolved: ResolvedSource): Promise<string> => {
 /**
  * Read the manifest from a cloned repository
  */
-const readClonedManifest = async (repoDir: string): Promise<TuckManifestOutput | null> => {
+export const readClonedManifest = async (repoDir: string): Promise<TuckManifestOutput | null> => {
   const manifestPath = join(repoDir, '.tuckmanifest.json');
 
   if (!(await fsPathExists(manifestPath))) {
@@ -1089,7 +1089,7 @@ const displayPlaceholderWarnings = (
  * Attempt to restore secrets from local store for files with placeholders
  * Returns info about what was restored
  */
-const tryRestoreSecretsFromLocalStore = async (
+export const tryRestoreSecretsFromLocalStore = async (
   filesWithPlaceholders: ApplyResult['filesWithPlaceholders'],
   interactive: boolean
 ): Promise<{ restored: number; unresolved: string[] }> => {
@@ -1558,6 +1558,75 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
       // Ignore cleanup errors
     }
   }
+};
+
+/** Structured result of {@link applyRepoDir} — no I/O, for composition. */
+export interface ApplyRepoResult {
+  applied: number;
+  /** repo-scoped sources skipped because their repo is unbound on this machine. */
+  skipped: string[];
+  /** Files whose secret placeholders could not be resolved from a backend. */
+  filesWithPlaceholders: ApplyResult['filesWithPlaceholders'];
+  /** Unsafe manifest entries that were refused (traversal, out-of-repo). */
+  unsafe: string[];
+  strategy: 'merge' | 'replace';
+}
+
+/**
+ * Apply an ALREADY-CLONED tuck repo directory, returning structured data with
+ * NO stdout/JSON emission of its own.
+ *
+ * This is the reusable apply core for callers that own their own output
+ * envelope — notably `tuck bootstrap`, which folds the result into a single
+ * combined JSON/human report. It deliberately reuses the SAME security-sensitive
+ * helpers as the interactive/CLI apply paths (`prepareFilesToApply`, the
+ * merge/replace write loops, the pre-apply snapshot) so the safety guarantees do
+ * not diverge; only the thin sequencing lives here. A pre-apply Time Machine
+ * snapshot is still taken (unless `dryRun`) so `tuck undo` can revert a bootstrap.
+ *
+ * @throws {InvalidManifestError} if the repo has no readable tuck manifest.
+ */
+export const applyRepoDir = async (
+  repoDir: string,
+  source: string,
+  options: ApplyOptions
+): Promise<ApplyRepoResult> => {
+  const manifest = await readClonedManifest(repoDir);
+  if (!manifest) {
+    throw new InvalidManifestError();
+  }
+
+  if (options.repoRoot) {
+    await bindReposFromOption(manifest, options.repoRoot);
+  }
+  await registerKnownRepoRoots(manifest);
+
+  const { files, skipped, unsafe } = await prepareFilesToApply(repoDir, manifest, options.bundle);
+  const strategy: 'merge' | 'replace' = options.replace ? 'replace' : 'merge';
+
+  if (files.length === 0) {
+    return { applied: 0, skipped, filesWithPlaceholders: [], unsafe, strategy };
+  }
+
+  if (!options.dryRun) {
+    const snapshotPaths = files.map((f) => f.destination);
+    if (snapshotPaths.length > 0) {
+      await createPreApplySnapshot(snapshotPaths, source);
+    }
+  }
+
+  const applyResult =
+    strategy === 'merge'
+      ? await applyWithMerge(files, options.dryRun || false)
+      : await applyWithReplace(files, options.dryRun || false);
+
+  return {
+    applied: applyResult.appliedCount,
+    skipped: [...skipped, ...applyResult.skippedUnboundRepos],
+    filesWithPlaceholders: applyResult.filesWithPlaceholders,
+    unsafe,
+    strategy,
+  };
 };
 
 /**
