@@ -56,6 +56,12 @@ const addFiles = async (
       trackedFile.bundle = options.bundle;
     }
 
+    // Carry the repo-only redaction plan across (issue #100 RC5): applied to the
+    // repository copy after the copy step; the live file is never rewritten.
+    if (f.redactions) {
+      trackedFile.redactions = f.redactions;
+    }
+
     if (isRepo) {
       trackedFile.scope = 'repo';
       trackedFile.repoKey = f.repoKey;
@@ -108,6 +114,7 @@ const runInteractiveAdd = async (tuckDir: string, options: AddOptions = {}): Pro
       force: options.force,
       secretHandling: 'interactive',
       forceBypassCommand: 'tuck add --force',
+      encrypt: options.encrypt,
       repo: options.repo,
       repoKey: options.repoKey,
     });
@@ -189,6 +196,7 @@ export const addFilesFromPaths = async (
     force: options.force,
     secretHandling: 'strict',
     forceBypassCommand: 'tuck add --force',
+    encrypt: options.encrypt,
     repo: options.repo,
     repoKey: options.repoKey,
   });
@@ -241,6 +249,7 @@ const runAdd = async (paths: string[], options: AddOptions): Promise<void> => {
       force: options.force,
       secretHandling: isJsonMode() || options.yes ? 'strict' : 'interactive',
       forceBypassCommand: 'tuck add --force',
+      encrypt: options.encrypt,
       repo: options.repo,
       repoKey: options.repoKey,
     });
@@ -270,6 +279,7 @@ const runAdd = async (paths: string[], options: AddOptions): Promise<void> => {
     force: options.force,
     secretHandling: isJsonMode() || options.yes ? 'strict' : 'interactive',
     forceBypassCommand: 'tuck add --force',
+    encrypt: options.encrypt,
     repo: options.repo,
     repoKey: options.repoKey,
   });

@@ -185,12 +185,14 @@ b3BlbnNzaC1rZXktdjEAAAAA
       const pattern = getPatternById('password-assignment');
       expect(pattern).toBeDefined();
 
-      // Pattern requires quotes around the password value
+      // Issue #100: quoted OR unquoted values are matched (previously quoted-only)
       const passwords = [
         'password="mysecretpassword"',
         "password='mysecretpassword'",
         'PASSWORD: "mysecretpassword"',
         "PASSWORD='verysecretvalue'",
+        'password=mysecretpassword',
+        'DB_PASSWORD=mysecretpassword',
       ];
 
       passwords.forEach((pwd) => {
