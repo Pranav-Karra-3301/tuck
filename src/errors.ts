@@ -384,6 +384,35 @@ export class ValidationError extends TuckError {
   }
 }
 
+export class InvalidRequirementError extends TuckError {
+  constructor(spec: string, reason: string) {
+    super(`Invalid dependency requirement "${spec}": ${reason}`, 'INVALID_REQUIREMENT', [
+      'Use the form <manager>:<package> (e.g. brew:starship, apt:zsh)',
+      'Supported managers: brew, apt, dnf, pacman, winget, scoop, cargo, npm, pnpm, pipx, go, gem',
+    ]);
+  }
+}
+
+export class CyclicDependencyError extends TuckError {
+  /** The node ids that participate in the detected cycle. */
+  public readonly cycle: string[];
+
+  constructor(cycle: string[]) {
+    const chain = cycle.length > 0 ? `${cycle.join(' → ')} → ${cycle[0]}` : 'unknown';
+    super(`Cyclic dependency detected: ${chain}`, 'CYCLIC_DEPENDENCY', [
+      'Remove one of the `requires:` edges that forms the cycle',
+      'Dependencies must form a directed acyclic graph (a package cannot depend on itself)',
+    ]);
+    this.cycle = cycle;
+  }
+}
+
+export class BootstrapError extends TuckError {
+  constructor(message: string, suggestions?: string[]) {
+    super(`Bootstrap failed: ${message}`, 'BOOTSTRAP_ERROR', suggestions);
+  }
+}
+
 export class KeystoreError extends TuckError {
   constructor(keystore: string, message: string, suggestions?: string[]) {
     super(`${keystore} error: ${message}`, 'KEYSTORE_ERROR', suggestions || [
