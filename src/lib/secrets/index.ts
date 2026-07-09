@@ -63,6 +63,8 @@ export {
   PLACEHOLDER_REGEX,
   redactContent,
   redactFile,
+  getStoredValueMap,
+  getRedactedChecksum,
   restoreContent,
   restoreFile,
   findPlaceholders,
