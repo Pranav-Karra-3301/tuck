@@ -97,13 +97,14 @@ tuck restore --all
 
 ### Managing Files
 
-| Command               | Description                        |
-| --------------------- | ---------------------------------- |
-| `tuck add <paths>`    | Manually track specific files      |
-| `tuck remove <paths>` | Stop tracking files                |
-| `tuck scan`           | Discover dotfiles without syncing  |
-| `tuck list`           | List all tracked files by category |
-| `tuck diff [file]`    | Show what's changed                |
+| Command                     | Description                                           |
+| --------------------------- | ----------------------------------------------------- |
+| `tuck add <paths>`          | Manually track specific files                         |
+| `tuck add --preset <agent>` | Track an AI agent's safe config allowlist (see below) |
+| `tuck remove <paths>`       | Stop tracking files                                   |
+| `tuck scan`                 | Discover dotfiles without syncing                     |
+| `tuck list`                 | List all tracked files by category                    |
+| `tuck diff [file]`          | Show what's changed                                   |
 
 ### Syncing
 
@@ -122,35 +123,36 @@ tuck restore --all
 
 ### Configuration
 
-| Command              | Description                                  |
-| -------------------- | -------------------------------------------- |
-| `tuck config`        | Interactive config menu (includes a setup wizard option) |
-| `tuck config remote` | Configure git provider (GitHub/GitLab/local) |
-| `tuck config get/set/list/edit/reset` | Read or change individual settings |
+| Command                               | Description                                              |
+| ------------------------------------- | -------------------------------------------------------- |
+| `tuck config`                         | Interactive config menu (includes a setup wizard option) |
+| `tuck config remote`                  | Configure git provider (GitHub/GitLab/local)             |
+| `tuck config get/set/list/edit/reset` | Read or change individual settings                       |
 
 ### Diagnostics & Verification
 
-| Command         | Description                                          |
-| --------------- | ---------------------------------------------------- |
-| `tuck doctor`   | Run repository health and safety diagnostics         |
-| `tuck verify`   | Verify the live system, repo, and manifest agree (add `--exit-code` as a CI gate) |
+| Command       | Description                                                                       |
+| ------------- | --------------------------------------------------------------------------------- |
+| `tuck doctor` | Run repository health and safety diagnostics                                      |
+| `tuck verify` | Verify the live system, repo, and manifest agree (add `--exit-code` as a CI gate) |
 
 `tuck doctor` flags:
+
 - `--json`: Machine-readable output for CI
 - `--strict`: Treat warnings as non-zero exit
 - `-c, --category <env|repo|manifest|security|hooks|sandboxing>`: Run one check group
 
 ### Advanced
 
-| Command             | Description                                                       |
-| ------------------- | ---------------------------------------------------------------- |
-| `tuck bundle`       | Manage bundles — logical groups of tracked files                 |
-| `tuck encryption`   | Manage at-rest backup encryption (AES-256-GCM, password-based)   |
-| `tuck secrets`      | Manage local secrets / placeholder replacement                   |
-| `tuck context`      | Track AI agent configs across home and per-repo scopes           |
-| `tuck preset`       | Apply or publish curated bundles of dotfiles & agent configs     |
-| `tuck repo`         | Manage machine-local repo bindings (for repo-scoped tracking)    |
-| `tuck mcp`          | Run the Model Context Protocol server (expose tuck to AI agents) |
+| Command           | Description                                                      |
+| ----------------- | ---------------------------------------------------------------- |
+| `tuck bundle`     | Manage bundles — logical groups of tracked files                 |
+| `tuck encryption` | Manage at-rest backup encryption (AES-256-GCM, password-based)   |
+| `tuck secrets`    | Manage local secrets / placeholder replacement                   |
+| `tuck context`    | Track AI agent configs across home and per-repo scopes           |
+| `tuck preset`     | Apply or publish curated bundles of dotfiles & agent configs     |
+| `tuck repo`       | Manage machine-local repo bindings (for repo-scoped tracking)    |
+| `tuck mcp`        | Run the Model Context Protocol server (expose tuck to AI agents) |
 
 ## How It Works
 
@@ -179,16 +181,57 @@ tuck stores your dotfiles in `~/.tuck`, organized by category:
 
 Run `tuck sync` anytime to detect changes and push. On a new machine, run `tuck apply username` to grab anyone's dotfiles.
 
+## AI Agent Configs
+
+tuck knows exactly which files under each AI agent's home directory are safe to
+version-control — and which are credentials, history, or session state that must
+never leave your machine. One command tracks the safe set:
+
+```bash
+tuck add --preset claude-code   # CLAUDE.md, settings.json, commands/, skills/, agents/, hooks/, rules/
+tuck add --preset cursor        # user settings, keybindings, snippets, ~/.cursor rules
+tuck add --preset codex         # AGENTS.md, config.toml, prompts/
+tuck add --preset gemini        # GEMINI.md, settings.json, commands/
+tuck add --preset copilot       # GitHub Copilot CLI config (non-credential)
+```
+
+Each preset **hard-excludes** local/credential/history/session files
+(`settings.local.json`, `.credentials.json`, `sessions/`, `projects/`, …). Files
+that are found but deliberately skipped are reported so you know they were left
+alone, and tuck's secret scanner still runs on everything actually tracked.
+
+Preview without tracking anything:
+
+```bash
+tuck add --preset claude-code --plan --json
+```
+
+### Cross-agent translation
+
+Keep one canonical instructions file and materialize it for every agent you use.
+`tuck preset translate` writes the same source into each agent's global
+instruction path (default: Claude Code's `~/.claude/CLAUDE.md` and Codex's
+`~/.codex/AGENTS.md`):
+
+```bash
+tuck preset translate ~/dotfiles/AGENTS.md          # copy into Claude + Codex
+tuck preset translate ~/dotfiles/AGENTS.md --link   # symlink instead of copy
+tuck preset translate ~/dotfiles/AGENTS.md --to claude-code,codex,gemini
+```
+
+Existing files are snapshotted before being overwritten (`tuck undo` rolls it
+back), and translation refuses to clobber non-interactively without `--yes`.
+
 ## Git Providers
 
 tuck supports multiple git hosting providers, detected automatically during setup:
 
-| Provider | CLI Required | Features |
-|----------|--------------|----------|
-| **GitHub** | `gh` | Auto-create repos, full integration |
-| **GitLab** | `glab` | Auto-create repos, self-hosted support |
-| **Local** | None | No remote sync, local git only |
-| **Custom** | None | Any git URL (Bitbucket, Gitea, etc.) |
+| Provider   | CLI Required | Features                               |
+| ---------- | ------------ | -------------------------------------- |
+| **GitHub** | `gh`         | Auto-create repos, full integration    |
+| **GitLab** | `glab`       | Auto-create repos, self-hosted support |
+| **Local**  | None         | No remote sync, local git only         |
+| **Custom** | None         | Any git URL (Bitbucket, Gitea, etc.)   |
 
 ### Switching Providers
 
@@ -244,14 +287,14 @@ tuck fully supports Windows with platform-specific handling:
 
 ### Detected Windows Dotfiles
 
-| Category | Files |
-|----------|-------|
-| **Shell** | PowerShell profiles (`Microsoft.PowerShell_profile.ps1`) |
-| **Terminal** | Windows Terminal settings, ConEmu/Cmder configs |
-| **Editors** | VS Code, Cursor, Neovim (in `%LOCALAPPDATA%`) |
-| **Git** | `.gitconfig`, `.gitignore_global` |
-| **SSH** | SSH config in `%USERPROFILE%\.ssh` |
-| **Misc** | WSL config (`.wslconfig`), Docker, Kubernetes |
+| Category     | Files                                                    |
+| ------------ | -------------------------------------------------------- |
+| **Shell**    | PowerShell profiles (`Microsoft.PowerShell_profile.ps1`) |
+| **Terminal** | Windows Terminal settings, ConEmu/Cmder configs          |
+| **Editors**  | VS Code, Cursor, Neovim (in `%LOCALAPPDATA%`)            |
+| **Git**      | `.gitconfig`, `.gitignore_global`                        |
+| **SSH**      | SSH config in `%USERPROFILE%\.ssh`                       |
+| **Misc**     | WSL config (`.wslconfig`), Docker, Kubernetes            |
 
 ### Windows-Specific Behavior
 
