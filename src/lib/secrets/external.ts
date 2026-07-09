@@ -154,6 +154,9 @@ const generatePlaceholderFromRule = (ruleId: string): string => {
  */
 export const gitleaksResultToMatch = (finding: GitleaksResult): SecretMatch => {
   const secretValue = finding.Secret || finding.Match;
+  // gitleaks reports 1-based line/column, not whole-content offsets; approximate
+  // the value range from the column so SecretMatch.start/end stay self-consistent.
+  const start = Math.max(0, finding.StartColumn - 1);
   return {
     patternId: `gitleaks-${finding.RuleID}`,
     patternName: finding.Description || finding.RuleID,
@@ -164,6 +167,8 @@ export const gitleaksResultToMatch = (finding: GitleaksResult): SecretMatch => {
     redactedValue: redactSecret(secretValue),
     context: redactSecret(finding.Match),
     placeholder: generatePlaceholderFromRule(finding.RuleID),
+    start,
+    end: start + secretValue.length,
   };
 };
 

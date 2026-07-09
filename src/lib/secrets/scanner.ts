@@ -40,6 +40,13 @@ export interface SecretMatch {
   column: number;
   context: string;
   placeholder: string;
+  /**
+   * Content offsets of the captured value: `start` is its index in the scanned
+   * content and `end` is `start + value.length`, so `content.slice(start, end)`
+   * reproduces `value`. Used by overlap resolution (issue #100 Task 3).
+   */
+  start: number;
+  end: number;
 }
 
 export interface FileScanResult {
@@ -200,6 +207,25 @@ const clonePattern = (pattern: RegExp): RegExp => {
   return new RegExp(pattern.source, flags);
 };
 
+/**
+ * Placeholder for a match: the full captured identifier when the pattern
+ * exposes one (e.g. LAMBDA_API_KEY -> {{LAMBDA_API_KEY}}), else the pattern
+ * default. Sanitized to match PLACEHOLDER_REGEX ([A-Z][A-Z0-9_]*).
+ */
+const derivePlaceholder = (name: string | undefined, fallback: string): string => {
+  if (!name) return fallback;
+  let p = name.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+  if (!/^[A-Z]/.test(p)) p = `SECRET_${p}`;
+  return p;
+};
+
+// Values that are clearly not literal secrets: env-var references, home/abs/rel
+// paths, and already-redacted placeholders. Broad unquoted classes (issue #100
+// Task 2) would otherwise flag `KEY_FILE=/path/to/key.pem` or `KEY=$OTHER_VAR`.
+const NON_SECRET_PREFIXES = ['$', '~', '/', './', '{{'] as const;
+const isLikelyNonSecret = (value: string): boolean =>
+  NON_SECRET_PREFIXES.some((p) => value.startsWith(p));
+
 // ============================================================================
 // Core Scanning Functions
 // ============================================================================
@@ -261,11 +287,25 @@ export const scanContent = (content: string, options: ScanOptions = {}): SecretM
         break;
       }
 
-      // Extract the captured value (prefer capture group 1 if exists)
-      const value = match[1] || match[0];
+      // Extract the secret value. Named-group convention (new patterns): `qvalue`
+      // (quoted) / `value` (unquoted). Numbered-group convention (legacy + custom
+      // patterns): first DEFINED group. `??`-chains so an empty-string capture never
+      // falls through to match[0] (which would include the identifier context and
+      // make redaction eat surrounding text — issue #100 root cause 1).
+      const groups = match.groups;
+      const value =
+        groups?.['qvalue'] ??
+        groups?.['value'] ??
+        match.slice(1).find((g): g is string => g !== undefined) ??
+        match[0];
 
       // Skip empty or very short matches
       if (!value || value.length < 4) {
+        continue;
+      }
+
+      // Skip env-var references, paths, and already-redacted placeholders.
+      if (isLikelyNonSecret(value)) {
         continue;
       }
 
@@ -278,6 +318,10 @@ export const scanContent = (content: string, options: ScanOptions = {}): SecretM
 
       const position = getPosition(content, match.index);
 
+      // Value range for downstream overlap resolution (issue #100 Task 3).
+      const valueOffset = match[0].indexOf(value); // value is always a substring of match[0]
+      const start = match.index + (valueOffset >= 0 ? valueOffset : 0);
+
       matches.push({
         patternId: pattern.id,
         patternName: pattern.name,
@@ -287,7 +331,9 @@ export const scanContent = (content: string, options: ScanOptions = {}): SecretM
         line: position.line,
         column: position.column,
         context: getContext(content, position.line, value),
-        placeholder: pattern.placeholder,
+        placeholder: derivePlaceholder(groups?.['name'], pattern.placeholder),
+        start,
+        end: start + value.length,
       });
 
       // Prevent infinite loops for zero-width matches
