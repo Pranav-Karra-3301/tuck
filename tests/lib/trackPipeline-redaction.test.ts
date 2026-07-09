@@ -52,6 +52,22 @@ vi.mock('../../src/ui/index.js', () => {
 const SECRET_LINE =
   'export LAMBDA_API_KEY=secret_example_e3878cb6494b410eabc3e16d15a99b08.SecondHalfOfKey12345';
 
+// Hand-built plan pieces matching the shape applySecretPolicy attaches.
+const makeMatch = (value: string, placeholder: string) => ({
+  patternId: 'generic-api-key',
+  patternName: 'Generic API Key',
+  severity: 'high' as const,
+  value,
+  redactedValue: '***',
+  line: 1,
+  column: 1,
+  context: '',
+  placeholder,
+  start: 0,
+  end: value.length,
+  offsetsExact: true,
+});
+
 describe('track pipeline repo-only redaction', () => {
   beforeEach(() => {
     vol.reset();
@@ -115,6 +131,111 @@ describe('track pipeline repo-only redaction', () => {
 
     // Manifest checksum matches the REDACTED repo copy (not the live cleartext).
     expect(entry!.checksum).toBe(await getFileChecksum(repoAbs));
+
+    logSpy.mockRestore();
+  });
+
+  it('skips a plan whose inner file was excluded from the directory copy (no throw)', async () => {
+    await initTestTuck();
+
+    // A tracked DIRECTORY whose secret-bearing inner file is excluded from the
+    // copy: its secret never reaches the repo, so there is nothing to redact —
+    // tracking must succeed rather than fail on the missing repo target.
+    const dir = join(TEST_HOME, '.config', 'sometool');
+    const secretValue = 'AKIAIOSFODNN7EXAMPLE';
+    vol.mkdirSync(dir, { recursive: true });
+    vol.writeFileSync(join(dir, 'credentials'), `AWS_ACCESS_KEY_ID=${secretValue}\n`);
+    vol.writeFileSync(join(dir, 'settings.conf'), 'theme=dark\n');
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const { trackFilesWithProgress } = await import('../../src/lib/fileTracking.js');
+    const { loadManifest } = await import('../../src/lib/manifest.js');
+
+    const result = await trackFilesWithProgress(
+      [
+        {
+          path: '~/.config/sometool',
+          category: 'misc',
+          exclude: ['credentials'],
+          redactions: [
+            {
+              livePath: join(dir, 'credentials'),
+              matches: [makeMatch(secretValue, 'AWS_ACCESS_KEY_ID')],
+              placeholderMap: new Map([[secretValue, 'AWS_ACCESS_KEY_ID']]),
+            },
+          ],
+        },
+      ],
+      TEST_TUCK_DIR,
+      { showCategory: false, delayBetween: 0 }
+    );
+
+    expect(result.succeeded).toBe(1);
+    expect(result.failed).toBe(0);
+
+    const manifest = await loadManifest(TEST_TUCK_DIR);
+    const entry = Object.values(manifest.files).find((f) => f.source === '~/.config/sometool');
+    expect(entry).toBeDefined();
+    const repoDir = join(TEST_TUCK_DIR, entry!.destination);
+    // The excluded secret file never reached the repo; the clean file did.
+    expect(vol.existsSync(join(repoDir, 'credentials'))).toBe(false);
+    expect(vol.readFileSync(join(repoDir, 'settings.conf'), 'utf-8')).toBe('theme=dark\n');
+
+    logSpy.mockRestore();
+  });
+
+  it('removes the copied repo destination when a redaction plan genuinely fails (no cleartext orphan)', async () => {
+    await initTestTuck();
+
+    // A tracked directory containing a real secret plus a SUBDIRECTORY. A plan
+    // whose livePath points at the subdirectory produces a repoTarget that
+    // exists but is a directory — redactFile's readFile throws (EISDIR), a
+    // genuine plan failure. The already-copied destination (still cleartext!)
+    // must be deleted, not left for sync's stageAll to commit.
+    const dir = join(TEST_HOME, '.config', 'failtool');
+    const secretValue = 'AKIAIOSFODNN7EXAMPLE';
+    vol.mkdirSync(join(dir, 'sub'), { recursive: true });
+    vol.writeFileSync(join(dir, 'credentials'), `AWS_ACCESS_KEY_ID=${secretValue}\n`);
+    vol.writeFileSync(join(dir, 'sub', 'inner.conf'), 'x=1\n');
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const { trackFilesWithProgress } = await import('../../src/lib/fileTracking.js');
+    const { loadManifest } = await import('../../src/lib/manifest.js');
+
+    const result = await trackFilesWithProgress(
+      [
+        {
+          path: '~/.config/failtool',
+          category: 'misc',
+          redactions: [
+            {
+              livePath: join(dir, 'sub'),
+              matches: [makeMatch(secretValue, 'AWS_ACCESS_KEY_ID')],
+              placeholderMap: new Map([[secretValue, 'AWS_ACCESS_KEY_ID']]),
+            },
+          ],
+        },
+      ],
+      TEST_TUCK_DIR,
+      { showCategory: false, delayBetween: 0 }
+    );
+
+    expect(result.succeeded).toBe(0);
+    expect(result.failed).toBe(1);
+
+    // No manifest entry and no orphaned cleartext copy in the repo tree.
+    const manifest = await loadManifest(TEST_TUCK_DIR);
+    expect(
+      Object.values(manifest.files).find((f) => f.source === '~/.config/failtool')
+    ).toBeUndefined();
+    expect(vol.existsSync(join(TEST_TUCK_DIR, 'files/misc/.config/failtool'))).toBe(false);
+
+    // Live files untouched throughout.
+    expect(vol.readFileSync(join(dir, 'credentials'), 'utf-8')).toBe(
+      `AWS_ACCESS_KEY_ID=${secretValue}\n`
+    );
 
     logSpy.mockRestore();
   });

@@ -114,6 +114,7 @@ const runInteractiveAdd = async (tuckDir: string, options: AddOptions = {}): Pro
       force: options.force,
       secretHandling: 'interactive',
       forceBypassCommand: 'tuck add --force',
+      encrypt: options.encrypt,
       repo: options.repo,
       repoKey: options.repoKey,
     });
@@ -195,6 +196,7 @@ export const addFilesFromPaths = async (
     force: options.force,
     secretHandling: 'strict',
     forceBypassCommand: 'tuck add --force',
+    encrypt: options.encrypt,
     repo: options.repo,
     repoKey: options.repoKey,
   });
@@ -247,6 +249,7 @@ const runAdd = async (paths: string[], options: AddOptions): Promise<void> => {
       force: options.force,
       secretHandling: isJsonMode() || options.yes ? 'strict' : 'interactive',
       forceBypassCommand: 'tuck add --force',
+      encrypt: options.encrypt,
       repo: options.repo,
       repoKey: options.repoKey,
     });
@@ -276,6 +279,7 @@ const runAdd = async (paths: string[], options: AddOptions): Promise<void> => {
     force: options.force,
     secretHandling: isJsonMode() || options.yes ? 'strict' : 'interactive',
     forceBypassCommand: 'tuck add --force',
+    encrypt: options.encrypt,
     repo: options.repo,
     repoKey: options.repoKey,
   });

@@ -8,11 +8,19 @@ import {
   generateFileId,
   detectCategory,
   validatePathWithinRoot,
+  pathExists,
 } from './paths.js';
 import { logger } from '../ui/index.js';
 import { redactFile, type SecretMatch } from './secrets/index.js';
 import { addFileToManifest, loadManifest } from './manifest.js';
-import { copyFileOrDir, createSymlink, getFileChecksum, getFileInfo, getSourceStatCache } from './files.js';
+import {
+  copyFileOrDir,
+  createSymlink,
+  deleteFileOrDir,
+  getFileChecksum,
+  getFileInfo,
+  getSourceStatCache,
+} from './files.js';
 import { loadConfig } from './config.js';
 import { CATEGORIES } from '../constants.js';
 import { ensureDir } from 'fs-extra';
@@ -324,14 +332,44 @@ export const trackFilesWithProgress = async (
       // is downgraded per-file above; encrypted repo copies are ciphertext (already
       // at-rest-protected) so plans are skipped for them.
       if (file.redactions?.length && !encrypt) {
-        for (const plan of file.redactions) {
-          const liveAbs = expandPath(plan.livePath);
-          const repoTarget =
-            liveAbs === expandedPath
-              ? destination
-              : join(destination, relative(expandedPath, liveAbs));
-          validatePathWithinRoot(repoTarget, tuckDir, 'redaction target');
-          await redactFile(repoTarget, plan.matches, plan.placeholderMap);
+        try {
+          for (const plan of file.redactions) {
+            const liveAbs = expandPath(plan.livePath);
+            const repoTarget =
+              liveAbs === expandedPath
+                ? destination
+                : join(destination, relative(expandedPath, liveAbs));
+            validatePathWithinRoot(repoTarget, tuckDir, 'redaction target');
+            // An inner file excluded from the directory copy never reached the
+            // repo: there is no repo copy to redact and its secret was never
+            // written. Skip the plan; only real failures below are fatal.
+            if (!(await pathExists(repoTarget))) {
+              logger.debug(
+                `Skipping redaction plan for ${collapsePath(plan.livePath)}: no repo copy at ${repoTarget} (excluded from copy)`
+              );
+              continue;
+            }
+            await redactFile(repoTarget, plan.matches, plan.placeholderMap);
+          }
+        } catch (redactionError) {
+          // A failed plan must never leave the already-copied destination in the
+          // repo working tree: it still holds CLEARTEXT secrets, has no manifest
+          // entry, and sync's stageAll would commit it. Delete it before
+          // rethrowing so the per-file catch records the error with no orphan.
+          try {
+            await deleteFileOrDir(destination);
+          } catch (cleanupError) {
+            const redactMsg =
+              redactionError instanceof Error ? redactionError.message : String(redactionError);
+            const cleanupMsg =
+              cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+            throw new Error(
+              `Redaction of the repository copy failed (${redactMsg}) and removing the ` +
+                `cleartext copy also failed (${cleanupMsg}). Remove ${destination} manually ` +
+                `before running 'tuck sync'.`
+            );
+          }
+          throw redactionError;
         }
       }
 
