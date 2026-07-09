@@ -1,3 +1,5 @@
+<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
+
 # [1.10.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.9.0...v1.10.0) (2026-07-09)
 
 
@@ -119,8 +121,6 @@
 * sync --json/--plan/--dry-run, Bun binary build, install script ([3d3a61b](https://github.com/Pranav-Karra-3301/tuck/commit/3d3a61b88f8b4e9030b73a3920d197f03f16324a))
 * tuck apply accepts a local directory or tarball (no remote/GitHub) ([8d977d4](https://github.com/Pranav-Karra-3301/tuck/commit/8d977d43be669414a9ec2687a9feb4e1714856dd))
 * unify --json output of status/list/scan/doctor under the envelope ([0234592](https://github.com/Pranav-Karra-3301/tuck/commit/023459267ccbffbb26aa76381bb22a59bbf14b33))
-
-<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
 # [1.9.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.8.0...v1.9.0) (2026-02-20)
 
