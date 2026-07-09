@@ -38,6 +38,7 @@ import { contextCommand } from './commands/context.js';
 import { mcpCommand } from './commands/mcp.js';
 import { presetCommand } from './commands/preset.js';
 import { repoCommand } from './commands/repo.js';
+import { settingsCommand } from './commands/settings.js';
 
 const program = new Command();
 
@@ -81,6 +82,7 @@ program.addCommand(contextCommand);
 program.addCommand(mcpCommand);
 program.addCommand(presetCommand);
 program.addCommand(repoCommand);
+program.addCommand(settingsCommand);
 
 // Best-effort EARLY detection so the error handler can emit JSON even for
 // failures that occur before any command action runs (e.g. during parsing).

@@ -341,15 +341,11 @@ export class InvalidManifestError extends TuckError {
 
 export class PathTraversalError extends TuckError {
   constructor(path: string, reason?: string) {
-    super(
-      `Unsafe path detected: ${path}${reason ? ` - ${reason}` : ''}`,
-      'PATH_TRAVERSAL_ERROR',
-      [
-        'Paths must be within your home directory',
-        'Path traversal (..) is not allowed',
-        'Use absolute paths starting with ~/ or $HOME/',
-      ]
-    );
+    super(`Unsafe path detected: ${path}${reason ? ` - ${reason}` : ''}`, 'PATH_TRAVERSAL_ERROR', [
+      'Paths must be within your home directory',
+      'Path traversal (..) is not allowed',
+      'Use absolute paths starting with ~/ or $HOME/',
+    ]);
   }
 }
 
@@ -378,17 +374,50 @@ export class ScanLimitError extends TuckError {
 
 export class ValidationError extends TuckError {
   constructor(field: string, message: string) {
-    super(`Invalid ${field}: ${message}`, 'VALIDATION_ERROR', [
-      'Check your input and try again',
-    ]);
+    super(`Invalid ${field}: ${message}`, 'VALIDATION_ERROR', ['Check your input and try again']);
   }
 }
 
 export class KeystoreError extends TuckError {
   constructor(keystore: string, message: string, suggestions?: string[]) {
-    super(`${keystore} error: ${message}`, 'KEYSTORE_ERROR', suggestions || [
-      'Check your system keychain/credential manager is accessible',
-      'Try running without encryption or use the fallback keystore',
+    super(
+      `${keystore} error: ${message}`,
+      'KEYSTORE_ERROR',
+      suggestions || [
+        'Check your system keychain/credential manager is accessible',
+        'Try running without encryption or use the fallback keystore',
+      ]
+    );
+  }
+}
+
+// ============================================================================
+// OS Settings Errors
+// ============================================================================
+
+export class SettingsUnsupportedOsError extends TuckError {
+  constructor(platform: string) {
+    super(
+      `\`tuck settings\` is not supported on this platform yet (${platform})`,
+      'SETTINGS_UNSUPPORTED_OS',
+      [
+        'macOS is supported today; Linux (dconf) support is planned',
+        'Existing captured settings still apply on their original OS',
+      ]
+    );
+  }
+}
+
+export class SettingsError extends TuckError {
+  constructor(message: string, suggestions?: string[]) {
+    super(message, 'SETTINGS_ERROR', suggestions);
+  }
+}
+
+export class SettingNotFoundError extends TuckError {
+  constructor(id: string) {
+    super(`No tracked setting with id "${id}"`, 'SETTING_NOT_FOUND', [
+      'Run `tuck settings list` to see tracked settings',
     ]);
   }
 }
