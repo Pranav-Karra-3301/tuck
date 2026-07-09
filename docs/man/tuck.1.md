@@ -10,9 +10,9 @@ tuck [command] [options]
 tuck is a modern dotfiles manager that provides a beautiful CLI for managing your configuration files across machines.
 
 ## COMMANDS
-* **init**: Initialize tuck
+* **init**: Initialize tuck (leads with the scan-based "adopt existing dotfiles" path)
 * **add**: Track new dotfiles
-* **remove**: Stop tracking dotfiles
+* **remove**: Stop tracking dotfiles (snapshots the repo copy before **--delete**)
 * **sync**: Sync all dotfile changes (pull, detect, scan, track, commit, push)
 * **push**: Push changes to remote
 * **pull**: Pull changes from remote
@@ -21,7 +21,7 @@ tuck is a modern dotfiles manager that provides a beautiful CLI for managing you
 * **list**: List all tracked files
 * **diff**: Show differences between system and repository
 * **config**: Manage tuck configuration
-* **apply**: Apply dotfiles from a repository to this machine
+* **apply**: Apply dotfiles from a repository to this machine (shows a full diff summary and auto-creates a snapshot before touching anything)
 * **undo**: Restore files from a Time Machine backup snapshot
 * **scan**: Scan the system for dotfiles and select which to track
 * **secrets**: Manage local secrets for placeholder replacement
