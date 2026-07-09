@@ -1,4 +1,5 @@
 import { basename } from 'path';
+import { sortJsonKeys } from './jsonKey.js';
 import type {
   arrayMergeStrategySchema,
   conflictResolutionSchema,
@@ -96,17 +97,16 @@ const isArray = (value: Slot): value is JsonValue[] =>
  * Canonical, order-independent serialization used for deep equality and for
  * array de-duplication. Object keys are sorted so `{a:1,b:2}` and `{b:2,a:1}`
  * hash identically; array order is preserved (arrays are ordered values).
+ *
+ * Derived from the shared {@link sortJsonKeys} deep key-sort (same primitive
+ * behind jsonKey's `canonicalJson`) so the two canonical serializers cannot
+ * drift: `canonicalize(v)` is exactly `JSON.stringify` over a recursively
+ * key-sorted `v`. `sortJsonKeys` uses a null-prototype result object, so an own
+ * `__proto__` data key survives here just as it did in the previous hand-rolled
+ * recursion.
  */
-export const canonicalize = (value: JsonValue): string => {
-  if (value === null || typeof value !== 'object') {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalize).join(',')}]`;
-  }
-  const keys = Object.keys(value).sort();
-  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalize(value[k])}`).join(',')}}`;
-};
+export const canonicalize = (value: JsonValue): string =>
+  JSON.stringify(sortJsonKeys(value));
 
 /** Deep structural equality via canonical serialization. */
 const deepEqual = (a: Slot, b: Slot): boolean => {

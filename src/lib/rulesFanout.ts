@@ -17,7 +17,7 @@
  * files that would change are snapshotted (Time Machine) before being touched.
  */
 
-import { join, dirname, basename, relative, resolve, posix } from 'path';
+import { join, dirname, relative, resolve, posix } from 'path';
 import { readFile, writeFile, lstat, readlink, rm } from 'fs/promises';
 import {
   expandPath,
@@ -33,6 +33,7 @@ import {
   deleteFileOrDir,
 } from './files.js';
 import { resolveWriteTarget, addKnownRepoRoots, type RepoWriteTarget } from './writeContext.js';
+import { findGitRoot, slugifyPath, repoScopeKey } from './repoScope.js';
 import { renderTemplate, defaultTemplateContext, type TemplateContext } from './template.js';
 import { createSnapshot } from './timemachine.js';
 import { TuckError, FileNotFoundError } from '../errors.js';
@@ -112,31 +113,6 @@ export const saveRulesManifest = async (
   manifest: RulesManifest
 ): Promise<void> => {
   await writeFile(rulesManifestPath(tuckDir), JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
-};
-
-const slugifyPath = (p: string): string =>
-  p
-    .replace(/^~?\/+/, '')
-    .replace(/[^a-zA-Z0-9._-]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .toLowerCase();
-
-const repoScopeKey = (repoRoot: string): string =>
-  slugifyPath(basename(repoRoot)) + '__' + slugifyPath(repoRoot);
-
-/** Walk up from `start` looking for a `.git` entry; return the repo root or null. */
-const findGitRoot = async (start: string): Promise<string | null> => {
-  // expandPath, not resolve(): win32 resolve() stamps the host drive letter
-  // onto drive-less absolute paths, corrupting the returned repo root.
-  let dir = expandPath(start);
-  for (let i = 0; i < 64; i++) {
-    if (await pathExists(join(dir, '.git'))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-  return null;
 };
 
 /** Stable id for a rule set (home vs repo, collision-safe across repos). */

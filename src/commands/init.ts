@@ -24,6 +24,7 @@ import {
   stageAll,
   commit,
   push,
+  gitRemoteToWebUrl,
 } from '../lib/git.js';
 import {
   setupProvider,
@@ -1454,15 +1455,8 @@ const commitAndOfferPush = async (
           await push(tuckDir, { remote: 'origin', branch: 'main', setUpstream: true });
           pushSpinner.stop('Pushed successfully!');
 
-          // Show success with URL
-          let viewUrl = remoteUrl;
-          if (viewUrl.startsWith('git@github.com:')) {
-            viewUrl = viewUrl
-              .replace('git@github.com:', 'https://github.com/')
-              .replace('.git', '');
-          } else if (viewUrl.startsWith('https://github.com/')) {
-            viewUrl = viewUrl.replace('.git', '');
-          }
+          // Show success with a browsable URL via the shared helper.
+          const viewUrl = gitRemoteToWebUrl(remoteUrl);
 
           console.log();
           prompts.note(

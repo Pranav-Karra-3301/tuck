@@ -37,6 +37,8 @@
  *     VS Code settings.json) are rejected rather than silently corrupted.
  */
 
+import { createHash } from 'node:crypto';
+
 import { JsonKeyError } from '../errors.js';
 
 /** A JSON value with no functions/undefined — what `JSON.parse` yields. */
@@ -114,15 +116,26 @@ export const parseJsonKeyPath = (key: string): string[] => {
   return segments;
 };
 
-/** Recursively sort object keys so serialization is deterministic. */
-const sortValue = (value: JsonValue): JsonValue => {
+/**
+ * Recursively sort object keys so serialization is deterministic. The shared
+ * deep key-sort primitive: `canonicalJson` (here) and `canonicalize` in
+ * jsonMerge.ts both derive from it, so the two canonical serializers can never
+ * drift apart.
+ *
+ * The result object is created with a `null` prototype so a literal `__proto__`
+ * data key (which `JSON.parse` yields as an OWN property) is stored as a plain
+ * own property instead of hijacking the prototype slot — this is what keeps
+ * `JSON.stringify(sortJsonKeys(v))` byte-identical to the hand-written
+ * `canonicalize(v)` (which reads own keys directly), including for `__proto__`.
+ */
+export const sortJsonKeys = (value: JsonValue): JsonValue => {
   if (Array.isArray(value)) {
-    return value.map(sortValue);
+    return value.map(sortJsonKeys);
   }
   if (isPlainObject(value)) {
-    const out: Record<string, JsonValue> = {};
+    const out = Object.create(null) as Record<string, JsonValue>;
     for (const k of Object.keys(value).sort()) {
-      out[k] = sortValue(value[k]);
+      out[k] = sortJsonKeys(value[k]);
     }
     return out;
   }
@@ -135,7 +148,17 @@ const sortValue = (value: JsonValue): JsonValue => {
  * identical for identical content regardless of the source file's ordering.
  */
 export const canonicalJson = (value: JsonValue): string =>
-  `${JSON.stringify(sortValue(value), null, 2)}\n`;
+  `${JSON.stringify(sortJsonKeys(value), null, 2)}\n`;
+
+/**
+ * The single SHA-256 checksum of a tracked JSON subtree's canonical text. Change
+ * detection (sync), status, and verify must all hash an extracted subtree the
+ * SAME way for their checksums to agree, so the algorithm lives here in exactly
+ * one place. Hashes the UTF-8 bytes of `text` (equivalent to, and replacing, the
+ * former `Buffer.from(text, 'utf8')` wrapper).
+ */
+export const hashSubtree = (text: string): string =>
+  createHash('sha256').update(text, 'utf8').digest('hex');
 
 /** Parse text as strict JSON, raising a {@link JsonKeyError} with context on failure. */
 const parseJsonOrThrow = (content: string, label: string): JsonValue => {
@@ -492,7 +515,7 @@ const serializeSpliceValue = (
   multiline: boolean,
   continuationIndent: string
 ): string => {
-  const sorted = sortValue(value);
+  const sorted = sortJsonKeys(value);
   if (!multiline) return JSON.stringify(sorted);
   const raw = JSON.stringify(sorted, null, indentUnit);
   return raw

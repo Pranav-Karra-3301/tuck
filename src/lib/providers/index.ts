@@ -23,6 +23,17 @@ export { CustomProvider, customProvider } from './custom.js';
 // Provider Registry
 // ============================================================================
 
+/**
+ * Normalize a git host / provider URL to a bare host: strip any `http(s)://`
+ * scheme and a single trailing slash. Inputs may be bare hosts with no scheme
+ * (e.g. `gitlab.example.com`), so `new URL()` is intentionally NOT used — it
+ * rejects scheme-less hosts. Shared so the scheme + trailing-slash policy lives
+ * in one place and cannot drift between call sites.
+ */
+export function normalizeGitHost(url: string): string {
+  return url.replace(/^https?:\/\//, '').replace(/\/$/, '');
+}
+
 /** Provider display info for selection UI */
 export interface ProviderOption {
   mode: ProviderMode;
@@ -47,7 +58,7 @@ export function getProvider(mode: ProviderMode, config?: RemoteConfig): GitProvi
     case 'gitlab':
       // Support self-hosted GitLab
       if (config?.providerUrl) {
-        const host = config.providerUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
+        const host = normalizeGitHost(config.providerUrl);
         return GitLabProvider.forHost(host);
       }
       return gitlabProvider;
@@ -168,7 +179,7 @@ export function describeProviderConfig(config: RemoteConfig): string {
 
     case 'gitlab':
       if (config.providerUrl) {
-        const host = config.providerUrl.replace(/^https?:\/\//, '');
+        const host = normalizeGitHost(config.providerUrl);
         return config.username ? `GitLab ${host} (@${config.username})` : `GitLab (${host})`;
       }
       return config.username ? `GitLab (@${config.username})` : 'GitLab';

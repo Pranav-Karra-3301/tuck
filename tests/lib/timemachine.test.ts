@@ -451,6 +451,26 @@ describe('timemachine', () => {
     it('should format gigabytes', () => {
       expect(formatSnapshotSize(1073741824)).toBe('1 GB');
     });
+
+    it('renders terabyte-scale sizes as GB, never an undefined unit', () => {
+      // Regression: the old inline copy indexed sizes[floor(log1024(bytes))] with
+      // no clamp, so any value >= 1 TB rendered "1.1 undefined". It now delegates
+      // to the bounds-safe formatBytes.
+      const result = formatSnapshotSize(1024 ** 4);
+      expect(result).not.toContain('undefined');
+      expect(result).toMatch(/ GB$/);
+    });
+
+    it('normalizes negative and non-finite inputs to 0 B instead of NaN', () => {
+      expect(formatSnapshotSize(-5)).toBe('0 B');
+      expect(formatSnapshotSize(Number.NaN)).toBe('0 B');
+      expect(formatSnapshotSize(Number.POSITIVE_INFINITY)).toBe('0 B');
+    });
+
+    it('keeps two-decimal precision for fractional sizes', () => {
+      // 1500 / 1024 = 1.4648... → 1.46 KB at 2 decimals (preserves prior output).
+      expect(formatSnapshotSize(1500)).toBe('1.46 KB');
+    });
   });
 
   // ============================================================================

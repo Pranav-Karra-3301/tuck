@@ -67,6 +67,39 @@ const PRIVATE_IP_PATTERNS = [
 ] as const;
 
 // ============================================================================
+// Shared blocklists (security guards — keep the policy in exactly one place)
+// ============================================================================
+
+/**
+ * Shell metacharacters that must never appear in a URL, path, or description.
+ * These are the characters a shell would interpret (command substitution,
+ * globbing, redirection, quoting, escaping). Centralized so every validator
+ * enforces the same policy and the copies cannot drift apart.
+ */
+const SHELL_METACHAR_PATTERN = /[;&|`$(){}[\]<>!#*?'"\\]/;
+
+/**
+ * Control characters (NUL, tab, CR, LF, and every other C0 control plus DEL)
+ * that must never appear in user-supplied strings.
+ */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHAR_PATTERN = /[\x00-\x1F\x7F]/;
+
+/**
+ * True if the string contains any shell metacharacter.
+ */
+export function hasShellMetachars(value: string): boolean {
+  return SHELL_METACHAR_PATTERN.test(value);
+}
+
+/**
+ * True if the string contains any control character.
+ */
+export function hasControlChars(value: string): boolean {
+  return CONTROL_CHAR_PATTERN.test(value);
+}
+
+// ============================================================================
 // Repository Name Validation
 // ============================================================================
 
@@ -78,8 +111,7 @@ const PRIVATE_IP_PATTERNS = [
  */
 export function validateRepoName(repoName: string, provider: string): void {
   // Check for control characters and null bytes
-  // eslint-disable-next-line no-control-regex
-  if (/[\x00-\x1F\x7F]/.test(repoName)) {
+  if (hasControlChars(repoName)) {
     throw new Error('Repository name contains invalid control characters');
   }
 
@@ -127,7 +159,7 @@ function validateHttpUrl(url: string, provider: string): void {
   }
 
   // Check for shell metacharacters
-  if (/[;&|`$(){}[\]<>!#*?'"\\]/.test(url)) {
+  if (hasShellMetachars(url)) {
     throw new Error('URL contains invalid characters');
   }
 
@@ -147,7 +179,7 @@ function validateHttpUrl(url: string, provider: string): void {
  */
 function validateSshUrl(url: string, _provider: string): void {
   // Check for shell metacharacters before pattern matching
-  if (/[;&|`$(){}[\]<>!#*?'"\\]/.test(url)) {
+  if (hasShellMetachars(url)) {
     throw new Error('URL contains invalid characters');
   }
 
@@ -189,8 +221,9 @@ export function validateDescription(description: string, maxLength: number = 350
   }
 
   // Check for invalid characters including quotes, newlines, and shell metacharacters
-  // eslint-disable-next-line no-control-regex
-  if (/[;&|`$(){}[\]<>!#*?'"\\\r\n\t\x00-\x1F\x7F]/.test(description)) {
+  // (\r\n\t fall within the control-character range, so the two guards together
+  // cover the original combined class exactly)
+  if (hasShellMetachars(description) || hasControlChars(description)) {
     throw new Error(
       'Description contains invalid characters. Cannot contain: ; & | ` $ ( ) { } [ ] < > ! # * ? \' " \\ newlines or control characters'
     );
@@ -254,8 +287,7 @@ export function validateHostname(hostname: string): void {
  */
 export function validateGitUrl(url: string): boolean {
   // Check for control characters
-  // eslint-disable-next-line no-control-regex
-  if (/[\x00-\x1F\x7F]/.test(url)) {
+  if (hasControlChars(url)) {
     return false;
   }
 
@@ -283,8 +315,11 @@ export function validateGitUrl(url: string): boolean {
     httpsPattern.test(url) ||
     gitPattern.test(url)
   ) {
-    // Additional check: no shell metacharacters
-    if (/[;&|`$(){}[\]<>!#*?]/.test(url.replace(/[/:@.]/g, ''))) {
+    // Additional check: no shell metacharacters. The URL has already matched a
+    // restrictive pattern above, so after stripping the legitimate URL
+    // separators only alphanumerics/underscore/hyphen remain — the shared
+    // (broader) blocklist is behavior-identical here and keeps the policy unified.
+    if (hasShellMetachars(url.replace(/[/:@.]/g, ''))) {
       return false;
     }
     return true;

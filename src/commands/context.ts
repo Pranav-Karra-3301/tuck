@@ -29,6 +29,7 @@ import {
   validatePathWithinRoot,
 } from '../lib/paths.js';
 import { resolveWriteTarget } from '../lib/writeContext.js';
+import { findGitRoot, slugifyPath, repoScopeKey } from '../lib/repoScope.js';
 import { loadManifest } from '../lib/manifest.js';
 import {
   copyFileOrDir,
@@ -158,19 +159,6 @@ export const classifyAgentPath = (p: string): string => {
   return 'other';
 };
 
-/** Walk up from `start` looking for a `.git` directory; return repo root or null. */
-const findGitRoot = async (start: string): Promise<string | null> => {
-  let dir = resolve(start);
-  // Bound the walk so we never escape the user's home tree in pathological cases.
-  for (let i = 0; i < 64; i++) {
-    if (await pathExists(join(dir, '.git'))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-  return null;
-};
-
 /**
  * Decide whether a path should be tracked as home-scoped or repo-scoped.
  * Home: anywhere under $HOME that is NOT inside a git working tree.
@@ -194,19 +182,6 @@ const ensureInitialized = async (tuckDir: string): Promise<void> => {
   } catch {
     throw new NotInitializedError();
   }
-};
-
-const slugifyPath = (p: string): string => {
-  return p
-    .replace(/^~?\/+/, '')
-    .replace(/[^a-zA-Z0-9._-]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .toLowerCase();
-};
-
-const repoScopeKey = (repoRoot: string): string => {
-  return slugifyPath(basename(repoRoot)) + '__' + slugifyPath(repoRoot);
 };
 
 const destinationFor = (entry: { scope: 'home' | 'repo'; repoRoot?: string; source: string }): string => {

@@ -858,6 +858,48 @@ const getCredentialsPath = async (): Promise<string> => {
 };
 
 /**
+ * Run `git credential <subcommand>` with the given stdin input.
+ *
+ * Owns the shared spawn/stdin/close-promise plumbing used by the credential
+ * store and lookup flows. Resolves with the collected stdout (an empty string
+ * when `captureStdout` is false). Rejects with `git credential <subcommand>
+ * failed` when git exits non-zero, or with the spawn error when the process
+ * cannot be started.
+ */
+const runGitCredential = async (
+  subcommand: 'approve' | 'reject' | 'fill',
+  input: string,
+  { captureStdout = false }: { captureStdout?: boolean } = {}
+): Promise<string> => {
+  const { spawn } = await import('child_process');
+  return new Promise<string>((resolve, reject) => {
+    const proc = spawn('git', ['credential', subcommand], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let output = '';
+    if (captureStdout) {
+      proc.stdout.on('data', (data) => {
+        output += data.toString();
+      });
+    }
+
+    proc.stdin.write(input);
+    proc.stdin.end();
+
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve(output);
+      } else {
+        reject(new Error(`git credential ${subcommand} failed`));
+      }
+    });
+
+    proc.on('error', reject);
+  });
+};
+
+/**
  * Store GitHub credentials securely
  * Uses git credential helper for the actual token storage
  * Stores metadata (type, creation date) in tuck config
@@ -885,25 +927,7 @@ export const storeGitHubCredentials = async (
   const credentialInput = `protocol=https\nhost=github.com\nusername=${username}\npassword=${token}\n\n`; // Note: git credential protocol requires input to be terminated with a blank line (\n\n)
 
   try {
-    const { spawn } = await import('child_process');
-    await new Promise<void>((resolve, reject) => {
-      const proc = spawn('git', ['credential', 'approve'], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-
-      proc.stdin.write(credentialInput);
-      proc.stdin.end();
-
-      proc.on('close', (code) => {
-        if (code === 0) {
-          resolve();
-        } else {
-          reject(new Error('git credential approve failed'));
-        }
-      });
-
-      proc.on('error', reject);
-    });
+    await runGitCredential('approve', credentialInput);
   } catch (error) {
     // If git credential helper fails, we can still continue.
     // The user will just be prompted for credentials on push.
@@ -1039,31 +1063,12 @@ export const testStoredCredentials = async (): Promise<{
   let password: string | null = null;
 
   try {
-    const { spawn } = await import('child_process');
-    const credentialOutput = await new Promise<string>((resolve, reject) => {
-      const proc = spawn('git', ['credential', 'fill'], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-
-      // Request credentials for github.com
-      proc.stdin.write('protocol=https\nhost=github.com\n\n');
-      proc.stdin.end();
-
-      let output = '';
-      proc.stdout.on('data', (data) => {
-        output += data.toString();
-      });
-
-      proc.on('close', (code) => {
-        if (code === 0) {
-          resolve(output);
-        } else {
-          reject(new Error('git credential fill failed'));
-        }
-      });
-
-      proc.on('error', reject);
-    });
+    // Request credentials for github.com
+    const credentialOutput = await runGitCredential(
+      'fill',
+      'protocol=https\nhost=github.com\n\n',
+      { captureStdout: true }
+    );
 
     // Parse credential output (format: key=value\n). Values may contain '=' characters,
     // so split into at most two parts: key and the full remaining value.

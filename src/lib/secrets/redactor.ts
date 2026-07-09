@@ -5,60 +5,14 @@
  * and restoring them from the local secrets store.
  */
 
-import { readFile, writeFile, rename, unlink, stat } from 'fs/promises';
+import { readFile, stat } from 'fs/promises';
 import { randomBytes, createHash } from 'crypto';
-import { dirname, basename, join, relative } from 'path';
+import { relative } from 'path';
 import { expandPath, pathExists, isDirectory } from '../paths.js';
-import { getDirectoryFiles } from '../files.js';
+import { atomicWriteFile, getDirectoryFiles } from '../files.js';
 import { isBinaryBuffer } from '../binary.js';
 import type { SecretMatch } from './scanner.js';
 import { getAllSecrets } from './store.js';
-
-// ============================================================================
-// Atomic File Operations
-// ============================================================================
-
-/**
- * Atomically write to a file by writing to a temp file first, then renaming.
- * This prevents data loss from race conditions or crashes during write.
- */
-const atomicWriteFile = async (filepath: string, content: string): Promise<void> => {
-  // Generate unique temp filename in same directory (for same-filesystem rename)
-  const tempSuffix = randomBytes(8).toString('hex');
-  const tempPath = join(dirname(filepath), `.${basename(filepath)}.tmp.${tempSuffix}`);
-
-  try {
-    // Get original file permissions if file exists
-    let mode: number | undefined;
-    let fileExists = false;
-    try {
-      const stats = await stat(filepath);
-      mode = stats.mode;
-      fileExists = true;
-    } catch {
-      // File doesn't exist
-    }
-
-    // Security: For new security-sensitive files (e.g., dotfiles), use restrictive permissions
-    if (!fileExists && basename(filepath).startsWith('.')) {
-      mode = 0o600; // Owner read/write only
-    }
-
-    // Write to temp file first
-    await writeFile(tempPath, content, { encoding: 'utf-8', mode });
-
-    // Atomically rename temp to target (this is atomic on POSIX systems)
-    await rename(tempPath, filepath);
-  } catch (error) {
-    // Clean up temp file on error
-    try {
-      await unlink(tempPath);
-    } catch {
-      // Ignore cleanup errors
-    }
-    throw error;
-  }
-};
 
 // ============================================================================
 // Types

@@ -34,6 +34,7 @@ import { keystorePassphrase } from './materialize.js';
 import { EncryptionError } from '../errors.js';
 import { isJsonMode } from './jsonOutput.js';
 import { extractSubtree } from './jsonKey.js';
+import { isSensitiveFile } from './trackPipeline.js';
 
 export interface FileToTrack {
   path: string;
@@ -135,38 +136,6 @@ export interface FileTrackingResult {
   errors: Array<{ path: string; error: Error }>;
   sensitiveFiles: string[];
 }
-
-/**
- * Pattern matching for sensitive files
- */
-const SENSITIVE_FILE_PATTERNS = [
-  /^\.netrc$/,
-  /^\.aws\/credentials$/,
-  /^\.docker\/config\.json$/,
-  /^\.npmrc$/,
-  /^\.pypirc$/,
-  /^\.kube\/config$/,
-  /^\.ssh\/config$/,
-  /^\.gnupg\//,
-  /credentials/i,
-  /secrets?/i,
-  /tokens?\.json$/i,
-  /\.env$/,
-  /\.env\./,
-];
-
-/**
- * Check if a path contains potentially sensitive data
- */
-const isSensitiveFile = (path: string): boolean => {
-  const pathToTest = path.startsWith('~/') ? path.slice(2) : path;
-  for (const pattern of SENSITIVE_FILE_PATTERNS) {
-    if (pattern.test(pathToTest)) {
-      return true;
-    }
-  }
-  return false;
-};
 
 /**
  * Shared file tracking logic used by add, scan, and init commands.

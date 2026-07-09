@@ -252,15 +252,38 @@ const isHttpsGitHubRemote = (url: string): boolean => {
 };
 
 /**
+ * Convert a git remote URL into a browsable, https "web" URL for display.
+ *
+ * Handles scp-style SSH remotes (`git@host:owner/repo`), `ssh://git@host/owner/repo`,
+ * and plain https remotes. The trailing `.git` suffix is stripped with an ANCHORED
+ * regex (`/\.git$/`) so a repo whose path legitimately contains `.git` mid-string
+ * (e.g. `owner/my.github-config`) is not mangled — an unanchored `.replace('.git','')`
+ * would corrupt such names by removing the first interior `.git` occurrence.
+ *
+ * Exported and shared by `tuck push` and `tuck init` so the SSH→HTTPS view-URL
+ * conversion lives in exactly one place.
+ */
+export const gitRemoteToWebUrl = (url: string): string => {
+  let web = url.trim();
+  // scp-style ssh: git@host:owner/repo -> https://host/owner/repo
+  const scpMatch = web.match(/^git@([^:/]+):(.+)$/);
+  if (scpMatch) {
+    web = `https://${scpMatch[1]}/${scpMatch[2]}`;
+  } else if (web.startsWith('ssh://')) {
+    // ssh://git@host/owner/repo -> https://host/owner/repo
+    web = web.replace(/^ssh:\/\/(git@)?/, 'https://');
+  }
+  // Anchor the suffix strip so only a trailing `.git` is removed.
+  return web.replace(/\.git$/, '');
+};
+
+/**
  * Configure git to use gh CLI credentials if gh is authenticated
  */
 const ensureGitCredentials = async (): Promise<void> => {
   try {
-    // Check if gh is authenticated
-    const { execFile } = await import('child_process');
-    const { promisify } = await import('util');
-    const execFileAsync = promisify(execFile);
-    
+    // Check if gh is authenticated. Reuse the module-level execFileAsync
+    // (defined above) rather than re-importing child_process/util here.
     const { stdout, stderr } = await execFileAsync('gh', ['auth', 'status']);
     // gh auth status writes its output to stderr per gh CLI design
     const output = (stderr || stdout || '').trim();

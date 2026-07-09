@@ -10,7 +10,7 @@
  * skipped — never guessed.
  */
 
-import { join, basename, resolve } from 'path';
+import { join, basename, dirname, resolve } from 'path';
 import { createHash } from 'crypto';
 import { readFile } from 'fs/promises';
 import { ensureDir } from 'fs-extra';
@@ -123,15 +123,37 @@ export const canonicalRemoteUrl = (url: string): string => {
 export const repoKeyFromIdentity = (dirBasename: string, identity: string): string =>
   `${slugify(dirBasename)}-${createHash('sha256').update(identity).digest('hex').slice(0, 8)}`;
 
+/**
+ * Slugify a path into a filesystem-safe id fragment used by the repo/home
+ * fan-out destination scheme. Strips a leading `~/`, maps runs of unsafe
+ * characters to a single `-`, trims dashes, and lowercases — preserving `._-`.
+ *
+ * NOTE: distinct from {@link slugify}, which is the tighter (alnum-only,
+ * length-capped, `'repo'`-defaulting) slug used inside repoKey identities.
+ */
+export const slugifyPath = (p: string): string =>
+  p
+    .replace(/^~?\/+/, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .toLowerCase();
+
+/** Collision-safe scope key for a repo root: `<basename-slug>__<full-path-slug>`. */
+export const repoScopeKey = (repoRoot: string): string =>
+  slugifyPath(basename(repoRoot)) + '__' + slugifyPath(repoRoot);
+
 /** Walk up from `start` to find the enclosing git repo root, or null. */
 export const findGitRoot = async (start: string): Promise<string | null> => {
-  let dir = resolve(start);
+  // expandPath, not resolve(): win32 resolve() stamps the host drive letter
+  // onto drive-less absolute paths, corrupting the returned repo root. It also
+  // expands a leading `~/` that resolve() would leave verbatim.
+  let dir = expandPath(start);
   for (let i = 0; i < 64; i++) {
     if (await pathExists(join(dir, '.git'))) return dir;
-    const parent = join(dir, '..');
-    const resolvedParent = resolve(parent);
-    if (resolvedParent === dir) return null;
-    dir = resolvedParent;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
   }
   return null;
 };
