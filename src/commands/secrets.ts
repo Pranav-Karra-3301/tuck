@@ -26,7 +26,13 @@ import {
   isValidSecretName,
   normalizeSecretName,
   scanForSecrets,
+  computeFingerprint,
+  addAllowlistEntryByFingerprint,
+  removeAllowlistEntries,
+  listAllowlistEntries,
+  getAllowlistPath,
   type ScanSummary,
+  type AllowlistEntry,
 } from '../lib/secrets/index.js';
 import {
   createResolver,
@@ -35,8 +41,10 @@ import {
   CONFIGURABLE_BACKEND_NAMES,
   type ConfiguredBackendName,
 } from '../lib/secretBackends/index.js';
-import { NotInitializedError, TuckError } from '../errors.js';
+import { NotInitializedError, TuckError, ValidationError } from '../errors.js';
 import { getLog } from '../lib/git.js';
+import { logSecretAllowlisted, logSecretAllowlistRemoved } from '../lib/audit.js';
+import { collapsePath } from '../lib/paths.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 
 const isConfiguredBackendName = (value: string): value is ConfiguredBackendName => {
@@ -939,6 +947,294 @@ const runTest = async (options: TestOptions): Promise<void> => {
 };
 
 // ============================================================================
+// Allowlist Commands
+// ============================================================================
+
+const SHORT_FINGERPRINT_LENGTH = 12;
+
+const isFingerprint = (value: string): boolean => /^[a-f0-9]{64}$/i.test(value);
+
+const formatAllowEntry = (entry: AllowlistEntry): void => {
+  console.log(`  ${c.green(entry.fingerprint.slice(0, SHORT_FINGERPRINT_LENGTH))}${c.dim('…')}`);
+  console.log(`    ${c.dim('Reason:')} ${entry.reason}`);
+  if (entry.pattern) console.log(`    ${c.dim('Pattern:')} ${entry.pattern}`);
+  if (entry.path) console.log(`    ${c.dim('Path:')} ${entry.path}`);
+  if (entry.addedBy) console.log(`    ${c.dim('Added by:')} ${entry.addedBy}`);
+  console.log(`    ${c.dim('Added:')} ${new Date(entry.addedAt).toLocaleDateString()}`);
+  console.log();
+};
+
+const requireInitialized = async (tuckDir: string): Promise<void> => {
+  try {
+    await loadManifest(tuckDir);
+  } catch {
+    throw new NotInitializedError();
+  }
+};
+
+const runAllowList = async (options: JsonOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets allow list');
+  const tuckDir = getTuckDir();
+  await requireInitialized(tuckDir);
+
+  const entries = await listAllowlistEntries(tuckDir);
+
+  if (isJsonMode()) {
+    // SECURITY: the allowlist already contains only fingerprints (no raw
+    // values), so it is safe to emit verbatim.
+    emitJsonOk({ entries });
+    return;
+  }
+
+  if (entries.length === 0) {
+    logger.info('No allowlisted findings');
+    console.log();
+    logger.dim(`Allowlist file: ${collapsePath(getAllowlistPath(tuckDir))}`);
+    logger.dim('Mark a scanner false-positive as safe with: tuck secrets allow add --file <path>');
+    return;
+  }
+
+  console.log();
+  console.log(c.bold.cyan(`Allowlisted Findings (${entries.length})`));
+  console.log(c.dim('─'.repeat(50)));
+  console.log();
+  for (const entry of entries) {
+    formatAllowEntry(entry);
+  }
+  logger.dim(`Allowlist file: ${collapsePath(getAllowlistPath(tuckDir))} (committed & auditable)`);
+};
+
+interface AllowRemoveOptions extends JsonOptions {}
+
+const runAllowRemove = async (
+  fingerprint: string,
+  options: AllowRemoveOptions = {}
+): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets allow remove');
+  const tuckDir = getTuckDir();
+  await requireInitialized(tuckDir);
+
+  const prefix = fingerprint.trim().toLowerCase();
+  if (prefix.length === 0 || !/^[a-f0-9]+$/.test(prefix)) {
+    throw new ValidationError('fingerprint', 'must be a hex fingerprint (or prefix)');
+  }
+
+  const removed = await removeAllowlistEntries(tuckDir, prefix);
+  if (removed.length > 0) {
+    await logSecretAllowlistRemoved(removed.map((entry) => entry.fingerprint));
+  }
+
+  if (isJsonMode()) {
+    emitJsonOk({ removed: removed.length, fingerprints: removed.map((e) => e.fingerprint) });
+    return;
+  }
+
+  if (removed.length === 0) {
+    logger.warning(`No allowlist entry matching: ${fingerprint}`);
+    logger.dim('Run `tuck secrets allow list` to see fingerprints');
+    return;
+  }
+  logger.success(
+    `Removed ${removed.length} allowlist entr${removed.length === 1 ? 'y' : 'ies'}`
+  );
+};
+
+interface AllowAddOptions extends JsonOptions {
+  reason?: string;
+  file?: string;
+  pattern?: string;
+  fingerprint?: string;
+  yes?: boolean;
+}
+
+/**
+ * Add scanner findings to the centralized allowlist.
+ *
+ * Three input modes (none of which put a raw secret on the command line):
+ *  - `--fingerprint <hash>`: allowlist a known fingerprint directly.
+ *  - `--file <path>` [+ `--pattern <id>`]: re-scan the file and allowlist the
+ *    matching findings by fingerprint (value never leaves the process).
+ *  - interactive (TTY, no --file/--fingerprint): scan tracked files and let the
+ *    user pick which findings to mark safe.
+ */
+const runAllowAdd = async (options: AllowAddOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets allow add');
+  const tuckDir = getTuckDir();
+  await requireInitialized(tuckDir);
+
+  const nonInteractive = isJsonMode() || options.yes === true || !process.stdout.isTTY;
+
+  // ---- Resolve a reason (required, keeps the allowlist auditable) ----
+  const resolveReason = async (): Promise<string> => {
+    if (options.reason && options.reason.trim().length > 0) return options.reason.trim();
+    if (nonInteractive) {
+      throw new TuckError('A reason is required', 'ALLOW_REASON_REQUIRED', [
+        'Pass --reason "<why this value is safe>"',
+      ]);
+    }
+    const reason = await prompts.text('Why is this value safe? (recorded in the allowlist)', {
+      placeholder: 'e.g. example value from docs, not a real key',
+    });
+    if (!reason || reason.trim().length === 0) {
+      throw new TuckError('A reason is required', 'ALLOW_REASON_REQUIRED');
+    }
+    return reason.trim();
+  };
+
+  // ---- Mode 1: direct fingerprint ----
+  if (options.fingerprint) {
+    const fp = options.fingerprint.trim().toLowerCase();
+    if (!isFingerprint(fp)) {
+      throw new ValidationError('fingerprint', 'must be a 64-char SHA-256 hex digest');
+    }
+    const reason = await resolveReason();
+    const entry = await addAllowlistEntryByFingerprint(tuckDir, fp, {
+      reason,
+      pattern: options.pattern,
+    });
+    await logSecretAllowlisted(entry.fingerprint, entry.reason, {
+      pattern: entry.pattern,
+      path: entry.path,
+    });
+    if (isJsonMode()) {
+      emitJsonOk({ added: 1, entries: [entry] });
+      return;
+    }
+    logger.success(`Allowlisted ${entry.fingerprint.slice(0, SHORT_FINGERPRINT_LENGTH)}…`);
+    return;
+  }
+
+  // ---- Determine which files to scan ----
+  let scanPaths: string[];
+  if (options.file) {
+    const expanded = expandPath(options.file);
+    if (!(await pathExists(expanded))) {
+      throw new TuckError(`File not found: ${options.file}`, 'FILE_NOT_FOUND', [
+        'Check the path and try again',
+      ]);
+    }
+    scanPaths = [expanded];
+  } else {
+    scanPaths = Array.from(
+      new Set(
+        Object.values(await getAllTrackedFiles(tuckDir)).map((file) => expandPath(file.source))
+      )
+    );
+  }
+
+  if (scanPaths.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ added: 0, entries: [] });
+      return;
+    }
+    logger.warning('No files to scan');
+    return;
+  }
+
+  // NOTE: scan the RAW files, not via scanForSecrets — the latter already
+  // filters out allowlisted findings, which would hide the very matches the user
+  // wants to add here.
+  const { scanFiles } = await import('../lib/secrets/scanner.js');
+  const summary = await scanFiles(scanPaths);
+
+  if (summary.filesWithSecrets === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ added: 0, entries: [] });
+      return;
+    }
+    logger.info('No findings to allowlist');
+    return;
+  }
+
+  // Flatten to candidate findings (deduped by fingerprint+pattern+path).
+  interface Candidate {
+    value: string;
+    fingerprint: string;
+    patternId: string;
+    patternName: string;
+    collapsedPath: string;
+    line: number;
+    context: string;
+  }
+  const candidates: Candidate[] = [];
+  const seen = new Set<string>();
+  for (const result of summary.results) {
+    for (const match of result.matches) {
+      if (options.pattern && match.patternId !== options.pattern) continue;
+      const fingerprint = computeFingerprint(match.value);
+      const key = `${fingerprint}:${match.patternId}:${result.collapsedPath}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      candidates.push({
+        value: match.value,
+        fingerprint,
+        patternId: match.patternId,
+        patternName: match.patternName,
+        collapsedPath: result.collapsedPath,
+        line: match.line,
+        context: match.context,
+      });
+    }
+  }
+
+  if (candidates.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ added: 0, entries: [] });
+      return;
+    }
+    logger.info('No findings matched the given filters');
+    return;
+  }
+
+  // ---- Choose which candidates to allowlist ----
+  let chosen: Candidate[];
+  if (nonInteractive || options.file || options.pattern) {
+    // Non-interactive / scoped: allowlist every matching finding.
+    chosen = candidates;
+  } else {
+    const selected = await prompts.multiselect<string>(
+      'Select findings to mark as safe (allowlist):',
+      candidates.map((candidate, i) => ({
+        value: String(i),
+        label: `${candidate.patternName} — ${candidate.collapsedPath}:${candidate.line}`,
+        hint: candidate.context,
+      }))
+    );
+    if (!selected || selected.length === 0) {
+      logger.info('Nothing selected');
+      return;
+    }
+    const indices = new Set(selected.map((s) => parseInt(s, 10)));
+    chosen = candidates.filter((_, i) => indices.has(i));
+  }
+
+  const reason = await resolveReason();
+  const added: AllowlistEntry[] = [];
+  for (const candidate of chosen) {
+    const entry = await addAllowlistEntryByFingerprint(tuckDir, candidate.fingerprint, {
+      reason,
+      pattern: candidate.patternId,
+      path: candidate.collapsedPath,
+    });
+    await logSecretAllowlisted(entry.fingerprint, entry.reason, {
+      pattern: entry.pattern,
+      path: entry.path,
+    });
+    added.push(entry);
+  }
+
+  if (isJsonMode()) {
+    emitJsonOk({ added: added.length, entries: added });
+    return;
+  }
+
+  logger.success(
+    `Allowlisted ${added.length} finding${added.length === 1 ? '' : 's'}`
+  );
+  logger.dim(`Allowlist file: ${collapsePath(getAllowlistPath(tuckDir))} (commit it to share)`);
+};
+
+// ============================================================================
 // Command Definition
 // ============================================================================
 
@@ -988,6 +1284,39 @@ export const secretsCommand = new Command('secrets')
       .option('--since <date>', 'Only scan commits after this date (e.g., 2024-01-01)')
       .option('--limit <n>', 'Maximum number of commits to scan', '50')
       .action(runScanHistory)
+  )
+  // Centralized, auditable allowlist (replaces inline ignore comments)
+  .addCommand(
+    new Command('allow')
+      .description('Manage the centralized secret allowlist (mark findings as safe)')
+      .option('--json', 'Emit JSON envelope to stdout')
+      .action((options: JsonOptions) => runAllowList(options))
+      .addCommand(
+        new Command('list')
+          .description('List allowlisted findings')
+          .option('--json', 'Emit JSON envelope to stdout')
+          .action((options: JsonOptions) => runAllowList(options))
+      )
+      .addCommand(
+        new Command('add')
+          .description('Add scanner finding(s) to the allowlist')
+          .option('--file <path>', 'Scan this file and allowlist its findings')
+          .option('--pattern <id>', 'Only allowlist findings from this pattern id')
+          .option('--fingerprint <hash>', 'Allowlist a known SHA-256 fingerprint directly')
+          .option('--reason <text>', 'Why the value is safe (required non-interactively)')
+          .option('--json', 'Emit JSON envelope to stdout')
+          .option('-y, --yes', 'Non-interactive: allowlist all matching findings')
+          .action((options: AllowAddOptions) => runAllowAdd(options))
+      )
+      .addCommand(
+        new Command('remove')
+          .description('Remove an allowlist entry by fingerprint (or prefix)')
+          .argument('<fingerprint>', 'Fingerprint or unique prefix to remove')
+          .option('--json', 'Emit JSON envelope to stdout')
+          .action((fingerprint: string, options: AllowRemoveOptions) =>
+            runAllowRemove(fingerprint, options)
+          )
+      )
   )
   // Backend management commands
   .addCommand(

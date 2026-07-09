@@ -25,15 +25,18 @@ import {
   PrivateKeyError,
   SecretsDetectedError,
 } from '../errors.js';
-import { logForceSecretBypass } from './audit.js';
+import { logForceSecretBypass, logSecretAllowlisted } from './audit.js';
 import { isJsonMode } from './jsonOutput.js';
 import {
   getSecretsPath,
+  getAllowlistPath,
   isSecretScanningEnabled,
   processSecretsForRedaction,
   redactFile,
   scanForSecrets,
   shouldBlockOnSecrets,
+  addAllowlistEntryByFingerprint,
+  computeFingerprint,
   type ScanSummary,
 } from './secrets/index.js';
 
@@ -297,6 +300,11 @@ const applySecretPolicy = async (
       label: 'Replace with placeholders',
       hint: 'Store originals in secrets.local.json (never committed)',
     },
+    {
+      value: 'allow',
+      label: 'Mark as safe (allowlist)',
+      hint: 'False positive? Record in secrets.allow.json and track',
+    },
     { value: 'ignore', label: 'Add files to .tuckignore', hint: 'Skip these files permanently' },
     { value: 'proceed', label: 'Proceed anyway', hint: 'Track files with secrets (dangerous!)' },
   ]);
@@ -304,6 +312,38 @@ const applySecretPolicy = async (
   if (action === 'abort') {
     logger.info('Operation aborted');
     return [];
+  }
+
+  if (action === 'allow') {
+    const reason = await prompts.text(
+      'Why are these findings safe? (recorded in the allowlist)',
+      { placeholder: 'e.g. example values from docs, not real secrets' }
+    );
+    if (!reason || reason.trim().length === 0) {
+      logger.info('Operation aborted (a reason is required to allowlist)');
+      return [];
+    }
+    let allowlisted = 0;
+    for (const result of summary.results) {
+      if (!result.hasSecrets) continue;
+      for (const match of result.matches) {
+        const entry = await addAllowlistEntryByFingerprint(
+          tuckDir,
+          computeFingerprint(match.value),
+          { reason: reason.trim(), pattern: match.patternId, path: result.collapsedPath }
+        );
+        await logSecretAllowlisted(entry.fingerprint, entry.reason, {
+          pattern: entry.pattern,
+          path: entry.path,
+        });
+        allowlisted++;
+      }
+    }
+    console.log();
+    logger.success(`Allowlisted ${allowlisted} finding${allowlisted === 1 ? '' : 's'} as safe`);
+    logger.dim(`Recorded in ${collapsePath(getAllowlistPath(tuckDir))} (commit it to share)`);
+    console.log();
+    return files;
   }
 
   if (action === 'redact') {
