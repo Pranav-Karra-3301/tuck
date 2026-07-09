@@ -77,6 +77,28 @@ export {
   previewRestorationWithResolver,
 } from './redactor.js';
 
+// Re-export value-level (SOPS-style) encryption
+export {
+  type EncryptValuesResult,
+  type DecryptValuesResult,
+  type EncryptFileResult,
+  type DecryptFileResult,
+  VALUE_TOKEN_REGEX,
+  formatValueToken,
+  parseValueToken,
+  isValueToken,
+  hasEncryptedValues,
+  countEncryptedValues,
+  findValueTokens,
+  encryptValue,
+  decryptValue,
+  encryptContentValues,
+  decryptContentValues,
+  encryptFileValues,
+  decryptFileValues,
+  fileHasEncryptedValues,
+} from './valueEncryption.js';
+
 // Re-export schema types
 export type { SecurityConfig, CustomPattern, SecretEntry, SecretsStore } from '../../schemas/secrets.schema.js';
 
