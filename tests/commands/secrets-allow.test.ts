@@ -62,6 +62,66 @@ describe('tuck secrets allow (integration)', () => {
     expect(after.totalSecrets).toBe(0);
   });
 
+  it('refuses the unscoped bulk path non-interactively without --yes', async () => {
+    await initTestTuck();
+    vol.mkdirSync(join(TEST_HOME, '.config'), { recursive: true });
+    vol.writeFileSync(CONFIG_PATH, AWS_LINE);
+
+    // No --file/--pattern/--fingerprint and no --yes: in a non-TTY context this
+    // would silently disarm the gate for EVERY finding — it must throw instead.
+    // (fresh module: commander instances retain option state across parses)
+    vi.resetModules();
+    const { secretsCommand } = await import('../../src/commands/secrets.js');
+    await expect(
+      secretsCommand.parseAsync(['allow', 'add', '--reason', 'nope'], { from: 'user' })
+    ).rejects.toMatchObject({ code: 'ALLOW_ALL_REQUIRES_YES' });
+
+    expect(await listAllowlistEntries(TEST_TUCK_DIR)).toHaveLength(0);
+
+    // With explicit --yes the bulk path is allowed... but there are no tracked
+    // files in this sandbox, so it exits cleanly without entries.
+    await secretsCommand.parseAsync(['allow', 'add', '--reason', 'bulk ok', '--yes'], {
+      from: 'user',
+    });
+  });
+
+  it('allow add sees config custom-pattern findings (same scan as the gate)', async () => {
+    await initTestTuck();
+    vol.mkdirSync(join(TEST_HOME, '.config'), { recursive: true });
+    const customPath = join(TEST_HOME, '.config', 'custom.conf');
+    vol.writeFileSync(customPath, 'ACME_TOKEN=acme-zz-123456789\n');
+    // Register a config-level custom pattern (the gate scans with it; the raw
+    // builtin scanner does not know it). Use a fresh module registry so the
+    // command, config cache, and scanner are the SAME instances (earlier tests
+    // call vi.resetModules, which would otherwise split top-level imports from
+    // dynamic ones and leave a stale config cache in play).
+    vi.resetModules();
+    const { getConfigPath } = await import('../../src/lib/paths.js');
+    const { clearConfigCache } = await import('../../src/lib/config.js');
+    const freshSecrets = await import('../../src/lib/secrets/index.js');
+    const configPath = getConfigPath(TEST_TUCK_DIR);
+    const config = JSON.parse(vol.readFileSync(configPath, 'utf-8') as string);
+    config.security = {
+      ...(config.security ?? {}),
+      customPatterns: [{ name: 'ACME token', pattern: 'acme-zz-[0-9]{9}', severity: 'high' }],
+    };
+    vol.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    clearConfigCache();
+
+    const before = await freshSecrets.scanForSecrets([customPath], TEST_TUCK_DIR);
+    expect(before.totalSecrets).toBeGreaterThanOrEqual(1);
+
+    const { secretsCommand } = await import('../../src/commands/secrets.js');
+    await secretsCommand.parseAsync(
+      ['allow', 'add', '--file', customPath, '--reason', 'test fixture token'],
+      { from: 'user' }
+    );
+
+    // The gate now honors the allowlisted custom-pattern finding.
+    const after = await freshSecrets.scanForSecrets([customPath], TEST_TUCK_DIR);
+    expect(after.totalSecrets).toBe(0);
+  });
+
   it('remove re-arms the finding', async () => {
     await initTestTuck();
     vol.mkdirSync(join(TEST_HOME, '.config'), { recursive: true });

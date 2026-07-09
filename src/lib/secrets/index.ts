@@ -129,7 +129,19 @@ export type { AllowlistEntry, SecretsAllowlist } from '../../schemas/secretsAllo
  * and the MCP server — honors the same centralized, auditable allowlist rather
  * than scattered inline ignore comments.
  */
-export const scanForSecrets = async (filepaths: string[], tuckDir: string): Promise<ScanSummary> => {
+export const scanForSecrets = async (
+  filepaths: string[],
+  tuckDir: string,
+  options: {
+    /**
+     * Return findings even when they are allowlisted. Used by
+     * `tuck secrets allow add`, which must see the same findings the gate
+     * sees (same scanner, custom patterns, and pattern ids) BEFORE the
+     * allowlist filter — otherwise recorded scopes never match the gate.
+     */
+    includeAllowlisted?: boolean;
+  } = {}
+): Promise<ScanSummary> => {
   const config = await loadConfig(tuckDir);
   const security = config.security || {};
 
@@ -150,7 +162,9 @@ export const scanForSecrets = async (filepaths: string[], tuckDir: string): Prom
 
     if (useExternal) {
       const externalSummary = await scanWithScanner(filepaths, configuredScanner);
-      return filterSummaryWithAllowlist(externalSummary, allowlist.entries);
+      return options.includeAllowlisted
+        ? externalSummary
+        : filterSummaryWithAllowlist(externalSummary, allowlist.entries);
     }
     // Fall through to built-in if external not available
   }
@@ -172,7 +186,9 @@ export const scanForSecrets = async (filepaths: string[], tuckDir: string): Prom
     maxFileSize: security.maxFileSize,
   });
 
-  return filterSummaryWithAllowlist(summary, allowlist.entries);
+  return options.includeAllowlisted
+    ? summary
+    : filterSummaryWithAllowlist(summary, allowlist.entries);
 };
 
 /**

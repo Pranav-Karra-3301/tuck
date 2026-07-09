@@ -1064,6 +1064,26 @@ const runAllowAdd = async (options: AllowAddOptions = {}): Promise<void> => {
 
   const nonInteractive = isJsonMode() || options.yes === true || !process.stdout.isTTY;
 
+  // Unscoped bulk allowlisting (no --file/--pattern/--fingerprint) permanently
+  // disarms the secret gate for EVERY current finding — never do that on the
+  // strength of a redirected stdout alone. Explicit --yes is required.
+  if (
+    nonInteractive &&
+    options.yes !== true &&
+    !options.file &&
+    !options.pattern &&
+    !options.fingerprint
+  ) {
+    throw new TuckError(
+      'Refusing to allowlist ALL findings non-interactively',
+      'ALLOW_ALL_REQUIRES_YES',
+      [
+        'Pass --yes to explicitly allowlist every finding across all tracked files',
+        'Or scope the operation with --file <path>, --pattern <id>, or --fingerprint <fp>',
+      ]
+    );
+  }
+
   // ---- Resolve a reason (required, keeps the allowlist auditable) ----
   const resolveReason = async (): Promise<string> => {
     if (options.reason && options.reason.trim().length > 0) return options.reason.trim();
@@ -1131,11 +1151,11 @@ const runAllowAdd = async (options: AllowAddOptions = {}): Promise<void> => {
     return;
   }
 
-  // NOTE: scan the RAW files, not via scanForSecrets — the latter already
-  // filters out allowlisted findings, which would hide the very matches the user
-  // wants to add here.
-  const { scanFiles } = await import('../lib/secrets/scanner.js');
-  const summary = await scanFiles(scanPaths);
+  // Run the SAME config-aware scan the secret gate runs (same scanner choice,
+  // custom patterns, and pattern ids — recorded scopes must match the gate),
+  // but without the allowlist filter, which would hide the very matches the
+  // user wants to add here.
+  const summary = await scanForSecrets(scanPaths, tuckDir, { includeAllowlisted: true });
 
   if (summary.filesWithSecrets === 0) {
     if (isJsonMode()) {
