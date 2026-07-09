@@ -246,6 +246,126 @@ const ensureGitCredentials = async (): Promise<void> => {
   }
 };
 
+/**
+ * First meaningful line of raw git output, as a suggestion entry. Only the
+ * generic fallback branches use this: when classification failed, the raw
+ * evidence is the most actionable thing we can show (the full output is on
+ * `GitError.gitOutput`, serialized as `git_output` in JSON mode and printed
+ * under DEBUG=1).
+ */
+const rawFirstLine = (raw: string): string[] => {
+  const line = raw
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  return line ? [`git said: ${line.slice(0, 200)}`] : [];
+};
+
+/**
+ * Turn a raw git failure into a {@link GitError} with context and actionable
+ * suggestions (issue #52). Git's stderr is terse and inconsistent; agents and
+ * humans both benefit from tuck naming the likely cause and the fix. Falls back
+ * to a generic message (with the raw output as the suggestion) when nothing
+ * recognizable matches, so behavior never regresses.
+ *
+ * Exported for unit testing of the classification logic.
+ */
+export const describeGitError = (
+  operation: 'push' | 'pull' | 'fetch',
+  raw: string
+): GitError => {
+  const text = raw.toLowerCase();
+  const has = (...needles: string[]): boolean => needles.some((n) => text.includes(n));
+
+  // Authentication / permission problems affect every network operation.
+  if (
+    has(
+      'authentication failed',
+      'could not read username',
+      'could not read password',
+      'permission denied (publickey)',
+      'invalid username or password',
+      'terminal prompts disabled',
+      'http basic: access denied',
+      'remote: invalid credentials',
+      'error: 403',
+      'error: 401'
+    )
+  ) {
+    return new GitError(`${operation} failed: authentication with the remote was rejected`, raw, [
+      'Verify your credentials for the git remote',
+      'For GitHub over HTTPS, run `gh auth login` (or `gh auth setup-git`)',
+      'For SSH, confirm your key is added: `ssh -T git@github.com`',
+      'Check the remote URL with `tuck config get` or `git remote -v`',
+    ]);
+  }
+
+  // Host unreachable / offline.
+  if (has('could not resolve host', 'unable to access', 'connection timed out', 'network is unreachable', 'failed to connect')) {
+    return new GitError(`${operation} failed: could not reach the remote`, raw, [
+      'Check your network connection',
+      'Verify the remote URL is correct and reachable',
+      'Retry once connectivity is restored',
+    ]);
+  }
+
+  if (operation === 'push') {
+    if (has('[rejected]', 'non-fast-forward', 'fetch first', 'tip of your current branch is behind', 'updates were rejected')) {
+      return new GitError('push rejected: the remote has commits you do not have locally', raw, [
+        'Run `tuck pull` first to integrate the remote changes, then push again',
+        'Or use `tuck push --force` to overwrite the remote (use with caution — this can discard remote history)',
+      ]);
+    }
+    if (has('has no upstream branch', 'set-upstream', 'no upstream configured')) {
+      return new GitError('push failed: the current branch has no upstream configured', raw, [
+        'Run `tuck push` again — tuck sets the upstream automatically on first push',
+        'Or set it manually with `git push --set-upstream origin <branch>`',
+      ]);
+    }
+    return new GitError('Failed to push', raw, [
+    ...rawFirstLine(raw),
+      'Run `tuck pull` to sync with the remote, then retry',
+      'Inspect the repo with `git status` to see what changed',
+    ]);
+  }
+
+  if (operation === 'pull') {
+    // Check uncommitted-local-changes before conflicts: git phrases it as
+    // "...would be overwritten by merge", which also contains the word "merge".
+    if (has('local changes', 'would be overwritten', 'commit your changes or stash')) {
+      return new GitError('pull failed: you have uncommitted local changes', raw, [
+        'Run `tuck sync` to commit your changes first, then pull',
+        'Or stash them with `git stash` before pulling',
+      ]);
+    }
+    if (has('merge conflict', 'conflict (', 'fix conflicts', 'needs merge', 'automatic merge failed')) {
+      return new GitError('pull produced merge conflicts', raw, [
+        'Run `tuck sync` in an interactive terminal to resolve the conflicts',
+        'Inspect the conflicting files with `git status`',
+        'Use `git merge --abort` (or `git rebase --abort`) to back out',
+      ]);
+    }
+    if (has('divergent branches', 'need to specify how to reconcile', 'not possible to fast-forward')) {
+      return new GitError('pull failed: local and remote branches have diverged', raw, [
+        'Run `tuck pull` with rebase, or resolve the divergence with `git pull --rebase`',
+        'Inspect both histories with `git log --oneline --graph`',
+      ]);
+    }
+    return new GitError('Failed to pull', raw, [
+    ...rawFirstLine(raw),
+      'Inspect the repo with `git status`',
+      'Retry after resolving any local changes',
+    ]);
+  }
+
+  // fetch
+  return new GitError('Failed to fetch', raw, [
+    ...rawFirstLine(raw),
+    'Verify the remote is configured with `git remote -v`',
+    'Check your network connection and credentials',
+  ]);
+};
+
 export const push = async (
   dir: string,
   options?: { remote?: string; branch?: string; force?: boolean; setUpstream?: boolean }
@@ -279,7 +399,7 @@ export const push = async (
       await git.push([...args, remote]);
     }
   } catch (error) {
-    throw new GitError('Failed to push', String(error));
+    throw describeGitError('push', String(error));
   }
 };
 
@@ -304,7 +424,7 @@ export const pull = async (
       await git.pull(remote, undefined, args);
     }
   } catch (error) {
-    throw new GitError('Failed to pull', String(error));
+    throw describeGitError('pull', String(error));
   }
 };
 
@@ -313,7 +433,7 @@ export const fetch = async (dir: string, remote = 'origin'): Promise<void> => {
     const git = createGit(dir);
     await git.fetch(remote);
   } catch (error) {
-    throw new GitError('Failed to fetch', String(error));
+    throw describeGitError('fetch', String(error));
   }
 };
 

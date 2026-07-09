@@ -22,6 +22,7 @@ import { SecretsDetectedError } from '../../src/errors.js';
 const AWS_SECRET = 'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n';
 
 const selectMock = vi.fn();
+const textMock = vi.fn();
 
 // Minimal ui mock: strict-mode paths need only logger; the interactive 'ignore'
 // path needs a controllable prompts.select plus colour/logging stubs.
@@ -40,6 +41,7 @@ vi.mock('../../src/ui/index.js', () => {
     },
     prompts: {
       select: selectMock,
+      text: textMock,
       confirm: vi.fn().mockResolvedValue(false),
       confirmDangerous: vi.fn().mockResolvedValue(false),
     },
@@ -91,5 +93,34 @@ describe('track pipeline secret gate', () => {
     // The secret-bearing repo file must be filtered out — never returned for
     // tracking despite the identity-vs-live-path mismatch.
     expect(prepared).toHaveLength(0);
+  });
+
+  it('allowlists findings and tracks the file when the user chooses "Mark as safe"', async () => {
+    selectMock.mockResolvedValue('allow');
+    textMock.mockResolvedValue('example value from docs');
+    await initTestTuck();
+
+    const filePath = join(TEST_HOME, '.config', 'app.conf');
+    vol.mkdirSync(join(TEST_HOME, '.config'), { recursive: true });
+    vol.writeFileSync(filePath, AWS_SECRET);
+
+    const { preparePathsForTracking } = await import('../../src/lib/trackPipeline.js');
+    const { listAllowlistEntries } = await import('../../src/lib/secrets/allowlist.js');
+
+    const prepared = await preparePathsForTracking([{ path: filePath }], TEST_TUCK_DIR, {
+      secretHandling: 'interactive',
+    });
+
+    // The file is tracked (returned) because the finding is now allowlisted...
+    expect(prepared).toHaveLength(1);
+    // ...and a committed, auditable allowlist entry was recorded.
+    const entries = await listAllowlistEntries(TEST_TUCK_DIR);
+    expect(entries.length).toBeGreaterThanOrEqual(1);
+    expect(entries[0].reason).toBe('example value from docs');
+
+    // A subsequent scan of the same file no longer flags it.
+    const { scanForSecrets } = await import('../../src/lib/secrets/index.js');
+    const rescan = await scanForSecrets([filePath], TEST_TUCK_DIR);
+    expect(rescan.filesWithSecrets).toBe(0);
   });
 });

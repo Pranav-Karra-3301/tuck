@@ -1,6 +1,7 @@
 export * from './paths.js';
 export * from './config.js';
 export * from './manifest.js';
+export * from './profiles.js';
 export * from './git.js';
 export * from './files.js';
 export * from './backup.js';
@@ -8,5 +9,8 @@ export * from './hooks.js';
 export * from './github.js';
 export * from './timemachine.js';
 export * from './merge.js';
+export * from './jsonMerge.js';
+export * from './jsonMergeSync.js';
 export * from './detect.js';
 export * from './remoteChecks.js';
+export * from './agentPresets.js';
