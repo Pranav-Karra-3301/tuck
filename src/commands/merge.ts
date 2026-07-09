@@ -16,7 +16,7 @@
 
 import { Command } from 'commander';
 import { logger, colors as c } from '../ui/index.js';
-import { getTuckDir, collapsePath } from '../lib/paths.js';
+import { getTuckDir, collapsePath, expandPath } from '../lib/paths.js';
 import { loadManifest, updateFileInManifest } from '../lib/manifest.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import { resolveMergePolicy, DEFAULT_JSON_MERGE_POLICY } from '../lib/jsonMerge.js';
@@ -47,8 +47,12 @@ const resolveTrackedFile = (
   target: string
 ): { id: string; file: TrackedFileOutput } => {
   if (files[target]) return { id: target, file: files[target] };
+  // Manifest sources are stored collapsed (~/...); the shell expands unquoted
+  // ~ arguments to absolute paths, so normalize before comparing (same as
+  // `tuck remove`).
+  const collapsed = collapsePath(expandPath(target));
   for (const [id, file] of Object.entries(files)) {
-    if (file.source === target) return { id, file };
+    if (file.source === target || file.source === collapsed) return { id, file };
   }
   throw new TuckError(`No tracked file matches: ${target}`, 'FILE_NOT_TRACKED', [
     'Pass either a manifest id or the original source path (e.g. ~/.claude/settings.json).',

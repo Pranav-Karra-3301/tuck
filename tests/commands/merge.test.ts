@@ -75,6 +75,17 @@ describe('tuck merge set', () => {
     });
   });
 
+  it('resolves a shell-expanded absolute path (unquoted ~ in the shell)', async () => {
+    // `tuck merge set ~/.zshrc` reaches the CLI as an ABSOLUTE path because
+    // the shell expands unquoted ~ — resolution must collapse it back to the
+    // manifest's ~-relative source (repo rule: always expandPath/collapsePath).
+    const { expandPath } = await import('../../src/lib/paths.js');
+    await setAction(expandPath('~/.zshrc'), { conflict: 'theirs' });
+    clearManifestCache();
+    const manifest = await loadManifest(TEST_TUCK_DIR);
+    expect(manifest.files.zshrc.merge?.conflict).toBe('theirs');
+  });
+
   it('resolves a file by manifest id as well as source path', async () => {
     await setAction('settings', { conflict: 'ours' });
     clearManifestCache();

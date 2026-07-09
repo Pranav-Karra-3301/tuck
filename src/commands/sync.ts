@@ -51,7 +51,13 @@ import {
   MergeConflictsError,
   JsonMergeConflictsError,
 } from '../errors.js';
-import { captureMergeBases, decideFileMerge } from '../lib/jsonMergeSync.js';
+import {
+  captureMergeBases,
+  decideFileMerge,
+  persistPendingMergeBases,
+  loadPendingMergeBases,
+  clearPendingMergeBases,
+} from '../lib/jsonMergeSync.js';
 import { resolveMergePolicy, type ConflictResolution } from '../lib/jsonMerge.js';
 import { setJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
 import type { SyncOptions, FileChange } from '../types.js';
@@ -810,6 +816,7 @@ const reconcileJsonMerges = async (
       // error (exit code 3) instead of silently picking a side.
       const nonInteractive = options.yes === true || options.json === true || isJsonMode();
       if (nonInteractive) {
+        await persistPendingMergeBases(mergeBases);
         throw new JsonMergeConflictsError(
           collapsePath(livePath),
           decision.conflicts.map((cf) => cf.path)
@@ -830,7 +837,14 @@ const reconcileJsonMerges = async (
       ]);
 
       if (choice === 'abort') {
+        // The base lives only in memory this run — persist it so the NEXT sync
+        // can still detect the divergence instead of silently committing local
+        // values over the remote's.
+        await persistPendingMergeBases(mergeBases);
         prompts.cancel('Sync aborted - unresolved JSON merge conflicts');
+        prompts.log.info(
+          'The merge base was saved; the next `tuck sync` will re-detect these conflicts.'
+        );
         return false;
       }
 
@@ -859,6 +873,9 @@ const reconcileJsonMerges = async (
     logger.file('merge', collapsePath(livePath));
   }
 
+  // Every conflict was reconciled (or none applied) — drop any abort-recovery
+  // bases from a previous run so stale ancestors never resurface.
+  await clearPendingMergeBases();
   return true;
 };
 
@@ -866,8 +883,9 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
   prompts.intro('tuck sync');
 
   // Repo-copy snapshots captured before a pull, used for the structured JSON
-  // merge in STEP 2.6. Empty unless a pull actually brought new commits.
-  let mergeBases = new Map<string, string>();
+  // merge in STEP 2.6. Seeded from any bases persisted by a previous aborted
+  // run (abort recovery); bases captured by THIS run's pull take precedence.
+  let mergeBases = await loadPendingMergeBases();
 
   // ========== STEP 1: Pull from remote if behind ==========
   if (options.pull !== false && (await hasRemote(tuckDir))) {
@@ -876,7 +894,7 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
 
     const pullResult = await pullIfBehind(tuckDir, options);
     if (pullResult.mergeBases) {
-      mergeBases = pullResult.mergeBases;
+      mergeBases = new Map([...mergeBases, ...pullResult.mergeBases]);
     }
     if (pullResult.error) {
       pullSpinner.stop(`Could not pull: ${pullResult.error}`);

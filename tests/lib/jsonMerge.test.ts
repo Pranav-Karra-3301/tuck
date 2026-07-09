@@ -216,3 +216,28 @@ describe('mergePolicySchema', () => {
     expect(() => mergePolicySchema.parse({ format: 'json', arrays: 'bogus' })).toThrow();
   });
 });
+
+describe('pending merge-base persistence (abort recovery)', () => {
+  it('round-trips bases through the state dir and clears them', async () => {
+    const { persistPendingMergeBases, loadPendingMergeBases, clearPendingMergeBases } =
+      await import('../../src/lib/jsonMergeSync.js');
+    const bases = new Map([['~/.claude/settings.json', '{"a":1}']]);
+    await persistPendingMergeBases(bases);
+    const loaded = await loadPendingMergeBases();
+    expect(loaded.get('~/.claude/settings.json')).toBe('{"a":1}');
+    await clearPendingMergeBases();
+    expect((await loadPendingMergeBases()).size).toBe(0);
+  });
+
+  it('returns an empty map on corrupt or absent state (never blocks sync)', async () => {
+    const { getPendingMergeBasesPath, loadPendingMergeBases, clearPendingMergeBases } =
+      await import('../../src/lib/jsonMergeSync.js');
+    await clearPendingMergeBases();
+    expect((await loadPendingMergeBases()).size).toBe(0);
+    const { vol } = await import('memfs');
+    const { dirname } = await import('path');
+    vol.mkdirSync(dirname(getPendingMergeBasesPath()), { recursive: true });
+    vol.writeFileSync(getPendingMergeBasesPath(), 'not json{');
+    expect((await loadPendingMergeBases()).size).toBe(0);
+  });
+});

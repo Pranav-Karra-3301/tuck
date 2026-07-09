@@ -1,6 +1,7 @@
-import { readFile } from 'fs/promises';
+import { readFile, writeFile, mkdir, rm } from 'fs/promises';
 import { join } from 'path';
 import { pathExists } from './paths.js';
+import { getStateDir } from './state.js';
 import {
   threeWayMergeJsonText,
   hasMergePolicy,
@@ -92,4 +93,62 @@ export const decideFileMerge = (
     return { kind: 'clean', text: result.text };
   }
   return { kind: 'conflict', text: result.text, conflicts: result.conflicts };
+};
+
+// ============================================================================
+// Pending merge-base persistence (abort recovery)
+// ============================================================================
+
+/**
+ * The merge base normally exists only in memory during the sync run that
+ * pulled. If the user aborts on a surfaced conflict, the next sync would find
+ * the branch no longer behind, capture no bases, and silently commit local
+ * values over the remote's. To keep the conflict recoverable, an aborted run
+ * persists its bases to the machine-local state dir and the next sync seeds
+ * from them (freshly-pulled bases always win). Cleared after a run that
+ * reconciles successfully.
+ */
+const PENDING_MERGE_BASES_FILE = 'pending-json-merge-bases.json';
+
+export const getPendingMergeBasesPath = (): string =>
+  join(getStateDir(), PENDING_MERGE_BASES_FILE);
+
+export const persistPendingMergeBases = async (bases: Map<string, string>): Promise<void> => {
+  if (bases.size === 0) return;
+  const path = getPendingMergeBasesPath();
+  await mkdir(getStateDir(), { recursive: true });
+  await writeFile(
+    path,
+    JSON.stringify({ version: 1, bases: Object.fromEntries(bases) }, null, 2) + '\n',
+    'utf-8'
+  );
+};
+
+export const loadPendingMergeBases = async (): Promise<Map<string, string>> => {
+  const path = getPendingMergeBasesPath();
+  if (!(await pathExists(path))) return new Map();
+  try {
+    const parsed: unknown = JSON.parse(await readFile(path, 'utf-8'));
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      !('bases' in parsed) ||
+      typeof (parsed as { bases: unknown }).bases !== 'object' ||
+      (parsed as { bases: unknown }).bases === null
+    ) {
+      return new Map();
+    }
+    const entries = Object.entries((parsed as { bases: Record<string, unknown> }).bases).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string'
+    );
+    return new Map(entries);
+  } catch {
+    // Corrupt state must never block a sync; the worst case is the pre-fix
+    // behavior (no recovered base).
+    return new Map();
+  }
+};
+
+export const clearPendingMergeBases = async (): Promise<void> => {
+  await rm(getPendingMergeBasesPath(), { force: true });
 };
