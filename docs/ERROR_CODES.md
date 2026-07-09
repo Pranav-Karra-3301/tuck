@@ -15,6 +15,7 @@ This document lists all error codes used by tuck for programmatic error handling
 | `FILE_ALREADY_TRACKED` | `FileAlreadyTrackedError` | File is already tracked | Adding same file twice | Use `tuck sync` to update |
 | `GIT_ERROR` | `GitError` | Git operation failed | Auth issues, network, conflicts | Check git credentials and network |
 | `MERGE_CONFLICTS` | `MergeConflictsError` | Merge left unresolved conflicts (**exit code 3**, distinct for agent branching) | Overlapping local/remote edits | Resolve conflicts, then re-run the operation |
+| `JSON_MERGE_CONFLICTS` | `JsonMergeConflictsError` | Structured JSON merge left unresolved key conflicts (**exit code 3**) | Same JSON key set to different values on two machines | Run `tuck sync` interactively, or set a policy with `tuck merge set <file> --conflict ours\|theirs` |
 | `CONFIG_ERROR` | `ConfigError` | Configuration problem | Corrupted config, invalid values | Run `tuck config reset` |
 | `MANIFEST_ERROR` | `ManifestError` | Manifest file issue | Corrupted JSON, schema mismatch | Restore from remote with `tuck init --from` |
 | `PERMISSION_ERROR` | `PermissionError` | Cannot read/write file | Wrong permissions, locked file | Check file permissions |
