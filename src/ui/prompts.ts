@@ -5,6 +5,7 @@
 
 import * as p from '@clack/prompts';
 import { colors as c } from './theme.js';
+import { logger } from './logger.js';
 import { isJsonMode } from '../lib/jsonOutput.js';
 import { isNonInteractive, isNonInteractiveFlagSet } from '../lib/agentMode.js';
 import { OperationCancelledError } from '../errors.js';
@@ -248,8 +249,11 @@ export const prompts = {
       if (process.env.TUCK_FORCE_DANGEROUS === 'true') {
         return true;
       }
-      prompts.log.error(`Cannot confirm dangerous operation in non-interactive mode.`);
-      prompts.log.info(`Set TUCK_FORCE_DANGEROUS=true to bypass (use with extreme caution).`);
+      // Use the JSON-gated logger (writes to stderr in JSON mode, silent for
+      // info) rather than prompts.log.* which always writes to stdout and would
+      // corrupt the single-object JSON envelope.
+      logger.error(`Cannot confirm dangerous operation in non-interactive mode.`);
+      logger.info(`Set TUCK_FORCE_DANGEROUS=true to bypass (use with extreme caution).`);
       return false;
     }
 

@@ -12,10 +12,11 @@ import {
   getCurrentBranch,
   addRemote,
 } from '../lib/git.js';
-import { NotInitializedError, GitError } from '../errors.js';
+import { NotInitializedError, GitError, OperationCancelledError } from '../errors.js';
 import type { PushOptions } from '../types.js';
 import { logForcePush } from '../lib/audit.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
+import { isNonInteractive } from '../lib/agentMode.js';
 import { loadConfig } from '../lib/config.js';
 import { assertRemoteAvailable } from '../lib/providers/index.js';
 
@@ -201,10 +202,18 @@ const runPush = async (options: PushOptions): Promise<void> => {
     }
   }
 
-  // Require explicit confirmation for force push. In non-interactive mode
-  // (--json / --yes) the caller has already opted in, so skip the prompt.
+  // Require explicit confirmation for force push. Only `--json` / `--yes` count
+  // as opting in (see `nonInteractive` above). If the caller did NOT opt in but
+  // we also cannot prompt (--non-interactive, JSON mode, or a non-TTY stdin),
+  // we must fail LOUDLY: silently cancelling here previously exited 0 having
+  // pushed nothing — a false success an agent could not detect.
   if (options.force) {
     if (!nonInteractive) {
+      if (isNonInteractive()) {
+        throw new OperationCancelledError(
+          're-run with --yes to confirm the --force push (force push cannot be confirmed non-interactively)'
+        );
+      }
       const confirmed = await prompts.confirmDangerous(
         'Force push will overwrite remote history.\n' +
           'This can cause data loss for collaborators and is generally discouraged.',

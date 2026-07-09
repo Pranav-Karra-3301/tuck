@@ -5,7 +5,7 @@
  * the classification so the machine-readable suggestions stay stable for agents.
  */
 import { describe, it, expect } from 'vitest';
-import { describeGitError } from '../../src/lib/git.js';
+import { describeGitError, scrubCredentials } from '../../src/lib/git.js';
 import { GitError } from '../../src/errors.js';
 
 describe('describeGitError', () => {
@@ -89,5 +89,70 @@ describe('describeGitError', () => {
     const err = describeGitError('push', 'remote: Invalid credentials');
     expect(err.message).toContain('authentication');
     expect(err.message).not.toContain('commits you do not have');
+  });
+});
+
+describe('scrubCredentials', () => {
+  it('redacts userinfo (user:token@) from an https URL', () => {
+    const out = scrubCredentials('https://alice:ghp_secretTOKEN123@github.com/alice/dotfiles.git');
+    expect(out).toBe('https://***@github.com/alice/dotfiles.git');
+    expect(out).not.toContain('ghp_secretTOKEN123');
+    expect(out).not.toContain('alice:');
+  });
+
+  it('redacts a bare token embedded as userinfo', () => {
+    const out = scrubCredentials('fatal: unable to access https://ghp_abc123DEF@github.com/x/y.git');
+    expect(out).toContain('https://***@github.com/x/y.git');
+    expect(out).not.toContain('ghp_abc123DEF');
+  });
+
+  it('redacts a standalone ghp_ token even without a URL', () => {
+    const out = scrubCredentials('token was ghp_ABCdef0123456789 rejected');
+    expect(out).toBe('token was ghp_*** rejected');
+  });
+
+  it('redacts github_pat_ fine-grained tokens', () => {
+    const out = scrubCredentials('using github_pat_11ABCDEFG_someMoreChars99 here');
+    expect(out).not.toContain('github_pat_11ABCDEFG_someMoreChars99');
+    expect(out).toContain('github_pat_***');
+  });
+
+  it('redacts glpat- GitLab tokens', () => {
+    const out = scrubCredentials('remote glpat-XYZ-123-abc denied');
+    expect(out).not.toContain('glpat-XYZ-123-abc');
+    expect(out).toContain('glpat-***');
+  });
+
+  it('leaves credential-free text unchanged', () => {
+    const raw = 'https://github.com/user/repo.git\n! [rejected] main -> main (non-fast-forward)';
+    expect(scrubCredentials(raw)).toBe(raw);
+  });
+});
+
+describe('describeGitError credential scrubbing', () => {
+  it('scrubs userinfo from gitOutput and its JSON projection', () => {
+    const raw =
+      "fatal: unable to access 'https://bob:ghp_LEAKED12345@github.com/bob/dotfiles.git/': The requested URL returned error: 403";
+    const err = describeGitError('push', raw);
+    expect(err.gitOutput).not.toContain('ghp_LEAKED12345');
+    expect(err.gitOutput).not.toContain('bob:ghp_');
+    expect(err.gitOutput).toContain('https://***@github.com');
+    // ...and the serialized envelope an agent parses.
+    expect(err.toJSON().git_output).not.toContain('ghp_LEAKED12345');
+  });
+
+  it('scrubs the token out of the raw-first-line suggestion on the generic fallback', () => {
+    // A novel (unclassified) failure that carries a token in the URL falls
+    // through to the generic branch, which copies the first raw line into a
+    // suggestion (and thus the hint). That copy must be scrubbed too.
+    const raw =
+      'fatal: weird breakage talking to https://ghp_TOKENinSuggestion@github.com/x/y.git during the operation';
+    const err = describeGitError('fetch', raw);
+    const suggestions = (err.suggestions ?? []).join(' ');
+    // Confirm we actually exercised the raw-first-line path.
+    expect(suggestions).toContain('git said:');
+    expect(suggestions).not.toContain('ghp_TOKENinSuggestion');
+    expect(suggestions).toContain('https://***@github.com');
+    expect(err.toJSON().hint ?? '').not.toContain('ghp_TOKENinSuggestion');
   });
 });

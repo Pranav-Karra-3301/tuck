@@ -32,7 +32,7 @@ import { getTuckDir, pathExists } from './lib/paths.js';
 import { loadManifest } from './lib/manifest.js';
 import { getStatus } from './lib/git.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from './lib/jsonOutput.js';
-import { setNonInteractive, configureColor } from './lib/agentMode.js';
+import { setNonInteractive, isNonInteractive, configureColor } from './lib/agentMode.js';
 import { buildCommandPath } from './lib/commandPath.js';
 import { setWriteContext } from './lib/writeContext.js';
 import { expandPath as expandTuckPath } from './lib/paths.js';
@@ -279,8 +279,11 @@ const isMcpCommand = process.argv.slice(2).includes('mcp');
 // Main execution
 const main = async (): Promise<void> => {
   // Check for updates (skipped for help/version, MCP, and JSON/agent mode — the
-  // update banner is human-only and would corrupt structured output).
-  if (!isHelpOrVersion && !isMcpCommand && !process.argv.includes('--json')) {
+  // update banner is human-only and its raw-readline prompt would block an agent
+  // and corrupt structured output). `isNonInteractive()` covers --non-interactive
+  // (set by the early argv scan above), --json, and a non-TTY stdin; the explicit
+  // --json check is kept as a defensive mirror of the early detection.
+  if (!isHelpOrVersion && !isMcpCommand && !process.argv.includes('--json') && !isNonInteractive()) {
     await checkForUpdates();
   }
 

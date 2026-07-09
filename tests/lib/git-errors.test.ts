@@ -27,6 +27,9 @@ const createErrorMockGit = (errorMessage: string) => ({
   revparse: vi.fn().mockRejectedValue(new Error(errorMessage)),
   branch: vi.fn().mockRejectedValue(new Error(errorMessage)),
   raw: vi.fn().mockRejectedValue(new Error(errorMessage)),
+  // Real simple-git exposes .env() (chainable). createGit configures a
+  // non-interactive env under non-TTY/JSON mode, so the double must provide it.
+  env: vi.fn().mockReturnThis(),
 });
 
 // Store mock git instance
