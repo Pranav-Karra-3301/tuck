@@ -46,6 +46,9 @@ This document lists all error codes used by tuck for programmatic error handling
 | `BOOTSTRAP_ERROR` | `BootstrapError` | `tuck bootstrap` could not complete a phase | Missing git, unclonable repo, or no manifest | Follow the error's suggestions and re-run (idempotent) |
 | `ALLOW_REASON_REQUIRED` | `TuckError` | `tuck secrets allow add` needs a reason | Ran non-interactively without `--reason` | Pass `--reason "<why safe>"` |
 | `JSON_MERGE_CONFLICTS` | `JsonMergeConflictsError` | Structured JSON merge left unresolved key conflicts (**exit code 3**) | Same JSON key set to different values on two machines | Run `tuck sync` interactively, or set a policy with `tuck merge set <file> --conflict ours\|theirs` |
+| `SETTINGS_UNSUPPORTED_OS` | `SettingsUnsupportedOsError` | `tuck settings` not supported on this OS | Running on a non-macOS platform | macOS is supported today; Linux/dconf is planned |
+| `SETTINGS_ERROR` | `SettingsError` | OS-settings operation failed | Missing capture flags, no TTY for interactive capture | Follow the message; pass `--domain/--key/--type/--value` for non-interactive capture |
+| `SETTING_NOT_FOUND` | `SettingNotFoundError` | No tracked setting/manual step with that id | Wrong id passed to `remove`/`manual done` | Run `tuck settings list` to see valid ids |
 
 ---
 

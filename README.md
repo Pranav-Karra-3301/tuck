@@ -246,6 +246,8 @@ Supported managers: `brew`, `apt`, `dnf`, `pacman`, `winget`, `scoop`, `cargo`, 
 | `tuck context`      | Track AI agent configs across home and per-repo scopes           |
 | `tuck preset`       | Apply or publish curated bundles of dotfiles & agent configs     |
 | `tuck repo`         | Manage machine-local repo bindings (for repo-scoped tracking)    |
+| `tuck settings`     | Capture, version, and replay OS settings (macOS `defaults`)      |
+| `tuck mcp`          | Run the Model Context Protocol server (expose tuck to AI agents) |
 | `tuck mcp`          | Run the MCP server + manage your MCP fleet (define once, render per client) |
 
 ### MCP fleet — define servers once, render per client
@@ -296,6 +298,43 @@ tuck add ~/.zshrc --json --yes    # never hangs; fails fast if a prompt is neede
 ```
 
 See [docs/AGENT-MODE.md](docs/AGENT-MODE.md) and [docs/ERROR_CODES.md](docs/ERROR_CODES.md) for the full contract.
+
+### OS settings (`tuck settings`)
+
+Instead of hand-maintaining an undocumented `.macos` script that silently
+breaks across macOS releases, capture settings by changing them in the GUI while
+tuck diffs the affected `defaults` domains, then replay them on another machine
+with per-OS-version guards. Steps that can't be automated live in a tracked
+manual-steps checklist that tuck reminds you about per machine.
+
+| Command                                   | Description                                              |
+| ----------------------------------------- | -------------------------------------------------------- |
+| `tuck settings capture`                   | Diff `defaults` domains while you change a GUI setting    |
+| `tuck settings apply`                     | Replay tracked settings (version-guarded) + restart apps |
+| `tuck settings list`                      | Show tracked settings and the manual-steps checklist     |
+| `tuck settings remove <id>`               | Untrack a captured setting                               |
+| `tuck settings manual add/list/done/reset`| Manage the manual-steps checklist (per-machine done)     |
+
+```bash
+# Interactive: tuck snapshots defaults, you flip the toggle, tuck records the write
+tuck settings capture "Auto-hide the Dock" --domain com.apple.dock --restart Dock
+
+# Non-interactive / scripted capture of a known key
+tuck settings capture --domain com.apple.dock --key autohide --type boolean --value true --restart Dock
+
+# On a new machine: preview, then apply (version guards skip anything out of range)
+tuck settings apply --dry-run
+tuck settings apply
+
+# Track a step that can't be automated
+tuck settings manual add "Enable FileVault" -i "System Settings → Privacy & Security → FileVault"
+tuck settings manual done macos__manual__enable-filevault
+```
+
+Captured settings live in `~/.tuck/os-settings.json` (committed and shared);
+per-machine manual-step completion and pre-apply backups live in the platform
+state dir, never in the repo. macOS is supported today; the backend is
+abstracted so Linux/dconf can be added later.
 
 ## How It Works
 
