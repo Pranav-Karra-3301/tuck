@@ -68,4 +68,26 @@ describe('describeGitError', () => {
     // Generic path still ships actionable suggestions.
     expect(err.suggestions && err.suggestions.length).toBeGreaterThan(0);
   });
+
+  it('surfaces the raw first line as a suggestion on the generic fallback', () => {
+    const raw = "fatal: '/nowhere/repo' does not appear to be a git repository\nfatal: Could not read from remote repository.";
+    for (const op of ['push', 'pull', 'fetch'] as const) {
+      const err = describeGitError(op, raw);
+      expect(err.suggestions?.join(' ')).toContain("does not appear to be a git repository");
+    }
+  });
+
+  it('serializes git_output in the JSON envelope', () => {
+    const raw = 'fatal: some entirely novel git failure';
+    const err = describeGitError('push', raw);
+    expect(err.toJSON().git_output).toBe(raw);
+  });
+
+  it('classified auth failures do not leak into substring re-classification traps', () => {
+    // The message deliberately contains the word "rejected" — command layers
+    // must not remap it to "push rejected" (they rethrow GitError as-is now).
+    const err = describeGitError('push', 'remote: Invalid credentials');
+    expect(err.message).toContain('authentication');
+    expect(err.message).not.toContain('commits you do not have');
+  });
 });

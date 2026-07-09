@@ -92,6 +92,14 @@ export class GitError extends TuckError {
     super(`Git operation failed: ${message}`, 'GIT_ERROR', suggestions ?? (gitError ? [gitError] : undefined));
     this.gitOutput = gitError;
   }
+
+  override toJSON(): JsonError {
+    const json = super.toJSON();
+    if (this.gitOutput) {
+      json.git_output = this.gitOutput;
+    }
+    return json;
+  }
 }
 
 export class MergeConflictsError extends TuckError {
@@ -415,6 +423,11 @@ export const handleError = (error: unknown): never => {
       console.error();
       console.error(chalk.dim('Suggestions:'));
       error.suggestions.forEach((s) => console.error(chalk.dim(`  → ${s}`)));
+    }
+    if (error instanceof GitError && error.gitOutput && process.env.DEBUG) {
+      console.error();
+      console.error(chalk.dim('Raw git output:'));
+      console.error(chalk.dim(error.gitOutput.trim()));
     }
     process.exit(error.exitCode);
   }

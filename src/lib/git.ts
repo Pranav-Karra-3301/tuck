@@ -247,6 +247,21 @@ const ensureGitCredentials = async (): Promise<void> => {
 };
 
 /**
+ * First meaningful line of raw git output, as a suggestion entry. Only the
+ * generic fallback branches use this: when classification failed, the raw
+ * evidence is the most actionable thing we can show (the full output is on
+ * `GitError.gitOutput`, serialized as `git_output` in JSON mode and printed
+ * under DEBUG=1).
+ */
+const rawFirstLine = (raw: string): string[] => {
+  const line = raw
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  return line ? [`git said: ${line.slice(0, 200)}`] : [];
+};
+
+/**
  * Turn a raw git failure into a {@link GitError} with context and actionable
  * suggestions (issue #52). Git's stderr is terse and inconsistent; agents and
  * humans both benefit from tuck naming the likely cause and the fix. Falls back
@@ -308,6 +323,7 @@ export const describeGitError = (
       ]);
     }
     return new GitError('Failed to push', raw, [
+    ...rawFirstLine(raw),
       'Run `tuck pull` to sync with the remote, then retry',
       'Inspect the repo with `git status` to see what changed',
     ]);
@@ -336,6 +352,7 @@ export const describeGitError = (
       ]);
     }
     return new GitError('Failed to pull', raw, [
+    ...rawFirstLine(raw),
       'Inspect the repo with `git status`',
       'Retry after resolving any local changes',
     ]);
@@ -343,6 +360,7 @@ export const describeGitError = (
 
   // fetch
   return new GitError('Failed to fetch', raw, [
+    ...rawFirstLine(raw),
     'Verify the remote is configured with `git remote -v`',
     'Check your network connection and credentials',
   ]);
