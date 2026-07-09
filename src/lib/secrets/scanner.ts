@@ -8,6 +8,7 @@ import { readFile, stat } from 'fs/promises';
 import { expandPath, collapsePath, pathExists } from '../paths.js';
 import {
   ALL_SECRET_PATTERNS,
+  GENERIC_PATTERN_IDS,
   assertSafeCustomRegex,
   getPatternsAboveSeverity,
   shouldSkipFile,
@@ -42,11 +43,22 @@ export interface SecretMatch {
   placeholder: string;
   /**
    * Content offsets of the captured value: `start` is its index in the scanned
-   * content and `end` is `start + value.length`, so `content.slice(start, end)`
-   * reproduces `value`. Used by overlap resolution (issue #100 Task 3).
+   * content and `end` is `start + value.length`. For matches produced by
+   * `scanContent` (`offsetsExact === true`), `content.slice(start, end)`
+   * reproduces `value` exactly. For matches from other producers (e.g.
+   * `external.ts`/gitleaks, which report only 1-based line/column and lack the
+   * whole-content offset) these are a best-effort APPROXIMATION and the slice
+   * equality does NOT hold. Used by overlap resolution (issue #100 Task 3).
    */
   start: number;
   end: number;
+  /**
+   * True only when `start`/`end` are exact content offsets satisfying
+   * `content.slice(start, end) === value` (set by `scanContent`). Absent/false
+   * means the offsets are approximate. Overlap- and offset-based consumers MUST
+   * ignore matches without `offsetsExact === true`.
+   */
+  offsetsExact?: boolean;
 }
 
 export interface FileScanResult {
@@ -222,6 +234,15 @@ const derivePlaceholder = (name: string | undefined, fallback: string): string =
 // Values that are clearly not literal secrets: env-var references, home/abs/rel
 // paths, and already-redacted placeholders. Broad unquoted classes (issue #100
 // Task 2) would otherwise flag `KEY_FILE=/path/to/key.pem` or `KEY=$OTHER_VAR`.
+//
+// Scope (deliberately narrow): this guard is applied ONLY to values captured
+// from the UNQUOTED named `value` group of a GENERIC pattern. It must NOT run
+// for vendor patterns or for quoted (`qvalue`) captures. Rationale: a false
+// negative here commits a real secret in cleartext (e.g. an AWS secret key
+// `[A-Za-z0-9/+=]{40}` legitimately starting with `/`, or a quoted
+// `password="$uper$ecret"` whose `$` cannot be an env-var reference inside
+// quotes), whereas a false positive merely prompts the user. The env-var/path
+// heuristic is only sound for a bare, unquoted generic assignment RHS.
 const NON_SECRET_PREFIXES = ['$', '~', '/', './', '{{'] as const;
 const isLikelyNonSecret = (value: string): boolean =>
   NON_SECRET_PREFIXES.some((p) => value.startsWith(p));
@@ -293,9 +314,11 @@ export const scanContent = (content: string, options: ScanOptions = {}): SecretM
       // falls through to match[0] (which would include the identifier context and
       // make redaction eat surrounding text — issue #100 root cause 1).
       const groups = match.groups;
+      const qvalue = groups?.['qvalue'];
+      const namedValue = groups?.['value'];
       const value =
-        groups?.['qvalue'] ??
-        groups?.['value'] ??
+        qvalue ??
+        namedValue ??
         match.slice(1).find((g): g is string => g !== undefined) ??
         match[0];
 
@@ -304,8 +327,18 @@ export const scanContent = (content: string, options: ScanOptions = {}): SecretM
         continue;
       }
 
-      // Skip env-var references, paths, and already-redacted placeholders.
-      if (isLikelyNonSecret(value)) {
+      // The value came from an UNQUOTED generic-pattern capture iff it resolved
+      // to the named `value` group (not `qvalue`, not a numbered/legacy group,
+      // not match[0]) AND the pattern is one of the low-specificity generics.
+      const fromUnquotedGenericValue =
+        qvalue === undefined &&
+        namedValue !== undefined &&
+        value === namedValue &&
+        GENERIC_PATTERN_IDS.has(pattern.id);
+
+      // Skip env-var references, paths, and already-redacted placeholders —
+      // but ONLY for unquoted generic captures (see isLikelyNonSecret above).
+      if (fromUnquotedGenericValue && isLikelyNonSecret(value)) {
         continue;
       }
 
@@ -334,6 +367,7 @@ export const scanContent = (content: string, options: ScanOptions = {}): SecretM
         placeholder: derivePlaceholder(groups?.['name'], pattern.placeholder),
         start,
         end: start + value.length,
+        offsetsExact: true,
       });
 
       // Prevent infinite loops for zero-width matches

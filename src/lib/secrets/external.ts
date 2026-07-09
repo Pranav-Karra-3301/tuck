@@ -152,11 +152,27 @@ const generatePlaceholderFromRule = (ruleId: string): string => {
  * secret because the redaction pipeline needs it to build placeholder mappings,
  * but it is never printed directly.
  */
+/**
+ * Approximate the value's content offsets from a gitleaks finding.
+ *
+ * gitleaks reports only 1-based line/column (`StartColumn`) — NOT a whole-content
+ * offset — and `scanWithGitleaks` reads gitleaks' JSON report, not the file
+ * content, at this point. We therefore cannot compute exact offsets here: the
+ * column-derived `start` only coincides with the true content offset when the
+ * secret is on line 1. The returned match is flagged `offsetsExact: false` so
+ * that overlap/offset-based consumers ignore these offsets (see `SecretMatch`).
+ */
+const approximateGitleaksOffsets = (
+  finding: GitleaksResult,
+  valueLength: number
+): { start: number; end: number } => {
+  const start = Math.max(0, finding.StartColumn - 1);
+  return { start, end: start + valueLength };
+};
+
 export const gitleaksResultToMatch = (finding: GitleaksResult): SecretMatch => {
   const secretValue = finding.Secret || finding.Match;
-  // gitleaks reports 1-based line/column, not whole-content offsets; approximate
-  // the value range from the column so SecretMatch.start/end stay self-consistent.
-  const start = Math.max(0, finding.StartColumn - 1);
+  const { start, end } = approximateGitleaksOffsets(finding, secretValue.length);
   return {
     patternId: `gitleaks-${finding.RuleID}`,
     patternName: finding.Description || finding.RuleID,
@@ -168,7 +184,10 @@ export const gitleaksResultToMatch = (finding: GitleaksResult): SecretMatch => {
     context: redactSecret(finding.Match),
     placeholder: generatePlaceholderFromRule(finding.RuleID),
     start,
-    end: start + secretValue.length,
+    end,
+    // Approximate (line/column-derived), NOT exact content offsets. Downstream
+    // overlap/offset logic MUST skip matches without offsetsExact === true.
+    offsetsExact: false,
   };
 };
 
