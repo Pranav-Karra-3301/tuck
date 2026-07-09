@@ -225,6 +225,56 @@ describe('apply command behavior', () => {
     }
   });
 
+  it('shows a full diff summary and an undo breadcrumb before/after applying (IDEAS 2.4/6.5)', async () => {
+    cloneSetup = (dir: string) => {
+      const manifest = createMockManifest({
+        files: {
+          existing: createMockTrackedFile({ source: '~/.zshrc', destination: 'files/shell/zshrc' }),
+          fresh: createMockTrackedFile({ source: '~/.vimrc', destination: 'files/editors/vimrc' }),
+        },
+      });
+      vol.mkdirSync(join(dir, 'files', 'shell'), { recursive: true });
+      vol.mkdirSync(join(dir, 'files', 'editors'), { recursive: true });
+      vol.writeFileSync(join(dir, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
+      vol.writeFileSync(join(dir, 'files', 'shell', 'zshrc'), 'export NEW=1');
+      vol.writeFileSync(join(dir, 'files', 'editors', 'vimrc'), 'set number');
+    };
+
+    // ~/.zshrc already exists (will update); ~/.vimrc does not (new).
+    vol.writeFileSync(join(TEST_HOME, '.zshrc'), 'export OLD=1');
+
+    const { runApply } = await import('../../src/commands/apply.js');
+    createPreApplySnapshotMock.mockResolvedValueOnce({ id: '2026-07-09-090807' });
+    await runApply('user/repo', { replace: true });
+
+    // Full diff summary printed BEFORE the snapshot/writes.
+    expect(loggerHeadingMock).toHaveBeenCalledWith('Changes to apply:');
+    expect(loggerInfoMock).toHaveBeenCalledWith('1 new, 1 to update');
+
+    // Undo breadcrumb pinned to the concrete snapshot id.
+    expect(loggerInfoMock).toHaveBeenCalledWith(
+      'Undo this change: tuck undo 2026-07-09-090807  (or tuck undo --latest)'
+    );
+  });
+
+  it('does not print the diff summary in JSON mode', async () => {
+    cloneSetup = (dir: string) => {
+      const manifest = createMockManifest({
+        files: {
+          safe: createMockTrackedFile({ source: '~/.zshrc', destination: 'files/shell/zshrc' }),
+        },
+      });
+      vol.mkdirSync(join(dir, 'files', 'shell'), { recursive: true });
+      vol.writeFileSync(join(dir, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
+      vol.writeFileSync(join(dir, 'files', 'shell', 'zshrc'), 'export NEW=1');
+    };
+
+    const { runApply } = await import('../../src/commands/apply.js');
+    await runApply('user/repo', { replace: true, json: true });
+
+    expect(loggerHeadingMock).not.toHaveBeenCalledWith('Changes to apply:');
+  });
+
   it('renders a template file on apply (P0-1)', async () => {
     cloneSetup = (dir: string) => {
       const manifest = createMockManifest({
