@@ -23,11 +23,14 @@ import { NotInitializedError, FileNotFoundError, PermissionError } from '../erro
 import { isBinaryExecutable } from '../lib/binary.js';
 import { isIgnored } from '../lib/tuckignore.js';
 import { resolveLiveTarget } from '../lib/repoScope.js';
+import { extractSubtree } from '../lib/jsonKey.js';
 import {
   materializeForLive,
   keystorePassphrase,
   buildMaterializeCtx,
 } from '../lib/materialize.js';
+import { enterReadOnlyMode, isReadOnlyMode } from '../lib/readOnlyMode.js';
+import { compareLiveToCache } from '../lib/crypto/driftCache.js';
 import {
   getStoredValueMap,
   getRedactedChecksum,
@@ -47,6 +50,12 @@ export interface FileDiff {
   repoSize?: number;
   systemContent?: string;
   repoContent?: string;
+  /**
+   * Set for an ENCRYPTED file whose drift was detected in read-only mode via the
+   * keyed-HMAC cache: we know it changed but deliberately did NOT decrypt the
+   * repo copy, so the line-level diff is withheld (no keystore unlock, no prompt).
+   */
+  encryptedHidden?: boolean;
 }
 
 const isBinary = async (path: string): Promise<boolean> => {
@@ -122,13 +131,31 @@ export const getFileDiff = async (
       diff.fileCount = files.length;
     } else {
       const systemContent = await readFile(systemPath, 'utf-8');
-      // This branch dumps the WHOLE live file as systemContent — redact known
-      // secrets before display so `tuck diff` never prints cleartext (#100).
-      // systemSize stays the real (un-redacted) file length.
       const store = valueMap ?? (await getStoredValueMap(tuckDir));
-      diff.systemContent =
-        store.size > 0 ? redactValuesInContent(systemContent, store) : systemContent;
-      diff.systemSize = systemContent.length;
+      if (tracked.file.jsonKey) {
+        // JSON-key entries track only a SUBTREE. The whole live file holds
+        // untracked keys (oauthToken, session state, history) that a jsonKey add
+        // NEVER wrote to the local secrets store — so redaction here cannot cover
+        // them and dumping the whole file would leak them. Show ONLY the tracked
+        // subtree (still redacted for any known values it does contain).
+        let subtree: string;
+        try {
+          subtree = extractSubtree(systemContent, tracked.file.jsonKey);
+        } catch {
+          // Corrupt live JSON or missing key path: withhold content entirely
+          // rather than fall back to the whole file. hasChanges stays true.
+          return diff;
+        }
+        diff.systemContent = store.size > 0 ? redactValuesInContent(subtree, store) : subtree;
+        diff.systemSize = subtree.length;
+      } else {
+        // This branch dumps the WHOLE live file as systemContent — redact known
+        // secrets before display so `tuck diff` never prints cleartext (#100).
+        // systemSize stays the real (un-redacted) file length.
+        diff.systemContent =
+          store.size > 0 ? redactValuesInContent(systemContent, store) : systemContent;
+        diff.systemSize = systemContent.length;
+      }
     }
     return diff;
   }
@@ -168,11 +195,62 @@ export const getFileDiff = async (
     return diff;
   }
 
+  // JSON-key entries track only a SUBTREE of the live file: compare
+  // extractSubtree(live) against the repo copy — diffing the whole live file
+  // would always report changes AND print every untracked live key (machine
+  // tokens included) in the hunks.
+  if (tracked.file.jsonKey) {
+    const repoContent = await readFile(repoPath, 'utf-8');
+    // Both the live subtree and the repo copy are plain JSON that can carry
+    // cleartext secret values, so redact known values before display — the same
+    // pass every other text branch applies (#100). systemSize/repoSize keep the
+    // real (un-redacted) lengths.
+    const store = valueMap ?? (await getStoredValueMap(tuckDir));
+    const redact = (text: string): string =>
+      store.size > 0 ? redactValuesInContent(text, store) : text;
+    let liveSubtree: string;
+    try {
+      const liveRaw = await readFile(systemPath, 'utf-8');
+      liveSubtree = extractSubtree(liveRaw, tracked.file.jsonKey);
+    } catch {
+      // Corrupt live JSON or missing key path: fall back to whole-repo view so
+      // the divergence is visible without dumping unrelated live keys.
+      diff.hasChanges = true;
+      diff.repoContent = redact(repoContent);
+      diff.repoSize = repoContent.length;
+      return diff;
+    }
+    diff.hasChanges = liveSubtree !== repoContent;
+    if (diff.hasChanges) {
+      diff.systemContent = redact(liveSubtree);
+      diff.systemSize = liveSubtree.length;
+      diff.repoContent = redact(repoContent);
+      diff.repoSize = repoContent.length;
+    }
+    return diff;
+  }
+
   // Template/encrypted files: the repo copy holds SOURCE form (TCKE1 ciphertext
   // or un-rendered {{ }} template), so comparing raw bytes always reports a
   // change. Compare the live file against materialize(repo) instead — matching
   // the state model that `tuck verify`/`tuck status` use.
   if (tracked.file.template || tracked.file.encrypted) {
+    // Read-only + ENCRYPTED: never decrypt. Decide changed/unchanged from the
+    // keyed-HMAC cache (zero decryption, no keystore, no prompt) and withhold the
+    // line-level diff rather than unlocking the repo copy. Pure templates touch
+    // no secret and render cheaply, so they fall through to the normal path.
+    if (tracked.file.encrypted && isReadOnlyMode()) {
+      const liveBytes = await readFile(systemPath);
+      const repoChecksum = await getFileChecksum(repoPath);
+      const cmp = await compareLiveToCache(tracked.id, liveBytes, repoChecksum);
+      if (cmp === 'mismatch') {
+        diff.hasChanges = true;
+        diff.encryptedHidden = true;
+      }
+      // 'match' or 'unknown' → no reportable diff in read-only mode.
+      return diff;
+    }
+
     let materialized: string;
     try {
       const ctx = await buildMaterializeCtx(tuckDir);
@@ -294,6 +372,13 @@ const formatUnifiedDiff = (diff: FileDiff): string => {
     return lines.join('\n');
   }
 
+  if (diff.encryptedHidden) {
+    lines.push(c.yellow('Encrypted file changed'));
+    lines.push(c.dim('  Contents hidden — read-only diff never decrypts.'));
+    lines.push(c.dim("  Run 'tuck verify' or 'tuck apply' for a full comparison."));
+    return lines.join('\n');
+  }
+
   const { systemContent, repoContent } = diff;
 
   // Check if systemContent is explicitly undefined (missing) vs empty string
@@ -393,6 +478,9 @@ const formatUnifiedDiff = (diff: FileDiff): string => {
 };
 
 const runDiff = async (paths: string[], options: DiffOptions): Promise<void> => {
+  // diff is a read-only inspection command: it must never unlock the keystore or
+  // touch a secret backend. This guarantees zero prompts (see lib/readOnlyMode).
+  enterReadOnlyMode();
   if (options.json) setJsonMode(true, 'tuck diff');
   const tuckDir = getTuckDir();
 

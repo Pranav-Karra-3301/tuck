@@ -6,6 +6,7 @@ import { clearManifestCache, getTrackedFileBySource, loadManifest } from '../../
 import { initTestTuck, createTestDotfile, TEST_TUCK_DIR } from '../utils/testHelpers.js';
 import { isEncryptedFile, decryptFileContent } from '../../src/lib/crypto/fileEncryption.js';
 import { setJsonMode } from '../../src/lib/jsonOutput.js';
+import { clearSessionKeyCache } from '../../src/lib/crypto/sessionKeyCache.js';
 
 const retrieveMock = vi.fn();
 vi.mock('../../src/lib/crypto/keystore/index.js', () => ({
@@ -18,11 +19,16 @@ describe('fileTracking symlink strategy', () => {
   beforeEach(() => {
     vol.reset();
     clearManifestCache();
+    // The keystore passphrase is cached per session (one prompt per session). In
+    // one process each test must start with a cold cache, or a passphrase unlocked
+    // by an earlier test would satisfy a later "no password configured" case.
+    clearSessionKeyCache();
   });
 
   afterEach(() => {
     vol.reset();
     clearManifestCache();
+    clearSessionKeyCache();
     vi.restoreAllMocks();
   });
 
@@ -190,6 +196,29 @@ describe('fileTracking symlink strategy', () => {
     const manifest = await loadManifest(TEST_TUCK_DIR);
     const destinations = Object.values(manifest.files).map((file) => file.destination);
     expect(new Set(destinations).size).toBe(destinations.length);
+
+    logSpy.mockRestore();
+  });
+
+  it('rejects --key combined with --template up front, leaving no orphan repo file', async () => {
+    await initTestTuck();
+    createTestDotfile('.claude.json', '{"mcpServers":{"git":{"command":"g"}}}');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    // The guard fires BEFORE the per-file loop (which would otherwise write the
+    // subtree to the repo before addFileToManifest's zod validation rejects the
+    // combo, orphaning the repo file). The whole call must reject.
+    await expect(
+      trackFilesWithProgress(
+        [{ path: '~/.claude.json', category: 'misc', jsonKey: 'mcpServers' }],
+        TEST_TUCK_DIR,
+        { strategy: 'copy', template: true, showCategory: false, delayBetween: 0 }
+      )
+    ).rejects.toThrow(/--template cannot be combined with --key/);
+
+    // Nothing was tracked and no repo copy was written.
+    const tracked = await getTrackedFileBySource(TEST_TUCK_DIR, '~/.claude.json');
+    expect(tracked).toBeNull();
 
     logSpy.mockRestore();
   });

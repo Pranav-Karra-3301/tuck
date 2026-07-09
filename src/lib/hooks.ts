@@ -6,6 +6,7 @@ import { logger } from '../ui/logger.js';
 import { prompts } from '../ui/prompts.js';
 import { IS_WINDOWS } from './platform.js';
 import { isJsonMode, addJsonWarning } from './jsonOutput.js';
+import { isNonInteractive } from './agentMode.js';
 
 const execAsync = promisify(exec);
 
@@ -99,7 +100,10 @@ export const runHook = async (
   // Include stdin: the trust prompt reads from stdin, so a non-TTY stdin
   // (e.g. `tuck sync < /dev/null`) must take the skip path, not attempt a
   // prompt that ensureInteractive() would throw on and abort the command.
-  const nonInteractive = isJsonMode() || !process.stdout.isTTY || !process.stdin.isTTY;
+  // isNonInteractive() also covers the explicit `--non-interactive` flag (and
+  // JSON mode / non-TTY stdin) so a PTY run of `--non-interactive` skips the
+  // hook with a warning instead of dying on a confirm it can never answer.
+  const nonInteractive = isNonInteractive() || !process.stdout.isTTY || !process.stdin.isTTY;
   const decision = decideHookExecution({
     skipHooks: options?.skipHooks,
     hasCommand: true,

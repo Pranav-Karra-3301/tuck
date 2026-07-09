@@ -7,6 +7,8 @@ import { join } from 'path';
 import { readdir } from 'fs/promises';
 import { REPO_STAGE_BLOCKLIST } from './state.js';
 import { GIT_OPERATION_TIMEOUTS } from './validation.js';
+import { isNonInteractive } from './agentMode.js';
+import { isJsonMode } from './jsonOutput.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -37,12 +39,47 @@ export interface GitCommit {
   author: string;
 }
 
+/**
+ * When tuck is driven non-interactively (an agent, CI, JSON mode, or a piped
+ * stdin) a child git process must NEVER be allowed to open its own credential
+ * or SSH prompt on /dev/tty — that bypasses every clack gate and blocks the
+ * caller forever. This returns an env that hard-disables those prompts, or
+ * `undefined` in interactive mode so a human's normal credential flow is left
+ * untouched. Computed at call time because the mode can flip in a preAction
+ * hook after module load.
+ */
+const buildNonInteractiveGitEnv = (): NodeJS.ProcessEnv | undefined => {
+  if (!isNonInteractive() && !isJsonMode()) return undefined;
+  // Append -oBatchMode=yes to any operator-supplied GIT_SSH_COMMAND rather than
+  // clobbering it, so custom ssh options / identity files are preserved.
+  const existingSsh = process.env.GIT_SSH_COMMAND?.trim();
+  const sshCommand = existingSsh ? `${existingSsh} -oBatchMode=yes` : 'ssh -oBatchMode=yes';
+  return {
+    ...process.env,
+    // Refuse to prompt on the terminal for username/password.
+    GIT_TERMINAL_PROMPT: '0',
+    // A no-op askpass helper: git invokes it instead of prompting, and `echo`
+    // returns an empty credential so the operation fails fast instead of hanging.
+    GIT_ASKPASS: 'echo',
+    // Disable interactive SSH auth (host-key / passphrase prompts) for git-over-ssh.
+    GIT_SSH_COMMAND: sshCommand,
+  };
+};
+
 const createGit = (dir: string): SimpleGit => {
-  return simpleGit(dir, {
+  const git = simpleGit(dir, {
     binary: 'git',
     maxConcurrentProcesses: 6,
     trimmed: true,
   });
+  const env = buildNonInteractiveGitEnv();
+  // `.env()` is always present on a real simple-git instance; the typeof guard
+  // keeps partial test doubles (which stub only the methods they exercise) from
+  // throwing here.
+  if (env && typeof git.env === 'function') {
+    git.env(env);
+  }
+  return git;
 };
 
 export const isGitRepo = async (dir: string): Promise<boolean> => {
@@ -69,12 +106,21 @@ export const cloneRepo = async (url: string, dir: string): Promise<void> => {
     // does NOT forward `maxBuffer` to the underlying child process — only its
     // `timeout.block` is honored, so the memory bound would silently be a no-op.
     // `execFile`'s own `timeout` kills the process and `maxBuffer` caps output.
+    const env = buildNonInteractiveGitEnv();
     await execFileAsync('git', ['clone', url, dir], {
       timeout: GIT_OPERATION_TIMEOUTS.CLONE,
       maxBuffer: CLONE_MAX_BUFFER,
+      // In non-interactive mode a clone against a private remote must fail fast
+      // rather than block on a credential/SSH prompt on /dev/tty.
+      ...(env ? { env } : {}),
     });
   } catch (error) {
-    throw new GitError(`Failed to clone repository from ${url}`, String(error));
+    // A remote URL can embed a token (https://user:token@host); scrub both the
+    // URL we echo and the raw error before they reach GitError.gitOutput.
+    throw new GitError(
+      `Failed to clone repository from ${scrubCredentials(url)}`,
+      scrubCredentials(String(error))
+    );
   }
 };
 
@@ -246,6 +292,154 @@ const ensureGitCredentials = async (): Promise<void> => {
   }
 };
 
+/**
+ * Redact credentials from raw git output before it is stored on a
+ * {@link GitError} (and thereby serialized into the JSON envelope as
+ * `git_output`, echoed under DEBUG=1, or copied into a suggestion/hint line).
+ *
+ * A remote URL of the form `https://user:ghp_xxx@github.com/...` — or a bare
+ * token git happens to echo — would otherwise leak a live credential into
+ * machine-parsed output. This is the single choke point: every raw-output sink
+ * routes through {@link describeGitError}, which scrubs here first.
+ *
+ * Exported for unit testing.
+ */
+export const scrubCredentials = (text: string): string => {
+  return text
+    // userinfo in URLs: https://user:token@host / https://token@host → https://***@host
+    .replace(/(https?:\/\/)[^/@\s]+@/g, '$1***@')
+    // GitHub classic personal access tokens.
+    .replace(/ghp_[A-Za-z0-9]+/g, 'ghp_***')
+    // GitHub fine-grained personal access tokens.
+    .replace(/github_pat_[A-Za-z0-9_]+/g, 'github_pat_***')
+    // GitLab personal access tokens.
+    .replace(/glpat-[A-Za-z0-9-]+/g, 'glpat-***');
+};
+
+/**
+ * First meaningful line of raw git output, as a suggestion entry. Only the
+ * generic fallback branches use this: when classification failed, the raw
+ * evidence is the most actionable thing we can show (the full output is on
+ * `GitError.gitOutput`, serialized as `git_output` in JSON mode and printed
+ * under DEBUG=1).
+ */
+const rawFirstLine = (raw: string): string[] => {
+  const line = raw
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  return line ? [`git said: ${line.slice(0, 200)}`] : [];
+};
+
+/**
+ * Turn a raw git failure into a {@link GitError} with context and actionable
+ * suggestions (issue #52). Git's stderr is terse and inconsistent; agents and
+ * humans both benefit from tuck naming the likely cause and the fix. Falls back
+ * to a generic message (with the raw output as the suggestion) when nothing
+ * recognizable matches, so behavior never regresses.
+ *
+ * Exported for unit testing of the classification logic.
+ */
+export const describeGitError = (
+  operation: 'push' | 'pull' | 'fetch',
+  rawInput: string
+): GitError => {
+  // Scrub once, up front: `raw` feeds the classified message, every suggestion
+  // (via rawFirstLine), and `GitError.gitOutput`, so redacting here guarantees
+  // no credential reaches any downstream sink.
+  const raw = scrubCredentials(rawInput);
+  const text = raw.toLowerCase();
+  const has = (...needles: string[]): boolean => needles.some((n) => text.includes(n));
+
+  // Authentication / permission problems affect every network operation.
+  if (
+    has(
+      'authentication failed',
+      'could not read username',
+      'could not read password',
+      'permission denied (publickey)',
+      'invalid username or password',
+      'terminal prompts disabled',
+      'http basic: access denied',
+      'remote: invalid credentials',
+      'error: 403',
+      'error: 401'
+    )
+  ) {
+    return new GitError(`${operation} failed: authentication with the remote was rejected`, raw, [
+      'Verify your credentials for the git remote',
+      'For GitHub over HTTPS, run `gh auth login` (or `gh auth setup-git`)',
+      'For SSH, confirm your key is added: `ssh -T git@github.com`',
+      'Check the remote URL with `tuck config get` or `git remote -v`',
+    ]);
+  }
+
+  // Host unreachable / offline.
+  if (has('could not resolve host', 'unable to access', 'connection timed out', 'network is unreachable', 'failed to connect')) {
+    return new GitError(`${operation} failed: could not reach the remote`, raw, [
+      'Check your network connection',
+      'Verify the remote URL is correct and reachable',
+      'Retry once connectivity is restored',
+    ]);
+  }
+
+  if (operation === 'push') {
+    if (has('[rejected]', 'non-fast-forward', 'fetch first', 'tip of your current branch is behind', 'updates were rejected')) {
+      return new GitError('push rejected: the remote has commits you do not have locally', raw, [
+        'Run `tuck pull` first to integrate the remote changes, then push again',
+        'Or use `tuck push --force` to overwrite the remote (use with caution — this can discard remote history)',
+      ]);
+    }
+    if (has('has no upstream branch', 'set-upstream', 'no upstream configured')) {
+      return new GitError('push failed: the current branch has no upstream configured', raw, [
+        'Run `tuck push` again — tuck sets the upstream automatically on first push',
+        'Or set it manually with `git push --set-upstream origin <branch>`',
+      ]);
+    }
+    return new GitError('Failed to push', raw, [
+    ...rawFirstLine(raw),
+      'Run `tuck pull` to sync with the remote, then retry',
+      'Inspect the repo with `git status` to see what changed',
+    ]);
+  }
+
+  if (operation === 'pull') {
+    // Check uncommitted-local-changes before conflicts: git phrases it as
+    // "...would be overwritten by merge", which also contains the word "merge".
+    if (has('local changes', 'would be overwritten', 'commit your changes or stash')) {
+      return new GitError('pull failed: you have uncommitted local changes', raw, [
+        'Run `tuck sync` to commit your changes first, then pull',
+        'Or stash them with `git stash` before pulling',
+      ]);
+    }
+    if (has('merge conflict', 'conflict (', 'fix conflicts', 'needs merge', 'automatic merge failed')) {
+      return new GitError('pull produced merge conflicts', raw, [
+        'Run `tuck sync` in an interactive terminal to resolve the conflicts',
+        'Inspect the conflicting files with `git status`',
+        'Use `git merge --abort` (or `git rebase --abort`) to back out',
+      ]);
+    }
+    if (has('divergent branches', 'need to specify how to reconcile', 'not possible to fast-forward')) {
+      return new GitError('pull failed: local and remote branches have diverged', raw, [
+        'Run `tuck pull` with rebase, or resolve the divergence with `git pull --rebase`',
+        'Inspect both histories with `git log --oneline --graph`',
+      ]);
+    }
+    return new GitError('Failed to pull', raw, [
+    ...rawFirstLine(raw),
+      'Inspect the repo with `git status`',
+      'Retry after resolving any local changes',
+    ]);
+  }
+
+  // fetch
+  return new GitError('Failed to fetch', raw, [
+    ...rawFirstLine(raw),
+    'Verify the remote is configured with `git remote -v`',
+    'Check your network connection and credentials',
+  ]);
+};
+
 export const push = async (
   dir: string,
   options?: { remote?: string; branch?: string; force?: boolean; setUpstream?: boolean }
@@ -279,7 +473,7 @@ export const push = async (
       await git.push([...args, remote]);
     }
   } catch (error) {
-    throw new GitError('Failed to push', String(error));
+    throw describeGitError('push', String(error));
   }
 };
 
@@ -304,7 +498,7 @@ export const pull = async (
       await git.pull(remote, undefined, args);
     }
   } catch (error) {
-    throw new GitError('Failed to pull', String(error));
+    throw describeGitError('pull', String(error));
   }
 };
 
@@ -313,7 +507,7 @@ export const fetch = async (dir: string, remote = 'origin'): Promise<void> => {
     const git = createGit(dir);
     await git.fetch(remote);
   } catch (error) {
-    throw new GitError('Failed to fetch', String(error));
+    throw describeGitError('fetch', String(error));
   }
 };
 

@@ -32,6 +32,8 @@ export type AuditAction =
   | 'FORCE_PUSH' // --force used for git push
   | 'FORCE_OVERWRITE' // --force used to overwrite files
   | 'SECRETS_COMMITTED' // User chose to commit files with detected secrets
+  | 'SECRET_ALLOWLISTED' // User added a scanner finding to the secret allowlist
+  | 'SECRET_ALLOWLIST_REMOVED' // User removed an entry from the secret allowlist
   | 'DANGEROUS_CONFIRMED'; // User confirmed a dangerous operation
 
 // ============================================================================
@@ -115,6 +117,41 @@ export async function logSecretsCommitted(files: string[]): Promise<void> {
  */
 export async function logDangerousConfirmed(operation: string, details?: string): Promise<void> {
   await logAuditEntry('DANGEROUS_CONFIRMED', operation, details);
+}
+
+/**
+ * Log when a scanner finding is added to the secret allowlist.
+ *
+ * SECURITY: only the (non-reversible) fingerprint and reason are recorded — the
+ * raw secret value never touches the audit log.
+ */
+export async function logSecretAllowlisted(
+  fingerprint: string,
+  reason: string,
+  scope?: { pattern?: string; path?: string }
+): Promise<void> {
+  const scopeParts = [
+    scope?.pattern ? `pattern=${scope.pattern}` : undefined,
+    scope?.path ? `path=${scope.path}` : undefined,
+  ].filter(Boolean);
+  const scopeText = scopeParts.length > 0 ? ` (${scopeParts.join(', ')})` : '';
+  await logAuditEntry(
+    'SECRET_ALLOWLISTED',
+    'tuck secrets allow',
+    `Allowlisted ${fingerprint.slice(0, 12)}…${scopeText}: ${reason}`
+  );
+}
+
+/**
+ * Log when an entry is removed from the secret allowlist.
+ */
+export async function logSecretAllowlistRemoved(fingerprints: string[]): Promise<void> {
+  const summary = fingerprints.map((fp) => fp.slice(0, 12)).join(', ');
+  await logAuditEntry(
+    'SECRET_ALLOWLIST_REMOVED',
+    'tuck secrets allow remove',
+    `Removed ${fingerprints.length} allowlist entr${fingerprints.length === 1 ? 'y' : 'ies'}: ${summary}`
+  );
 }
 
 // ============================================================================

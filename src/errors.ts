@@ -82,8 +82,23 @@ export class FileAlreadyTrackedError extends TuckError {
 }
 
 export class GitError extends TuckError {
-  constructor(message: string, gitError?: string) {
-    super(`Git operation failed: ${message}`, 'GIT_ERROR', gitError ? [gitError] : undefined);
+  /** Raw git stderr/stdout, preserved for debugging even when tailored suggestions are supplied. */
+  public readonly gitOutput?: string;
+
+  constructor(message: string, gitError?: string, suggestions?: string[]) {
+    // When callers provide contextual `suggestions` (see `describeGitError` in
+    // lib/git.ts), use them as the actionable next steps. Otherwise fall back to
+    // surfacing the raw git output as a single suggestion (legacy behavior).
+    super(`Git operation failed: ${message}`, 'GIT_ERROR', suggestions ?? (gitError ? [gitError] : undefined));
+    this.gitOutput = gitError;
+  }
+
+  override toJSON(): JsonError {
+    const json = super.toJSON();
+    if (this.gitOutput) {
+      json.git_output = this.gitOutput;
+    }
+    return json;
   }
 }
 
@@ -105,6 +120,31 @@ export class MergeConflictsError extends TuckError {
     );
     this.conflicts = conflicts;
     // Use a dedicated exit code so agents can branch on it.
+    this.exitCode = 3;
+  }
+}
+
+export class JsonMergeConflictsError extends TuckError {
+  /** JSON paths (e.g. `permissions.allow`, `env.TOKEN`) that could not be auto-merged. */
+  public readonly paths: string[];
+  /** The file the conflicts belong to (collapsed for display). */
+  public readonly file: string;
+
+  constructor(file: string, paths: string[]) {
+    const sample = paths.slice(0, 3).join(', ');
+    const summary = paths.length > 3 ? `${sample} and ${paths.length - 3} more` : sample;
+    super(
+      `Structured merge of ${file} left ${paths.length} unresolved conflict${paths.length === 1 ? '' : 's'}: ${summary}`,
+      'JSON_MERGE_CONFLICTS',
+      [
+        'Run `tuck sync` in an interactive terminal to resolve the conflicts',
+        'Set a merge policy with `tuck merge set <file> --conflict ours|theirs`',
+        'Edit the file directly to reconcile the conflicting keys, then re-run sync',
+      ]
+    );
+    this.file = file;
+    this.paths = paths;
+    // Reuse the dedicated conflict exit code so agents branch on it uniformly.
     this.exitCode = 3;
   }
 }
@@ -350,15 +390,11 @@ export class InvalidManifestError extends TuckError {
 
 export class PathTraversalError extends TuckError {
   constructor(path: string, reason?: string) {
-    super(
-      `Unsafe path detected: ${path}${reason ? ` - ${reason}` : ''}`,
-      'PATH_TRAVERSAL_ERROR',
-      [
-        'Paths must be within your home directory',
-        'Path traversal (..) is not allowed',
-        'Use absolute paths starting with ~/ or $HOME/',
-      ]
-    );
+    super(`Unsafe path detected: ${path}${reason ? ` - ${reason}` : ''}`, 'PATH_TRAVERSAL_ERROR', [
+      'Paths must be within your home directory',
+      'Path traversal (..) is not allowed',
+      'Use absolute paths starting with ~/ or $HOME/',
+    ]);
   }
 }
 
@@ -385,11 +421,19 @@ export class ScanLimitError extends TuckError {
   }
 }
 
+export class JsonKeyError extends TuckError {
+  constructor(message: string, suggestions?: string[]) {
+    super(message, 'JSON_KEY_ERROR', suggestions || [
+      'Pass a dot-delimited key path present in the file (e.g. --key mcpServers)',
+      'JSON-key tracking requires a strict-JSON file with a top-level object',
+      'Run `tuck list` to see how a file is tracked',
+    ]);
+  }
+}
+
 export class ValidationError extends TuckError {
   constructor(field: string, message: string) {
-    super(`Invalid ${field}: ${message}`, 'VALIDATION_ERROR', [
-      'Check your input and try again',
-    ]);
+    super(`Invalid ${field}: ${message}`, 'VALIDATION_ERROR', ['Check your input and try again']);
   }
 }
 
@@ -424,10 +468,64 @@ export class BootstrapError extends TuckError {
 
 export class KeystoreError extends TuckError {
   constructor(keystore: string, message: string, suggestions?: string[]) {
-    super(`${keystore} error: ${message}`, 'KEYSTORE_ERROR', suggestions || [
-      'Check your system keychain/credential manager is accessible',
-      'Try running without encryption or use the fallback keystore',
+    super(
+      `${keystore} error: ${message}`,
+      'KEYSTORE_ERROR',
+      suggestions || [
+        'Check your system keychain/credential manager is accessible',
+        'Try running without encryption or use the fallback keystore',
+      ]
+    );
+  }
+}
+
+// ============================================================================
+// OS Settings Errors
+// ============================================================================
+
+export class SettingsUnsupportedOsError extends TuckError {
+  constructor(platform: string) {
+    super(
+      `\`tuck settings\` is not supported on this platform yet (${platform})`,
+      'SETTINGS_UNSUPPORTED_OS',
+      [
+        'macOS is supported today; Linux (dconf) support is planned',
+        'Existing captured settings still apply on their original OS',
+      ]
+    );
+  }
+}
+
+export class SettingsError extends TuckError {
+  constructor(message: string, suggestions?: string[]) {
+    super(message, 'SETTINGS_ERROR', suggestions);
+  }
+}
+
+export class SettingNotFoundError extends TuckError {
+  constructor(id: string) {
+    super(`No tracked setting with id "${id}"`, 'SETTING_NOT_FOUND', [
+      'Run `tuck settings list` to see tracked settings',
     ]);
+  }
+}
+
+/**
+ * Raised when a read-only inspection command (status/diff/list) attempts an
+ * operation that would touch a secret backend or unlock the OS keystore. These
+ * commands guarantee zero prompts and zero backend access; hitting this error
+ * means that guarantee was about to be broken (a bug), not a user misconfig.
+ */
+export class ReadOnlyViolationError extends TuckError {
+  constructor(operation: string) {
+    super(
+      `Read-only command attempted a secret operation: ${operation}`,
+      'READ_ONLY_VIOLATION',
+      [
+        'status, diff, and list never unlock secrets — this indicates a bug',
+        'Run `tuck apply`, `tuck sync`, or `tuck verify` for operations that need secrets',
+      ]
+    );
   }
 }
 
@@ -502,6 +600,11 @@ export const handleError = (error: unknown): never => {
       console.error();
       console.error(chalk.dim('Suggestions:'));
       error.suggestions.forEach((s) => console.error(chalk.dim(`  → ${s}`)));
+    }
+    if (error instanceof GitError && error.gitOutput && process.env.DEBUG) {
+      console.error();
+      console.error(chalk.dim('Raw git output:'));
+      console.error(chalk.dim(error.gitOutput.trim()));
     }
     process.exit(error.exitCode);
   }

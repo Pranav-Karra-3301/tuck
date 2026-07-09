@@ -92,6 +92,26 @@ tuck init --from github.com/you/dotfiles
 tuck restore --all
 ```
 
+### Safe first apply
+
+`tuck apply` never touches a fresh machine blind:
+
+- It **shows a full diff summary first** — every file that will be created (`new`) vs
+  overwritten (`update`), with a one-line count — before anything is written.
+- It **auto-creates a Time Machine snapshot** of every destination (including files it
+  is about to create) before applying.
+- After it finishes — and after any other destructive change (`tuck sync` conflict
+  resolution, `tuck remove --delete`) — it prints a one-line breadcrumb showing exactly
+  how to roll back:
+
+  ```
+  Undo this change: tuck undo 2026-07-09-101112  (or tuck undo --latest)
+  ```
+
+`tuck init` leads with the scan-based **"adopt the dotfiles already on this machine"**
+path, so the fastest way to get started is to track what you already have — no remote or
+templating concepts required.
+
 ### Onto a remote box (SSH)
 
 Push the configs this machine already tracks — your agent configs (`.claude`,
@@ -141,6 +161,21 @@ auth recommended). `tuck` does not need to be installed on the remote for a push
 
 ### Managing Files
 
+| Command                          | Description                                                      |
+| -------------------------------- | --------------------------------------------------------------- |
+| `tuck add <paths>`               | Manually track specific files                                   |
+| `tuck add <file> --key <path>`   | Track only a JSON subtree (e.g. `mcpServers`) — see [JSON-key tracking](docs/JSON-KEY-TRACKING.md) |
+| `tuck remove <paths>`            | Stop tracking files                                             |
+| `tuck scan`                      | Discover dotfiles without syncing                               |
+| `tuck list`                      | List all tracked files by category                              |
+| `tuck diff [file]`               | Show what's changed                                             |
+
+**JSON-key-scoped tracking** lets you track a *subtree* of a JSON file instead of
+the whole thing. `tuck add ~/.claude.json --key mcpServers` extracts only the
+`mcpServers` value into your repo; on `tuck apply`/`tuck restore` it is
+deep-merged back into the live file, leaving OAuth tokens, session caches, and
+every other machine-managed key untouched. See
+[docs/JSON-KEY-TRACKING.md](docs/JSON-KEY-TRACKING.md).
 | Command                     | Description                                           |
 | --------------------------- | ----------------------------------------------------- |
 | `tuck add <paths>`          | Manually track specific files                         |
@@ -219,12 +254,16 @@ Supported managers: `brew`, `apt`, `dnf`, `pacman`, `winget`, `scoop`, `cargo`, 
 | Command             | Description                                                       |
 | ------------------- | ---------------------------------------------------------------- |
 | `tuck bundle`       | Manage bundles — logical groups of tracked files                 |
+| `tuck merge`        | Manage structured (JSON) three-way merge policies for tracked files |
 | `tuck profile`      | Profiles / tags — apply work/personal/server/agent subsets       |
 | `tuck encryption`   | Manage at-rest backup encryption (AES-256-GCM, password-based)   |
 | `tuck secrets`      | Manage local secrets / placeholder replacement                   |
 | `tuck context`      | Track AI agent configs across home and per-repo scopes           |
+| `tuck rules`        | Fan one canonical rules file out to per-tool variants (CLAUDE.md, .cursorrules, …) |
 | `tuck preset`       | Apply or publish curated bundles of dotfiles & agent configs     |
 | `tuck repo`         | Manage machine-local repo bindings (for repo-scoped tracking)    |
+| `tuck settings`     | Capture, version, and replay OS settings (macOS `defaults`)      |
+| `tuck mcp`          | Run the Model Context Protocol server (expose tuck to AI agents) |
 | `tuck mcp`          | Run the MCP server + manage your MCP fleet (define once, render per client) |
 
 ### MCP fleet — define servers once, render per client
@@ -257,6 +296,61 @@ values are resolved from the same secret backends tuck uses for dotfiles; if any
 can't be resolved, apply refuses to write rather than leak an unresolved token.
 Supported clients: Claude Desktop, Claude Code, Cursor, Windsurf, VS Code.
 
+### Agent-native automation
+
+tuck is safe to drive from AI agents, scripts, and CI. Every command supports:
+
+- `--json` — one stable JSON envelope on stdout (`{ ok, command, data | error }`); human output and color are suppressed, diagnostics go to stderr.
+- `--non-interactive` — never prompt; fail fast with a typed error (`OPERATION_CANCELLED`) instead of hanging. Implied by `--json` and by a non-TTY stdin.
+- `-y, --yes` — auto-confirm prompts. Combine with `--json` for full automation.
+
+ANSI color is stripped automatically when output is not a terminal, in `--json`
+mode, or when `NO_COLOR` is set. Errors carry machine-readable codes, actionable
+suggestions, and specific exit codes (`2` = not initialized, `3` = merge conflicts).
+
+```bash
+tuck status --json | jq '.data'
+tuck add ~/.zshrc --json --yes    # never hangs; fails fast if a prompt is needed
+```
+
+See [docs/AGENT-MODE.md](docs/AGENT-MODE.md) and [docs/ERROR_CODES.md](docs/ERROR_CODES.md) for the full contract.
+
+### OS settings (`tuck settings`)
+
+Instead of hand-maintaining an undocumented `.macos` script that silently
+breaks across macOS releases, capture settings by changing them in the GUI while
+tuck diffs the affected `defaults` domains, then replay them on another machine
+with per-OS-version guards. Steps that can't be automated live in a tracked
+manual-steps checklist that tuck reminds you about per machine.
+
+| Command                                   | Description                                              |
+| ----------------------------------------- | -------------------------------------------------------- |
+| `tuck settings capture`                   | Diff `defaults` domains while you change a GUI setting    |
+| `tuck settings apply`                     | Replay tracked settings (version-guarded) + restart apps |
+| `tuck settings list`                      | Show tracked settings and the manual-steps checklist     |
+| `tuck settings remove <id>`               | Untrack a captured setting                               |
+| `tuck settings manual add/list/done/reset`| Manage the manual-steps checklist (per-machine done)     |
+
+```bash
+# Interactive: tuck snapshots defaults, you flip the toggle, tuck records the write
+tuck settings capture "Auto-hide the Dock" --domain com.apple.dock --restart Dock
+
+# Non-interactive / scripted capture of a known key
+tuck settings capture --domain com.apple.dock --key autohide --type boolean --value true --restart Dock
+
+# On a new machine: preview, then apply (version guards skip anything out of range)
+tuck settings apply --dry-run
+tuck settings apply
+
+# Track a step that can't be automated
+tuck settings manual add "Enable FileVault" -i "System Settings → Privacy & Security → FileVault"
+tuck settings manual done macos__manual__enable-filevault
+```
+
+Captured settings live in `~/.tuck/os-settings.json` (committed and shared);
+per-machine manual-step completion and pre-apply backups live in the platform
+state dir, never in the repo. macOS is supported today; the backend is
+abstracted so Linux/dconf can be added later.
 
 ## How It Works
 
@@ -451,6 +545,15 @@ Configure tuck via `~/.tuck/.tuckrc.json` or the interactive `tuck config` menu 
 - **copy** (default) — Files are copied. Run `tuck sync` to update the repo.
 - **symlink** — tuck copies the file into the repo, then replaces the original path with a symlink to the repo file. Changes are instant, but this modifies your home dotfile paths.
 
+### Structured JSON smart merge
+
+High-churn, tool-rewritten JSON configs (Claude Code `settings.json`, `.mcp.json`, …)
+are reconciled **key-by-key** on `tuck sync` instead of being overwritten — so two
+machines that each edit the same config have their changes unioned rather than one
+silently clobbering the other. Permission allowlists and plugin lists are unioned;
+genuine conflicts are surfaced, not guessed. Manage per-file policies with
+`tuck merge` (set/unset/list/show). See [docs/JSON-SMART-MERGE.md](docs/JSON-SMART-MERGE.md).
+
 ## Windows Support
 
 tuck fully supports Windows with platform-specific handling:
@@ -501,9 +604,13 @@ tuck is designed with security in mind:
 - **Never tracks private keys** — SSH keys, `.env` files, and credentials are blocked by default
 - **Secret scanning** — Warns if files contain API keys or tokens
 - **Placeholder support** — Replace secrets with `{{PLACEHOLDER}}` syntax
+- **Value-level encryption** — SOPS-style: encrypt only secret *values* in place while keys, structure, and comments stay plaintext, so `git diff`/`merge`/review keep working
 - **External-first secrets** — `security.secretBackend` defaults to `auto`, preferring external password managers before local fallback
 - **Local fallback secrets** — Store actual values in `secrets.local.json` when needed; it is gitignored by default
+- **Fix, don't just block** — When a secret is flagged at `tuck add`/`tuck sync` time, choose to redact-and-store it (rewriting the tracked copy as a template) or mark a false positive as safe — no more disabling the whole check
+- **Centralized allowlist** — Mark scanner false positives once with `tuck secrets allow`; entries are stored (as fingerprints, never raw values) in a committed, reviewable `secrets.allow.json` instead of scattered inline ignore comments
 - **Runtime state isolation** — Audit logs, snapshots, and fallback keystore data live outside the tracked tuck repo
+- **Read-only commands never prompt** — `tuck status`, `tuck diff`, and `tuck list` are guaranteed never to unlock the keystore or contact a secret backend. Drift in encrypted files is detected with a machine-local keyed HMAC (zero decryptions), and the commands that do need the key unlock it **once per session**. See [docs/TEMPLATES-AND-ENCRYPTION.md](docs/TEMPLATES-AND-ENCRYPTION.md#read-only-commands-never-prompt).
 
 ```bash
 # Scan tracked files for secrets
@@ -511,8 +618,32 @@ tuck secrets scan
 
 # Set a secret value locally
 tuck secrets set API_KEY
+
+# Encrypt secret VALUES in place (keys/structure stay plaintext, git-diffable)
+tuck secrets encrypt ~/.env
+
+# Decrypt them back to plaintext
+tuck secrets decrypt ~/.env
 ```
 
+See [docs/VALUE-ENCRYPTION.md](docs/VALUE-ENCRYPTION.md) for the full value-level
+encryption workflow.
+# Mark a scanner false positive as safe (auditable, committed allowlist)
+tuck secrets allow add --file ~/.config/app.conf --reason "example value from docs"
+
+# Review or revoke allowlisted findings
+tuck secrets allow list
+tuck secrets allow remove <fingerprint>
+```
+
+### The secret allowlist
+
+`secrets.allow.json` records findings you have deliberately marked safe (false
+positives or intentionally-tracked non-secrets). It stores only a SHA-256
+**fingerprint** of each value — never the value itself — so it is safe to commit
+and share with teammates. Every scan path (`tuck add`, `tuck sync`,
+`tuck secrets scan`, the MCP server) honors it, and each add/remove is recorded
+in the audit log.
 ### MCP secrets extraction
 
 MCP clients (Claude Desktop, Claude Code, Cursor, VS Code) often store API keys

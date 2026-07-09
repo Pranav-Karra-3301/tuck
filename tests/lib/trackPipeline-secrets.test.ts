@@ -22,6 +22,7 @@ import { SecretsDetectedError } from '../../src/errors.js';
 const AWS_SECRET = 'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n';
 
 const selectMock = vi.fn();
+const textMock = vi.fn();
 
 // Minimal ui mock: strict-mode paths need only logger; the interactive 'ignore'
 // path needs a controllable prompts.select plus colour/logging stubs.
@@ -40,6 +41,7 @@ vi.mock('../../src/ui/index.js', () => {
     },
     prompts: {
       select: selectMock,
+      text: textMock,
       confirm: vi.fn().mockResolvedValue(false),
       confirmDangerous: vi.fn().mockResolvedValue(false),
     },
@@ -91,5 +93,70 @@ describe('track pipeline secret gate', () => {
     // The secret-bearing repo file must be filtered out — never returned for
     // tracking despite the identity-vs-live-path mismatch.
     expect(prepared).toHaveLength(0);
+  });
+
+  it('does not block --key add when the subtree secret is allowlisted (strict mode)', async () => {
+    await initTestTuck();
+
+    // A JSON file whose TRACKED subtree (mcpServers) carries an AWS key, plus an
+    // untracked oauthToken alongside it.
+    const secret = 'AKIAIOSFODNN7EXAMPLE';
+    const filePath = join(TEST_HOME, '.claude.json');
+    vol.writeFileSync(
+      filePath,
+      JSON.stringify({ mcpServers: { git: { token: secret } }, oauthToken: 'x' })
+    );
+
+    const { preparePathsForTracking } = await import('../../src/lib/trackPipeline.js');
+
+    // Without an allowlist entry, strict mode blocks (the subtree scan detects it).
+    await expect(
+      preparePathsForTracking([{ path: filePath }], TEST_TUCK_DIR, {
+        jsonKey: 'mcpServers',
+        secretHandling: 'strict',
+      })
+    ).rejects.toBeInstanceOf(SecretsDetectedError);
+
+    // Allowlist the finding, then the SAME strict add must proceed — previously
+    // the raw scanContent call never consulted the allowlist, so it re-blocked
+    // forever.
+    const { addAllowlistEntryForValue } = await import('../../src/lib/secrets/allowlist.js');
+    await addAllowlistEntryForValue(TEST_TUCK_DIR, secret, { reason: 'example key from docs' });
+
+    const prepared = await preparePathsForTracking([{ path: filePath }], TEST_TUCK_DIR, {
+      jsonKey: 'mcpServers',
+      secretHandling: 'strict',
+    });
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0].jsonKey).toBe('mcpServers');
+  });
+
+  it('allowlists findings and tracks the file when the user chooses "Mark as safe"', async () => {
+    selectMock.mockResolvedValue('allow');
+    textMock.mockResolvedValue('example value from docs');
+    await initTestTuck();
+
+    const filePath = join(TEST_HOME, '.config', 'app.conf');
+    vol.mkdirSync(join(TEST_HOME, '.config'), { recursive: true });
+    vol.writeFileSync(filePath, AWS_SECRET);
+
+    const { preparePathsForTracking } = await import('../../src/lib/trackPipeline.js');
+    const { listAllowlistEntries } = await import('../../src/lib/secrets/allowlist.js');
+
+    const prepared = await preparePathsForTracking([{ path: filePath }], TEST_TUCK_DIR, {
+      secretHandling: 'interactive',
+    });
+
+    // The file is tracked (returned) because the finding is now allowlisted...
+    expect(prepared).toHaveLength(1);
+    // ...and a committed, auditable allowlist entry was recorded.
+    const entries = await listAllowlistEntries(TEST_TUCK_DIR);
+    expect(entries.length).toBeGreaterThanOrEqual(1);
+    expect(entries[0].reason).toBe('example value from docs');
+
+    // A subsequent scan of the same file no longer flags it.
+    const { scanForSecrets } = await import('../../src/lib/secrets/index.js');
+    const rescan = await scanForSecrets([filePath], TEST_TUCK_DIR);
+    expect(rescan.filesWithSecrets).toBe(0);
   });
 });

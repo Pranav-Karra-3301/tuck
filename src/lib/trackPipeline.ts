@@ -21,20 +21,32 @@ import { addToTuckignore, isIgnored } from './tuckignore.js';
 import {
   FileAlreadyTrackedError,
   FileNotFoundError,
+  JsonKeyError,
   OperationCancelledError,
   PrivateKeyError,
   SecretsDetectedError,
 } from '../errors.js';
-import { logForceSecretBypass } from './audit.js';
+import { extractSubtree } from './jsonKey.js';
+import { readFile } from 'fs/promises';
+import { scanContent } from './secrets/index.js';
+import { logForceSecretBypass, logSecretAllowlisted } from './audit.js';
 import { isJsonMode } from './jsonOutput.js';
+import { loadConfig } from './config.js';
 import {
   getSecretsPath,
+  getAllowlistPath,
   isSecretScanningEnabled,
   processSecretsForRedaction,
   scanForSecrets,
   shouldBlockOnSecrets,
+  addAllowlistEntryByFingerprint,
+  computeFingerprint,
+  createCustomPattern,
+  loadAllowlist,
+  isMatchAllowed,
   type ScanSummary,
   type SecretMatch,
+  type SecretPattern,
 } from './secrets/index.js';
 
 const PRIVATE_KEY_PATTERNS = [
@@ -96,6 +108,11 @@ export interface PreparedTrackFile {
   remoteUrl?: string;
   /** Absolute live path to copy FROM (repo scope only). */
   liveSource?: string;
+  /**
+   * Dot-delimited JSON key path when tracking only a subtree of a JSON file
+   * (e.g. `mcpServers`). The repo copy holds just that subtree.
+   */
+  jsonKey?: string;
   /** Redaction plans for secret-bearing files: applied to the REPO copy after
    *  the copy step; the live file is never modified (issue #100 RC5). For a
    *  tracked DIRECTORY, livePath points at the inner file that holds the secret. */
@@ -128,6 +145,11 @@ export interface PreparePathsForTrackingOptions {
   repo?: string | boolean;
   /** Explicit repoKey override (advanced; default derives from the remote). */
   repoKey?: string;
+  /**
+   * Track only the JSON subtree at this dot-delimited key path (e.g.
+   * `mcpServers`) instead of the whole file.
+   */
+  jsonKey?: string;
 }
 
 const isPrivateKey = (collapsedPath: string): boolean => {
@@ -312,6 +334,11 @@ const applySecretPolicy = async (
       label: 'Replace with placeholders',
       hint: 'Repo copy gets placeholders; live file untouched. Originals in secrets.local.json (never committed)',
     },
+    {
+      value: 'allow',
+      label: 'Mark as safe (allowlist)',
+      hint: 'False positive? Record in secrets.allow.json and track',
+    },
     { value: 'ignore', label: 'Add files to .tuckignore', hint: 'Skip these files permanently' },
     { value: 'proceed', label: 'Proceed anyway', hint: 'Track files with secrets (dangerous!)' },
   ]);
@@ -319,6 +346,38 @@ const applySecretPolicy = async (
   if (action === 'abort') {
     logger.info('Operation aborted');
     return [];
+  }
+
+  if (action === 'allow') {
+    const reason = await prompts.text(
+      'Why are these findings safe? (recorded in the allowlist)',
+      { placeholder: 'e.g. example values from docs, not real secrets' }
+    );
+    if (!reason || reason.trim().length === 0) {
+      logger.info('Operation aborted (a reason is required to allowlist)');
+      return [];
+    }
+    let allowlisted = 0;
+    for (const result of summary.results) {
+      if (!result.hasSecrets) continue;
+      for (const match of result.matches) {
+        const entry = await addAllowlistEntryByFingerprint(
+          tuckDir,
+          computeFingerprint(match.value),
+          { reason: reason.trim(), pattern: match.patternId, path: result.collapsedPath }
+        );
+        await logSecretAllowlisted(entry.fingerprint, entry.reason, {
+          pattern: entry.pattern,
+          path: entry.path,
+        });
+        allowlisted++;
+      }
+    }
+    console.log();
+    logger.success(`Allowlisted ${allowlisted} finding${allowlisted === 1 ? '' : 's'} as safe`);
+    logger.dim(`Recorded in ${collapsePath(getAllowlistPath(tuckDir))} (commit it to share)`);
+    console.log();
+    return files;
   }
 
   if (action === 'redact') {
@@ -408,6 +467,131 @@ const applySecretPolicy = async (
   return files;
 };
 
+/**
+ * Scan an in-memory JSON subtree for secrets the SAME way the whole-file gate
+ * scans a file: honoring config-configured custom patterns, excludes, and
+ * min-severity, then dropping any finding recorded in the committed allowlist.
+ *
+ * The subtree lives only in memory (it is the extracted bytes, never the whole
+ * live file), so we cannot hand it to the file-based {@link scanForSecrets};
+ * instead we replicate its built-in-scanner branch over `content`. Without the
+ * allowlist filter, an allowlisted false positive would permanently block
+ * `tuck add --key` in strict mode and re-prompt forever in interactive mode.
+ */
+const scanSubtreeForSecrets = async (
+  content: string,
+  collapsedLivePath: string,
+  tuckDir: string
+): Promise<SecretMatch[]> => {
+  const config = await loadConfig(tuckDir);
+  const security = config.security || {};
+
+  const customPatterns: SecretPattern[] = (security.customPatterns || []).map((p, i) =>
+    createCustomPattern(`config-${i}`, p.name || `Custom Pattern ${i + 1}`, p.pattern, {
+      severity: p.severity,
+      description: p.description,
+      placeholder: p.placeholder,
+      flags: p.flags,
+    })
+  );
+
+  const matches = scanContent(content, {
+    customPatterns: customPatterns.length > 0 ? customPatterns : undefined,
+    excludePatternIds: security.excludePatterns,
+    minSeverity: security.minSeverity,
+  });
+
+  const allowlist = await loadAllowlist(tuckDir);
+  if (allowlist.entries.length === 0) return matches;
+  return matches.filter((match) => !isMatchAllowed(match, collapsedLivePath, allowlist.entries));
+};
+
+/**
+ * Secret gate for JSON-key files: scans ONLY the extracted subtree (the bytes
+ * that will actually land in the repo), not the whole live file. This is what
+ * makes the feature usable — a `~/.claude.json` mixes `mcpServers` with OAuth
+ * tokens and history, and scanning the whole file would block tracking the
+ * safe subtree. Mirrors {@link applySecretPolicy}'s force/strict/interactive
+ * decision structure at a subtree granularity (redact/ignore are omitted: a
+ * placeholder rewrite of a temporary in-memory subtree has nothing to persist).
+ */
+const applyJsonKeySecretPolicy = async (
+  files: PreparedTrackFile[],
+  tuckDir: string,
+  options: PreparePathsForTrackingOptions
+): Promise<PreparedTrackFile[]> => {
+  if (files.length === 0) return files;
+  if (!(await isSecretScanningEnabled(tuckDir))) return files;
+
+  const secretHandling = options.secretHandling ?? 'interactive';
+
+  if (options.force) {
+    if (secretHandling === 'interactive') {
+      const confirmed = await prompts.confirmDangerous(
+        'Using --force bypasses secret scanning.\n' +
+          'Any secrets in the tracked JSON subtree may be committed to git and potentially exposed.',
+        'force'
+      );
+      if (!confirmed) {
+        logger.info('Operation cancelled');
+        return [];
+      }
+    }
+    logger.warning('Secret scanning bypassed with --force');
+    await logForceSecretBypass(options.forceBypassCommand ?? 'tuck add --force', files.length);
+    return files;
+  }
+
+  // Scan each subtree independently so a finding maps back to exactly one file.
+  const withSecrets: Array<{ file: PreparedTrackFile; count: number }> = [];
+  for (const file of files) {
+    const live = file.liveSource ?? expandPath(file.source);
+    const content = await readFile(live, 'utf8');
+    const subtree = extractSubtree(content, file.jsonKey as string);
+    // Allowlist- and custom-pattern-aware (mirrors the whole-file gate): an
+    // allowlisted finding must NOT block the add, or strict mode re-prompts
+    // forever. The path used for path-scoped allowlist entries is the live file.
+    const matches = await scanSubtreeForSecrets(subtree, collapsePath(live), tuckDir);
+    if (matches.length > 0) {
+      withSecrets.push({ file, count: matches.length });
+    }
+  }
+
+  if (withSecrets.length === 0) return files;
+
+  const totalSecrets = withSecrets.reduce((sum, w) => sum + w.count, 0);
+  const affected = withSecrets.map((w) => `${collapsePath(w.file.source)} (--key ${w.file.jsonKey})`);
+
+  if (secretHandling === 'strict') {
+    if (await shouldBlockOnSecrets(tuckDir)) {
+      throw new SecretsDetectedError(totalSecrets, affected);
+    }
+    logger.warning('Secrets detected in a tracked JSON subtree but blockOnSecrets is disabled - proceeding');
+    logger.warning('Make sure your repository is private!');
+    return files;
+  }
+
+  console.log();
+  console.log(
+    c.error(c.bold(`  Security Warning: Found ${totalSecrets} potential secret(s) in the tracked JSON subtree`))
+  );
+  for (const entry of affected) {
+    console.log(`    ${c.brand(entry)}`);
+  }
+  console.log();
+
+  const proceed = await prompts.confirm(
+    c.error('The tracked JSON subtree contains potential secrets. Track it anyway?'),
+    false
+  );
+  if (!proceed) {
+    logger.info('Operation aborted');
+    return [];
+  }
+  logger.warning('Proceeding with secrets - make sure your repository is private!');
+  return files;
+};
+
 export const preparePathsForTracking = async (
   candidates: TrackPathCandidate[],
   tuckDir: string,
@@ -416,6 +600,19 @@ export const preparePathsForTracking = async (
   const secretHandling = options.secretHandling ?? 'interactive';
   const prepared: PreparedTrackFile[] = [];
   const isRepoScoped = options.repo !== undefined && options.repo !== false;
+  const jsonKey = options.jsonKey?.trim() ? options.jsonKey.trim() : undefined;
+
+  // JSON-key tracking is a home-scoped, single-file operation in v1: it extracts
+  // one JSON subtree per file. Repo-scoped or multi-path combos are rejected up
+  // front so the user gets a clear message instead of a confusing partial result.
+  if (jsonKey) {
+    if (isRepoScoped) {
+      throw new JsonKeyError('--key cannot be combined with --repo (v1 tracks JSON subtrees home-scoped only)');
+    }
+    if (candidates.length !== 1) {
+      throw new JsonKeyError('--key tracks a single JSON file; pass exactly one path');
+    }
+  }
 
   for (const candidate of candidates) {
     const expandedPath = expandPath(candidate.path);
@@ -501,6 +698,19 @@ export const preparePathsForTracking = async (
     }
 
     const isDir = await isDirectory(expandedPath);
+
+    // JSON-key tracking: validate the file is a single JSON file that actually
+    // contains the requested key path BEFORE it enters the manifest, so a typo
+    // or non-JSON file fails loudly at `tuck add` time rather than on apply.
+    if (jsonKey) {
+      if (isDir) {
+        throw new JsonKeyError(`--key requires a single JSON file, but ${candidate.path} is a directory`);
+      }
+      const content = await readFile(expandedPath, 'utf8');
+      // Throws JsonKeyError with a precise reason (bad JSON / missing key).
+      extractSubtree(content, jsonKey);
+    }
+
     const fileCount = isDir ? await getDirectoryFileCount(expandedPath) : 1;
     const category = candidate.category || options.category || detectCategory(expandedPath);
     const customName = candidate.name ?? options.name;
@@ -536,8 +746,18 @@ export const preparePathsForTracking = async (
       isDir,
       fileCount,
       sensitive: isSensitiveFile(trackingId),
+      ...(jsonKey ? { jsonKey } : {}),
     });
   }
 
-  return applySecretPolicy(prepared, tuckDir, options);
+  // JSON-key files scan only their extracted SUBTREE for secrets (not the whole
+  // file): the whole point of the feature is to track e.g. `mcpServers` while
+  // leaving OAuth tokens elsewhere in the file behind, so a token OUTSIDE the
+  // tracked subtree must not block the add. Whole-file entries keep the existing
+  // path-based secret policy untouched.
+  const jsonKeyFiles = prepared.filter((f) => f.jsonKey);
+  const wholeFileEntries = prepared.filter((f) => !f.jsonKey);
+  const survivingJsonKey = await applyJsonKeySecretPolicy(jsonKeyFiles, tuckDir, options);
+  const survivingWhole = await applySecretPolicy(wholeFileEntries, tuckDir, options);
+  return [...survivingJsonKey, ...survivingWhole];
 };

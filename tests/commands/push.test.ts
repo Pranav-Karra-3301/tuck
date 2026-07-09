@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const loadManifestMock = vi.fn();
 const checkLocalModeMock = vi.fn();
@@ -98,10 +98,26 @@ vi.mock('../../src/lib/providers/index.js', () => ({
   assertRemoteAvailable: assertRemoteAvailableMock,
 }));
 
+const originalStdinTTY = process.stdin.isTTY;
+const setStdinTTY = (value: boolean): void => {
+  Object.defineProperty(process.stdin, 'isTTY', {
+    value,
+    writable: true,
+    configurable: true,
+  });
+};
+
 describe('push command', () => {
+  afterEach(() => {
+    setStdinTTY(originalStdinTTY as boolean);
+  });
+
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+    // Default to a simulated interactive TTY so the prompt paths are reachable;
+    // the non-interactive regression tests below flip this off explicitly.
+    setStdinTTY(true);
 
     loadManifestMock.mockResolvedValue({ files: {} });
     checkLocalModeMock.mockResolvedValue(false);
@@ -170,6 +186,50 @@ describe('push command', () => {
     expect(pushMock).not.toHaveBeenCalled();
     expect(logForcePushMock).not.toHaveBeenCalled();
     expect(loggerInfoMock).toHaveBeenCalledWith('Push cancelled');
+  });
+
+  it('fails non-zero on --force in non-interactive mode instead of a false success', async () => {
+    // `tuck push --force` on a non-TTY (agent/CI) cannot confirm the dangerous
+    // op and was NOT pre-authorized via --yes/--json. It must throw a typed,
+    // non-zero error rather than print "Push cancelled" and exit 0 having pushed
+    // nothing.
+    setStdinTTY(false);
+    const { pushCommand } = await import('../../src/commands/push.js');
+
+    await expect(pushCommand.parseAsync(['--force'], { from: 'user' })).rejects.toMatchObject({
+      code: 'OPERATION_CANCELLED',
+      exitCode: 1,
+    });
+
+    // Never pushed, never audited, never falsely reported success.
+    expect(pushMock).not.toHaveBeenCalled();
+    expect(logForcePushMock).not.toHaveBeenCalled();
+    expect(promptsConfirmDangerousMock).not.toHaveBeenCalled();
+  });
+
+  it('surfaces an actionable --yes hint in the non-interactive --force error', async () => {
+    setStdinTTY(false);
+    const { pushCommand } = await import('../../src/commands/push.js');
+
+    await expect(pushCommand.parseAsync(['--force'], { from: 'user' })).rejects.toThrow(/--yes/);
+  });
+
+  it('force pushes without prompting when --force --yes is passed non-interactively', async () => {
+    // --yes is the explicit opt-in: it must skip the confirmation AND actually
+    // push (never route through the non-interactive throw above).
+    setStdinTTY(false);
+    getStatusMock.mockResolvedValue({ ahead: 1, behind: 0, tracking: 'origin/main' });
+    const { pushCommand } = await import('../../src/commands/push.js');
+
+    await pushCommand.parseAsync(['--force', '--yes'], { from: 'user' });
+
+    expect(promptsConfirmDangerousMock).not.toHaveBeenCalled();
+    expect(logForcePushMock).toHaveBeenCalledWith('main');
+    expect(pushMock).toHaveBeenCalledWith('/test-home/.tuck', {
+      force: true,
+      setUpstream: false,
+      branch: 'main',
+    });
   });
 
   it('runs the interactive push flow and sets upstream when needed', async () => {

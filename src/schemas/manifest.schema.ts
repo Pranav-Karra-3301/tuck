@@ -3,6 +3,39 @@ import { z } from 'zod';
 export const fileStrategySchema = z.enum(['copy', 'symlink']);
 
 /**
+ * How arrays are reconciled during a structured (JSON) three-way merge.
+ * - `union`   — combine both sides, dropping deep-duplicate entries (default;
+ *               ideal for allowlists like Claude permission `allow`/`deny`).
+ * - `concat`  — append both sides verbatim, keeping duplicates.
+ * - `replace` — treat a diverged array as a scalar conflict (resolved via the
+ *               `conflict` strategy) instead of combining.
+ */
+export const arrayMergeStrategySchema = z.enum(['union', 'concat', 'replace']);
+
+/**
+ * How an irreconcilable scalar/type conflict is resolved during a structured
+ * merge (both sides changed the same leaf to different values).
+ * - `ours`   — always keep the local value.
+ * - `theirs` — always take the incoming value.
+ * - `manual` — surface the conflict and stop instead of guessing (default).
+ */
+export const conflictResolutionSchema = z.enum(['ours', 'theirs', 'manual']);
+
+/**
+ * Per-file structured-merge policy. When present, `tuck sync` performs a
+ * key-level three-way merge of the tracked file instead of a silent
+ * whole-file overwrite when local and remote have both diverged. Absent
+ * (undefined) preserves the legacy behavior, so existing manifests parse
+ * byte-identical (this field is `.optional()`, never `.default()`).
+ */
+export const mergePolicySchema = z.object({
+  /** Structured format to parse. Only JSON is supported in v1. */
+  format: z.literal('json'),
+  arrays: arrayMergeStrategySchema.default('union'),
+  conflict: conflictResolutionSchema.default('manual'),
+});
+
+/**
  * Profile/tag name grammar. A tag names a machine PROFILE (work, personal,
  * server, agent, …). Constrained to a filename-safe, shell-safe subset so a tag
  * can appear on the CLI and in JSON without quoting surprises — the same
@@ -67,6 +100,23 @@ export const trackedFileSchema = z
     /** POSIX path of the file relative to the repo root. */
     repoRelative: z.string().optional(),
     /**
+     * JSON-key-scoped tracking. ABSENT (undefined) means the whole file is
+     * tracked, exactly as before (this field is `.optional()`, never
+     * `.default()`, so legacy manifests parse byte-identical). When present it
+     * is a dot-delimited key path (e.g. `mcpServers`): the repo copy holds ONLY
+     * that JSON subtree, and on apply/restore it REPLACES the value at that path
+     * in the live file, leaving every other key untouched. Mutually exclusive with
+     * template/encrypted (the repo copy is a plain JSON subtree, not a
+     * rendered/ciphertext artifact).
+     */
+    jsonKey: z.string().optional(),
+    /**
+     * Optional structured three-way merge policy. When set, `tuck sync`
+     * reconciles this file key-by-key instead of overwriting it wholesale.
+     * Undefined for the vast majority of files (plain copy semantics).
+     */
+    merge: mergePolicySchema.optional(),
+    /**
      * Declarative dependencies for this entry (IDEAS 2.3). Each value is a
      * `<manager>:<package>` spec (e.g. `brew:starship`, `apt:zsh`) that must be
      * installed BEFORE this file is applied. `tuck bootstrap`/`tuck apply`
@@ -83,6 +133,14 @@ export const trackedFileSchema = z
     requires: z.array(z.string()).optional(),
   })
   .superRefine((file, ctx) => {
+    if (file.jsonKey !== undefined) {
+      if (file.jsonKey.trim() === '') {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['jsonKey'], message: 'jsonKey must be a non-empty key path' });
+      }
+      if (file.template || file.encrypted) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['jsonKey'], message: 'jsonKey cannot be combined with template or encrypted' });
+      }
+    }
     if (file.scope === 'repo') {
       if (!file.repoKey) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['repoKey'], message: 'repoKey is required for repo-scoped files' });

@@ -19,6 +19,7 @@ import {
   encryptionCommand,
   doctorCommand,
   bundleCommand,
+  mergeCommand,
   profileCommand,
   verifyCommand,
   bootstrapCommand,
@@ -31,6 +32,7 @@ import { getTuckDir, pathExists } from './lib/paths.js';
 import { loadManifest } from './lib/manifest.js';
 import { getStatus } from './lib/git.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from './lib/jsonOutput.js';
+import { setNonInteractive, isNonInteractive, configureColor } from './lib/agentMode.js';
 import { buildCommandPath } from './lib/commandPath.js';
 import { setWriteContext } from './lib/writeContext.js';
 import { expandPath as expandTuckPath } from './lib/paths.js';
@@ -40,6 +42,8 @@ import { contextCommand } from './commands/context.js';
 import { mcpCommand } from './commands/mcp.js';
 import { presetCommand } from './commands/preset.js';
 import { repoCommand } from './commands/repo.js';
+import { rulesCommand } from './commands/rules.js';
+import { settingsCommand } from './commands/settings.js';
 
 const program = new Command();
 
@@ -51,6 +55,11 @@ program
     '--root <dir>',
     'Confine ALL writes under this directory (sandbox / dry-home mode). ' +
       'Also settable via TUCK_TARGET_ROOT. Use to run tuck without touching your real ~.'
+  )
+  .option(
+    '--non-interactive',
+    'Never prompt; fail fast with a typed error if a prompt would be required. ' +
+      'Implied by --json and by a non-TTY stdin. Pair with --yes to auto-confirm.'
   )
   .configureOutput({
     outputError: (str, write) => write(chalk.red(str)),
@@ -79,12 +88,15 @@ program.addCommand(secretsCommand);
 program.addCommand(encryptionCommand);
 program.addCommand(doctorCommand);
 program.addCommand(bundleCommand);
+program.addCommand(mergeCommand);
 program.addCommand(profileCommand);
 program.addCommand(verifyCommand);
 program.addCommand(contextCommand);
 program.addCommand(mcpCommand);
 program.addCommand(presetCommand);
 program.addCommand(repoCommand);
+program.addCommand(rulesCommand);
+program.addCommand(settingsCommand);
 
 // Best-effort EARLY detection so the error handler can emit JSON even for
 // failures that occur before any command action runs (e.g. during parsing).
@@ -96,12 +108,28 @@ program.addCommand(repoCommand);
 if (process.argv.slice(2).includes('--json')) {
   setJsonMode(true);
 }
+// The `--non-interactive` global is a bare flag (no value), so a plain argv scan
+// is unambiguous — mirroring the early `--json` detection above. This ensures the
+// prompt gate and color suppression are honored even for failures that occur
+// before any command action runs (e.g. during parsing).
+if (process.argv.slice(2).includes('--non-interactive')) {
+  setNonInteractive(true);
+}
+// Suppress ANSI for machine consumers / non-TTY stdout as early as possible so
+// even pre-action diagnostics come out clean. Re-run authoritatively in preAction.
+configureColor();
 
 // Authoritative resolution of JSON mode AND the write sandbox: runs after
-// parsing, before the action. Global --root lives on the root program.
+// parsing, before the action. Global --root / --non-interactive live on the root program.
 program.hook('preAction', (_thisCommand, actionCommand) => {
   const opts = actionCommand.opts() as { json?: boolean };
   setJsonMode(opts.json === true, buildCommandPath(actionCommand as { name(): string }));
+
+  const globalOpts = program.opts() as { nonInteractive?: boolean };
+  if (globalOpts.nonInteractive === true) setNonInteractive(true);
+  // Options are now authoritative (JSON mode may have been set by opts above),
+  // so recompute color suppression.
+  configureColor();
 
   const rootOpt = (program.opts() as { root?: string }).root ?? process.env.TUCK_TARGET_ROOT;
   if (rootOpt && rootOpt.trim()) {
@@ -251,8 +279,11 @@ const isMcpCommand = process.argv.slice(2).includes('mcp');
 // Main execution
 const main = async (): Promise<void> => {
   // Check for updates (skipped for help/version, MCP, and JSON/agent mode — the
-  // update banner is human-only and would corrupt structured output).
-  if (!isHelpOrVersion && !isMcpCommand && !process.argv.includes('--json')) {
+  // update banner is human-only and its raw-readline prompt would block an agent
+  // and corrupt structured output). `isNonInteractive()` covers --non-interactive
+  // (set by the early argv scan above), --json, and a non-TTY stdin; the explicit
+  // --json check is kept as a defensive mirror of the early detection.
+  if (!isHelpOrVersion && !isMcpCommand && !process.argv.includes('--json') && !isNonInteractive()) {
     await checkForUpdates();
   }
 

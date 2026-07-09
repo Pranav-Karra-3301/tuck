@@ -90,6 +90,12 @@ export interface TrackedFile {
   /** Logical group above category. Defaults to "default". */
   bundle: string;
   /**
+   * Dot-delimited JSON key path when this entry tracks only a SUBTREE of a JSON
+   * file (e.g. `mcpServers`). The repo copy holds just that subtree; apply/
+   * restore deep-merge it back into the live file. Absent for whole-file entries.
+   */
+  jsonKey?: string;
+  /**
    * Profile tags this file belongs to. Empty = universal (applies under every
    * profile). Defaults to `[]`.
    */
@@ -154,6 +160,12 @@ export interface AddOptions extends CommonOptions {
   /** Explicit repoKey override (advanced; default derives from the remote). */
   repoKey?: string;
   /**
+   * Track only the JSON subtree at this dot-delimited key path (e.g.
+   * `mcpServers`) instead of the whole file. On apply/restore the subtree is
+   * deep-merged back into the live file, leaving all other keys untouched.
+   */
+  key?: string;
+  /**
    * Track a curated AI-agent config preset instead of explicit paths, e.g.
    * `--preset claude-code`. Enumerates the agent's safe-to-track allowlist and
    * hard-excludes local/credential/history files.
@@ -164,6 +176,12 @@ export interface AddOptions extends CommonOptions {
 export interface RemoveOptions extends CommonOptions {
   delete?: boolean;
   keepOriginal?: boolean;
+  /**
+   * Proceed with `--delete` even if the pre-delete backup snapshot fails.
+   * Without it, a snapshot failure aborts the deletion (fail-closed) so a
+   * destructive delete never runs without a recovery point.
+   */
+  force?: boolean;
 }
 
 export interface SyncOptions extends CommonOptions {

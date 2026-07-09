@@ -20,7 +20,9 @@ import { getTuckDir, expandPath, collapsePath, pathExists } from '../lib/paths.j
 import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import { loadConfig, saveConfig } from '../lib/config.js';
 import { atomicWriteFile } from '../lib/files.js';
-import { createSnapshot } from '../lib/timemachine.js';
+import {
+  createSnapshot,
+} from '../lib/timemachine.js';
 import {
   listSecrets,
   setSecret,
@@ -35,6 +37,15 @@ import {
   type ScanSummary,
   type McpExtraction,
   type McpReferenceFormat,
+  computeFingerprint,
+  addAllowlistEntryByFingerprint,
+  removeAllowlistEntries,
+  listAllowlistEntries,
+  getAllowlistPath,
+  type AllowlistEntry,
+  encryptFileValues,
+  decryptFileValues,
+  fileHasEncryptedValues,
 } from '../lib/secrets/index.js';
 import {
   createResolver,
@@ -43,8 +54,15 @@ import {
   CONFIGURABLE_BACKEND_NAMES,
   type ConfiguredBackendName,
 } from '../lib/secretBackends/index.js';
-import { NotInitializedError, TuckError } from '../errors.js';
+import {
+  NotInitializedError,
+  TuckError,
+  ValidationError,
+  EncryptionError,
+} from '../errors.js';
+import { logSecretAllowlisted, logSecretAllowlistRemoved } from '../lib/audit.js';
 import { getLog } from '../lib/git.js';
+import { getStoredPassword } from '../lib/crypto/index.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 
 const isConfiguredBackendName = (value: string): value is ConfiguredBackendName => {
@@ -1277,6 +1295,600 @@ const buildRedactedExtractionSummary = (file: FileExtraction) => ({
 });
 
 // ============================================================================
+// Allowlist Commands
+// ============================================================================
+
+const SHORT_FINGERPRINT_LENGTH = 12;
+
+const isFingerprint = (value: string): boolean => /^[a-f0-9]{64}$/i.test(value);
+
+const formatAllowEntry = (entry: AllowlistEntry): void => {
+  console.log(`  ${c.green(entry.fingerprint.slice(0, SHORT_FINGERPRINT_LENGTH))}${c.dim('…')}`);
+  console.log(`    ${c.dim('Reason:')} ${entry.reason}`);
+  if (entry.pattern) console.log(`    ${c.dim('Pattern:')} ${entry.pattern}`);
+  if (entry.path) console.log(`    ${c.dim('Path:')} ${entry.path}`);
+  if (entry.addedBy) console.log(`    ${c.dim('Added by:')} ${entry.addedBy}`);
+  console.log(`    ${c.dim('Added:')} ${new Date(entry.addedAt).toLocaleDateString()}`);
+  console.log();
+};
+
+const requireInitialized = async (tuckDir: string): Promise<void> => {
+  try {
+    await loadManifest(tuckDir);
+  } catch {
+    throw new NotInitializedError();
+  }
+};
+
+const runAllowList = async (options: JsonOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets allow list');
+  const tuckDir = getTuckDir();
+  await requireInitialized(tuckDir);
+
+  const entries = await listAllowlistEntries(tuckDir);
+
+  if (isJsonMode()) {
+    // SECURITY: the allowlist already contains only fingerprints (no raw
+    // values), so it is safe to emit verbatim.
+    emitJsonOk({ entries });
+    return;
+  }
+
+  if (entries.length === 0) {
+    logger.info('No allowlisted findings');
+    console.log();
+    logger.dim(`Allowlist file: ${collapsePath(getAllowlistPath(tuckDir))}`);
+    logger.dim('Mark a scanner false-positive as safe with: tuck secrets allow add --file <path>');
+    return;
+  }
+
+  console.log();
+  console.log(c.bold.cyan(`Allowlisted Findings (${entries.length})`));
+  console.log(c.dim('─'.repeat(50)));
+  console.log();
+  for (const entry of entries) {
+    formatAllowEntry(entry);
+  }
+  logger.dim(`Allowlist file: ${collapsePath(getAllowlistPath(tuckDir))} (committed & auditable)`);
+};
+
+interface AllowRemoveOptions extends JsonOptions {}
+
+const runAllowRemove = async (
+  fingerprint: string,
+  options: AllowRemoveOptions = {}
+): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets allow remove');
+  const tuckDir = getTuckDir();
+  await requireInitialized(tuckDir);
+
+  const prefix = fingerprint.trim().toLowerCase();
+  if (prefix.length === 0 || !/^[a-f0-9]+$/.test(prefix)) {
+    throw new ValidationError('fingerprint', 'must be a hex fingerprint (or prefix)');
+  }
+
+  const removed = await removeAllowlistEntries(tuckDir, prefix);
+  if (removed.length > 0) {
+    await logSecretAllowlistRemoved(removed.map((entry) => entry.fingerprint));
+  }
+
+  if (isJsonMode()) {
+    emitJsonOk({ removed: removed.length, fingerprints: removed.map((e) => e.fingerprint) });
+    return;
+  }
+
+  if (removed.length === 0) {
+    logger.warning(`No allowlist entry matching: ${fingerprint}`);
+    logger.dim('Run `tuck secrets allow list` to see fingerprints');
+    return;
+  }
+  logger.success(
+    `Removed ${removed.length} allowlist entr${removed.length === 1 ? 'y' : 'ies'}`
+  );
+};
+
+interface AllowAddOptions extends JsonOptions {
+  reason?: string;
+  file?: string;
+  pattern?: string;
+  fingerprint?: string;
+  yes?: boolean;
+}
+
+/**
+ * Add scanner findings to the centralized allowlist.
+ *
+ * Three input modes (none of which put a raw secret on the command line):
+ *  - `--fingerprint <hash>`: allowlist a known fingerprint directly.
+ *  - `--file <path>` [+ `--pattern <id>`]: re-scan the file and allowlist the
+ *    matching findings by fingerprint (value never leaves the process).
+ *  - interactive (TTY, no --file/--fingerprint): scan tracked files and let the
+ *    user pick which findings to mark safe.
+ */
+const runAllowAdd = async (options: AllowAddOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets allow add');
+  const tuckDir = getTuckDir();
+  await requireInitialized(tuckDir);
+
+  const nonInteractive = isJsonMode() || options.yes === true || !process.stdout.isTTY;
+
+  // Unscoped bulk allowlisting (no --file/--pattern/--fingerprint) permanently
+  // disarms the secret gate for EVERY current finding — never do that on the
+  // strength of a redirected stdout alone. Explicit --yes is required.
+  if (
+    nonInteractive &&
+    options.yes !== true &&
+    !options.file &&
+    !options.pattern &&
+    !options.fingerprint
+  ) {
+    throw new TuckError(
+      'Refusing to allowlist ALL findings non-interactively',
+      'ALLOW_ALL_REQUIRES_YES',
+      [
+        'Pass --yes to explicitly allowlist every finding across all tracked files',
+        'Or scope the operation with --file <path>, --pattern <id>, or --fingerprint <fp>',
+      ]
+    );
+  }
+
+  // ---- Resolve a reason (required, keeps the allowlist auditable) ----
+  const resolveReason = async (): Promise<string> => {
+    if (options.reason && options.reason.trim().length > 0) return options.reason.trim();
+    if (nonInteractive) {
+      throw new TuckError('A reason is required', 'ALLOW_REASON_REQUIRED', [
+        'Pass --reason "<why this value is safe>"',
+      ]);
+    }
+    const reason = await prompts.text('Why is this value safe? (recorded in the allowlist)', {
+      placeholder: 'e.g. example value from docs, not a real key',
+    });
+    if (!reason || reason.trim().length === 0) {
+      throw new TuckError('A reason is required', 'ALLOW_REASON_REQUIRED');
+    }
+    return reason.trim();
+  };
+
+  // ---- Mode 1: direct fingerprint ----
+  if (options.fingerprint) {
+    const fp = options.fingerprint.trim().toLowerCase();
+    if (!isFingerprint(fp)) {
+      throw new ValidationError('fingerprint', 'must be a 64-char SHA-256 hex digest');
+    }
+    const reason = await resolveReason();
+    const entry = await addAllowlistEntryByFingerprint(tuckDir, fp, {
+      reason,
+      pattern: options.pattern,
+    });
+    await logSecretAllowlisted(entry.fingerprint, entry.reason, {
+      pattern: entry.pattern,
+      path: entry.path,
+    });
+    if (isJsonMode()) {
+      emitJsonOk({ added: 1, entries: [entry] });
+      return;
+    }
+    logger.success(`Allowlisted ${entry.fingerprint.slice(0, SHORT_FINGERPRINT_LENGTH)}…`);
+    return;
+  }
+
+  // ---- Determine which files to scan ----
+  let scanPaths: string[];
+  if (options.file) {
+    const expanded = expandPath(options.file);
+    if (!(await pathExists(expanded))) {
+      throw new TuckError(`File not found: ${options.file}`, 'FILE_NOT_FOUND', [
+        'Check the path and try again',
+      ]);
+    }
+    scanPaths = [expanded];
+  } else {
+    scanPaths = Array.from(
+      new Set(
+        Object.values(await getAllTrackedFiles(tuckDir)).map((file) => expandPath(file.source))
+      )
+    );
+  }
+
+  if (scanPaths.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ added: 0, entries: [] });
+      return;
+    }
+    logger.warning('No files to scan');
+    return;
+  }
+
+  // Run the SAME config-aware scan the secret gate runs (same scanner choice,
+  // custom patterns, and pattern ids — recorded scopes must match the gate),
+  // but without the allowlist filter, which would hide the very matches the
+  // user wants to add here.
+  const summary = await scanForSecrets(scanPaths, tuckDir, { includeAllowlisted: true });
+
+  if (summary.filesWithSecrets === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ added: 0, entries: [] });
+      return;
+    }
+    logger.info('No findings to allowlist');
+    return;
+  }
+
+  // Flatten to candidate findings (deduped by fingerprint+pattern+path).
+  interface Candidate {
+    value: string;
+    fingerprint: string;
+    patternId: string;
+    patternName: string;
+    collapsedPath: string;
+    line: number;
+    context: string;
+  }
+  const candidates: Candidate[] = [];
+  const seen = new Set<string>();
+  for (const result of summary.results) {
+    for (const match of result.matches) {
+      if (options.pattern && match.patternId !== options.pattern) continue;
+      const fingerprint = computeFingerprint(match.value);
+      const key = `${fingerprint}:${match.patternId}:${result.collapsedPath}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      candidates.push({
+        value: match.value,
+        fingerprint,
+        patternId: match.patternId,
+        patternName: match.patternName,
+        collapsedPath: result.collapsedPath,
+        line: match.line,
+        context: match.context,
+      });
+    }
+  }
+
+  if (candidates.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ added: 0, entries: [] });
+      return;
+    }
+    logger.info('No findings matched the given filters');
+    return;
+  }
+
+  // ---- Choose which candidates to allowlist ----
+  let chosen: Candidate[];
+  if (nonInteractive || options.file || options.pattern) {
+    // Non-interactive / scoped: allowlist every matching finding.
+    chosen = candidates;
+  } else {
+    const selected = await prompts.multiselect<string>(
+      'Select findings to mark as safe (allowlist):',
+      candidates.map((candidate, i) => ({
+        value: String(i),
+        label: `${candidate.patternName} — ${candidate.collapsedPath}:${candidate.line}`,
+        hint: candidate.context,
+      }))
+    );
+    if (!selected || selected.length === 0) {
+      logger.info('Nothing selected');
+      return;
+    }
+    const indices = new Set(selected.map((s) => parseInt(s, 10)));
+    chosen = candidates.filter((_, i) => indices.has(i));
+  }
+
+  const reason = await resolveReason();
+  const added: AllowlistEntry[] = [];
+  for (const candidate of chosen) {
+    const entry = await addAllowlistEntryByFingerprint(tuckDir, candidate.fingerprint, {
+      reason,
+      pattern: candidate.patternId,
+      path: candidate.collapsedPath,
+    });
+    await logSecretAllowlisted(entry.fingerprint, entry.reason, {
+      pattern: entry.pattern,
+      path: entry.path,
+    });
+    added.push(entry);
+  }
+
+  if (isJsonMode()) {
+    emitJsonOk({ added: added.length, entries: added });
+    return;
+  }
+
+  logger.success(
+    `Allowlisted ${added.length} finding${added.length === 1 ? '' : 's'}`
+  );
+  logger.dim(`Allowlist file: ${collapsePath(getAllowlistPath(tuckDir))} (commit it to share)`);
+};
+
+// ============================================================================
+// Value-Level Encryption Commands (SOPS-style)
+// ============================================================================
+
+/**
+ * Resolve the passphrase used for value-level encryption.
+ *
+ * Order: the `TUCK_ENCRYPTION_PASSWORD` env var (so CI never puts it in argv),
+ * then the OS keystore (the same password `tuck encryption setup` stores and
+ * apply/restore use for whole-file decryption), then an interactive prompt.
+ * Throws {@link EncryptionError} when none is available and we cannot prompt.
+ *
+ * When `confirmNew` is set, the interactive prompt is treated as INTRODUCING a
+ * brand-new passphrase (encryption) rather than supplying an existing one
+ * (decryption): it is entered twice and must match. This guards against a typo
+ * silently encrypting live files under a passphrase nobody knows. Decryption
+ * needs no confirmation — a wrong passphrase simply fails to decrypt existing
+ * tokens, loudly and non-destructively.
+ */
+const resolveEncryptionPassphrase = async (
+  interactive: boolean,
+  options: { confirmNew?: boolean } = {}
+): Promise<string> => {
+  const fromEnv = process.env.TUCK_ENCRYPTION_PASSWORD;
+  if (fromEnv && fromEnv.length > 0) {
+    return fromEnv;
+  }
+
+  const stored = await getStoredPassword();
+  if (stored && stored.length > 0) {
+    return stored;
+  }
+
+  if (!interactive) {
+    throw new EncryptionError('No encryption password available', [
+      'Run `tuck encryption setup` to configure a password in your OS keystore',
+      'Or set TUCK_ENCRYPTION_PASSWORD in the environment for non-interactive use',
+    ]);
+  }
+
+  // Introducing a new passphrase (encrypt): confirm it to catch typos before we
+  // rewrite live files under it.
+  if (options.confirmNew) {
+    const maxAttempts = 3;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const entered = await prompts.password('Enter a new encryption passphrase:');
+      if (!entered || entered.trim().length === 0) {
+        throw new EncryptionError('Encryption passphrase cannot be empty');
+      }
+      const confirmed = await prompts.password('Confirm encryption passphrase:');
+      if (entered === confirmed) {
+        return entered;
+      }
+      logger.warning('Passphrases did not match — please try again');
+    }
+    throw new EncryptionError('Encryption passphrases did not match', [
+      'Re-run the command and enter the same passphrase both times',
+    ]);
+  }
+
+  const entered = await prompts.password('Enter encryption passphrase:');
+  if (!entered || entered.trim().length === 0) {
+    throw new EncryptionError('Encryption passphrase cannot be empty');
+  }
+  return entered;
+};
+
+/** Resolve the target file list: explicit paths, or every tracked file. */
+const resolveTargetFiles = async (paths: string[], tuckDir: string): Promise<string[]> => {
+  if (paths.length > 0) {
+    return paths.map((p) => expandPath(p));
+  }
+  return Array.from(
+    new Set(
+      Object.values(await getAllTrackedFiles(tuckDir)).map((file) => expandPath(file.source))
+    )
+  );
+};
+
+interface ValueEncryptOptions {
+  json?: boolean;
+  yes?: boolean;
+}
+
+export const runSecretsEncryptValues = async (
+  paths: string[],
+  options: ValueEncryptOptions = {}
+): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets encrypt');
+
+  const tuckDir = getTuckDir();
+  try {
+    await loadManifest(tuckDir);
+  } catch {
+    throw new NotInitializedError();
+  }
+
+  const interactive = !isJsonMode() && !options.yes && !!process.stdout.isTTY;
+  const targets = await resolveTargetFiles(paths, tuckDir);
+
+  const existing: string[] = [];
+  for (const p of targets) {
+    if (await pathExists(p)) existing.push(p);
+  }
+
+  if (existing.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ filesEncrypted: 0, valuesEncrypted: 0, files: [] });
+      return;
+    }
+    logger.warning('No files to encrypt');
+    logger.dim("Pass file paths, or run 'tuck add <path>' to track files first");
+    return;
+  }
+
+  // Locate secret spans with the configured scanner (built-in or external).
+  const summary = await scanForSecrets(existing, tuckDir);
+  const filesWithSecrets = summary.results.filter((r) => r.hasSecrets && r.matches.length > 0);
+
+  if (filesWithSecrets.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ filesEncrypted: 0, valuesEncrypted: 0, files: [] });
+      return;
+    }
+    logger.success('No secret values detected to encrypt');
+    return;
+  }
+
+  if (!isJsonMode()) {
+    console.log();
+    console.log(c.bold.cyan(`Value-level encryption`));
+    console.log(c.dim('─'.repeat(50)));
+    for (const result of filesWithSecrets) {
+      // SECURITY: never print the secret value — only the count.
+      console.log(`  ${c.cyan(result.collapsedPath)} ${c.dim(`(${result.matches.length} value(s))`)}`);
+    }
+    console.log();
+  }
+
+  // Destructive: rewrites tracked files in place. Confirm + snapshot first.
+  if (interactive) {
+    const confirmed = await prompts.confirm(
+      `Encrypt secret values in ${filesWithSecrets.length} file(s)?`,
+      true
+    );
+    if (!confirmed) {
+      logger.warning('Encryption cancelled');
+      return;
+    }
+  }
+
+  // Encryption INTRODUCES the passphrase: confirm it (when prompted) so a typo
+  // never encrypts live files under a passphrase nobody can reproduce.
+  const passphrase = await resolveEncryptionPassphrase(interactive, { confirmNew: true });
+
+  // Safety net: back up every target before mutating it so `tuck undo` can revert.
+  await createSnapshot(
+    filesWithSecrets.map((r) => r.path),
+    'Pre value-encryption backup'
+  );
+
+  let filesEncrypted = 0;
+  let valuesEncrypted = 0;
+  const report: Array<{ path: string; valuesEncrypted: number }> = [];
+
+  for (const result of filesWithSecrets) {
+    const res = await encryptFileValues(result.path, result.matches, passphrase);
+    if (res.changed) {
+      filesEncrypted++;
+      valuesEncrypted += res.encrypted;
+      report.push({ path: result.collapsedPath, valuesEncrypted: res.encrypted });
+      if (!isJsonMode()) {
+        logger.success(`${result.collapsedPath}: encrypted ${res.encrypted} value(s)`);
+      }
+    }
+  }
+
+  if (isJsonMode()) {
+    emitJsonOk({ filesEncrypted, valuesEncrypted, files: report });
+    return;
+  }
+
+  console.log();
+  logger.success(`Encrypted ${valuesEncrypted} value(s) across ${filesEncrypted} file(s)`);
+  // The live file is rewritten in place, but the tracked repo copy still holds
+  // plaintext until a sync captures the encrypted version — committing without
+  // it pushes the plaintext the user just tried to protect.
+  if (valuesEncrypted > 0) {
+    logger.info("Run 'tuck sync' to capture the encrypted version into the repo before committing.");
+  }
+  logger.dim('Keys, structure, and comments stay plaintext — git diff/merge keep working.');
+  logger.dim("Run 'tuck secrets decrypt' to restore plaintext, or 'tuck undo' to revert.");
+};
+
+interface ValueDecryptOptions {
+  json?: boolean;
+  yes?: boolean;
+}
+
+export const runSecretsDecryptValues = async (
+  paths: string[],
+  options: ValueDecryptOptions = {}
+): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets decrypt');
+
+  const tuckDir = getTuckDir();
+  try {
+    await loadManifest(tuckDir);
+  } catch {
+    throw new NotInitializedError();
+  }
+
+  const interactive = !isJsonMode() && !options.yes && !!process.stdout.isTTY;
+  const targets = await resolveTargetFiles(paths, tuckDir);
+
+  // Only files that actually carry value tokens.
+  const encryptedFiles: string[] = [];
+  for (const p of targets) {
+    if (await fileHasEncryptedValues(p)) encryptedFiles.push(p);
+  }
+
+  if (encryptedFiles.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ filesDecrypted: 0, valuesDecrypted: 0, valuesFailed: 0, files: [] });
+      return;
+    }
+    logger.info('No encrypted values found');
+    return;
+  }
+
+  if (interactive) {
+    const confirmed = await prompts.confirm(
+      `Decrypt values in ${encryptedFiles.length} file(s) back to plaintext?`,
+      true
+    );
+    if (!confirmed) {
+      logger.warning('Decryption cancelled');
+      return;
+    }
+  }
+
+  const passphrase = await resolveEncryptionPassphrase(interactive);
+
+  // Safety net before rewriting live files with plaintext.
+  await createSnapshot(encryptedFiles, 'Pre value-decryption backup');
+
+  let filesDecrypted = 0;
+  let valuesDecrypted = 0;
+  let valuesFailed = 0;
+  const report: Array<{ path: string; valuesDecrypted: number; valuesFailed: number }> = [];
+
+  for (const p of encryptedFiles) {
+    // throwOnFailure:false so one bad token/wrong-key file never aborts the batch.
+    const res = await decryptFileValues(p, passphrase, { throwOnFailure: false });
+    valuesFailed += res.failed;
+    if (res.changed) {
+      filesDecrypted++;
+      valuesDecrypted += res.decrypted;
+    }
+    report.push({
+      path: collapsePath(p),
+      valuesDecrypted: res.decrypted,
+      valuesFailed: res.failed,
+    });
+    if (!isJsonMode() && res.decrypted > 0) {
+      logger.success(`${collapsePath(p)}: decrypted ${res.decrypted} value(s)`);
+    }
+    if (!isJsonMode() && res.failed > 0) {
+      logger.warning(`${collapsePath(p)}: ${res.failed} value(s) could not be decrypted`);
+    }
+  }
+
+  if (isJsonMode()) {
+    emitJsonOk({ filesDecrypted, valuesDecrypted, valuesFailed, files: report });
+    return;
+  }
+
+  console.log();
+  logger.success(`Decrypted ${valuesDecrypted} value(s) across ${filesDecrypted} file(s)`);
+  if (valuesFailed > 0) {
+    logger.warning(
+      `${valuesFailed} value(s) could not be decrypted — check the encryption passphrase`
+    );
+  }
+};
+
+// ============================================================================
 // Command Definition
 // ============================================================================
 
@@ -1319,6 +1931,59 @@ export const secretsCommand = new Command('secrets')
       .argument('[paths...]', 'Files to scan')
       .option('--json', 'Emit JSON envelope to stdout')
       .action(runScanFiles)
+  )
+  // Centralized, auditable allowlist (replaces inline ignore comments)
+  .addCommand(
+    new Command('allow')
+      .description('Manage the centralized secret allowlist (mark findings as safe)')
+      .option('--json', 'Emit JSON envelope to stdout')
+      .action((options: JsonOptions) => runAllowList(options))
+      .addCommand(
+        new Command('list')
+          .description('List allowlisted findings')
+          .option('--json', 'Emit JSON envelope to stdout')
+          .action((options: JsonOptions) => runAllowList(options))
+      )
+      .addCommand(
+        new Command('add')
+          .description('Add scanner finding(s) to the allowlist')
+          .option('--file <path>', 'Scan this file and allowlist its findings')
+          .option('--pattern <id>', 'Only allowlist findings from this pattern id')
+          .option('--fingerprint <hash>', 'Allowlist a known SHA-256 fingerprint directly')
+          .option('--reason <text>', 'Why the value is safe (required non-interactively)')
+          .option('--json', 'Emit JSON envelope to stdout')
+          .option('-y, --yes', 'Non-interactive: allowlist all matching findings')
+          .action((options: AllowAddOptions) => runAllowAdd(options))
+      )
+      .addCommand(
+        new Command('remove')
+          .description('Remove an allowlist entry by fingerprint (or prefix)')
+          .argument('<fingerprint>', 'Fingerprint or unique prefix to remove')
+          .option('--json', 'Emit JSON envelope to stdout')
+          .action((fingerprint: string, options: AllowRemoveOptions) =>
+            runAllowRemove(fingerprint, options)
+          )
+      )
+  )
+  .addCommand(
+    new Command('encrypt')
+      .description('Encrypt secret values in place (keys/structure stay plaintext)')
+      .argument('[paths...]', 'Files to encrypt (defaults to all tracked files)')
+      .option('--json', 'Emit JSON envelope to stdout (values are never included)')
+      .option('-y, --yes', 'Non-interactive: skip confirmation prompts')
+      .action((paths: string[], options: ValueEncryptOptions) =>
+        runSecretsEncryptValues(paths, options)
+      )
+  )
+  .addCommand(
+    new Command('decrypt')
+      .description('Decrypt in-place encrypted values back to plaintext')
+      .argument('[paths...]', 'Files to decrypt (defaults to all tracked files)')
+      .option('--json', 'Emit JSON envelope to stdout')
+      .option('-y, --yes', 'Non-interactive: skip confirmation prompts')
+      .action((paths: string[], options: ValueDecryptOptions) =>
+        runSecretsDecryptValues(paths, options)
+      )
   )
   .addCommand(
     new Command('extract')

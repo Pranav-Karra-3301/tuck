@@ -9,6 +9,7 @@ import chalk from 'chalk';
 import boxen from 'boxen';
 import { createInterface } from 'readline';
 import { APP_NAME, VERSION } from '../constants.js';
+import { isNonInteractive } from './agentMode.js';
 
 // Package info for update-notifier
 const pkg = {
@@ -114,9 +115,11 @@ const executeUpdate = (packageManager: 'npm' | 'pnpm'): boolean => {
 };
 
 /**
- * Check if running in an environment where we should skip update checks
+ * Check if running in an environment where we should skip update checks.
+ *
+ * Exported for unit testing of the skip conditions.
  */
-const shouldSkipUpdateCheck = (): boolean => {
+export const shouldSkipUpdateCheck = (): boolean => {
   // Skip in CI environments
   if (process.env.CI) {
     return true;
@@ -133,8 +136,12 @@ const shouldSkipUpdateCheck = (): boolean => {
     return true;
   }
 
-  // Skip if not a TTY (non-interactive)
-  if (!process.stdin.isTTY) {
+  // Skip whenever the CLI is running non-interactively: an explicit
+  // `--non-interactive`, `--json`, or a non-TTY stdin. The update prompt uses a
+  // raw readline (waitForEnterOrCancel) that bypasses the clack interactive gate,
+  // so without this an agent driving tuck in a PTY would block forever. This also
+  // subsumes the previous bare `!process.stdin.isTTY` check.
+  if (isNonInteractive()) {
     return true;
   }
 

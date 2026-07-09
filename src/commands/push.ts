@@ -12,10 +12,11 @@ import {
   getCurrentBranch,
   addRemote,
 } from '../lib/git.js';
-import { NotInitializedError, GitError } from '../errors.js';
+import { NotInitializedError, GitError, OperationCancelledError } from '../errors.js';
 import type { PushOptions } from '../types.js';
 import { logForcePush } from '../lib/audit.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
+import { isNonInteractive } from '../lib/agentMode.js';
 import { loadConfig } from '../lib/config.js';
 import { assertRemoteAvailable } from '../lib/providers/index.js';
 
@@ -120,23 +121,19 @@ const runInteractivePush = async (tuckDir: string): Promise<void> => {
     });
     prompts.log.success('Pushed successfully!');
   } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : String(error);
-
-    // Provide specific guidance based on common errors
-    if (errorMsg.includes('Permission denied') || errorMsg.includes('publickey')) {
-      prompts.log.error('Authentication failed');
-      prompts.log.info('Check your SSH keys with: ssh -T git@github.com');
-      prompts.log.info('Or try switching to HTTPS: git remote set-url origin https://...');
-    } else if (errorMsg.includes('Could not resolve host') || errorMsg.includes('Network')) {
-      prompts.log.error('Network error - could not reach remote');
-      prompts.log.info('Check your internet connection and try again');
-    } else if (errorMsg.includes('rejected') || errorMsg.includes('non-fast-forward')) {
-      prompts.log.error('Push rejected - remote has changes');
-      prompts.log.info("Run 'tuck pull' first, then push again");
-      prompts.log.info("Or use 'tuck push --force' to overwrite (use with caution)");
-    } else {
-      prompts.log.error(`Push failed: ${errorMsg}`);
+    // The lib layer (describeGitError) already classified the failure with a
+    // contextual message and suggestions; re-classifying here by substring
+    // misfires (e.g. "authentication ... was rejected" matched the
+    // push-rejected branch). Present the lib's diagnosis verbatim.
+    if (error instanceof GitError) {
+      prompts.log.error(error.message);
+      for (const suggestion of error.suggestions ?? []) {
+        prompts.log.info(suggestion);
+      }
+      return;
     }
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    prompts.log.error(`Push failed: ${errorMsg}`);
     return;
   }
 
@@ -205,10 +202,18 @@ const runPush = async (options: PushOptions): Promise<void> => {
     }
   }
 
-  // Require explicit confirmation for force push. In non-interactive mode
-  // (--json / --yes) the caller has already opted in, so skip the prompt.
+  // Require explicit confirmation for force push. Only `--json` / `--yes` count
+  // as opting in (see `nonInteractive` above). If the caller did NOT opt in but
+  // we also cannot prompt (--non-interactive, JSON mode, or a non-TTY stdin),
+  // we must fail LOUDLY: silently cancelling here previously exited 0 having
+  // pushed nothing — a false success an agent could not detect.
   if (options.force) {
     if (!nonInteractive) {
+      if (isNonInteractive()) {
+        throw new OperationCancelledError(
+          're-run with --yes to confirm the --force push (force push cannot be confirmed non-interactively)'
+        );
+      }
       const confirmed = await prompts.confirmDangerous(
         'Force push will overwrite remote history.\n' +
           'This can cause data loss for collaborators and is generally discouraged.',
@@ -241,17 +246,13 @@ const runPush = async (options: PushOptions): Promise<void> => {
     }
     logger.success('Pushed successfully!');
   } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : String(error);
-
-    if (errorMsg.includes('Permission denied') || errorMsg.includes('publickey')) {
-      throw new GitError('Authentication failed', 'Check your SSH keys: ssh -T git@github.com');
-    } else if (errorMsg.includes('Could not resolve host') || errorMsg.includes('Network')) {
-      throw new GitError('Network error', 'Check your internet connection');
-    } else if (errorMsg.includes('rejected') || errorMsg.includes('non-fast-forward')) {
-      throw new GitError('Push rejected', "Run 'tuck pull' first, or use --force");
-    } else {
-      throw new GitError('Push failed', errorMsg);
+    // Lib-layer GitErrors are already contextual (describeGitError) — rethrow
+    // as-is instead of re-classifying by message substring, which misfired on
+    // messages like "authentication with the remote was rejected".
+    if (error instanceof GitError) {
+      throw error;
     }
+    throw new GitError('Push failed', error instanceof Error ? error.message : String(error));
   }
 };
 

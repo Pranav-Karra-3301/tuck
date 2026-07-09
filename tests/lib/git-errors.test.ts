@@ -27,6 +27,9 @@ const createErrorMockGit = (errorMessage: string) => ({
   revparse: vi.fn().mockRejectedValue(new Error(errorMessage)),
   branch: vi.fn().mockRejectedValue(new Error(errorMessage)),
   raw: vi.fn().mockRejectedValue(new Error(errorMessage)),
+  // Real simple-git exposes .env() (chainable). createGit configures a
+  // non-interactive env under non-TTY/JSON mode, so the double must provide it.
+  env: vi.fn().mockReturnThis(),
 });
 
 // Store mock git instance
@@ -226,17 +229,29 @@ describe('git-errors', () => {
   // ============================================================================
 
   describe('push errors', () => {
-    it('should throw GitError when push fails', async () => {
+    it('should throw a contextual GitError for auth failures (issue #52)', async () => {
       mockGitInstance = createErrorMockGit('authentication failed');
 
-      await expect(push(TEST_TUCK_DIR)).rejects.toThrow('Failed to push');
+      // describeGitError classifies the raw git output into an actionable message.
+      await expect(push(TEST_TUCK_DIR)).rejects.toThrow('authentication with the remote was rejected');
     }, 30000); // Longer timeout for Windows CI
 
-    it('should throw GitError for non-fast-forward push', async () => {
+    it('should throw a contextual GitError for non-fast-forward push (issue #52)', async () => {
       mockGitInstance = createErrorMockGit('non-fast-forward');
 
-      await expect(push(TEST_TUCK_DIR)).rejects.toThrow('Failed to push');
+      await expect(push(TEST_TUCK_DIR)).rejects.toThrow('remote has commits you do not have locally');
     }, 30000); // Longer timeout for Windows CI
+
+    it('preserves the raw git output on the GitError for debugging', async () => {
+      mockGitInstance = createErrorMockGit('non-fast-forward');
+      try {
+        await push(TEST_TUCK_DIR);
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(GitError);
+        expect((error as GitError).gitOutput).toContain('non-fast-forward');
+      }
+    }, 30000);
   });
 
   // ============================================================================
@@ -244,10 +259,10 @@ describe('git-errors', () => {
   // ============================================================================
 
   describe('pull errors', () => {
-    it('should throw GitError when pull fails', async () => {
+    it('should throw a contextual GitError for merge conflicts (issue #52)', async () => {
       mockGitInstance = createErrorMockGit('merge conflict');
 
-      await expect(pull(TEST_TUCK_DIR)).rejects.toThrow('Failed to pull');
+      await expect(pull(TEST_TUCK_DIR)).rejects.toThrow('pull produced merge conflicts');
     });
 
     it('should throw GitError for diverged branches', async () => {
@@ -268,10 +283,10 @@ describe('git-errors', () => {
       await expect(fetch(TEST_TUCK_DIR)).rejects.toThrow('Failed to fetch');
     });
 
-    it('should throw GitError for network errors', async () => {
+    it('should throw a contextual GitError for network errors (issue #52)', async () => {
       mockGitInstance = createErrorMockGit('unable to access');
 
-      await expect(fetch(TEST_TUCK_DIR, 'origin')).rejects.toThrow('Failed to fetch');
+      await expect(fetch(TEST_TUCK_DIR, 'origin')).rejects.toThrow('could not reach the remote');
     });
   });
 

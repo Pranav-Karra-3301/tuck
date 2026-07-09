@@ -192,3 +192,14 @@ describe('init command behavior', () => {
     expect(saveConfigMock).not.toHaveBeenCalled();
   });
 });
+
+describe('buildInitStartChoices', () => {
+  it('offers the scan-based adopt-existing path first (IDEAS 2.4)', async () => {
+    const { buildInitStartChoices } = await import('../../src/commands/init.js');
+    const choices = buildInitStartChoices();
+
+    expect(choices[0].value).toBe('adopt');
+    expect(choices[0].hint.toLowerCase()).toContain('recommended');
+    expect(choices.map((choice) => choice.value)).toEqual(['adopt', 'clone', 'fresh']);
+  });
+});
