@@ -1,5 +1,32 @@
 <img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
+# [1.11.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.10.0...v1.11.0) (2026-07-09)
+
+
+### Bug Fixes
+
+* **diff:** load secrets map once per run; never print cleartext in missing-repo diffs ([f67a74c](https://github.com/Pranav-Karra-3301/tuck/commit/f67a74ce15a2584517f5901e3b5705394696bd76))
+* **secrets:** align store-inversion order between redaction and drift compare ([d3b78cc](https://github.com/Pranav-Karra-3301/tuck/commit/d3b78cc69b25594ed5e102de57b27dffb7c8c22c))
+* **secrets:** extract correct capture group and match full identifiers (issue [#100](https://github.com/Pranav-Karra-3301/tuck/issues/100) RC1-RC4) ([52aadf7](https://github.com/Pranav-Karra-3301/tuck/commit/52aadf77e0663ccfe4cc3f6516549165171f6ea2))
+* **secrets:** placeholder-aware change detection for sync/status/diff (issue [#100](https://github.com/Pranav-Karra-3301/tuck/issues/100)) ([c514573](https://github.com/Pranav-Karra-3301/tuck/commit/c514573020bd11d9bbe76784fb3f76b469eeb126))
+* **secrets:** resolve overlapping matches, specific patterns beat generic ([fd8cba0](https://github.com/Pranav-Karra-3301/tuck/commit/fd8cba08a37cb8415f393108e9f63f60a333d5b0)), closes [#100](https://github.com/Pranav-Karra-3301/tuck/issues/100)
+* **secrets:** reuse stored placeholders across scans ([84277b0](https://github.com/Pranav-Karra-3301/tuck/commit/84277b08ca0a436fb0aa33d4bcf109914311bb7c))
+* **secrets:** scope non-secret guard to unquoted generic values; honest gitleaks offsets ([da2f122](https://github.com/Pranav-Karra-3301/tuck/commit/da2f1226171296b27ff7d099a27da7ba50988e5e))
+* **sync:** redact repository copy only during sync (issue [#100](https://github.com/Pranav-Karra-3301/tuck/issues/100) RC5) ([df0044d](https://github.com/Pranav-Karra-3301/tuck/commit/df0044da5c986c3bcf82850f0c4e1a9c0ec84e4f))
+* **track:** clean up repo copy when redaction fails; honest redaction messaging ([6ede601](https://github.com/Pranav-Karra-3301/tuck/commit/6ede601551936ff3d31c5342978c43ae9073144e)), closes [#100](https://github.com/Pranav-Karra-3301/tuck/issues/100)
+* **track:** redact repository copy only, never the live file (issue [#100](https://github.com/Pranav-Karra-3301/tuck/issues/100) RC5) ([662eb9d](https://github.com/Pranav-Karra-3301/tuck/commit/662eb9d61c88c4bee7f079c6bbfa92f94357de6e))
+
+
+### Features
+
+* AI agent config presets and cross-agent instructions translation ([#107](https://github.com/Pranav-Karra-3301/tuck/issues/107)) ([9cf9344](https://github.com/Pranav-Karra-3301/tuck/commit/9cf93442540a6af991b989bcf8bc67a9f14a16fb))
+* **apply:** remote / SSH apply — push tracked configs onto a remote box ([#104](https://github.com/Pranav-Karra-3301/tuck/issues/104)) ([f08eb7a](https://github.com/Pranav-Karra-3301/tuck/commit/f08eb7a112ddd8757f62529b0bab19027021c998))
+* **mcp:** MCP fleet management — define servers once, render per client ([#106](https://github.com/Pranav-Karra-3301/tuck/issues/106)) ([0720cb3](https://github.com/Pranav-Karra-3301/tuck/commit/0720cb3c18a96ec340ea6c101ac3323fbd1c85a5))
+* profiles / tags (work, personal, server, agent) ([#114](https://github.com/Pranav-Karra-3301/tuck/issues/114)) ([3ecd264](https://github.com/Pranav-Karra-3301/tuck/commit/3ecd26489e8cf288999a3824a2214042d3400df6))
+* **secrets:** MCP inline-credential extraction (secrets extract --mcp) ([#103](https://github.com/Pranav-Karra-3301/tuck/issues/103)) ([2692fe4](https://github.com/Pranav-Karra-3301/tuck/commit/2692fe4a8f4263301af0f62fe4ed8af939ec1d90))
+* **secrets:** redacted-content checksum helpers for drift detection (issue [#100](https://github.com/Pranav-Karra-3301/tuck/issues/100)) ([0168a21](https://github.com/Pranav-Karra-3301/tuck/commit/0168a2186b53e08fbce37301e2d4aef4d0fd415a))
+* tuck bootstrap — one-command idempotent machine setup + declarative requires ([#117](https://github.com/Pranav-Karra-3301/tuck/issues/117)) ([5dd2c5e](https://github.com/Pranav-Karra-3301/tuck/commit/5dd2c5e1ae6f23e37afdbeb559c4e58aa232af61))
+
 # [1.10.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.9.0...v1.10.0) (2026-07-09)
 
 
