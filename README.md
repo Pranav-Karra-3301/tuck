@@ -150,7 +150,37 @@ tuck restore --all
 | `tuck context`      | Track AI agent configs across home and per-repo scopes           |
 | `tuck preset`       | Apply or publish curated bundles of dotfiles & agent configs     |
 | `tuck repo`         | Manage machine-local repo bindings (for repo-scoped tracking)    |
-| `tuck mcp`          | Run the Model Context Protocol server (expose tuck to AI agents) |
+| `tuck mcp`          | Run the MCP server + manage your MCP fleet (define once, render per client) |
+
+### MCP fleet — define servers once, render per client
+
+MCP client config formats diverge: Claude Desktop uses one JSON shape, Cursor
+another, VS Code a third. Declare each MCP server once in your tuck repo and let
+`tuck mcp apply` project it into every client's native format, injecting
+credentials from your secret backends at apply time.
+
+```bash
+# Declare a server once (credentials stay as {{PLACEHOLDER}} references)
+tuck mcp add github \
+  --command npx \
+  --arg -y --arg @modelcontextprotocol/server-github \
+  --env GITHUB_TOKEN={{GITHUB_TOKEN}}
+
+# A remote (http/sse) server, scoped to specific clients
+tuck mcp add linear --transport sse --url https://mcp.linear.app/sse --client cursor --client vscode
+
+tuck mcp list                 # show the fleet
+tuck mcp clients              # supported clients + their config paths
+tuck mcp render --client cursor   # preview (secrets NOT injected by default)
+tuck mcp apply --dry-run      # show what would change
+tuck mcp apply                # write configs (backs up existing files first)
+```
+
+The fleet lives in `mcp-servers.json` in your tuck repo and is safe to commit —
+it only ever holds placeholders, never real secrets. On apply, `{{PLACEHOLDER}}`
+values are resolved from the same secret backends tuck uses for dotfiles; if any
+can't be resolved, apply refuses to write rather than leak an unresolved token.
+Supported clients: Claude Desktop, Claude Code, Cursor, Windsurf, VS Code.
 
 ## How It Works
 

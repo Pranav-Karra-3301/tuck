@@ -30,7 +30,7 @@ tuck is a modern dotfiles manager that provides a beautiful CLI for managing you
 * **verify**: Verify that the live system, repo, and manifest agree
 * **bundle**: Manage bundles — logical groups of tracked files
 * **context**: Track AI agent configs across home and per-repo scopes
-* **mcp**: Model Context Protocol server — expose tuck to AI agents
+* **mcp**: Model Context Protocol server, plus MCP fleet management (declare servers once with `mcp add`, render each client's config with `mcp apply`)
 * **preset**: Apply or publish curated bundles of dotfiles & agent configs
 * **repo**: Manage machine-local repo bindings (repoKey → absolute root)
 
