@@ -89,9 +89,19 @@ export interface TrackedFile {
   checksum: string;
   /** Logical group above category. Defaults to "default". */
   bundle: string;
+  /**
+   * Profile tags this file belongs to. Empty = universal (applies under every
+   * profile). Defaults to `[]`.
+   */
+  tags: string[];
 }
 
 export interface BundleMetadata {
+  description?: string;
+  created: string;
+}
+
+export interface ProfileMetadata {
   description?: string;
   created: string;
 }
@@ -103,6 +113,7 @@ export interface TuckManifest {
   machine?: string;
   files: Record<string, TrackedFile>;
   bundles: Record<string, BundleMetadata>;
+  profiles: Record<string, ProfileMetadata>;
 }
 
 export interface InitOptions {
@@ -123,6 +134,11 @@ export interface AddOptions extends CommonOptions {
   template?: boolean;
   /** Bundle to assign the tracked file to. Defaults to "default". */
   bundle?: string;
+  /**
+   * Profile tags to attach to the tracked file(s) at add time (work, personal,
+   * server, agent, …). Each tag is auto-registered as a profile if new.
+   */
+  tag?: string[];
   /**
    * Track the file as REPO-scoped: it lives inside a git repo (optionally at
    * the given dir; auto-detected from the path otherwise) whose absolute path
@@ -197,6 +213,12 @@ export interface ApplyOptions extends CommonOptions {
   noSecrets?: boolean;
   /** Scope apply to a single bundle. Defaults to all bundles when unset. */
   bundle?: string;
+  /**
+   * Scope apply to a single profile (work, personal, server, agent, …). When
+   * unset, falls back to this machine's bound profile; when neither is set,
+   * every file is applied (legacy behavior).
+   */
+  profile?: string;
   /** Bind an as-yet-unknown repo to this root before applying repo-scoped files. */
   repoRoot?: string;
 }
