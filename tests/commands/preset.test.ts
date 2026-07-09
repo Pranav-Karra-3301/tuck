@@ -15,6 +15,7 @@ import {
   decidePresetOverwrite,
   bundledRegistryDir,
   applyAction,
+  translateAction,
 } from '../../src/commands/preset.js';
 
 // Spy on the snapshot helper so we can assert it is (or is not) called with the
@@ -73,10 +74,7 @@ describe('assertPresetTargetsSafe', () => {
 
   it('rejects the whole batch if any single target is unsafe', () => {
     expect(() =>
-      assertPresetTargetsSafe([
-        { target: '/test-home/.config/ok' },
-        { target: '/root/.bashrc' },
-      ])
+      assertPresetTargetsSafe([{ target: '/test-home/.config/ok' }, { target: '/root/.bashrc' }])
     ).toThrow();
   });
 });
@@ -184,7 +182,9 @@ describe('preset apply (integration)', () => {
 
     // Files landed under the (mocked) home. Built with resolve() to match
     // resolveWriteTarget's output on both POSIX and Windows (drive-prefixed).
-    expect(vol.readFileSync(resolve(TEST_HOME, '.claude', 'CLAUDE.md'), 'utf-8')).toBe('hello claude');
+    expect(vol.readFileSync(resolve(TEST_HOME, '.claude', 'CLAUDE.md'), 'utf-8')).toBe(
+      'hello claude'
+    );
     expect(vol.readFileSync(resolve(TEST_HOME, '.config', 'zshrc'), 'utf-8')).toBe('export A=1');
 
     const env = jsonEnvelope();
@@ -262,7 +262,7 @@ describe('preset apply (integration)', () => {
   });
 
   it.skipIf(process.platform === 'win32')(
-    'applies the preset file\'s declared permissions to the written target',
+    "applies the preset file's declared permissions to the written target",
     async () => {
       // Stage a preset whose (non-template) file declares a hardened mode, like
       // an SSH/credential config. The permissions field was parsed but never
@@ -296,6 +296,133 @@ describe('preset apply (integration)', () => {
       expect(mode.toString(8)).toBe('600');
     }
   );
+});
+
+/**
+ * preset translate — cross-agent instructions translation (IDEAS 1.8 v1).
+ *
+ * translateAction materializes one canonical instructions file into each
+ * agent's global instruction path. It reuses the same safety machinery as
+ * `preset apply` (home-confined targets, snapshot + overwrite refusal), so the
+ * tests focus on the fan-out, the self-target skip, and the refusal path.
+ */
+describe('preset translate', () => {
+  const SOURCE = join(TEST_HOME, 'canonical-instructions.md');
+  const CLAUDE = resolve(TEST_HOME, '.claude', 'CLAUDE.md');
+  const CODEX = resolve(TEST_HOME, '.codex', 'AGENTS.md');
+
+  let writes: string[];
+  let writeSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(async () => {
+    vol.reset();
+    vol.mkdirSync(TEST_HOME, { recursive: true });
+    createPreApplySnapshotMock.mockClear();
+    confirmMock.mockClear().mockResolvedValue(true);
+    const { setJsonMode, __resetJsonEmitState } = await import('../../src/lib/jsonOutput.js');
+    setJsonMode(false);
+    __resetJsonEmitState();
+    writes = [];
+    writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+  });
+
+  afterEach(async () => {
+    writeSpy.mockRestore();
+    const { setJsonMode } = await import('../../src/lib/jsonOutput.js');
+    setJsonMode(false);
+  });
+
+  const jsonEnvelope = (): { ok: boolean; command: string; data?: any; error?: any } => {
+    const jsonLine = writes.find((w) => w.trim().startsWith('{'));
+    return JSON.parse((jsonLine ?? writes.join('')).trim());
+  };
+
+  it('materializes the canonical file for both default agents (claude + codex)', async () => {
+    vol.writeFileSync(SOURCE, '# my canonical rules');
+
+    await translateAction(SOURCE, { json: true, yes: true });
+
+    expect(vol.readFileSync(CLAUDE, 'utf-8')).toBe('# my canonical rules');
+    expect(vol.readFileSync(CODEX, 'utf-8')).toBe('# my canonical rules');
+
+    const env = jsonEnvelope();
+    expect(env.ok).toBe(true);
+    expect(env.command).toBe('tuck preset translate');
+    expect(env.data.translated).toBe(2);
+    // Fresh targets → no snapshot.
+    expect(createPreApplySnapshotMock).not.toHaveBeenCalled();
+  });
+
+  it('skips the target that is the source itself', async () => {
+    // Source IS Claude's instruction file → only Codex should be written.
+    vol.mkdirSync(resolve(TEST_HOME, '.claude'), { recursive: true });
+    vol.writeFileSync(CLAUDE, '# claude rules');
+
+    await translateAction(CLAUDE, { json: true, yes: true });
+
+    const env = jsonEnvelope();
+    expect(env.data.translated).toBe(1);
+    expect(vol.readFileSync(CODEX, 'utf-8')).toBe('# claude rules');
+  });
+
+  it('refuses to overwrite non-interactively without --yes and writes nothing', async () => {
+    vol.writeFileSync(SOURCE, 'NEW');
+    vol.mkdirSync(resolve(TEST_HOME, '.codex'), { recursive: true });
+    vol.writeFileSync(CODEX, 'ORIGINAL');
+
+    await expect(translateAction(SOURCE, { json: true })).rejects.toMatchObject({
+      code: 'PRESET_OVERWRITE_REFUSED',
+    });
+
+    // Existing untouched; the fresh Claude target never got created either.
+    expect(vol.readFileSync(CODEX, 'utf-8')).toBe('ORIGINAL');
+    expect(vol.existsSync(CLAUDE)).toBe(false);
+    expect(createPreApplySnapshotMock).not.toHaveBeenCalled();
+  });
+
+  it('overwrites with --yes and snapshots the existing target first', async () => {
+    vol.writeFileSync(SOURCE, 'NEW');
+    vol.mkdirSync(resolve(TEST_HOME, '.codex'), { recursive: true });
+    vol.writeFileSync(CODEX, 'ORIGINAL');
+
+    await translateAction(SOURCE, { json: true, yes: true });
+
+    expect(vol.readFileSync(CODEX, 'utf-8')).toBe('NEW');
+    expect(createPreApplySnapshotMock).toHaveBeenCalledTimes(1);
+    const [snapTargets] = createPreApplySnapshotMock.mock.calls[0] as [string[], string];
+    expect(snapTargets).toEqual([CODEX]);
+  });
+
+  it('--plan emits the plan and writes nothing', async () => {
+    vol.writeFileSync(SOURCE, 'planme');
+
+    await translateAction(SOURCE, { json: true, plan: true });
+
+    const env = jsonEnvelope();
+    expect(env.ok).toBe(true);
+    expect(Array.isArray(env.data.plan)).toBe(true);
+    expect(env.data.plan.length).toBe(2);
+    expect(vol.existsSync(CLAUDE)).toBe(false);
+    expect(vol.existsSync(CODEX)).toBe(false);
+  });
+
+  it('rejects an unknown target agent', async () => {
+    vol.writeFileSync(SOURCE, 'x');
+    await expect(
+      translateAction(SOURCE, { to: 'claude-code,bogus', json: true, yes: true })
+    ).rejects.toMatchObject({ code: 'UNKNOWN_TRANSLATION_TARGET' });
+  });
+
+  it('errors when no source is given and no canonical file exists', async () => {
+    await expect(translateAction(undefined, { json: true, yes: true })).rejects.toMatchObject({
+      code: 'PRESET_SOURCE_MISSING',
+    });
+  });
 });
 
 describe('bundledRegistryDir', () => {
