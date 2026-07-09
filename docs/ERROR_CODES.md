@@ -6,39 +6,45 @@ This document lists all error codes used by tuck for programmatic error handling
 
 ## Error Code Table
 
-| Code | Error Class | Description | Common Causes | Suggestions |
-|------|-------------|-------------|---------------|-------------|
-| `NOT_INITIALIZED` | `NotInitializedError` | Tuck is not initialized | Running commands before `tuck init` | Run `tuck init` to get started |
-| `ALREADY_INITIALIZED` | `AlreadyInitializedError` | Tuck already exists at path | Running `tuck init` twice | Use `tuck status` to see current state |
-| `FILE_NOT_FOUND` | `FileNotFoundError` | Specified file doesn't exist | Wrong path, deleted file | Check path, use absolute paths |
-| `FILE_NOT_TRACKED` | `FileNotTrackedError` | File isn't being tracked | File not added with `tuck add` | Run `tuck add <path>` first |
-| `FILE_ALREADY_TRACKED` | `FileAlreadyTrackedError` | File is already tracked | Adding same file twice | Use `tuck sync` to update |
-| `GIT_ERROR` | `GitError` | Git operation failed | Auth issues, network, conflicts | Check git credentials and network |
-| `MERGE_CONFLICTS` | `MergeConflictsError` | Merge left unresolved conflicts (**exit code 3**, distinct for agent branching) | Overlapping local/remote edits | Resolve conflicts, then re-run the operation |
-| `CONFIG_ERROR` | `ConfigError` | Configuration problem | Corrupted config, invalid values | Run `tuck config reset` |
-| `MANIFEST_ERROR` | `ManifestError` | Manifest file issue | Corrupted JSON, schema mismatch | Restore from remote with `tuck init --from` |
-| `PERMISSION_ERROR` | `PermissionError` | Cannot read/write file | Wrong permissions, locked file | Check file permissions |
-| `GITHUB_CLI_ERROR` | `GitHubCliError` | GitHub CLI issue | Not installed, not authenticated | Install `gh` and run `gh auth login` |
-| `BACKUP_ERROR` | `BackupError` | Backup operation failed | Disk full, permissions | Check disk space and permissions |
-| `ENCRYPTION_ERROR` | `EncryptionError` | Encryption failed | Wrong password, key issues | Check encryption password |
-| `DECRYPTION_ERROR` | `DecryptionError` | Decryption failed | Wrong password, corrupted data | Verify correct password is used |
-| `SECRETS_DETECTED` | `SecretsDetectedError` | Secrets found in files | API keys, passwords in dotfiles | Review and remove secrets, or use `--force` |
+| Code                         | Error Class                  | Description                                                                     | Common Causes                                           | Suggestions                                             |
+| ---------------------------- | ---------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------- |
+| `NOT_INITIALIZED`            | `NotInitializedError`        | Tuck is not initialized                                                         | Running commands before `tuck init`                     | Run `tuck init` to get started                          |
+| `ALREADY_INITIALIZED`        | `AlreadyInitializedError`    | Tuck already exists at path                                                     | Running `tuck init` twice                               | Use `tuck status` to see current state                  |
+| `FILE_NOT_FOUND`             | `FileNotFoundError`          | Specified file doesn't exist                                                    | Wrong path, deleted file                                | Check path, use absolute paths                          |
+| `FILE_NOT_TRACKED`           | `FileNotTrackedError`        | File isn't being tracked                                                        | File not added with `tuck add`                          | Run `tuck add <path>` first                             |
+| `FILE_ALREADY_TRACKED`       | `FileAlreadyTrackedError`    | File is already tracked                                                         | Adding same file twice                                  | Use `tuck sync` to update                               |
+| `GIT_ERROR`                  | `GitError`                   | Git operation failed                                                            | Auth issues, network, conflicts                         | Check git credentials and network                       |
+| `MERGE_CONFLICTS`            | `MergeConflictsError`        | Merge left unresolved conflicts (**exit code 3**, distinct for agent branching) | Overlapping local/remote edits                          | Resolve conflicts, then re-run the operation            |
+| `CONFIG_ERROR`               | `ConfigError`                | Configuration problem                                                           | Corrupted config, invalid values                        | Run `tuck config reset`                                 |
+| `MANIFEST_ERROR`             | `ManifestError`              | Manifest file issue                                                             | Corrupted JSON, schema mismatch                         | Restore from remote with `tuck init --from`             |
+| `PERMISSION_ERROR`           | `PermissionError`            | Cannot read/write file                                                          | Wrong permissions, locked file                          | Check file permissions                                  |
+| `GITHUB_CLI_ERROR`           | `GitHubCliError`             | GitHub CLI issue                                                                | Not installed, not authenticated                        | Install `gh` and run `gh auth login`                    |
+| `BACKUP_ERROR`               | `BackupError`                | Backup operation failed                                                         | Disk full, permissions                                  | Check disk space and permissions                        |
+| `ENCRYPTION_ERROR`           | `EncryptionError`            | Encryption failed                                                               | Wrong password, key issues                              | Check encryption password                               |
+| `DECRYPTION_ERROR`           | `DecryptionError`            | Decryption failed                                                               | Wrong password, corrupted data                          | Verify correct password is used                         |
+| `SECRETS_DETECTED`           | `SecretsDetectedError`       | Secrets found in files                                                          | API keys, passwords in dotfiles                         | Review and remove secrets, or use `--force`             |
+| `SECRET_BACKEND_ERROR`       | `SecretBackendError`         | Password manager issue                                                          | Not installed, not authenticated                        | Check CLI installation and auth                         |
+| `SECRET_NOT_FOUND`           | `SecretNotFoundError`        | Secret not in backend                                                           | Missing mapping, deleted secret                         | Check secrets.mappings.json                             |
+| `BACKEND_NOT_AVAILABLE`      | `BackendNotAvailableError`   | Backend CLI missing                                                             | 1Password/Bitwarden not installed                       | Install the backend CLI                                 |
+| `BACKEND_AUTH_ERROR`         | `BackendAuthenticationError` | Backend not authenticated                                                       | Session expired                                         | Re-authenticate with backend                            |
+| `UNRESOLVED_SECRETS`         | `UnresolvedSecretsError`     | Could not resolve secrets                                                       | Missing in backend                                      | Ensure secrets are configured                           |
+| `MATERIALIZE_FAILED`         | `MaterializeError`           | Could not materialize a template/encrypted file on apply                        | Bad template, decryption failure                        | Check the source file and encryption password           |
+| `OPERATION_CANCELLED`        | `OperationCancelledError`    | Operation was cancelled                                                         | User aborted, or a prompt required in a non-TTY context | Re-run interactively, or pass `-y/--yes`                |
+| `PRIVATE_KEY_ERROR`          | `PrivateKeyError`            | Refused to track a private key                                                  | Attempting to add an SSH/GPG private key                | Store keys in a secret manager, not dotfiles            |
+| `REPOSITORY_NOT_FOUND`       | `RepositoryNotFoundError`    | No dotfiles repository found for the source                                     | Bad user/repo, missing remote                           | Check the source argument and remote access             |
+| `INVALID_MANIFEST`           | `InvalidManifestError`       | Manifest failed schema validation                                               | Hand-edited or corrupted manifest                       | Restore from remote with `tuck init --from`             |
+| `PATH_TRAVERSAL_ERROR`       | `PathTraversalError`         | Path escaped the allowed root                                                   | `..` segments or absolute escape in a path              | Use a path within the tuck/target root                  |
+| `SECRETS_STORE_ERROR`        | `SecretsStoreError`          | Local secrets store operation failed                                            | Corrupted store, permissions                            | Check the secrets store file and permissions            |
+| `SCAN_LIMIT_ERROR`           | `ScanLimitError`             | Too many files to scan                                                          | Directory exceeds the scan limit                        | Narrow the scan scope or raise the limit                |
+| `VALIDATION_ERROR`           | `ValidationError`            | Input failed validation                                                         | Invalid flag/field value                                | Correct the input per the message                       |
+| `KEYSTORE_ERROR`             | `KeystoreError`              | OS keystore operation failed                                                    | Keychain/secret-service unavailable                     | Check the OS keystore or use the fallback               |
+| `UNKNOWN_AGENT_PRESET`       | `TuckError`                  | `tuck add --preset` was given an unknown agent                                  | Typo or unsupported agent id                            | Use one of: claude-code, cursor, codex, gemini, copilot |
+| `UNKNOWN_TRANSLATION_TARGET` | `TuckError`                  | `tuck preset translate --to` named an unknown agent                             | Typo in the `--to` list                                 | Use claude-code, codex, or gemini                       |
+| `MCP_CONFIG_INVALID` | `McpConfigError` | An MCP config file could not be parsed during `secrets extract --mcp` | Invalid JSON, comments in the config | Fix the JSON syntax, then re-run the extraction |
+| `INVALID_REQUIREMENT` | `InvalidRequirementError` | A `requires:` dependency spec is malformed | Missing `<manager>:` prefix or unknown manager | Use `<manager>:<package>` (e.g. `brew:starship`) |
+| `CYCLIC_DEPENDENCY` | `CyclicDependencyError` | The `requires:` graph contains a cycle | A package/file dependency loops back on itself | Remove one edge so dependencies form a DAG |
+| `BOOTSTRAP_ERROR` | `BootstrapError` | `tuck bootstrap` could not complete a phase | Missing git, unclonable repo, or no manifest | Follow the error's suggestions and re-run (idempotent) |
 | `ALLOW_REASON_REQUIRED` | `TuckError` | `tuck secrets allow add` needs a reason | Ran non-interactively without `--reason` | Pass `--reason "<why safe>"` |
-| `SECRET_BACKEND_ERROR` | `SecretBackendError` | Password manager issue | Not installed, not authenticated | Check CLI installation and auth |
-| `SECRET_NOT_FOUND` | `SecretNotFoundError` | Secret not in backend | Missing mapping, deleted secret | Check secrets.mappings.json |
-| `BACKEND_NOT_AVAILABLE` | `BackendNotAvailableError` | Backend CLI missing | 1Password/Bitwarden not installed | Install the backend CLI |
-| `BACKEND_AUTH_ERROR` | `BackendAuthenticationError` | Backend not authenticated | Session expired | Re-authenticate with backend |
-| `UNRESOLVED_SECRETS` | `UnresolvedSecretsError` | Could not resolve secrets | Missing in backend | Ensure secrets are configured |
-| `MATERIALIZE_FAILED` | `MaterializeError` | Could not materialize a template/encrypted file on apply | Bad template, decryption failure | Check the source file and encryption password |
-| `OPERATION_CANCELLED` | `OperationCancelledError` | Operation was cancelled | User aborted, or a prompt required in a non-TTY context | Re-run interactively, or pass `-y/--yes` |
-| `PRIVATE_KEY_ERROR` | `PrivateKeyError` | Refused to track a private key | Attempting to add an SSH/GPG private key | Store keys in a secret manager, not dotfiles |
-| `REPOSITORY_NOT_FOUND` | `RepositoryNotFoundError` | No dotfiles repository found for the source | Bad user/repo, missing remote | Check the source argument and remote access |
-| `INVALID_MANIFEST` | `InvalidManifestError` | Manifest failed schema validation | Hand-edited or corrupted manifest | Restore from remote with `tuck init --from` |
-| `PATH_TRAVERSAL_ERROR` | `PathTraversalError` | Path escaped the allowed root | `..` segments or absolute escape in a path | Use a path within the tuck/target root |
-| `SECRETS_STORE_ERROR` | `SecretsStoreError` | Local secrets store operation failed | Corrupted store, permissions | Check the secrets store file and permissions |
-| `SCAN_LIMIT_ERROR` | `ScanLimitError` | Too many files to scan | Directory exceeds the scan limit | Narrow the scan scope or raise the limit |
-| `VALIDATION_ERROR` | `ValidationError` | Input failed validation | Invalid flag/field value | Correct the input per the message |
-| `KEYSTORE_ERROR` | `KeystoreError` | OS keystore operation failed | Keychain/secret-service unavailable | Check the OS keystore or use the fallback |
 
 ---
 
@@ -48,8 +54,8 @@ All tuck errors extend the base `TuckError` class and include:
 
 ```typescript
 interface TuckError {
-  message: string;      // Human-readable error message
-  code: string;         // Error code (from table above)
+  message: string; // Human-readable error message
+  code: string; // Error code (from table above)
   suggestions?: string[]; // Helpful suggestions to resolve
 }
 ```
@@ -90,17 +96,20 @@ execFile('tuck', ['status'], (error, stdout, stderr) => {
 This error occurs when tuck's secret scanner finds potential secrets in files you're trying to track.
 
 **What triggers it:**
+
 - API keys (AWS, GitHub, etc.)
 - Passwords in config files
 - Private keys
 - OAuth tokens
 
 **Resolution options:**
+
 1. Remove the secrets from the file
 2. Use a password manager integration
 3. Use `--force` to bypass (not recommended)
 
 **Example:**
+
 ```
 ✖ Found 2 potential secret(s) in: ~/.aws/credentials
 
@@ -137,6 +146,7 @@ DEBUG=1 tuck status
 ```
 
 This shows:
+
 - Full stack traces
 - Internal error messages
 - Additional diagnostic information
@@ -186,6 +196,7 @@ If you encounter an unexpected error:
 3. Open an issue at https://github.com/Pranav-Karra-3301/tuck/issues
 
 Include:
+
 - The full error message
 - What command you ran
 - Your OS and Node.js version

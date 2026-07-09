@@ -21,6 +21,8 @@ const mkMatch = (value: string, placeholder: string, line: number): SecretMatch 
   column: 2,
   context: '',
   placeholder,
+  start: 0,
+  end: value.length,
 });
 
 describe('redactContent ordering', () => {
