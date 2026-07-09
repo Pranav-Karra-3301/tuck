@@ -165,7 +165,9 @@ describe('tuck apply — audit regressions', () => {
     const [snapshotPaths] = createPreApplySnapshotMock.mock.calls[0] as [string[], string];
     // The not-yet-existing destination is included, so restoreSnapshot (undo) can
     // delete it (createSnapshot records it as existed:false).
-    expect(snapshotPaths).toContain(join(TEST_HOME, '.tmux.conf'));
+    // resolve() so the expectation matches resolveWriteTarget's output on
+    // Windows too, where resolving '/test-home' adds the current drive letter.
+    expect(snapshotPaths).toContain(resolve(TEST_HOME, '.tmux.conf'));
 
     // The printed undo instruction must reference the real `tuck undo` command,
     // pinned to the snapshot just created, not the non-existent

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { vol } from 'memfs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { createMockManifest, createMockTrackedFile } from '../utils/factories.js';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
 import { encryptFileContent } from '../../src/lib/crypto/fileEncryption.js';
@@ -219,8 +219,10 @@ describe('apply command behavior', () => {
     await runApply('user/repo', { replace: true });
 
     expect(createPreApplySnapshotMock).toHaveBeenCalledTimes(1);
+    // resolve() so the expectation matches resolveWriteTarget's output on
+    // Windows too, where resolving '/test-home' adds the current drive letter.
     expect(createPreApplySnapshotMock).toHaveBeenCalledWith(
-      [join(TEST_HOME, '.zshrc')],
+      [resolve(TEST_HOME, '.zshrc')],
       'user/repo'
     );
     expect(vol.readFileSync(join(TEST_HOME, '.zshrc'), 'utf-8')).toBe('export NEW=1');
