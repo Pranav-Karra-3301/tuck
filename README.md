@@ -85,6 +85,43 @@ tuck init --from github.com/you/dotfiles
 tuck restore --all
 ```
 
+### Onto a remote box (SSH)
+
+Push the configs this machine already tracks — your agent configs (`.claude`,
+`.cursor`, `.codex`), shell, git, editor — onto a remote server over ssh/scp.
+tuck prints a plan first and asks before transferring anything.
+
+```bash
+# Push everything you track to a remote box (a plan is shown first)
+tuck apply --target ssh://me@server.example.com
+
+# Shorthand, a non-standard port, and a preview-only run
+tuck apply --ssh me@server.example.com --port 2222
+tuck apply --ssh server --dry-run
+
+# Only push a single bundle (e.g. your agent configs)
+tuck apply --ssh server --bundle agents
+```
+
+Each tracked file lands at the same home-relative path on the remote
+(`~/.zshrc` → remote `~/.zshrc`). Only regular home-scoped files are pushed;
+repo-scoped and directory entries are skipped and reported. Nothing runs through
+a shell on your side, and the ssh host/user/port and every remote path are
+validated before use.
+
+**No local push? Bootstrap the remote instead.** Print a one-liner that installs
+tuck and applies a source on a fresh box:
+
+```bash
+tuck apply you/dotfiles --print-bootstrap
+# → npm install -g @prnv/tuck && tuck apply you/dotfiles --yes
+# run it over ssh:
+ssh server 'npm install -g @prnv/tuck && tuck apply you/dotfiles --yes'
+```
+
+Requires `ssh` and `scp` on your machine and SSH access to the remote (key-based
+auth recommended). `tuck` does not need to be installed on the remote for a push.
+
 ## Commands
 
 ### Essential (what you'll use 99% of the time)
@@ -114,11 +151,12 @@ tuck restore --all
 
 ### Restoring
 
-| Command             | Description                                            |
-| ------------------- | ------------------------------------------------------ |
-| `tuck apply <user>` | Apply dotfiles from a GitHub user (with smart merging) |
-| `tuck restore`      | Restore dotfiles from repo to system                   |
-| `tuck undo`         | Restore from Time Machine backup snapshots             |
+| Command                     | Description                                                     |
+| --------------------------- | --------------------------------------------------------------- |
+| `tuck apply <user>`         | Apply dotfiles from a GitHub user (with smart merging)          |
+| `tuck apply --target <uri>` | Push your locally-tracked configs onto a remote box over SSH    |
+| `tuck restore`              | Restore dotfiles from repo to system                            |
+| `tuck undo`                 | Restore from Time Machine backup snapshots                      |
 
 ### Configuration
 
