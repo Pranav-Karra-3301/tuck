@@ -77,7 +77,14 @@ tuck sync
 ### On a new machine
 
 ```bash
-# Apply dotfiles from any GitHub user
+# One command sets up the whole machine: install packages, apply dotfiles,
+# run health checks — idempotent, so re-running just converges.
+tuck bootstrap username
+
+# Or install tuck AND bootstrap in a single curl (no tuck required yet):
+curl -fsSL https://raw.githubusercontent.com/Pranav-Karra-3301/tuck/main/install.sh | bash -s -- username --yes
+
+# Just the dotfiles (no packages, no doctor):
 tuck apply username
 
 # Or clone your own and restore
@@ -152,13 +159,40 @@ auth recommended). `tuck` does not need to be installed on the remote for a push
 
 ### Restoring
 
-| Command                     | Description                                                     |
-| --------------------------- | --------------------------------------------------------------- |
-| `tuck apply <user>`         | Apply dotfiles from a GitHub user (with smart merging)          |
-| `tuck apply --target <uri>` | Push your locally-tracked configs onto a remote box over SSH    |
-| `tuck restore`              | Restore dotfiles from repo to system                            |
-| `tuck undo`                 | Restore from Time Machine backup snapshots                      |
+| Command                     | Description                                                                          |
+| --------------------------- | ------------------------------------------------------------------------------------ |
+| `tuck bootstrap <repo>`     | One-command machine setup: install packages, apply dotfiles, run doctor (idempotent) |
+| `tuck apply <user>`         | Apply dotfiles from a GitHub user (with smart merging)                               |
+| `tuck apply --target <uri>` | Push your locally-tracked configs onto a remote box over SSH                         |
+| `tuck restore`              | Restore dotfiles from repo to system                                                 |
+| `tuck undo`                 | Restore from Time Machine backup snapshots                                           |
 
+`tuck bootstrap` flags:
+- `--yes` / `--force`: Non-interactive (skip the plan confirmation)
+- `--dry-run`: Show the plan and what would change without touching the machine
+- `--skip-packages`: Apply dotfiles only, don't install declared packages
+- `--skip-doctor`: Skip the final health check
+- `-m, --merge` / `-r, --replace`: Conflict strategy for existing files (merge is the default)
+- `-b, --bundle <name>`: Only bootstrap files in the named bundle
+- `--json`: Emit a single machine-readable envelope
+
+#### Declarative dependencies (`requires:`)
+
+Tracked files can declare the packages they need with `<manager>:<package>` specs.
+`tuck bootstrap` installs them (topologically ordered, packages before files) and
+shows the plan first. Installation is idempotent — already-present packages are
+detected and skipped, and a package manager that isn't available is skipped, not
+fatal.
+
+```bash
+# Record dependencies when tracking a file
+tuck add ~/.zshrc --requires "brew:starship,apt:zsh"
+
+# Bootstrap installs starship/zsh (as available) before applying ~/.zshrc
+tuck bootstrap you/dotfiles --yes
+```
+
+Supported managers: `brew`, `apt`, `dnf`, `pacman`, `winget`, `scoop`, `cargo`, `npm`, `pnpm`, `pipx`, `go`, `gem`.
 ### Configuration
 
 | Command                               | Description                                              |
@@ -185,6 +219,7 @@ auth recommended). `tuck` does not need to be installed on the remote for a push
 | Command             | Description                                                       |
 | ------------------- | ---------------------------------------------------------------- |
 | `tuck bundle`       | Manage bundles — logical groups of tracked files                 |
+| `tuck profile`      | Profiles / tags — apply work/personal/server/agent subsets       |
 | `tuck encryption`   | Manage at-rest backup encryption (AES-256-GCM, password-based)   |
 | `tuck secrets`      | Manage local secrets / placeholder replacement                   |
 | `tuck context`      | Track AI agent configs across home and per-repo scopes           |
@@ -267,6 +302,72 @@ tuck stores your dotfiles in `~/.tuck`, organized by category:
 ```
 
 Run `tuck sync` anytime to detect changes and push. On a new machine, run `tuck apply username` to grab anyone's dotfiles.
+
+## Profiles (work / personal / server / agent)
+
+One repo, different machines. Tag any tracked file with one or more **profiles**,
+then apply just the subset a machine needs. A file with **no tags** is
+**universal** — it applies under every profile (your shared/common set).
+
+```bash
+# Tag files as you track them…
+tuck add ~/.work-gitconfig --tag work
+tuck add ~/.claude --tag agent
+
+# …or tag existing files later
+tuck profile tag personal ~/.hammerspoon
+
+# See profiles, counts, and this machine's binding
+tuck profile list
+
+# Apply only a subset
+tuck apply you/dotfiles --profile work        # universal + work
+```
+
+**Remembered per machine.** Bind a machine once and `tuck apply` uses that
+profile by default (the binding is machine-local and never committed):
+
+```bash
+tuck profile bind work
+tuck apply you/dotfiles        # applies the "work" subset automatically
+```
+
+`tuck status` shows the bound profile and **flags cross-profile leaks** — files
+belonging to other profiles that ended up on this machine.
+
+### Ephemeral environments (devcontainers, Codespaces, agent sandboxes)
+
+Nobody wants their whole dotfiles — or their credentials — in every throwaway
+sandbox. Tag just your agent configs and apply that subset headlessly:
+
+```bash
+tuck profile create agent
+tuck profile tag agent ~/.claude ~/.codex
+
+# Scaffold a devcontainer.json + Codespaces dotfiles bootstrap
+tuck profile devcontainer .
+```
+
+The generated `.devcontainer/devcontainer.json` and `install.sh` run:
+
+```bash
+tuck apply you/dotfiles --profile agent --yes
+```
+
+so only the agent-config subset lands in the container — no secrets, no
+personal or work files.
+
+| Command                          | Description                                            |
+| -------------------------------- | ------------------------------------------------------ |
+| `tuck profile list`              | List profiles, file counts, and the bound profile      |
+| `tuck profile create <name>`     | Register a new profile                                  |
+| `tuck profile rm <name>`         | Remove a profile (strips its tag from files)           |
+| `tuck profile tag <p> <path…>`   | Tag tracked file(s) with a profile                     |
+| `tuck profile untag <p> <path…>` | Remove a profile tag from tracked file(s)              |
+| `tuck profile bind <name>`       | Bind THIS machine to a profile (machine-local)         |
+| `tuck profile unbind`            | Clear this machine's binding                           |
+| `tuck profile show`              | Show the bound profile and any cross-profile leaks     |
+| `tuck profile devcontainer [dir]`| Scaffold devcontainer.json + Codespaces bootstrap      |
 
 ## AI Agent Configs
 

@@ -41,6 +41,9 @@ This document lists all error codes used by tuck for programmatic error handling
 | `UNKNOWN_AGENT_PRESET`       | `TuckError`                  | `tuck add --preset` was given an unknown agent                                  | Typo or unsupported agent id                            | Use one of: claude-code, cursor, codex, gemini, copilot |
 | `UNKNOWN_TRANSLATION_TARGET` | `TuckError`                  | `tuck preset translate --to` named an unknown agent                             | Typo in the `--to` list                                 | Use claude-code, codex, or gemini                       |
 | `MCP_CONFIG_INVALID` | `McpConfigError` | An MCP config file could not be parsed during `secrets extract --mcp` | Invalid JSON, comments in the config | Fix the JSON syntax, then re-run the extraction |
+| `INVALID_REQUIREMENT` | `InvalidRequirementError` | A `requires:` dependency spec is malformed | Missing `<manager>:` prefix or unknown manager | Use `<manager>:<package>` (e.g. `brew:starship`) |
+| `CYCLIC_DEPENDENCY` | `CyclicDependencyError` | The `requires:` graph contains a cycle | A package/file dependency loops back on itself | Remove one edge so dependencies form a DAG |
+| `BOOTSTRAP_ERROR` | `BootstrapError` | `tuck bootstrap` could not complete a phase | Missing git, unclonable repo, or no manifest | Follow the error's suggestions and re-run (idempotent) |
 
 ---
 

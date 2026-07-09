@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { prompts, logger } from '../ui/index.js';
 import { getTuckDir } from '../lib/paths.js';
 import { loadManifest, ensureBundle, isFileTracked } from '../lib/manifest.js';
+import { ensureProfile, isValidProfileName } from '../lib/profiles.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
 import { NotInitializedError, TuckError } from '../errors.js';
 import { CATEGORIES } from '../constants.js';
@@ -13,6 +14,7 @@ import {
   type PreparedTrackFile,
   type TrackPathCandidate,
 } from '../lib/trackPipeline.js';
+import { parseRequirementList } from '../lib/requires.js';
 
 type FileToAdd = PreparedTrackFile;
 
@@ -31,6 +33,27 @@ const assertRepoScopeCompatible = (options: AddOptions): void => {
   }
 };
 
+/**
+ * Normalize and validate `--tag` values: allow comma- or space-separated
+ * bundles per flag, dedupe, and reject malformed names up front so a bad tag
+ * never reaches the manifest.
+ */
+const normalizeTags = (raw: string[] | undefined): string[] => {
+  if (!raw || raw.length === 0) return [];
+  const tags = new Set<string>();
+  for (const entry of raw) {
+    for (const part of entry.split(/[,\s]+/u).filter(Boolean)) {
+      if (!isValidProfileName(part)) {
+        throw new Error(
+          `Invalid profile tag: ${part}. Tags may only contain letters, digits, dot, dash, and underscore.`
+        );
+      }
+      tags.add(part);
+    }
+  }
+  return [...tags].sort();
+};
+
 const addFiles = async (
   filesToAdd: FileToAdd[],
   tuckDir: string,
@@ -39,6 +62,17 @@ const addFiles = async (
   if (options.bundle) {
     await ensureBundle(tuckDir, options.bundle);
   }
+
+  const tags = normalizeTags(options.tag);
+  for (const tag of tags) {
+    await ensureProfile(tuckDir, tag);
+  }
+  // Parse --requires ONCE (fail fast on a bad spec before any file is tracked).
+  // The validated specs apply to every file added in this invocation.
+  const requires =
+    options.requires && options.requires.trim().length > 0
+      ? parseRequirementList(options.requires)
+      : undefined;
 
   const filesToTrack: FileToTrack[] = filesToAdd.map((f) => {
     const isRepo = f.scope === 'repo';
@@ -55,6 +89,14 @@ const addFiles = async (
 
     if (options.bundle) {
       trackedFile.bundle = options.bundle;
+    }
+
+    if (tags.length > 0) {
+      trackedFile.tags = tags;
+    }
+
+    if (requires && requires.length > 0) {
+      trackedFile.requires = requires;
     }
 
     // Carry the repo-only redaction plan across (issue #100 RC5): applied to the
@@ -403,6 +445,7 @@ const runAdd = async (paths: string[], options: AddOptions): Promise<void> => {
     });
 
     const bundle = options.bundle ?? 'default';
+    const tags = normalizeTags(options.tag);
     if (isJsonMode()) {
       emitJsonOk({
         plan: plannedFiles.map((f) => ({
@@ -412,6 +455,7 @@ const runAdd = async (paths: string[], options: AddOptions): Promise<void> => {
           sensitive: f.sensitive,
           scope: f.scope ?? 'home',
           bundle,
+          tags,
         })),
       });
     } else {
@@ -445,6 +489,7 @@ const runAdd = async (paths: string[], options: AddOptions): Promise<void> => {
       added: filesToAdd.length,
       files: filesToAdd.map((f) => ({ source: f.source, category: f.category })),
       bundle: options.bundle ?? 'default',
+      tags: normalizeTags(options.tag),
     });
     return;
   }
@@ -492,6 +537,14 @@ export const addCommand = new Command('add')
   )
   .option('-f, --force', 'Skip secret scanning (not recommended)')
   .option('-b, --bundle <name>', 'Bundle to assign the file to (defaults to "default")')
+  .option(
+    '-t, --tag <name...>',
+    'Profile tag(s) to attach (work, personal, server, agent, …); repeatable or comma-separated'
+  )
+  .option(
+    '--requires <specs>',
+    'Declare package dependencies for this file, e.g. "brew:starship,apt:zsh" (installed first by `tuck bootstrap`)'
+  )
   .option('--json', 'Emit JSON envelope to stdout (non-interactive)')
   .option('-y, --yes', 'Auto-confirm prompts (use with --json for full automation)')
   .option('--plan', 'Print the planned tracking operation as JSON and exit')
