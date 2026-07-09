@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.schema.json",
+  "name": "tuck agent sandbox",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts"
+    }
+  },
+  "//": "Applies ONLY the agent-tagged subset of your dotfiles — no secrets, no personal/work files. Replace <you>/<dotfiles> with your tuck repo.",
+  "postCreateCommand": "npm install -g tuck-cli && tuck apply <you>/<dotfiles> --profile agent --yes",
+  "remoteUser": "vscode",
+  "customizations": {
+    "vscode": {
+      "extensions": []
+    }
+  }
+}
