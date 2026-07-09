@@ -219,6 +219,7 @@ Supported managers: `brew`, `apt`, `dnf`, `pacman`, `winget`, `scoop`, `cargo`, 
 | Command             | Description                                                       |
 | ------------------- | ---------------------------------------------------------------- |
 | `tuck bundle`       | Manage bundles — logical groups of tracked files                 |
+| `tuck merge`        | Manage structured (JSON) three-way merge policies for tracked files |
 | `tuck profile`      | Profiles / tags — apply work/personal/server/agent subsets       |
 | `tuck encryption`   | Manage at-rest backup encryption (AES-256-GCM, password-based)   |
 | `tuck secrets`      | Manage local secrets / placeholder replacement                   |
@@ -468,6 +469,15 @@ Configure tuck via `~/.tuck/.tuckrc.json` or the interactive `tuck config` menu 
 
 - **copy** (default) — Files are copied. Run `tuck sync` to update the repo.
 - **symlink** — tuck copies the file into the repo, then replaces the original path with a symlink to the repo file. Changes are instant, but this modifies your home dotfile paths.
+
+### Structured JSON smart merge
+
+High-churn, tool-rewritten JSON configs (Claude Code `settings.json`, `.mcp.json`, …)
+are reconciled **key-by-key** on `tuck sync` instead of being overwritten — so two
+machines that each edit the same config have their changes unioned rather than one
+silently clobbering the other. Permission allowlists and plugin lists are unioned;
+genuine conflicts are surfaced, not guessed. Manage per-file policies with
+`tuck merge` (set/unset/list/show). See [docs/JSON-SMART-MERGE.md](docs/JSON-SMART-MERGE.md).
 
 ## Windows Support
 

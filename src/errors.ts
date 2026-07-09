@@ -124,6 +124,31 @@ export class MergeConflictsError extends TuckError {
   }
 }
 
+export class JsonMergeConflictsError extends TuckError {
+  /** JSON paths (e.g. `permissions.allow`, `env.TOKEN`) that could not be auto-merged. */
+  public readonly paths: string[];
+  /** The file the conflicts belong to (collapsed for display). */
+  public readonly file: string;
+
+  constructor(file: string, paths: string[]) {
+    const sample = paths.slice(0, 3).join(', ');
+    const summary = paths.length > 3 ? `${sample} and ${paths.length - 3} more` : sample;
+    super(
+      `Structured merge of ${file} left ${paths.length} unresolved conflict${paths.length === 1 ? '' : 's'}: ${summary}`,
+      'JSON_MERGE_CONFLICTS',
+      [
+        'Run `tuck sync` in an interactive terminal to resolve the conflicts',
+        'Set a merge policy with `tuck merge set <file> --conflict ours|theirs`',
+        'Edit the file directly to reconcile the conflicting keys, then re-run sync',
+      ]
+    );
+    this.file = file;
+    this.paths = paths;
+    // Reuse the dedicated conflict exit code so agents branch on it uniformly.
+    this.exitCode = 3;
+  }
+}
+
 export class ConfigError extends TuckError {
   constructor(message: string) {
     super(`Configuration error: ${message}`, 'CONFIG_ERROR', [

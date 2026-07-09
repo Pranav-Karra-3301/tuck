@@ -19,6 +19,7 @@ import {
   encryptionCommand,
   doctorCommand,
   bundleCommand,
+  mergeCommand,
   profileCommand,
   verifyCommand,
   bootstrapCommand,
@@ -85,6 +86,7 @@ program.addCommand(secretsCommand);
 program.addCommand(encryptionCommand);
 program.addCommand(doctorCommand);
 program.addCommand(bundleCommand);
+program.addCommand(mergeCommand);
 program.addCommand(profileCommand);
 program.addCommand(verifyCommand);
 program.addCommand(contextCommand);
