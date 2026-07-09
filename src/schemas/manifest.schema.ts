@@ -104,8 +104,8 @@ export const trackedFileSchema = z
      * tracked, exactly as before (this field is `.optional()`, never
      * `.default()`, so legacy manifests parse byte-identical). When present it
      * is a dot-delimited key path (e.g. `mcpServers`): the repo copy holds ONLY
-     * that JSON subtree, and on apply/restore it is deep-merged back into the
-     * live file, leaving every other key untouched. Mutually exclusive with
+     * that JSON subtree, and on apply/restore it REPLACES the value at that path
+     * in the live file, leaving every other key untouched. Mutually exclusive with
      * template/encrypted (the repo copy is a plain JSON subtree, not a
      * rendered/ciphertext artifact).
      */

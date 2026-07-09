@@ -131,13 +131,31 @@ export const getFileDiff = async (
       diff.fileCount = files.length;
     } else {
       const systemContent = await readFile(systemPath, 'utf-8');
-      // This branch dumps the WHOLE live file as systemContent — redact known
-      // secrets before display so `tuck diff` never prints cleartext (#100).
-      // systemSize stays the real (un-redacted) file length.
       const store = valueMap ?? (await getStoredValueMap(tuckDir));
-      diff.systemContent =
-        store.size > 0 ? redactValuesInContent(systemContent, store) : systemContent;
-      diff.systemSize = systemContent.length;
+      if (tracked.file.jsonKey) {
+        // JSON-key entries track only a SUBTREE. The whole live file holds
+        // untracked keys (oauthToken, session state, history) that a jsonKey add
+        // NEVER wrote to the local secrets store — so redaction here cannot cover
+        // them and dumping the whole file would leak them. Show ONLY the tracked
+        // subtree (still redacted for any known values it does contain).
+        let subtree: string;
+        try {
+          subtree = extractSubtree(systemContent, tracked.file.jsonKey);
+        } catch {
+          // Corrupt live JSON or missing key path: withhold content entirely
+          // rather than fall back to the whole file. hasChanges stays true.
+          return diff;
+        }
+        diff.systemContent = store.size > 0 ? redactValuesInContent(subtree, store) : subtree;
+        diff.systemSize = subtree.length;
+      } else {
+        // This branch dumps the WHOLE live file as systemContent — redact known
+        // secrets before display so `tuck diff` never prints cleartext (#100).
+        // systemSize stays the real (un-redacted) file length.
+        diff.systemContent =
+          store.size > 0 ? redactValuesInContent(systemContent, store) : systemContent;
+        diff.systemSize = systemContent.length;
+      }
     }
     return diff;
   }
@@ -183,6 +201,13 @@ export const getFileDiff = async (
   // tokens included) in the hunks.
   if (tracked.file.jsonKey) {
     const repoContent = await readFile(repoPath, 'utf-8');
+    // Both the live subtree and the repo copy are plain JSON that can carry
+    // cleartext secret values, so redact known values before display — the same
+    // pass every other text branch applies (#100). systemSize/repoSize keep the
+    // real (un-redacted) lengths.
+    const store = valueMap ?? (await getStoredValueMap(tuckDir));
+    const redact = (text: string): string =>
+      store.size > 0 ? redactValuesInContent(text, store) : text;
     let liveSubtree: string;
     try {
       const liveRaw = await readFile(systemPath, 'utf-8');
@@ -191,15 +216,15 @@ export const getFileDiff = async (
       // Corrupt live JSON or missing key path: fall back to whole-repo view so
       // the divergence is visible without dumping unrelated live keys.
       diff.hasChanges = true;
-      diff.repoContent = repoContent;
+      diff.repoContent = redact(repoContent);
       diff.repoSize = repoContent.length;
       return diff;
     }
     diff.hasChanges = liveSubtree !== repoContent;
     if (diff.hasChanges) {
-      diff.systemContent = liveSubtree;
+      diff.systemContent = redact(liveSubtree);
       diff.systemSize = liveSubtree.length;
-      diff.repoContent = repoContent;
+      diff.repoContent = redact(repoContent);
       diff.repoSize = repoContent.length;
     }
     return diff;

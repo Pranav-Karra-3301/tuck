@@ -200,6 +200,29 @@ describe('fileTracking symlink strategy', () => {
     logSpy.mockRestore();
   });
 
+  it('rejects --key combined with --template up front, leaving no orphan repo file', async () => {
+    await initTestTuck();
+    createTestDotfile('.claude.json', '{"mcpServers":{"git":{"command":"g"}}}');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    // The guard fires BEFORE the per-file loop (which would otherwise write the
+    // subtree to the repo before addFileToManifest's zod validation rejects the
+    // combo, orphaning the repo file). The whole call must reject.
+    await expect(
+      trackFilesWithProgress(
+        [{ path: '~/.claude.json', category: 'misc', jsonKey: 'mcpServers' }],
+        TEST_TUCK_DIR,
+        { strategy: 'copy', template: true, showCategory: false, delayBetween: 0 }
+      )
+    ).rejects.toThrow(/--template cannot be combined with --key/);
+
+    // Nothing was tracked and no repo copy was written.
+    const tracked = await getTrackedFileBySource(TEST_TUCK_DIR, '~/.claude.json');
+    expect(tracked).toBeNull();
+
+    logSpy.mockRestore();
+  });
+
   it('supports custom destination names while preserving source subdirectories', async () => {
     await initTestTuck();
     createTestDotfile('.aws/config', 'region = us-east-1');

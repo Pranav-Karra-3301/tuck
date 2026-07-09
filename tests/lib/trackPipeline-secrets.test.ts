@@ -95,6 +95,42 @@ describe('track pipeline secret gate', () => {
     expect(prepared).toHaveLength(0);
   });
 
+  it('does not block --key add when the subtree secret is allowlisted (strict mode)', async () => {
+    await initTestTuck();
+
+    // A JSON file whose TRACKED subtree (mcpServers) carries an AWS key, plus an
+    // untracked oauthToken alongside it.
+    const secret = 'AKIAIOSFODNN7EXAMPLE';
+    const filePath = join(TEST_HOME, '.claude.json');
+    vol.writeFileSync(
+      filePath,
+      JSON.stringify({ mcpServers: { git: { token: secret } }, oauthToken: 'x' })
+    );
+
+    const { preparePathsForTracking } = await import('../../src/lib/trackPipeline.js');
+
+    // Without an allowlist entry, strict mode blocks (the subtree scan detects it).
+    await expect(
+      preparePathsForTracking([{ path: filePath }], TEST_TUCK_DIR, {
+        jsonKey: 'mcpServers',
+        secretHandling: 'strict',
+      })
+    ).rejects.toBeInstanceOf(SecretsDetectedError);
+
+    // Allowlist the finding, then the SAME strict add must proceed — previously
+    // the raw scanContent call never consulted the allowlist, so it re-blocked
+    // forever.
+    const { addAllowlistEntryForValue } = await import('../../src/lib/secrets/allowlist.js');
+    await addAllowlistEntryForValue(TEST_TUCK_DIR, secret, { reason: 'example key from docs' });
+
+    const prepared = await preparePathsForTracking([{ path: filePath }], TEST_TUCK_DIR, {
+      jsonKey: 'mcpServers',
+      secretHandling: 'strict',
+    });
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0].jsonKey).toBe('mcpServers');
+  });
+
   it('allowlists findings and tracks the file when the user chooses "Mark as safe"', async () => {
     selectMock.mockResolvedValue('allow');
     textMock.mockResolvedValue('example value from docs');

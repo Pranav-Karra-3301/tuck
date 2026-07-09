@@ -75,7 +75,8 @@ export interface FileToTrack {
   /**
    * Dot-delimited JSON key path when tracking only a subtree of a JSON file
    * (e.g. `mcpServers`). The repo copy holds the extracted subtree — NOT the
-   * whole file — and apply/restore deep-merge it back into the live file.
+   * whole file — and apply/restore write it back into the live file by REPLACING
+   * the value at that path, leaving every other key untouched.
    */
   jsonKey?: string;
   /**
@@ -218,6 +219,12 @@ export const trackFilesWithProgress = async (
   }
   if (hasJsonKey && encrypt) {
     throw new Error('--encrypt cannot be combined with --key: the repo copy of a JSON subtree must stay plain JSON.');
+  }
+  if (hasJsonKey && template) {
+    // Guarded up front (not just at manifest-save time): the subtree is written
+    // to the repo at :347 before addFileToManifest's zod validation rejects the
+    // template+jsonKey combo, which would otherwise leave an orphan repo file.
+    throw new Error('--template cannot be combined with --key: the repo copy of a JSON subtree must stay plain JSON, not an un-rendered template.');
   }
   const total = files.length;
   const errors: Array<{ path: string; error: Error }> = [];

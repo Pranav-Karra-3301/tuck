@@ -230,4 +230,164 @@ describe('mergeSubtreeIntoLive', () => {
   it('throws when the live top level is not an object', () => {
     expect(() => mergeSubtreeIntoLive('[1,2]', canonicalJson({ a: 1 }), 'k')).toThrow(JsonKeyError);
   });
+
+  it('throws when an INTERMEDIATE node on the write path is not an object', () => {
+    // Tracking a.b when live has "a": [1,2,3] must fail loudly rather than
+    // silently replace the whole array (which would discard untracked data).
+    const live = JSON.stringify({ a: [1, 2, 3], keep: 1 });
+    expect(() => mergeSubtreeIntoLive(live, canonicalJson({ x: 1 }), 'a.b')).toThrow(JsonKeyError);
+    expect(() => mergeSubtreeIntoLive(live, canonicalJson({ x: 1 }), 'a.b')).toThrow(
+      /not an object/i
+    );
+  });
+});
+
+describe('parseJsonKeyPath escaping', () => {
+  it('treats a backslash-escaped dot as a literal character in a single key name', () => {
+    // `servers.github\.copilot` addresses servers -> "github.copilot"
+    expect(parseJsonKeyPath('servers.github\\.copilot')).toEqual(['servers', 'github.copilot']);
+  });
+
+  it('unescapes a literal backslash (\\\\ -> \\)', () => {
+    expect(parseJsonKeyPath('a\\\\b')).toEqual(['a\\b']);
+  });
+
+  it('still splits on UNESCAPED dots', () => {
+    expect(parseJsonKeyPath('a.b\\.c.d')).toEqual(['a', 'b.c', 'd']);
+  });
+
+  it('applies the empty-segment guard to the unescaped result', () => {
+    expect(() => parseJsonKeyPath('a..b')).toThrow(JsonKeyError);
+  });
+
+  it('applies the prototype-pollution guard to the UNESCAPED segment names', () => {
+    expect(() => parseJsonKeyPath('a.__proto__')).toThrow(/reserved property/);
+  });
+});
+
+describe('mergeSubtreeIntoLive span-splice (byte preservation)', () => {
+  it('preserves a large integer in the UNTRACKED remainder byte-for-byte', () => {
+    const live = [
+      '{',
+      '  "bigId": 1234567890123456789,',
+      '  "mcpServers": {',
+      '    "git": { "command": "OLD" }',
+      '  }',
+      '}',
+    ].join('\n');
+    const out = mergeSubtreeIntoLive(live, canonicalJson({ git: { command: 'NEW' } }), 'mcpServers');
+    // The untracked big int must survive verbatim — a JSON.parse round-trip would
+    // corrupt it to ...800.
+    expect(out).toContain('1234567890123456789');
+    expect(out).not.toContain('1234567890123456800');
+    // And the tracked subtree is actually replaced.
+    expect(JSON.parse(out).mcpServers).toEqual({ git: { command: 'NEW' } });
+  });
+
+  it('preserves the textual key order of the untracked remainder', () => {
+    const live = ['{', '  "z": 1,', '  "a": 2,', '  "tracked": {},', '  "m": 3', '}'].join('\n');
+    const out = mergeSubtreeIntoLive(live, canonicalJson({ v: 1 }), 'tracked');
+    expect(out.indexOf('"z"')).toBeLessThan(out.indexOf('"a"'));
+    expect(out.indexOf('"a"')).toBeLessThan(out.indexOf('"tracked"'));
+    expect(out.indexOf('"tracked"')).toBeLessThan(out.indexOf('"m"'));
+  });
+
+  it('does not reorder integer-like keys in the untracked remainder', () => {
+    // JSON.parse/stringify reorders numeric string keys ascending (1,2,10); the
+    // span-splice must keep the original textual order (10,2,1).
+    const live = ['{', '  "10": "a",', '  "2": "b",', '  "1": "c",', '  "tracked": {}', '}'].join(
+      '\n'
+    );
+    const out = mergeSubtreeIntoLive(live, canonicalJson({ v: 1 }), 'tracked');
+    expect(out.indexOf('"10"')).toBeLessThan(out.indexOf('"2"'));
+    expect(out.indexOf('"2"')).toBeLessThan(out.indexOf('"1"'));
+  });
+
+  it('preserves tab indentation of untracked lines and re-indents the value with tabs', () => {
+    const live = '{\n\t"tracked": {\n\t\t"old": 1\n\t},\n\t"keep": 2\n}';
+    const out = mergeSubtreeIntoLive(live, canonicalJson({ fresh: true }), 'tracked');
+    expect(out).toContain('\t"keep": 2');
+    expect(out).toContain('\t"tracked": {');
+    expect(JSON.parse(out)).toEqual({ tracked: { fresh: true }, keep: 2 });
+  });
+
+  it('preserves 4-space indentation', () => {
+    const live = [
+      '{',
+      '    "tracked": {',
+      '        "old": 1',
+      '    },',
+      '    "keep": 2',
+      '}',
+    ].join('\n');
+    const out = mergeSubtreeIntoLive(live, canonicalJson({ nested: { deep: true } }), 'tracked');
+    expect(JSON.parse(out)).toEqual({ tracked: { nested: { deep: true } }, keep: 2 });
+    expect(out).toContain('    "tracked": {');
+    expect(out).toContain('        "nested": {');
+    expect(out).toContain('            "deep": true');
+  });
+
+  it('replaces the subtree correctly at a deeply nested path', () => {
+    const live = [
+      '{',
+      '  "a": {',
+      '    "b": {',
+      '      "c": { "old": 1 }',
+      '    }',
+      '  },',
+      '  "keep": 9',
+      '}',
+    ].join('\n');
+    const out = mergeSubtreeIntoLive(live, canonicalJson({ fresh: true }), 'a.b.c');
+    const parsed = JSON.parse(out);
+    expect(parsed.a.b.c).toEqual({ fresh: true });
+    expect(parsed.keep).toBe(9);
+  });
+
+  it('inserts the key into the nearest existing ancestor object when the path is missing', () => {
+    const live = ['{', '  "editor": {},', '  "keep": 1', '}'].join('\n');
+    const out = mergeSubtreeIntoLive(live, canonicalJson({ enabled: true }), 'editor.settings');
+    const parsed = JSON.parse(out);
+    expect(parsed.editor.settings).toEqual({ enabled: true });
+    expect(parsed.keep).toBe(1);
+  });
+
+  it('handles unicode escapes and braces inside string values without confusing nesting', () => {
+    const live = JSON.stringify(
+      { weird: 'a{[}] " brace A \\ end', tracked: { old: 1 } },
+      null,
+      2
+    );
+    const out = mergeSubtreeIntoLive(live, canonicalJson({ fresh: true }), 'tracked');
+    const parsed = JSON.parse(out);
+    expect(parsed.weird).toBe('a{[}] " brace A \\ end');
+    expect(parsed.tracked).toEqual({ fresh: true });
+  });
+
+  it('touches only the tracked value in a compact file, leaving other bytes intact', () => {
+    const live = '{"tracked":{"old":1},"keep":2}';
+    const out = mergeSubtreeIntoLive(live, canonicalJson({ new: 1 }), 'tracked');
+    expect(out).toBe('{"tracked":{"new":1},"keep":2}');
+  });
+
+  it('preserves a trailing newline in the untouched remainder', () => {
+    const live = '{\n  "tracked": {},\n  "keep": 1\n}\n';
+    const out = mergeSubtreeIntoLive(live, canonicalJson({ a: 1 }), 'tracked');
+    expect(out.endsWith('}\n')).toBe(true);
+    expect(JSON.parse(out)).toEqual({ tracked: { a: 1 }, keep: 1 });
+  });
+
+  it('round-trips an escaped-dot key through extract then write-back', () => {
+    const live = JSON.stringify(
+      { servers: { 'github.copilot': { on: true }, other: 1 } },
+      null,
+      2
+    );
+    const sub = extractSubtree(live, 'servers.github\\.copilot');
+    expect(JSON.parse(sub)).toEqual({ on: true });
+    const merged = mergeSubtreeIntoLive(live, canonicalJson({ on: false }), 'servers.github\\.copilot');
+    const parsed = JSON.parse(merged);
+    expect(parsed.servers['github.copilot']).toEqual({ on: false });
+    expect(parsed.servers.other).toBe(1);
+  });
 });

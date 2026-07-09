@@ -31,6 +31,7 @@ import { readFile } from 'fs/promises';
 import { scanContent } from './secrets/index.js';
 import { logForceSecretBypass, logSecretAllowlisted } from './audit.js';
 import { isJsonMode } from './jsonOutput.js';
+import { loadConfig } from './config.js';
 import {
   getSecretsPath,
   getAllowlistPath,
@@ -40,8 +41,12 @@ import {
   shouldBlockOnSecrets,
   addAllowlistEntryByFingerprint,
   computeFingerprint,
+  createCustomPattern,
+  loadAllowlist,
+  isMatchAllowed,
   type ScanSummary,
   type SecretMatch,
+  type SecretPattern,
 } from './secrets/index.js';
 
 const PRIVATE_KEY_PATTERNS = [
@@ -463,6 +468,45 @@ const applySecretPolicy = async (
 };
 
 /**
+ * Scan an in-memory JSON subtree for secrets the SAME way the whole-file gate
+ * scans a file: honoring config-configured custom patterns, excludes, and
+ * min-severity, then dropping any finding recorded in the committed allowlist.
+ *
+ * The subtree lives only in memory (it is the extracted bytes, never the whole
+ * live file), so we cannot hand it to the file-based {@link scanForSecrets};
+ * instead we replicate its built-in-scanner branch over `content`. Without the
+ * allowlist filter, an allowlisted false positive would permanently block
+ * `tuck add --key` in strict mode and re-prompt forever in interactive mode.
+ */
+const scanSubtreeForSecrets = async (
+  content: string,
+  collapsedLivePath: string,
+  tuckDir: string
+): Promise<SecretMatch[]> => {
+  const config = await loadConfig(tuckDir);
+  const security = config.security || {};
+
+  const customPatterns: SecretPattern[] = (security.customPatterns || []).map((p, i) =>
+    createCustomPattern(`config-${i}`, p.name || `Custom Pattern ${i + 1}`, p.pattern, {
+      severity: p.severity,
+      description: p.description,
+      placeholder: p.placeholder,
+      flags: p.flags,
+    })
+  );
+
+  const matches = scanContent(content, {
+    customPatterns: customPatterns.length > 0 ? customPatterns : undefined,
+    excludePatternIds: security.excludePatterns,
+    minSeverity: security.minSeverity,
+  });
+
+  const allowlist = await loadAllowlist(tuckDir);
+  if (allowlist.entries.length === 0) return matches;
+  return matches.filter((match) => !isMatchAllowed(match, collapsedLivePath, allowlist.entries));
+};
+
+/**
  * Secret gate for JSON-key files: scans ONLY the extracted subtree (the bytes
  * that will actually land in the repo), not the whole live file. This is what
  * makes the feature usable — a `~/.claude.json` mixes `mcpServers` with OAuth
@@ -504,7 +548,10 @@ const applyJsonKeySecretPolicy = async (
     const live = file.liveSource ?? expandPath(file.source);
     const content = await readFile(live, 'utf8');
     const subtree = extractSubtree(content, file.jsonKey as string);
-    const matches = scanContent(subtree);
+    // Allowlist- and custom-pattern-aware (mirrors the whole-file gate): an
+    // allowlisted finding must NOT block the add, or strict mode re-prompts
+    // forever. The path used for path-scoped allowlist entries is the live file.
+    const matches = await scanSubtreeForSecrets(subtree, collapsePath(live), tuckDir);
     if (matches.length > 0) {
       withSecrets.push({ file, count: matches.length });
     }
