@@ -20,5 +20,6 @@ export { mergeCommand } from './merge.js';
 export { profileCommand } from './profile.js';
 export { verifyCommand } from './verify.js';
 export { repoCommand } from './repo.js';
+export { rulesCommand } from './rules.js';
 export { settingsCommand } from './settings.js';
 export { bootstrapCommand } from './bootstrap.js';

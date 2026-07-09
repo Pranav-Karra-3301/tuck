@@ -35,6 +35,20 @@ export const setKnownRepoRoots = (roots: string[]): void => {
   knownRepoRoots = roots.map((r) => resolve(r));
 };
 
+/**
+ * Merge additional repo roots into the allowed-write set WITHOUT dropping the
+ * ones the CLI preAction already registered. Used by operations that write into
+ * a repo the user is currently sitting in but which is not (yet) in the machine
+ * repo registry — e.g. rules fan-out materializing per-tool variants into the
+ * current checkout. A no-op in sandbox mode, where `allowedRoots()` is only the
+ * sandbox root regardless.
+ */
+export const addKnownRepoRoots = (roots: string[]): void => {
+  const merged = new Set(knownRepoRoots);
+  for (const r of roots) merged.add(resolve(r));
+  knownRepoRoots = Array.from(merged);
+};
+
 /** Test-only: clear the context back to the default (real home). */
 export const resetWriteContext = (): void => {
   ctx = null;

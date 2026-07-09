@@ -259,6 +259,7 @@ Supported managers: `brew`, `apt`, `dnf`, `pacman`, `winget`, `scoop`, `cargo`, 
 | `tuck encryption`   | Manage at-rest backup encryption (AES-256-GCM, password-based)   |
 | `tuck secrets`      | Manage local secrets / placeholder replacement                   |
 | `tuck context`      | Track AI agent configs across home and per-repo scopes           |
+| `tuck rules`        | Fan one canonical rules file out to per-tool variants (CLAUDE.md, .cursorrules, …) |
 | `tuck preset`       | Apply or publish curated bundles of dotfiles & agent configs     |
 | `tuck repo`         | Manage machine-local repo bindings (for repo-scoped tracking)    |
 | `tuck settings`     | Capture, version, and replay OS settings (macOS `defaults`)      |
