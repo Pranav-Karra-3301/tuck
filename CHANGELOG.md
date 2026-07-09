@@ -1,3 +1,5 @@
+<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
+
 # [1.12.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.11.0...v1.12.0) (2026-07-09)
 
 
@@ -24,8 +26,6 @@
 * **secrets:** value-level (SOPS-style) encryption ([#115](https://github.com/Pranav-Karra-3301/tuck/issues/115)) ([54dd472](https://github.com/Pranav-Karra-3301/tuck/commit/54dd472397ac18a373fdb6d029805263df481c15))
 * **settings:** versioned OS settings (macOS defaults) ([#113](https://github.com/Pranav-Karra-3301/tuck/issues/113)) ([d6159cf](https://github.com/Pranav-Karra-3301/tuck/commit/d6159cfdf57900b30d03a5a89f95999f857cd9f0))
 * structured JSON three-way smart merge for agent-mutated configs ([#110](https://github.com/Pranav-Karra-3301/tuck/issues/110)) ([325dd69](https://github.com/Pranav-Karra-3301/tuck/commit/325dd69c33540ee4d5c10c2bee40de02678de56d))
-
-<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
 # [1.11.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.10.0...v1.11.0) (2026-07-09)
 
