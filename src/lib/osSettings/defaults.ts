@@ -1,0 +1,119 @@
+/**
+ * macOS backend for `tuck settings`, built on the `defaults` CLI.
+ *
+ * All process invocations go through `execFileAsync` (never a shell) so
+ * user/domain/key/value strings are passed as discrete argv entries and cannot
+ * be interpreted as shell syntax. Tests mock `child_process` to drive this
+ * backend without a real `defaults`/`sw_vers`/`killall`.
+ */
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import { topLevelEntries } from './plist.js';
+import type { DomainSnapshot, ApplyOutcome, OsSettingsBackend } from './types.js';
+import type { SettingEntry, SettingType } from '../../schemas/osSettings.schema.js';
+
+const execFileAsync = promisify(execFile);
+
+/** Map a supported scalar type to its `defaults write` flag. */
+const TYPE_FLAG: Record<SettingType, string> = {
+  boolean: '-bool',
+  integer: '-int',
+  float: '-float',
+  string: '-string',
+  date: '-date',
+};
+
+/**
+ * The "global" domain has a canonical name plus the `-g`/`-globalDomain`
+ * aliases; we always store and query it under NSGlobalDomain for stability.
+ */
+export const GLOBAL_DOMAIN = 'NSGlobalDomain';
+
+/** Build the argv (after `defaults`) that replays a stored setting entry. */
+export const buildDefaultsArgv = (entry: SettingEntry): string[] => {
+  if (entry.action === 'delete') {
+    return ['delete', entry.domain, entry.key];
+  }
+  if (!entry.type) {
+    throw new Error(`Setting "${entry.id}" is a write with no type`);
+  }
+  const flag = TYPE_FLAG[entry.type];
+  return ['write', entry.domain, entry.key, flag, entry.value ?? ''];
+};
+
+export class MacOsDefaultsBackend implements OsSettingsBackend {
+  readonly os = 'macos' as const;
+
+  async isAvailable(): Promise<boolean> {
+    return process.platform === 'darwin';
+  }
+
+  async currentOsVersion(): Promise<string> {
+    try {
+      const { stdout } = await execFileAsync('sw_vers', ['-productVersion']);
+      return stdout.trim();
+    } catch {
+      return '';
+    }
+  }
+
+  async listDomains(): Promise<string[]> {
+    let domains: string[] = [];
+    try {
+      const { stdout } = await execFileAsync('defaults', ['domains']);
+      domains = stdout
+        .split(',')
+        .map((d) => d.trim())
+        .filter((d) => d.length > 0);
+    } catch {
+      domains = [];
+    }
+    // `defaults domains` omits the global domain; always include it so a
+    // full-system capture watches NSGlobalDomain too.
+    if (!domains.includes(GLOBAL_DOMAIN)) domains.unshift(GLOBAL_DOMAIN);
+    return domains;
+  }
+
+  async exportRaw(domain: string): Promise<string> {
+    try {
+      const { stdout } = await execFileAsync('defaults', ['export', domain, '-']);
+      return stdout;
+    } catch {
+      return '';
+    }
+  }
+
+  async snapshotDomain(domain: string): Promise<DomainSnapshot> {
+    const raw = await this.exportRaw(domain);
+    if (!raw.trim()) {
+      // A domain with no preferences (or one that cannot be exported) is treated
+      // as empty rather than fatal — capture diffs against an empty snapshot.
+      return { domain, entries: new Map() };
+    }
+    try {
+      return { domain, entries: topLevelEntries(raw) };
+    } catch {
+      return { domain, entries: new Map() };
+    }
+  }
+
+  plan(entry: SettingEntry): ApplyOutcome {
+    const argv = buildDefaultsArgv(entry);
+    return { argv, display: `defaults ${argv.join(' ')}` };
+  }
+
+  async apply(entry: SettingEntry): Promise<void> {
+    const argv = buildDefaultsArgv(entry);
+    await execFileAsync('defaults', argv);
+  }
+
+  async restartApp(app: string): Promise<void> {
+    // Best-effort: `killall` exits non-zero if the app is not running. That is
+    // not an error for our purposes (nothing to restart), so swallow it.
+    try {
+      await execFileAsync('killall', [app]);
+    } catch {
+      /* app was not running */
+    }
+  }
+}

@@ -513,11 +513,20 @@ export const PRIVATE_KEY_PATTERNS: SecretPattern[] = [
 
 export const GENERIC_PATTERNS: SecretPattern[] = [
   // Password assignments
+  //
+  // Issue #100: the lookbehind `(?<![A-Za-z0-9_-])` anchors the identifier
+  // start; the bounded lazy prefix `[A-Za-z0-9_-]{0,64}?` lets the keyword sit
+  // at the END of a longer identifier (`DB_PASSWORD` matches whole — a bare
+  // lookbehind alone would stop detecting it, RC2 done wrong); the required
+  // `\s*[=:]` is the right boundary so lookalikes never match; the unquoted
+  // class is non-whitespace-non-quote so dotted values are captured whole (RC3).
+  // Named groups: `name` (identifier), `qvalue` (quoted), `value` (unquoted).
   {
     id: 'password-assignment',
     name: 'Password Assignment',
     // Security: Upper bound to prevent ReDoS
-    pattern: /(?:password|passwd|pwd|pass)\s*[=:]\s*['"]([^'"]{8,200})['"]?/gi,
+    pattern:
+      /(?<![A-Za-z0-9_-])(?<name>[A-Za-z0-9_-]{0,64}?(?:password|passwd|pwd|pass))\s*[=:]\s*(?:['"](?<qvalue>[^'"\r\n]{8,200})['"]|(?<value>[^\s'"]{8,200}))/gi,
     severity: 'high',
     description: 'Password assigned in configuration',
     placeholder: 'PASSWORD',
@@ -525,8 +534,10 @@ export const GENERIC_PATTERNS: SecretPattern[] = [
   {
     id: 'password-url',
     name: 'Password in URL',
-    // Security: Upper bounds to prevent ReDoS
-    pattern: /:\/\/[^:]{1,100}:([^@]{8,200})@/g,
+    // Security: Upper bounds to prevent ReDoS. Issue #100 RC4: RFC 3986 userinfo
+    // cannot contain whitespace; excluding `\s` (and `/` in the user part) makes
+    // cross-line matches impossible.
+    pattern: /:\/\/(?<user>[^:@/\s]{1,100}):(?<value>[^@\s]{8,200})@/g,
     severity: 'critical',
     description: 'Password embedded in URL',
     placeholder: 'URL_PASSWORD',
@@ -536,17 +547,19 @@ export const GENERIC_PATTERNS: SecretPattern[] = [
   {
     id: 'api-key-assignment',
     name: 'API Key Assignment',
-    pattern: /(?:api[_-]?key|apikey)\s*[=:]\s*(?:['"]([A-Za-z0-9_-]{16,256})['"]|([A-Za-z0-9_-]{16,256}))/gi,
+    pattern:
+      /(?<![A-Za-z0-9_-])(?<name>[A-Za-z0-9_-]{0,64}?(?:api[_-]?key|apikey))\s*[=:]\s*(?:['"](?<qvalue>[A-Za-z0-9_-]{16,256})['"]|(?<value>[^\s'"]{16,256}))/gi,
     severity: 'high',
     description: 'API key assigned in configuration',
     placeholder: 'API_KEY',
   },
 
-  // Token assignments
+  // Token assignments (the `[_-]?token` suffix subsumes auth/access/bearer variants)
   {
     id: 'token-assignment',
     name: 'Token Assignment',
-    pattern: /(?:token|auth[_-]?token|access[_-]?token|bearer[_-]?token)\s*[=:]\s*(?:['"]([A-Za-z0-9_.-]{20,256})['"]|([A-Za-z0-9_.-]{20,256}))/gi,
+    pattern:
+      /(?<![A-Za-z0-9_-])(?<name>[A-Za-z0-9_-]{0,64}?token)\s*[=:]\s*(?:['"](?<qvalue>[A-Za-z0-9_.-]{20,256})['"]|(?<value>[^\s'"]{20,256}))/gi,
     severity: 'high',
     description: 'Token assigned in configuration',
     placeholder: 'TOKEN',
@@ -556,7 +569,8 @@ export const GENERIC_PATTERNS: SecretPattern[] = [
   {
     id: 'secret-assignment',
     name: 'Secret Assignment',
-    pattern: /(?:secret|client[_-]?secret|app[_-]?secret|secret[_-]?key)\s*[=:]\s*(?:['"]([A-Za-z0-9_-]{16,256})['"]|([A-Za-z0-9_-]{16,256}))/gi,
+    pattern:
+      /(?<![A-Za-z0-9_-])(?<name>[A-Za-z0-9_-]{0,64}?(?:secret|secret[_-]?key))\s*[=:]\s*(?:['"](?<qvalue>[A-Za-z0-9_-]{16,256})['"]|(?<value>[^\s'"]{16,256}))/gi,
     severity: 'high',
     description: 'Secret assigned in configuration',
     placeholder: 'SECRET',
@@ -657,6 +671,11 @@ export const GENERIC_PATTERNS: SecretPattern[] = [
     placeholder: 'SSH_PASSPHRASE',
   },
 ];
+
+/** Ids of the low-specificity generic patterns — lose overlap ties to vendor patterns. */
+export const GENERIC_PATTERN_IDS: ReadonlySet<string> = new Set(
+  GENERIC_PATTERNS.map((p) => p.id)
+);
 
 // ============================================================================
 // Combine All Patterns

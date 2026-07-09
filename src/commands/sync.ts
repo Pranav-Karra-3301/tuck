@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { join, basename } from 'path';
+import { join, basename, relative, isAbsolute } from 'path';
 import { realpath, readFile, writeFile } from 'fs/promises';
 import { createHash } from 'node:crypto';
 import { prompts, logger, withSpinner, colors as c } from '../ui/index.js';
@@ -31,6 +31,7 @@ import {
 } from '../lib/mergeConflicts.js';
 import { resolveConflictsInteractively } from '../ui/merge.js';
 import { createSnapshot } from '../lib/timemachine.js';
+import { undoBreadcrumb } from '../lib/undoHint.js';
 import { resolveLiveTarget } from '../lib/repoScope.js';
 import { isJsonMode } from '../lib/jsonOutput.js';
 import {
@@ -47,15 +48,40 @@ import { loadConfig } from '../lib/config.js';
 import { assertRemoteAvailable } from '../lib/providers/index.js';
 import { runPreSyncHook, runPostSyncHook, type HookOptions } from '../lib/hooks.js';
 import { extractSubtree, hasSubtree } from '../lib/jsonKey.js';
-import { NotInitializedError, SecretsDetectedError, MergeConflictsError } from '../errors.js';
+import {
+  NotInitializedError,
+  SecretsDetectedError,
+  MergeConflictsError,
+  JsonMergeConflictsError,
+} from '../errors.js';
+import {
+  captureMergeBases,
+  decideFileMerge,
+  persistPendingMergeBases,
+  loadPendingMergeBases,
+  clearPendingMergeBases,
+} from '../lib/jsonMergeSync.js';
+import { resolveMergePolicy, type ConflictResolution } from '../lib/jsonMerge.js';
 import { setJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
 import type { SyncOptions, FileChange } from '../types.js';
 import { detectDotfiles, DETECTION_CATEGORIES, type DetectedFile } from '../lib/detect.js';
 import { trackFilesWithProgress, type FileToTrack } from '../lib/fileTracking.js';
 import { preparePathsForTracking } from '../lib/trackPipeline.js';
-import { scanForSecrets, isSecretScanningEnabled, shouldBlockOnSecrets, processSecretsForRedaction, redactFile } from '../lib/secrets/index.js';
+import {
+  scanForSecrets,
+  isSecretScanningEnabled,
+  shouldBlockOnSecrets,
+  processSecretsForRedaction,
+  redactFile,
+  getStoredValueMap,
+  getRedactedChecksum,
+  addAllowlistEntryByFingerprint,
+  computeFingerprint,
+  getAllowlistPath,
+  type SecretMatch,
+} from '../lib/secrets/index.js';
 import { displayScanResults } from './secrets.js';
-import { logForceSecretBypass } from '../lib/audit.js';
+import { logForceSecretBypass, logSecretAllowlisted } from '../lib/audit.js';
 
 interface SyncResult {
   modified: string[];
@@ -78,6 +104,19 @@ interface SyncResult {
  */
 type TrackedFileChange = FileChange & { id?: string };
 
+/**
+ * A pending secret redaction for one LIVE file (issue #100 RC5). Built when the
+ * user picks the 'redact' action in {@link scanAndHandleSecrets} and applied by
+ * {@link syncFiles} to the REPO copy right after it is written — the live file
+ * is never rewritten. For a tracked DIRECTORY, `livePath` points at the inner
+ * file that holds the secret.
+ */
+interface RedactionPlan {
+  livePath: string;
+  matches: SecretMatch[];
+  placeholderMap: Map<string, string>;
+}
+
 const pathsResolveToSameLocation = async (sourcePath: string, destinationPath: string): Promise<boolean> => {
   try {
     const [resolvedSource, resolvedDestination] = await Promise.all([
@@ -90,9 +129,12 @@ const pathsResolveToSameLocation = async (sourcePath: string, destinationPath: s
   }
 };
 
-const detectChanges = async (tuckDir: string): Promise<TrackedFileChange[]> => {
+export const detectChanges = async (tuckDir: string): Promise<TrackedFileChange[]> => {
   const files = await getAllTrackedFiles(tuckDir);
   const ignoredPaths = await loadTuckignore(tuckDir);
+  // Load the stored-secret value map ONCE per run (issue #100). Empty map ⇒ no
+  // stored secrets ⇒ raw checksum comparison is authoritative (fast path).
+  const valueMap = await getStoredValueMap(tuckDir);
   const changes: TrackedFileChange[] = [];
 
   for (const [id, file] of Object.entries(files)) {
@@ -175,6 +217,18 @@ const detectChanges = async (tuckDir: string): Promise<TrackedFileChange[]> => {
     try {
       const sourceChecksum = await getFileChecksum(sourcePath);
       if (sourceChecksum !== file.checksum) {
+        // The repo copy is redacted (secret placeholders), while the LIVE file
+        // keeps its real secrets, so raw checksums ALWAYS differ for a
+        // secret-bearing file. Re-check against the LIVE file hashed AS IF its
+        // known secrets were redacted: if that matches the stored (redacted)
+        // checksum, the only difference is the placeholder substitution — clean,
+        // not modified (issue #100). Skipped entirely when no secrets are stored.
+        if (
+          valueMap.size > 0 &&
+          (await getRedactedChecksum(sourcePath, valueMap)) === file.checksum
+        ) {
+          continue;
+        }
         changes.push({
           path: file.source,
           status: 'modified',
@@ -295,7 +349,18 @@ const resolveConflictsInline = async (
 const pullIfBehind = async (
   tuckDir: string,
   options: SyncOptions = {}
-): Promise<{ pulled: boolean; behind: number; error?: string; resolvedConflicts?: string[] }> => {
+): Promise<{
+  pulled: boolean;
+  behind: number;
+  error?: string;
+  resolvedConflicts?: string[];
+  /**
+   * Repo-copy contents of every merge-policy file, captured immediately BEFORE
+   * the pull. This is the common ancestor for the sync-time structured merge —
+   * see {@link reconcileJsonMerges}. Empty unless a pull actually ran.
+   */
+  mergeBases?: Map<string, string>;
+}> => {
   const hasRemoteRepo = await hasRemote(tuckDir);
   if (!hasRemoteRepo) {
     return { pulled: false, behind: 0 };
@@ -311,6 +376,12 @@ const pullIfBehind = async (
       return { pulled: false, behind: 0 };
     }
 
+    // Capture the repo copy of every merge-policy file BEFORE pulling. On this
+    // machine that copy equals the last-synced state, so it is the correct
+    // common ancestor for a three-way merge once the pull advances the repo
+    // copy to the remote's version.
+    const mergeBases = await captureMergeBases(tuckDir, await getAllTrackedFiles(tuckDir));
+
     // Snapshot tracked sources before a potentially-destructive pull so users
     // can roll back if anything goes sideways during merge.
     await snapshotBeforePull(tuckDir, 'Pre-sync pull backup');
@@ -321,7 +392,7 @@ const pullIfBehind = async (
       // The rebase rewrote .tuckmanifest.json out-of-band; drop the cached copy
       // so the rest of this run (and change detection) sees the pulled state.
       clearManifestCache();
-      return { pulled: true, behind: status.behind };
+      return { pulled: true, behind: status.behind, mergeBases };
     } catch (pullError) {
       // A failed pull --rebase may have left conflicts staged in the index.
       // If it didn't, this is just a regular git error and we re-throw.
@@ -373,6 +444,7 @@ const pullIfBehind = async (
         pulled: true,
         behind: status.behind,
         resolvedConflicts: conflicts.map((c) => c.path),
+        mergeBases,
       };
     }
   } catch (error) {
@@ -469,7 +541,8 @@ const generateCommitMessage = (result: SyncResult): string => {
 const syncFiles = async (
   tuckDir: string,
   changes: TrackedFileChange[],
-  options: SyncOptions
+  options: SyncOptions,
+  redactionPlans: RedactionPlan[] = []
 ): Promise<SyncResult> => {
   const result: SyncResult = {
     modified: [],
@@ -550,6 +623,17 @@ const syncFiles = async (
         result.modified.push(basename(change.path) || change.path);
         continue;
       }
+      // Redaction plans whose live file is this change's source, or lies inside
+      // it (a tracked DIRECTORY whose inner file holds the secret). Compared on
+      // expanded absolute paths.
+      const expandedSourcePath = expandPath(sourcePath);
+      const plansForChange = redactionPlans.filter((plan) => {
+        const liveAbs = expandPath(plan.livePath);
+        if (liveAbs === expandedSourcePath) return true;
+        const rel = relative(expandedSourcePath, liveAbs);
+        return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+      });
+
       await withSpinner(`Syncing ${change.path}...`, async () => {
         // Symlink tracking can make source and destination the same underlying file.
         // Skip copying in that case to avoid same-file copy errors.
@@ -567,6 +651,60 @@ const syncFiles = async (
             await deleteFileOrDir(destPath);
           }
           await copyFileOrDir(sourcePath, destPath, { overwrite: true });
+
+          // Repo-only redaction (issue #100 RC5): apply the placeholders to the
+          // REPO copy that was just written — never to the live file. This runs
+          // BEFORE the checksum below so the manifest records the redacted
+          // content that sync will stage.
+          try {
+            for (const plan of plansForChange) {
+              const liveAbs = expandPath(plan.livePath);
+              const repoTarget =
+                liveAbs === expandedSourcePath
+                  ? destPath
+                  : join(destPath, relative(expandedSourcePath, liveAbs));
+              validatePathWithinRoot(repoTarget, tuckDir, 'sync redaction target');
+              // An inner file excluded from the directory copy never reached the
+              // repo: there is no repo copy to redact and its secret was never
+              // written. Skip the plan; only real failures below are fatal.
+              if (!(await pathExists(repoTarget))) {
+                logger.debug?.(
+                  `sync: skipping redaction plan for ${collapsePath(plan.livePath)}: no repo copy at ${repoTarget} (excluded from copy)`
+                );
+                continue;
+              }
+              await redactFile(repoTarget, plan.matches, plan.placeholderMap);
+            }
+          } catch (redactionError) {
+            // A failed plan must never leave the freshly-copied destination in
+            // the repo working tree: it still holds CLEARTEXT secrets, and
+            // sync's stageAll would commit it. Delete it and fail this file's
+            // sync loudly — the manifest checksum below is never recorded.
+            try {
+              await deleteFileOrDir(destPath);
+            } catch (cleanupError) {
+              const redactMsg =
+                redactionError instanceof Error ? redactionError.message : String(redactionError);
+              const cleanupMsg =
+                cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+              throw new Error(
+                `Redaction of the repository copy failed (${redactMsg}) and removing the ` +
+                  `cleartext copy also failed (${cleanupMsg}). Remove ${destPath} manually ` +
+                  `before running 'tuck sync' again.`
+              );
+            }
+            throw redactionError;
+          }
+        } else if (plansForChange.length > 0) {
+          // A symlink-tracked file: the live file and the repo copy are the SAME
+          // inode, so redacting the repo copy would rewrite the user's live
+          // config — exactly what issue #100 forbids. Its secrets are already in
+          // the repo working tree; warn, but do not fail the sync.
+          logger.warning(
+            `Cannot redact ${change.path}: it is symlink-tracked, so its live file IS the repo copy ` +
+              `and its secrets are already in the repo working tree. Re-track it with the copy ` +
+              `strategy ('tuck remove' then 'tuck add' without --symlink) to enable repo-only redaction.`
+          );
         }
 
         // Update checksum in manifest using the id resolved above.
@@ -668,14 +806,19 @@ const scanJsonKeySubtrees = async (
 };
 
 /**
- * Scan modified files for secrets and handle user interaction
- * Returns true if sync should continue, false if aborted
+ * Scan modified files for secrets and handle user interaction.
+ *
+ * Returns `proceed: false` when the sync should abort. When the user picks the
+ * 'redact' action, the detected secrets are stored locally and returned as
+ * {@link RedactionPlan}s — the placeholders are applied to the REPO copies by
+ * {@link syncFiles} during this sync; the LIVE files are never rewritten
+ * (issue #100 RC5).
  */
 const scanAndHandleSecrets = async (
   tuckDir: string,
   changes: FileChange[],
   options: SyncOptions
-): Promise<boolean> => {
+): Promise<{ proceed: boolean; redactionPlans: RedactionPlan[] }> => {
   // Skip if force flag is set (but require confirmation first)
   if (options.force) {
     const confirmed = await prompts.confirmDangerous(
@@ -685,18 +828,18 @@ const scanAndHandleSecrets = async (
     );
     if (!confirmed) {
       logger.info('Sync cancelled');
-      return false;
+      return { proceed: false, redactionPlans: [] };
     }
     logger.warning('Secret scanning bypassed with --force');
     // Audit log for security tracking
     await logForceSecretBypass('tuck sync --force', changes.length);
-    return true;
+    return { proceed: true, redactionPlans: [] };
   }
 
   // Check if scanning is enabled in config
   const scanningEnabled = await isSecretScanningEnabled(tuckDir);
   if (!scanningEnabled) {
-    return true;
+    return { proceed: true, redactionPlans: [] };
   }
 
   // Resolve modified changes to their LIVE paths (repo-scoped entries via the
@@ -705,7 +848,7 @@ const scanAndHandleSecrets = async (
   const targets = await resolveModifiedChangeTargets(tuckDir, changes);
 
   if (targets.length === 0) {
-    return true;
+    return { proceed: true, redactionPlans: [] };
   }
 
   const modifiedPaths = targets.map((t) => t.live);
@@ -733,13 +876,13 @@ const scanAndHandleSecrets = async (
     );
     if (choice !== 'proceed') {
       prompts.cancel('Sync aborted - secrets detected in a tracked JSON subtree');
-      return false;
+      return { proceed: false, redactionPlans: [] };
     }
     await logForceSecretBypass('tuck sync (proceed past jsonKey subtree findings)', subtreeFindings.length);
   }
 
   if (summary.totalSecrets === 0) {
-    return true;
+    return { proceed: true, redactionPlans: [] };
   }
 
   // Display results
@@ -748,45 +891,87 @@ const scanAndHandleSecrets = async (
   // Prompt user for action
   const action = await prompts.select('What would you like to do?', [
     { value: 'abort', label: 'Abort sync' },
-    { value: 'redact', label: 'Redact secrets (replace with placeholders)' },
+    { value: 'redact', label: 'Redact secrets (placeholders in repo copy; live file untouched)' },
+    { value: 'allow', label: 'Mark as safe (allowlist false positives)' },
     { value: 'ignore', label: 'Add files to .tuckignore and skip them' },
     { value: 'proceed', label: 'Proceed anyway (secrets will be committed)' },
   ]);
 
   if (action === 'abort') {
     prompts.cancel('Sync aborted - secrets detected');
-    return false;
+    return { proceed: false, redactionPlans: [] };
+  }
+
+  if (action === 'allow') {
+    const reason = await prompts.text(
+      'Why are these findings safe? (recorded in the allowlist)',
+      { placeholder: 'e.g. example values from docs, not real secrets' }
+    );
+    if (!reason || reason.trim().length === 0) {
+      prompts.cancel('Sync aborted - a reason is required to allowlist');
+      return { proceed: false, redactionPlans: [] };
+    }
+    let allowlisted = 0;
+    for (const result of summary.results) {
+      if (!result.hasSecrets) continue;
+      for (const match of result.matches) {
+        const entry = await addAllowlistEntryByFingerprint(
+          tuckDir,
+          computeFingerprint(match.value),
+          { reason: reason.trim(), pattern: match.patternId, path: result.collapsedPath }
+        );
+        await logSecretAllowlisted(entry.fingerprint, entry.reason, {
+          pattern: entry.pattern,
+          path: entry.path,
+        });
+        allowlisted++;
+      }
+    }
+    prompts.log.success(
+      `Allowlisted ${allowlisted} finding${allowlisted === 1 ? '' : 's'} in ${collapsePath(getAllowlistPath(tuckDir))}`
+    );
+    prompts.note('Commit secrets.allow.json so teammates share the allowlist', 'Tip');
+    // Everything flagged was just allowlisted — proceed with no redactions.
+    return { proceed: true, redactionPlans: [] };
   }
 
   if (action === 'redact') {
-    // Store secrets and replace them with placeholders in the source files
+    // Store the secrets locally and BUILD redaction plans. The placeholders are
+    // applied to the REPO copies as syncFiles writes them — the live files are
+    // never rewritten (issue #100 RC5).
     const spinner = prompts.spinner();
-    spinner.start('Redacting secrets...');
+    spinner.start('Storing secrets for redaction...');
 
     try {
       // Process secrets: store them and get placeholder mappings
       const fileRedactionMaps = await processSecretsForRedaction(summary.results, tuckDir);
 
-      // Redact each file
-      let redactedCount = 0;
+      const redactionPlans: RedactionPlan[] = [];
       for (const result of summary.results) {
         const placeholderMap = fileRedactionMaps.get(result.path);
         if (placeholderMap && placeholderMap.size > 0) {
-          await redactFile(result.path, result.matches, placeholderMap);
-          redactedCount++;
+          redactionPlans.push({
+            livePath: result.path,
+            matches: result.matches,
+            placeholderMap,
+          });
         }
       }
 
-      spinner.stop(`Redacted secrets in ${redactedCount} file${redactedCount !== 1 ? 's' : ''}`);
-      prompts.log.success('Secrets stored locally and replaced with placeholders');
+      spinner.stop(
+        `Stored secrets from ${redactionPlans.length} file${redactionPlans.length !== 1 ? 's' : ''}`
+      );
+      prompts.log.success(
+        'Secrets stored locally — the repository copy gets placeholders during this sync'
+      );
+      prompts.log.info('Your live files are left untouched');
       prompts.note("Use 'tuck secrets list' to see stored secrets", 'Tip');
+      return { proceed: true, redactionPlans };
     } catch (error) {
       spinner.stop('Redaction failed');
       prompts.log.error(error instanceof Error ? error.message : String(error));
-      return false;
+      return { proceed: false, redactionPlans: [] };
     }
-
-    return true;
   }
 
   if (action === 'ignore') {
@@ -817,18 +1002,156 @@ const scanAndHandleSecrets = async (
 
     if (changes.length === 0) {
       prompts.log.info('No remaining changes to sync');
-      return false;
+      return { proceed: false, redactionPlans: [] };
     }
-    return true;
+    return { proceed: true, redactionPlans: [] };
   }
 
   // proceed - continue with warning
   prompts.log.warning('Proceeding with secrets - make sure your repo is private!');
+  return { proceed: true, redactionPlans: [] };
+};
+
+/**
+ * Structured three-way merge for tracked JSON files after a pull.
+ *
+ * When a merge-policy file was modified locally AND the pull advanced its repo
+ * copy, a naive live→repo capture would silently discard the incoming changes.
+ * Instead we three-way merge base(pre-pull repo) × local(live) × remote(post-
+ * pull repo), union allowlists/plugin lists, and write the reconciled document
+ * to BOTH the live file and the repo copy so the two machines converge. The
+ * later `syncFiles` copy then captures the already-merged content.
+ *
+ * Returns `false` when the user aborts on an unresolvable conflict (the caller
+ * stops the sync), `true` otherwise.
+ */
+const reconcileJsonMerges = async (
+  tuckDir: string,
+  changes: TrackedFileChange[],
+  mergeBases: Map<string, string>,
+  options: SyncOptions
+): Promise<boolean> => {
+  if (mergeBases.size === 0) return true;
+
+  const trackedFiles = await getAllTrackedFiles(tuckDir);
+  const bySource = new Map<string, (typeof trackedFiles)[string]>();
+  for (const file of Object.values(trackedFiles)) {
+    bySource.set(file.source, file);
+  }
+
+  for (const change of changes) {
+    if (change.status !== 'modified') continue;
+
+    const baseText = mergeBases.get(change.source);
+    if (baseText === undefined) continue;
+
+    const entry = bySource.get(change.source);
+    if (!entry) continue;
+
+    const policy = resolveMergePolicy(entry.source, entry.merge);
+    if (!policy) continue;
+
+    const livePath = await resolveLiveTarget(entry);
+    if (livePath === null) continue;
+
+    const destPath = join(tuckDir, entry.destination);
+    if (!(await pathExists(livePath)) || !(await pathExists(destPath))) continue;
+
+    let liveText: string;
+    let remoteText: string;
+    try {
+      liveText = await readFile(livePath, 'utf-8');
+      remoteText = await readFile(destPath, 'utf-8');
+    } catch {
+      continue;
+    }
+
+    let decision = decideFileMerge(baseText, liveText, remoteText, policy);
+
+    if (decision.kind === 'skip') continue;
+
+    if (decision.kind === 'unparsable') {
+      logger.warning(
+        `Could not structurally merge ${collapsePath(livePath)} (not valid JSON on one side) — keeping local version`
+      );
+      continue;
+    }
+
+    if (decision.kind === 'conflict') {
+      // Non-interactive callers cannot choose a resolution: surface a structured
+      // error (exit code 3) instead of silently picking a side.
+      const nonInteractive = options.yes === true || options.json === true || isJsonMode();
+      if (nonInteractive) {
+        await persistPendingMergeBases(mergeBases);
+        throw new JsonMergeConflictsError(
+          collapsePath(livePath),
+          decision.conflicts.map((cf) => cf.path)
+        );
+      }
+
+      console.log();
+      console.log(c.yellow(`Merge conflicts in ${collapsePath(livePath)}:`));
+      for (const cf of decision.conflicts) {
+        console.log(c.dim(`  • ${cf.path} — ${cf.reason}`));
+      }
+      console.log();
+
+      const choice = await prompts.select('How should tuck resolve these conflicts?', [
+        { value: 'ours', label: 'Keep local values' },
+        { value: 'theirs', label: 'Take incoming values' },
+        { value: 'abort', label: 'Abort sync and resolve manually' },
+      ]);
+
+      if (choice === 'abort') {
+        // The base lives only in memory this run — persist it so the NEXT sync
+        // can still detect the divergence instead of silently committing local
+        // values over the remote's.
+        await persistPendingMergeBases(mergeBases);
+        prompts.cancel('Sync aborted - unresolved JSON merge conflicts');
+        prompts.log.info(
+          'The merge base was saved; the next `tuck sync` will re-detect these conflicts.'
+        );
+        return false;
+      }
+
+      // Re-run with the chosen strategy so every conflicting leaf resolves.
+      decision = decideFileMerge(baseText, liveText, remoteText, {
+        ...policy,
+        conflict: choice as ConflictResolution,
+      });
+    }
+
+    if (decision.kind !== 'clean' && decision.kind !== 'conflict') continue;
+    const mergedText = decision.text;
+
+    // Snapshot the live file before we rewrite it so `tuck undo` can recover the
+    // pre-merge version even if the union surprises the user.
+    try {
+      await createSnapshot([livePath], `Pre-merge backup: ${change.path}`);
+    } catch (error) {
+      logger.dim(
+        `Pre-merge snapshot skipped: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    await writeFile(livePath, mergedText, 'utf-8');
+    await writeFile(destPath, mergedText, 'utf-8');
+    logger.file('merge', collapsePath(livePath));
+  }
+
+  // Every conflict was reconciled (or none applied) — drop any abort-recovery
+  // bases from a previous run so stale ancestors never resurface.
+  await clearPendingMergeBases();
   return true;
 };
 
 const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): Promise<void> => {
   prompts.intro('tuck sync');
+
+  // Repo-copy snapshots captured before a pull, used for the structured JSON
+  // merge in STEP 2.6. Seeded from any bases persisted by a previous aborted
+  // run (abort recovery); bases captured by THIS run's pull take precedence.
+  let mergeBases = await loadPendingMergeBases();
 
   // ========== STEP 1: Pull from remote if behind ==========
   if (options.pull !== false && (await hasRemote(tuckDir))) {
@@ -836,17 +1159,26 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
     pullSpinner.start('Checking remote for updates...');
 
     const pullResult = await pullIfBehind(tuckDir, options);
+    if (pullResult.mergeBases) {
+      mergeBases = new Map([...mergeBases, ...pullResult.mergeBases]);
+    }
     if (pullResult.error) {
       pullSpinner.stop(`Could not pull: ${pullResult.error}`);
       prompts.log.warning('Continuing with local changes...');
     } else if (pullResult.pulled) {
+      const resolvedCount = pullResult.resolvedConflicts?.length ?? 0;
       const conflictNote =
-        pullResult.resolvedConflicts && pullResult.resolvedConflicts.length > 0
-          ? ` (resolved ${pullResult.resolvedConflicts.length} conflict${pullResult.resolvedConflicts.length === 1 ? '' : 's'})`
+        resolvedCount > 0
+          ? ` (resolved ${resolvedCount} conflict${resolvedCount === 1 ? '' : 's'})`
           : '';
       pullSpinner.stop(
         `Pulled ${pullResult.behind} commit${pullResult.behind > 1 ? 's' : ''} from remote${conflictNote}`
       );
+      // A conflict resolution rewrote tracked files in place; surface the
+      // snapshot taken during resolution as a one-line recovery path (IDEAS 6.5).
+      if (resolvedCount > 0) {
+        logger.info(undoBreadcrumb());
+      }
     } else {
       pullSpinner.stop('Up to date with remote');
     }
@@ -858,12 +1190,27 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
   const changes = await detectChanges(tuckDir);
   changeSpinner.stop(`Found ${changes.length} changed file${changes.length !== 1 ? 's' : ''}`);
 
-  // ========== STEP 2.5: Scan modified files for secrets ==========
-  if (changes.length > 0) {
-    const shouldContinue = await scanAndHandleSecrets(tuckDir, changes, options);
+  // ========== STEP 2.4: Structured three-way merge for JSON policy files ==========
+  // Reconcile locally-modified JSON files against the freshly-pulled repo copy
+  // BEFORE scanning/committing, so an agent-rewritten config never silently
+  // overwrites the incoming changes. Only does work when a pull captured bases.
+  if (changes.length > 0 && mergeBases.size > 0) {
+    const shouldContinue = await reconcileJsonMerges(tuckDir, changes, mergeBases, options);
     if (!shouldContinue) {
       return;
     }
+  }
+
+  // ========== STEP 2.5: Scan modified files for secrets ==========
+  // When the user picks 'redact', the plans are threaded into syncFiles below,
+  // which applies them to the REPO copies only (issue #100 RC5).
+  let redactionPlans: RedactionPlan[] = [];
+  if (changes.length > 0) {
+    const secretScan = await scanAndHandleSecrets(tuckDir, changes, options);
+    if (!secretScan.proceed) {
+      return;
+    }
+    redactionPlans = secretScan.redactionPlans;
   }
 
   // ========== STEP 3: Scan for new dotfiles (if enabled) ==========
@@ -1103,7 +1450,7 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
     );
     console.log();
 
-    result = await syncFiles(tuckDir, changes, { ...options, message });
+    result = await syncFiles(tuckDir, changes, { ...options, message }, redactionPlans);
   } else if (filesToTrack.length > 0) {
     // Only new files were added, commit them
     if (!options.noCommit) {

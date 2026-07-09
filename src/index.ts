@@ -19,7 +19,10 @@ import {
   encryptionCommand,
   doctorCommand,
   bundleCommand,
+  mergeCommand,
+  profileCommand,
   verifyCommand,
+  bootstrapCommand,
 } from './commands/index.js';
 import { handleError } from './errors.js';
 import { VERSION, DESCRIPTION } from './constants.js';
@@ -29,6 +32,7 @@ import { getTuckDir, pathExists } from './lib/paths.js';
 import { loadManifest } from './lib/manifest.js';
 import { getStatus } from './lib/git.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from './lib/jsonOutput.js';
+import { setNonInteractive, configureColor } from './lib/agentMode.js';
 import { buildCommandPath } from './lib/commandPath.js';
 import { setWriteContext } from './lib/writeContext.js';
 import { expandPath as expandTuckPath } from './lib/paths.js';
@@ -38,6 +42,7 @@ import { contextCommand } from './commands/context.js';
 import { mcpCommand } from './commands/mcp.js';
 import { presetCommand } from './commands/preset.js';
 import { repoCommand } from './commands/repo.js';
+import { settingsCommand } from './commands/settings.js';
 
 const program = new Command();
 
@@ -49,6 +54,11 @@ program
     '--root <dir>',
     'Confine ALL writes under this directory (sandbox / dry-home mode). ' +
       'Also settable via TUCK_TARGET_ROOT. Use to run tuck without touching your real ~.'
+  )
+  .option(
+    '--non-interactive',
+    'Never prompt; fail fast with a typed error if a prompt would be required. ' +
+      'Implied by --json and by a non-TTY stdin. Pair with --yes to auto-confirm.'
   )
   .configureOutput({
     outputError: (str, write) => write(chalk.red(str)),
@@ -70,17 +80,21 @@ program.addCommand(listCommand);
 program.addCommand(diffCommand);
 program.addCommand(configCommand);
 program.addCommand(applyCommand);
+program.addCommand(bootstrapCommand);
 program.addCommand(undoCommand);
 program.addCommand(scanCommand);
 program.addCommand(secretsCommand);
 program.addCommand(encryptionCommand);
 program.addCommand(doctorCommand);
 program.addCommand(bundleCommand);
+program.addCommand(mergeCommand);
+program.addCommand(profileCommand);
 program.addCommand(verifyCommand);
 program.addCommand(contextCommand);
 program.addCommand(mcpCommand);
 program.addCommand(presetCommand);
 program.addCommand(repoCommand);
+program.addCommand(settingsCommand);
 
 // Best-effort EARLY detection so the error handler can emit JSON even for
 // failures that occur before any command action runs (e.g. during parsing).
@@ -92,12 +106,28 @@ program.addCommand(repoCommand);
 if (process.argv.slice(2).includes('--json')) {
   setJsonMode(true);
 }
+// The `--non-interactive` global is a bare flag (no value), so a plain argv scan
+// is unambiguous — mirroring the early `--json` detection above. This ensures the
+// prompt gate and color suppression are honored even for failures that occur
+// before any command action runs (e.g. during parsing).
+if (process.argv.slice(2).includes('--non-interactive')) {
+  setNonInteractive(true);
+}
+// Suppress ANSI for machine consumers / non-TTY stdout as early as possible so
+// even pre-action diagnostics come out clean. Re-run authoritatively in preAction.
+configureColor();
 
 // Authoritative resolution of JSON mode AND the write sandbox: runs after
-// parsing, before the action. Global --root lives on the root program.
+// parsing, before the action. Global --root / --non-interactive live on the root program.
 program.hook('preAction', (_thisCommand, actionCommand) => {
   const opts = actionCommand.opts() as { json?: boolean };
   setJsonMode(opts.json === true, buildCommandPath(actionCommand as { name(): string }));
+
+  const globalOpts = program.opts() as { nonInteractive?: boolean };
+  if (globalOpts.nonInteractive === true) setNonInteractive(true);
+  // Options are now authoritative (JSON mode may have been set by opts above),
+  // so recompute color suppression.
+  configureColor();
 
   const rootOpt = (program.opts() as { root?: string }).root ?? process.env.TUCK_TARGET_ROOT;
   if (rootOpt && rootOpt.trim()) {

@@ -95,9 +95,19 @@ export interface TrackedFile {
    * restore deep-merge it back into the live file. Absent for whole-file entries.
    */
   jsonKey?: string;
+  /**
+   * Profile tags this file belongs to. Empty = universal (applies under every
+   * profile). Defaults to `[]`.
+   */
+  tags: string[];
 }
 
 export interface BundleMetadata {
+  description?: string;
+  created: string;
+}
+
+export interface ProfileMetadata {
   description?: string;
   created: string;
 }
@@ -109,6 +119,7 @@ export interface TuckManifest {
   machine?: string;
   files: Record<string, TrackedFile>;
   bundles: Record<string, BundleMetadata>;
+  profiles: Record<string, ProfileMetadata>;
 }
 
 export interface InitOptions {
@@ -130,6 +141,17 @@ export interface AddOptions extends CommonOptions {
   /** Bundle to assign the tracked file to. Defaults to "default". */
   bundle?: string;
   /**
+   * Profile tags to attach to the tracked file(s) at add time (work, personal,
+   * server, agent, …). Each tag is auto-registered as a profile if new.
+   */
+  tag?: string[];
+  /**
+   * Comma/whitespace-separated `<manager>:<package>` dependency specs recorded
+   * on the tracked file(s), e.g. "brew:starship,apt:zsh". Installed before the
+   * file by `tuck bootstrap` (IDEAS 2.3).
+   */
+  requires?: string;
+  /**
    * Track the file as REPO-scoped: it lives inside a git repo (optionally at
    * the given dir; auto-detected from the path otherwise) whose absolute path
    * differs per machine. Stored by stable (repoKey, repoRelative).
@@ -143,6 +165,12 @@ export interface AddOptions extends CommonOptions {
    * deep-merged back into the live file, leaving all other keys untouched.
    */
   key?: string;
+  /**
+   * Track a curated AI-agent config preset instead of explicit paths, e.g.
+   * `--preset claude-code`. Enumerates the agent's safe-to-track allowlist and
+   * hard-excludes local/credential/history files.
+   */
+  preset?: string;
 }
 
 export interface RemoveOptions extends CommonOptions {
@@ -209,6 +237,12 @@ export interface ApplyOptions extends CommonOptions {
   noSecrets?: boolean;
   /** Scope apply to a single bundle. Defaults to all bundles when unset. */
   bundle?: string;
+  /**
+   * Scope apply to a single profile (work, personal, server, agent, …). When
+   * unset, falls back to this machine's bound profile; when neither is set,
+   * every file is applied (legacy behavior).
+   */
+  profile?: string;
   /** Bind an as-yet-unknown repo to this root before applying repo-scoped files. */
   repoRoot?: string;
 }
@@ -216,6 +250,22 @@ export interface ApplyOptions extends CommonOptions {
 export interface DoctorOptions extends CommonOptions {
   strict?: boolean;
   category?: 'env' | 'repo' | 'manifest' | 'security' | 'hooks';
+}
+
+export interface BootstrapOptions extends CommonOptions {
+  /** Apply strategy: preserve local customizations (default) vs overwrite. */
+  merge?: boolean;
+  replace?: boolean;
+  /** Skip the declared-package install phase. */
+  skipPackages?: boolean;
+  /** Skip the final `tuck doctor` health check. */
+  skipDoctor?: boolean;
+  /** Bind an as-yet-unlinked repo to this checkout before applying repo-scoped files. */
+  repoRoot?: string;
+  /** Only bootstrap files in the named bundle. */
+  bundle?: string;
+  /** Proceed without the interactive plan confirmation (implied by --yes/--json). */
+  force?: boolean;
 }
 
 export interface FileChange {
