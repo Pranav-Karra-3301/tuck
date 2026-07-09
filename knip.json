@@ -1,0 +1,36 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": ["src/index.ts", "scripts/*.{ts,mjs,js}"],
+  "project": ["src/**/*.ts", "scripts/**/*.{ts,mjs,js}"],
+  "ignore": ["src/lib/index.ts"],
+  "ignoreDependencies": ["lint-staged"],
+  "ignoreBinaries": ["secret-tool", "security", "pwsh", "powershell.exe"],
+  "ignoreExportsUsedInFile": true,
+  "vitest": {
+    "config": [
+      "vitest.config.ts",
+      "vitest.e2e.config.ts",
+      "vitest.bench.config.ts"
+    ],
+    "entry": [
+      "tests/**/*.{test,spec,bench}.ts",
+      "tests/setup.ts",
+      "src/**/*.test.ts"
+    ]
+  },
+  "rules": {
+    "files": "error",
+    "dependencies": "error",
+    "devDependencies": "error",
+    "optionalPeerDependencies": "error",
+    "unlisted": "error",
+    "unresolved": "error",
+    "binaries": "error",
+    "exports": "warn",
+    "types": "warn",
+    "nsExports": "warn",
+    "nsTypes": "warn",
+    "duplicates": "warn",
+    "enumMembers": "warn"
+  }
+}

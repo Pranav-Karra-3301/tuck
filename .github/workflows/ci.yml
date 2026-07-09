@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   lint:
-    name: Lint & Typecheck
+    name: Lint, Typecheck & Static Analysis
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -39,6 +39,9 @@ jobs:
 
       - name: Run TypeScript type checking
         run: pnpm typecheck
+
+      - name: Run knip (dead code / unused dependency check)
+        run: pnpm knip
 
   test:
     name: Test (${{ matrix.os }}, Node ${{ matrix.node }})
