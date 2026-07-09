@@ -92,6 +92,26 @@ tuck init --from github.com/you/dotfiles
 tuck restore --all
 ```
 
+### Safe first apply
+
+`tuck apply` never touches a fresh machine blind:
+
+- It **shows a full diff summary first** — every file that will be created (`new`) vs
+  overwritten (`update`), with a one-line count — before anything is written.
+- It **auto-creates a Time Machine snapshot** of every destination (including files it
+  is about to create) before applying.
+- After it finishes — and after any other destructive change (`tuck sync` conflict
+  resolution, `tuck remove --delete`) — it prints a one-line breadcrumb showing exactly
+  how to roll back:
+
+  ```
+  Undo this change: tuck undo 2026-07-09-101112  (or tuck undo --latest)
+  ```
+
+`tuck init` leads with the scan-based **"adopt the dotfiles already on this machine"**
+path, so the fastest way to get started is to track what you already have — no remote or
+templating concepts required.
+
 ### Onto a remote box (SSH)
 
 Push the configs this machine already tracks — your agent configs (`.claude`,

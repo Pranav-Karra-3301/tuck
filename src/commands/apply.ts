@@ -46,6 +46,13 @@ import {
 import { getProvider, type ProviderMode, type RemoteConfig as ProviderRemoteConfig } from '../lib/providers/index.js';
 import { setJsonMode, isJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
 import { materializeForLive, keystorePassphrase, buildMaterializeCtx } from '../lib/materialize.js';
+import {
+  summarizeApplyDiff,
+  formatApplyDiffLine,
+  type ApplyDiffItem,
+  type ApplyDiffSummary,
+} from '../lib/applyDiff.js';
+import { undoBreadcrumb, UNDO_BREADCRUMB_TITLE } from '../lib/undoHint.js';
 
 // Track if Windows permission warning has been shown this session
 let windowsPermissionWarningShown = false;
@@ -368,6 +375,38 @@ interface ApplyResult {
 }
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Resolve the new/modify status of every file about to be applied by checking
+ * whether its live destination already exists. Feeds the pre-apply diff summary
+ * (IDEAS 2.4) shown before anything is touched.
+ */
+const buildApplyDiffItems = async (files: ApplyFile[]): Promise<ApplyDiffItem[]> =>
+  Promise.all(
+    files.map(async (file) => ({
+      destination: collapsePath(file.destination),
+      category: file.category,
+      status: (await pathExists(file.destination)) ? ('modify' as const) : ('new' as const),
+    }))
+  );
+
+/**
+ * Print the full pre-apply diff summary to the human (non-JSON) logger: a
+ * per-file new/update listing grouped by category, followed by a one-line count.
+ * Shown BEFORE the snapshot and before any write, so a fresh-machine apply
+ * always reveals exactly what it is about to change.
+ */
+const printApplyDiffSummary = (summary: ApplyDiffSummary): void => {
+  logger.heading('Changes to apply:');
+  for (const item of summary.items) {
+    const label =
+      item.status === 'new'
+        ? `${item.destination} ${c.green('(new)')}`
+        : `${item.destination} ${c.yellow('(update)')}`;
+    logger.file(item.status === 'new' ? 'add' : 'modify', label);
+  }
+  logger.info(formatApplyDiffLine(summary));
+};
 
 export type ApplySourceKind = 'provider-prefixed' | 'git-url' | 'local' | 'repo-id' | 'username';
 
@@ -1260,8 +1299,10 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
       return;
     }
 
-    // Show what will be applied
-    prompts.log.info(`Found ${files.length} file(s) to apply:`);
+    // Full diff summary — always shown before anything is touched (IDEAS 2.4).
+    const diffSummary = summarizeApplyDiff(await buildApplyDiffItems(files));
+
+    prompts.log.info(`Found ${files.length} file(s) to apply (${formatApplyDiffLine(diffSummary)}):`);
     console.log();
 
     // Group by category
@@ -1273,12 +1314,16 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
       byCategory[file.category].push(file);
     }
 
+    const statusByDestination = new Map(
+      diffSummary.items.map((item) => [item.destination, item.status])
+    );
+
     for (const [category, categoryFiles] of Object.entries(byCategory)) {
       const categoryConfig = CATEGORIES[category] || { icon: '📄' };
       console.log(c.bold(`  ${categoryConfig.icon} ${category}`));
       for (const file of categoryFiles) {
-        const exists = await pathExists(file.destination);
-        const status = exists ? c.yellow('(will update)') : c.green('(new)');
+        const isNew = statusByDestination.get(collapsePath(file.destination)) === 'new';
+        const status = isNew ? c.green('(new)') : c.yellow('(will update)');
         console.log(c.dim(`    ${collapsePath(file.destination)} ${status}`));
       }
     }
@@ -1345,10 +1390,12 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
     // returning the system to its true pre-apply state.
     const snapshotPaths = files.map((f) => f.destination);
 
+    let snapshotId: string | undefined;
     if (snapshotPaths.length > 0 && !options.dryRun) {
       const spinner = prompts.spinner();
       spinner.start('Creating backup snapshot...');
       const snapshot = await createPreApplySnapshot(snapshotPaths, repoId);
+      snapshotId = snapshot.id;
       spinner.stop(`Backup created: ${snapshot.id}`);
       console.log();
     }
@@ -1387,8 +1434,8 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
     if (!options.dryRun) {
       console.log();
       prompts.note(
-        'To undo this apply, run:\n  tuck undo --latest\n\nTo see all backups:\n  tuck undo --list',
-        'Undo'
+        `${undoBreadcrumb(snapshotId)}\n\nTo see all backups:\n  tuck undo --list`,
+        UNDO_BREADCRUMB_TITLE
       );
     }
 
@@ -1478,16 +1525,28 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
     // Determine strategy
     const strategy = options.replace ? 'replace' : 'merge';
 
+    // Full diff summary — shown BEFORE the snapshot and before any write so even
+    // the non-interactive path reveals exactly what it will change (IDEAS 2.4).
+    // Suppressed in JSON mode (the envelope is the machine-readable contract) and
+    // in dry-run (the apply loop already lists every file below).
+    if (!options.dryRun && !isJsonMode()) {
+      const diffSummary = summarizeApplyDiff(await buildApplyDiffItems(files));
+      printApplyDiffSummary(diffSummary);
+      logger.blank();
+    }
+
     // Create backup if not dry run. Snapshot EVERY destination (not just existing
     // ones) so `tuck undo` can also delete files this apply newly created —
     // createSnapshot records missing paths as existed:false and restoreSnapshot
     // removes them on undo.
+    let snapshotId: string | undefined;
     if (!options.dryRun) {
       const snapshotPaths = files.map((f) => f.destination);
 
       if (snapshotPaths.length > 0) {
         if (!isJsonMode()) logger.info('Creating backup snapshot...');
         const snapshot = await createPreApplySnapshot(snapshotPaths, source);
+        snapshotId = snapshot.id;
         if (!isJsonMode()) logger.success(`Backup created: ${snapshot.id}`);
       }
     }
@@ -1548,7 +1607,7 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
     }
 
     if (!options.dryRun) {
-      logger.info('To undo: tuck undo --latest');
+      logger.info(undoBreadcrumb(snapshotId));
     }
   } finally {
     // Clean up temp directory

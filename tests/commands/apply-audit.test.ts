@@ -168,9 +168,12 @@ describe('tuck apply — audit regressions', () => {
     expect(snapshotPaths).toContain(join(TEST_HOME, '.tmux.conf'));
 
     // The printed undo instruction must reference the real `tuck undo` command,
-    // not the non-existent `tuck restore --latest` flag.
+    // pinned to the snapshot just created, not the non-existent
+    // `tuck restore --latest` flag.
     const ui = await import('../../src/ui/index.js');
-    expect(vi.mocked(ui.logger.info)).toHaveBeenCalledWith('To undo: tuck undo --latest');
+    expect(vi.mocked(ui.logger.info)).toHaveBeenCalledWith(
+      'Undo this change: tuck undo snapshot-test  (or tuck undo --latest)'
+    );
   });
 
   it('should restore local-store secrets into the sandbox write target under --root, not the real home', async () => {

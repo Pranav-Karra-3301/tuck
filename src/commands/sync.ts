@@ -30,6 +30,7 @@ import {
 } from '../lib/mergeConflicts.js';
 import { resolveConflictsInteractively } from '../ui/merge.js';
 import { createSnapshot } from '../lib/timemachine.js';
+import { undoBreadcrumb } from '../lib/undoHint.js';
 import { resolveLiveTarget } from '../lib/repoScope.js';
 import { isJsonMode } from '../lib/jsonOutput.js';
 import {
@@ -1053,13 +1054,19 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
       pullSpinner.stop(`Could not pull: ${pullResult.error}`);
       prompts.log.warning('Continuing with local changes...');
     } else if (pullResult.pulled) {
+      const resolvedCount = pullResult.resolvedConflicts?.length ?? 0;
       const conflictNote =
-        pullResult.resolvedConflicts && pullResult.resolvedConflicts.length > 0
-          ? ` (resolved ${pullResult.resolvedConflicts.length} conflict${pullResult.resolvedConflicts.length === 1 ? '' : 's'})`
+        resolvedCount > 0
+          ? ` (resolved ${resolvedCount} conflict${resolvedCount === 1 ? '' : 's'})`
           : '';
       pullSpinner.stop(
         `Pulled ${pullResult.behind} commit${pullResult.behind > 1 ? 's' : ''} from remote${conflictNote}`
       );
+      // A conflict resolution rewrote tracked files in place; surface the
+      // snapshot taken during resolution as a one-line recovery path (IDEAS 6.5).
+      if (resolvedCount > 0) {
+        logger.info(undoBreadcrumb());
+      }
     } else {
       pullSpinner.stop('Up to date with remote');
     }

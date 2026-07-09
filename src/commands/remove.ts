@@ -13,6 +13,8 @@ import {
 import { loadManifest, removeFileFromManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import { deleteFileOrDir, copyFileOrDir } from '../lib/files.js';
 import { resolveLiveTarget } from '../lib/repoScope.js';
+import { createSnapshot } from '../lib/timemachine.js';
+import { undoBreadcrumb } from '../lib/undoHint.js';
 import { NotInitializedError, FileNotTrackedError } from '../errors.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import type { RemoveOptions, FileStrategy } from '../types.js';
@@ -149,6 +151,33 @@ const removeFiles = async (
   tuckDir: string,
   options: RemoveOptions
 ): Promise<void> => {
+  // ONE snapshot covering every repo copy this run will delete, taken BEFORE
+  // the loop — a per-file snapshot would leave the undo breadcrumb pointing at
+  // a checkpoint that restores only the LAST file. A snapshot hiccup must not
+  // block the removal.
+  let snapshotId: string | undefined;
+  if (options.delete) {
+    const deletablePaths: string[] = [];
+    for (const file of filesToRemove) {
+      if (await pathExists(file.destination)) deletablePaths.push(file.destination);
+    }
+    if (deletablePaths.length > 0) {
+      try {
+        const snapshot = await createSnapshot(
+          deletablePaths,
+          `Pre-remove delete backup: ${filesToRemove.map((f) => f.source).join(', ')}`
+        );
+        snapshotId = snapshot.id;
+      } catch (error) {
+        if (!isJsonMode()) {
+          logger.dim(
+            `  Pre-delete snapshot skipped: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+    }
+  }
+
   for (const file of filesToRemove) {
     // Restore a symlinked original to a real file first (unless --keep-original),
     // so untracking + optional --delete can never leave a dangling symlink with
@@ -179,6 +208,13 @@ const removeFiles = async (
         logger.dim('  Also deleted from repository');
       }
     }
+  }
+
+  // Surface the recovery path after a destructive delete (IDEAS 6.5). Only shown
+  // when --delete actually removed a repo copy we snapshotted — a plain untrack
+  // leaves the repo copy intact, so `tuck undo` would not be the right recovery.
+  if (!isJsonMode() && snapshotId) {
+    logger.info(undoBreadcrumb(snapshotId));
   }
 };
 
