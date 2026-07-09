@@ -20,7 +20,9 @@ import { getTuckDir, expandPath, collapsePath, pathExists } from '../lib/paths.j
 import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import { loadConfig, saveConfig } from '../lib/config.js';
 import { atomicWriteFile } from '../lib/files.js';
-import { createSnapshot } from '../lib/timemachine.js';
+import {
+  createSnapshot,
+} from '../lib/timemachine.js';
 import {
   listSecrets,
   setSecret,
@@ -41,6 +43,9 @@ import {
   listAllowlistEntries,
   getAllowlistPath,
   type AllowlistEntry,
+  encryptFileValues,
+  decryptFileValues,
+  fileHasEncryptedValues,
 } from '../lib/secrets/index.js';
 import {
   createResolver,
@@ -49,9 +54,15 @@ import {
   CONFIGURABLE_BACKEND_NAMES,
   type ConfiguredBackendName,
 } from '../lib/secretBackends/index.js';
-import { NotInitializedError, TuckError, ValidationError } from '../errors.js';
+import {
+  NotInitializedError,
+  TuckError,
+  ValidationError,
+  EncryptionError,
+} from '../errors.js';
 import { logSecretAllowlisted, logSecretAllowlistRemoved } from '../lib/audit.js';
 import { getLog } from '../lib/git.js';
+import { getStoredPassword } from '../lib/crypto/index.js';
 import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 
 const isConfiguredBackendName = (value: string): value is ConfiguredBackendName => {
@@ -1592,6 +1603,260 @@ const runAllowAdd = async (options: AllowAddOptions = {}): Promise<void> => {
 };
 
 // ============================================================================
+// Value-Level Encryption Commands (SOPS-style)
+// ============================================================================
+
+/**
+ * Resolve the passphrase used for value-level encryption.
+ *
+ * Order: the `TUCK_ENCRYPTION_PASSWORD` env var (so CI never puts it in argv),
+ * then the OS keystore (the same password `tuck encryption setup` stores and
+ * apply/restore use for whole-file decryption), then an interactive prompt.
+ * Throws {@link EncryptionError} when none is available and we cannot prompt.
+ */
+const resolveEncryptionPassphrase = async (interactive: boolean): Promise<string> => {
+  const fromEnv = process.env.TUCK_ENCRYPTION_PASSWORD;
+  if (fromEnv && fromEnv.length > 0) {
+    return fromEnv;
+  }
+
+  const stored = await getStoredPassword();
+  if (stored && stored.length > 0) {
+    return stored;
+  }
+
+  if (!interactive) {
+    throw new EncryptionError('No encryption password available', [
+      'Run `tuck encryption setup` to configure a password in your OS keystore',
+      'Or set TUCK_ENCRYPTION_PASSWORD in the environment for non-interactive use',
+    ]);
+  }
+
+  const entered = await prompts.password('Enter encryption passphrase:');
+  if (!entered || entered.trim().length === 0) {
+    throw new EncryptionError('Encryption passphrase cannot be empty');
+  }
+  return entered;
+};
+
+/** Resolve the target file list: explicit paths, or every tracked file. */
+const resolveTargetFiles = async (paths: string[], tuckDir: string): Promise<string[]> => {
+  if (paths.length > 0) {
+    return paths.map((p) => expandPath(p));
+  }
+  return Array.from(
+    new Set(
+      Object.values(await getAllTrackedFiles(tuckDir)).map((file) => expandPath(file.source))
+    )
+  );
+};
+
+interface ValueEncryptOptions {
+  json?: boolean;
+  yes?: boolean;
+}
+
+export const runSecretsEncryptValues = async (
+  paths: string[],
+  options: ValueEncryptOptions = {}
+): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets encrypt');
+
+  const tuckDir = getTuckDir();
+  try {
+    await loadManifest(tuckDir);
+  } catch {
+    throw new NotInitializedError();
+  }
+
+  const interactive = !isJsonMode() && !options.yes && !!process.stdout.isTTY;
+  const targets = await resolveTargetFiles(paths, tuckDir);
+
+  const existing: string[] = [];
+  for (const p of targets) {
+    if (await pathExists(p)) existing.push(p);
+  }
+
+  if (existing.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ filesEncrypted: 0, valuesEncrypted: 0, files: [] });
+      return;
+    }
+    logger.warning('No files to encrypt');
+    logger.dim("Pass file paths, or run 'tuck add <path>' to track files first");
+    return;
+  }
+
+  // Locate secret spans with the configured scanner (built-in or external).
+  const summary = await scanForSecrets(existing, tuckDir);
+  const filesWithSecrets = summary.results.filter((r) => r.hasSecrets && r.matches.length > 0);
+
+  if (filesWithSecrets.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ filesEncrypted: 0, valuesEncrypted: 0, files: [] });
+      return;
+    }
+    logger.success('No secret values detected to encrypt');
+    return;
+  }
+
+  if (!isJsonMode()) {
+    console.log();
+    console.log(c.bold.cyan(`Value-level encryption`));
+    console.log(c.dim('─'.repeat(50)));
+    for (const result of filesWithSecrets) {
+      // SECURITY: never print the secret value — only the count.
+      console.log(`  ${c.cyan(result.collapsedPath)} ${c.dim(`(${result.matches.length} value(s))`)}`);
+    }
+    console.log();
+  }
+
+  // Destructive: rewrites tracked files in place. Confirm + snapshot first.
+  if (interactive) {
+    const confirmed = await prompts.confirm(
+      `Encrypt secret values in ${filesWithSecrets.length} file(s)?`,
+      true
+    );
+    if (!confirmed) {
+      logger.warning('Encryption cancelled');
+      return;
+    }
+  }
+
+  const passphrase = await resolveEncryptionPassphrase(interactive);
+
+  // Safety net: back up every target before mutating it so `tuck undo` can revert.
+  await createSnapshot(
+    filesWithSecrets.map((r) => r.path),
+    'Pre value-encryption backup'
+  );
+
+  let filesEncrypted = 0;
+  let valuesEncrypted = 0;
+  const report: Array<{ path: string; valuesEncrypted: number }> = [];
+
+  for (const result of filesWithSecrets) {
+    const res = await encryptFileValues(result.path, result.matches, passphrase);
+    if (res.changed) {
+      filesEncrypted++;
+      valuesEncrypted += res.encrypted;
+      report.push({ path: result.collapsedPath, valuesEncrypted: res.encrypted });
+      if (!isJsonMode()) {
+        logger.success(`${result.collapsedPath}: encrypted ${res.encrypted} value(s)`);
+      }
+    }
+  }
+
+  if (isJsonMode()) {
+    emitJsonOk({ filesEncrypted, valuesEncrypted, files: report });
+    return;
+  }
+
+  console.log();
+  logger.success(`Encrypted ${valuesEncrypted} value(s) across ${filesEncrypted} file(s)`);
+  // The live file is rewritten in place, but the tracked repo copy still holds
+  // plaintext until a sync captures the encrypted version — committing without
+  // it pushes the plaintext the user just tried to protect.
+  if (valuesEncrypted > 0) {
+    logger.info("Run 'tuck sync' to capture the encrypted version into the repo before committing.");
+  }
+  logger.dim('Keys, structure, and comments stay plaintext — git diff/merge keep working.');
+  logger.dim("Run 'tuck secrets decrypt' to restore plaintext, or 'tuck undo' to revert.");
+};
+
+interface ValueDecryptOptions {
+  json?: boolean;
+  yes?: boolean;
+}
+
+export const runSecretsDecryptValues = async (
+  paths: string[],
+  options: ValueDecryptOptions = {}
+): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets decrypt');
+
+  const tuckDir = getTuckDir();
+  try {
+    await loadManifest(tuckDir);
+  } catch {
+    throw new NotInitializedError();
+  }
+
+  const interactive = !isJsonMode() && !options.yes && !!process.stdout.isTTY;
+  const targets = await resolveTargetFiles(paths, tuckDir);
+
+  // Only files that actually carry value tokens.
+  const encryptedFiles: string[] = [];
+  for (const p of targets) {
+    if (await fileHasEncryptedValues(p)) encryptedFiles.push(p);
+  }
+
+  if (encryptedFiles.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ filesDecrypted: 0, valuesDecrypted: 0, valuesFailed: 0, files: [] });
+      return;
+    }
+    logger.info('No encrypted values found');
+    return;
+  }
+
+  if (interactive) {
+    const confirmed = await prompts.confirm(
+      `Decrypt values in ${encryptedFiles.length} file(s) back to plaintext?`,
+      true
+    );
+    if (!confirmed) {
+      logger.warning('Decryption cancelled');
+      return;
+    }
+  }
+
+  const passphrase = await resolveEncryptionPassphrase(interactive);
+
+  // Safety net before rewriting live files with plaintext.
+  await createSnapshot(encryptedFiles, 'Pre value-decryption backup');
+
+  let filesDecrypted = 0;
+  let valuesDecrypted = 0;
+  let valuesFailed = 0;
+  const report: Array<{ path: string; valuesDecrypted: number; valuesFailed: number }> = [];
+
+  for (const p of encryptedFiles) {
+    // throwOnFailure:false so one bad token/wrong-key file never aborts the batch.
+    const res = await decryptFileValues(p, passphrase, { throwOnFailure: false });
+    valuesFailed += res.failed;
+    if (res.changed) {
+      filesDecrypted++;
+      valuesDecrypted += res.decrypted;
+    }
+    report.push({
+      path: collapsePath(p),
+      valuesDecrypted: res.decrypted,
+      valuesFailed: res.failed,
+    });
+    if (!isJsonMode() && res.decrypted > 0) {
+      logger.success(`${collapsePath(p)}: decrypted ${res.decrypted} value(s)`);
+    }
+    if (!isJsonMode() && res.failed > 0) {
+      logger.warning(`${collapsePath(p)}: ${res.failed} value(s) could not be decrypted`);
+    }
+  }
+
+  if (isJsonMode()) {
+    emitJsonOk({ filesDecrypted, valuesDecrypted, valuesFailed, files: report });
+    return;
+  }
+
+  console.log();
+  logger.success(`Decrypted ${valuesDecrypted} value(s) across ${filesDecrypted} file(s)`);
+  if (valuesFailed > 0) {
+    logger.warning(
+      `${valuesFailed} value(s) could not be decrypted — check the encryption passphrase`
+    );
+  }
+};
+
+// ============================================================================
 // Command Definition
 // ============================================================================
 
@@ -1666,6 +1931,26 @@ export const secretsCommand = new Command('secrets')
           .action((fingerprint: string, options: AllowRemoveOptions) =>
             runAllowRemove(fingerprint, options)
           )
+      )
+  )
+  .addCommand(
+    new Command('encrypt')
+      .description('Encrypt secret values in place (keys/structure stay plaintext)')
+      .argument('[paths...]', 'Files to encrypt (defaults to all tracked files)')
+      .option('--json', 'Emit JSON envelope to stdout (values are never included)')
+      .option('-y, --yes', 'Non-interactive: skip confirmation prompts')
+      .action((paths: string[], options: ValueEncryptOptions) =>
+        runSecretsEncryptValues(paths, options)
+      )
+  )
+  .addCommand(
+    new Command('decrypt')
+      .description('Decrypt in-place encrypted values back to plaintext')
+      .argument('[paths...]', 'Files to decrypt (defaults to all tracked files)')
+      .option('--json', 'Emit JSON envelope to stdout')
+      .option('-y, --yes', 'Non-interactive: skip confirmation prompts')
+      .action((paths: string[], options: ValueDecryptOptions) =>
+        runSecretsDecryptValues(paths, options)
       )
   )
   .addCommand(

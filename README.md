@@ -588,6 +588,7 @@ tuck is designed with security in mind:
 - **Never tracks private keys** — SSH keys, `.env` files, and credentials are blocked by default
 - **Secret scanning** — Warns if files contain API keys or tokens
 - **Placeholder support** — Replace secrets with `{{PLACEHOLDER}}` syntax
+- **Value-level encryption** — SOPS-style: encrypt only secret *values* in place while keys, structure, and comments stay plaintext, so `git diff`/`merge`/review keep working
 - **External-first secrets** — `security.secretBackend` defaults to `auto`, preferring external password managers before local fallback
 - **Local fallback secrets** — Store actual values in `secrets.local.json` when needed; it is gitignored by default
 - **Fix, don't just block** — When a secret is flagged at `tuck add`/`tuck sync` time, choose to redact-and-store it (rewriting the tracked copy as a template) or mark a false positive as safe — no more disabling the whole check
@@ -601,6 +602,15 @@ tuck secrets scan
 # Set a secret value locally
 tuck secrets set API_KEY
 
+# Encrypt secret VALUES in place (keys/structure stay plaintext, git-diffable)
+tuck secrets encrypt ~/.env
+
+# Decrypt them back to plaintext
+tuck secrets decrypt ~/.env
+```
+
+See [docs/VALUE-ENCRYPTION.md](docs/VALUE-ENCRYPTION.md) for the full value-level
+encryption workflow.
 # Mark a scanner false positive as safe (auditable, committed allowlist)
 tuck secrets allow add --file ~/.config/app.conf --reason "example value from docs"
 
