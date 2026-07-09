@@ -206,6 +206,50 @@ describe.runIf(process.platform === 'darwin')('tuck settings capture/apply (macO
     expect(data.backupDir).toBeNull();
   });
 
+  // ── Finding 3: --json apply is destructive and must carry --yes ──
+  it('apply --json without --yes refuses to apply (non-dry-run)', async () => {
+    await runJson(
+      'capture',
+      '--domain',
+      'com.apple.dock',
+      '--key',
+      'autohide',
+      '--type',
+      'boolean',
+      '--value',
+      'true'
+    );
+    await expect(runSettings('apply', '--json')).rejects.toThrow();
+  });
+
+  it('apply --json --yes applies and reports the backup directory', async () => {
+    await runJson(
+      'capture',
+      '--domain',
+      'com.apple.dock',
+      '--key',
+      'autohide',
+      '--type',
+      'boolean',
+      '--value',
+      'true'
+    );
+    const env = await runJson('apply', '--yes');
+    expect(env.ok).toBe(true);
+    const data = env.data as {
+      dryRun: boolean;
+      applied: { id: string }[];
+      failed: unknown[];
+      backupDir: string | null;
+      restarted: string[];
+      restartRequired: string[];
+    };
+    expect(data.dryRun).toBe(false);
+    expect(data.applied.map((a) => a.id)).toEqual(['macos__com.apple.dock__autohide']);
+    expect(data.failed).toEqual([]);
+    expect(data.backupDir).not.toBeNull();
+  });
+
   it('skips a setting whose min-version guard exceeds the current OS', async () => {
     await runJson(
       'capture',

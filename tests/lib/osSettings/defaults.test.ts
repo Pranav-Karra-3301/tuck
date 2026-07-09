@@ -6,6 +6,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const execFileMock = vi.fn();
+// Separately records the options object passed to each execFile call so tests
+// can assert maxBuffer without changing execFileMock's (cmd, argv) signature.
+const execOptionsMock = vi.fn();
 
 // Per-test control over stdout/errors keyed by the invoked binary + first arg.
 let responder: (cmd: string, args: string[]) => { stdout: string } | Error = () => ({
@@ -20,7 +23,10 @@ vi.mock('child_process', () => ({
     ) => void;
     const cmd = args[0] as string;
     const argv = (args[1] as string[]) ?? [];
+    // execFile(file, args, options, callback): options sits between argv and cb.
+    const options = args.length > 3 ? args[2] : undefined;
     execFileMock(cmd, argv);
+    execOptionsMock(cmd, options);
     const res = responder(cmd, argv);
     if (res instanceof Error) {
       callback(res, { stdout: '', stderr: '' });
@@ -43,6 +49,7 @@ const EXPORT_DOCK = `<?xml version="1.0" encoding="UTF-8"?>
 describe('MacOsDefaultsBackend', () => {
   beforeEach(() => {
     execFileMock.mockClear();
+    execOptionsMock.mockClear();
     responder = () => ({ stdout: '' });
   });
 
@@ -167,5 +174,40 @@ describe('MacOsDefaultsBackend', () => {
     const { MacOsDefaultsBackend } = await import('../../../src/lib/osSettings/defaults.js');
     await expect(new MacOsDefaultsBackend().restartApp('Dock')).resolves.toBeUndefined();
     expect(execFileMock).toHaveBeenCalledWith('killall', ['Dock']);
+  });
+
+  // ── Finding 1: large maxBuffer + no silent-empty on export failure ──
+
+  it('exportRaw passes a large maxBuffer so multi-MB domains are not truncated', async () => {
+    responder = (cmd, argv) =>
+      cmd === 'defaults' && argv[0] === 'export' ? { stdout: EXPORT_DOCK } : { stdout: '' };
+    const { MacOsDefaultsBackend } = await import('../../../src/lib/osSettings/defaults.js');
+    await new MacOsDefaultsBackend().exportRaw('com.apple.dock');
+    const exportCall = execOptionsMock.mock.calls.find(
+      ([cmd]) => cmd === 'defaults'
+    ) as [string, { maxBuffer?: number } | undefined] | undefined;
+    expect(exportCall?.[1]?.maxBuffer).toBeGreaterThanOrEqual(64 * 1024 * 1024);
+  });
+
+  it('exportRaw returns empty string for a domain that does not exist', async () => {
+    responder = () => new Error('Domain com.apple.nope does not exist');
+    const { MacOsDefaultsBackend } = await import('../../../src/lib/osSettings/defaults.js');
+    expect(await new MacOsDefaultsBackend().exportRaw('com.apple.nope')).toBe('');
+  });
+
+  it('exportRaw throws (never silently empties) on a real export failure', async () => {
+    responder = () => new Error('stdout maxBuffer length exceeded');
+    const { MacOsDefaultsBackend } = await import('../../../src/lib/osSettings/defaults.js');
+    await expect(new MacOsDefaultsBackend().exportRaw('com.apple.finder')).rejects.toThrow(
+      /Failed to export defaults domain "com.apple.finder"/
+    );
+  });
+
+  it('snapshotDomain propagates a real export failure instead of reporting empty', async () => {
+    responder = () => new Error('stdout maxBuffer length exceeded');
+    const { MacOsDefaultsBackend } = await import('../../../src/lib/osSettings/defaults.js');
+    await expect(new MacOsDefaultsBackend().snapshotDomain('com.apple.finder')).rejects.toThrow(
+      /Failed to export/
+    );
   });
 });

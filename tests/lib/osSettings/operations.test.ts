@@ -27,12 +27,22 @@ import type {
 } from '../../../src/lib/osSettings/types.js';
 import type { SettingEntry } from '../../../src/schemas/osSettings.schema.js';
 
+interface FakeBackendOpts {
+  /** Domains whose exportRaw should throw (simulates a backup export failure). */
+  failExportDomains?: string[];
+  /** Setting ids whose apply() should throw (simulates a `defaults` failure). */
+  failApplyIds?: string[];
+}
+
 class FakeBackend implements OsSettingsBackend {
   readonly os = 'macos' as const;
   public applied: string[] = [];
   public restarted: string[] = [];
   public exported: string[] = [];
-  constructor(private version = '15.1') {}
+  constructor(
+    private version = '15.1',
+    private opts: FakeBackendOpts = {}
+  ) {}
   async isAvailable(): Promise<boolean> {
     return true;
   }
@@ -46,6 +56,9 @@ class FakeBackend implements OsSettingsBackend {
     return { domain, entries: new Map() };
   }
   async exportRaw(domain: string): Promise<string> {
+    if (this.opts.failExportDomains?.includes(domain)) {
+      throw new Error(`Failed to export defaults domain "${domain}": maxBuffer exceeded`);
+    }
     this.exported.push(domain);
     return `<plist><dict><key>x</key><string>${domain}</string></dict></plist>`;
   }
@@ -57,6 +70,9 @@ class FakeBackend implements OsSettingsBackend {
     return { argv, display: `defaults ${argv.join(' ')}` };
   }
   async apply(entry: SettingEntry): Promise<void> {
+    if (this.opts.failApplyIds?.includes(entry.id)) {
+      throw new Error(`defaults write failed for ${entry.id}`);
+    }
     this.applied.push(entry.id);
   }
   async restartApp(app: string): Promise<void> {
@@ -215,6 +231,128 @@ describe('applySettings', () => {
     await setManualDone('macos__manual__enable-filevault', true);
     const after = await applySettings(backend, TEST_TUCK_DIR, { currentVersion: '15.1' });
     expect(after.pendingManual).toHaveLength(0);
+  });
+
+  // ── Finding 4: --no-restart must not claim apps were restarted ──
+  it('does not restart apps when restart is disabled, but reports restartRequired', async () => {
+    await seed();
+    const backend = new FakeBackend('15.1');
+    const result = await applySettings(backend, TEST_TUCK_DIR, {
+      currentVersion: '15.1',
+      restart: false,
+    });
+    // Nothing was actually restarted…
+    expect(result.restarted).toEqual([]);
+    expect(backend.restarted).toEqual([]);
+    // …but the applied dock setting still needs Dock restarted to take effect.
+    expect(result.restartRequired).toEqual(['Dock']);
+  });
+
+  // ── Finding 2: a defaults failure mid-replay is captured, not thrown away ──
+  it('records per-entry apply failures and still reports applied + backup', async () => {
+    await recordSetting(TEST_TUCK_DIR, {
+      os: 'macos',
+      domain: 'com.apple.dock',
+      key: 'autohide',
+      action: 'write',
+      type: 'boolean',
+      value: 'true',
+    });
+    await recordSetting(TEST_TUCK_DIR, {
+      os: 'macos',
+      domain: 'com.apple.finder',
+      key: 'ShowPathbar',
+      action: 'write',
+      type: 'boolean',
+      value: 'true',
+    });
+    const backend = new FakeBackend('15.1', {
+      failApplyIds: ['macos__com.apple.finder__ShowPathbar'],
+    });
+    const result = await applySettings(backend, TEST_TUCK_DIR, {
+      currentVersion: '15.1',
+      restart: true,
+    });
+    expect(result.applied.map((a) => a.id)).toEqual(['macos__com.apple.dock__autohide']);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0].id).toBe('macos__com.apple.finder__ShowPathbar');
+    expect(result.failed[0].error).toContain('defaults write failed');
+    expect(result.backupDir).not.toBeNull();
+  });
+
+  // ── Finding 1c: a failed pre-apply backup fails closed (nothing applied) ──
+  it('aborts before applying when a domain backup cannot be taken', async () => {
+    await recordSetting(TEST_TUCK_DIR, {
+      os: 'macos',
+      domain: 'com.apple.dock',
+      key: 'autohide',
+      action: 'write',
+      type: 'boolean',
+      value: 'true',
+    });
+    const backend = new FakeBackend('15.1', { failExportDomains: ['com.apple.dock'] });
+    await expect(
+      applySettings(backend, TEST_TUCK_DIR, { currentVersion: '15.1' })
+    ).rejects.toThrow(/back up domain "com.apple.dock"/);
+    // Nothing was applied — fail closed.
+    expect(backend.applied).toEqual([]);
+  });
+
+  it('applies without a backup when --force overrides a failed backup', async () => {
+    await recordSetting(TEST_TUCK_DIR, {
+      os: 'macos',
+      domain: 'com.apple.dock',
+      key: 'autohide',
+      action: 'write',
+      type: 'boolean',
+      value: 'true',
+    });
+    const backend = new FakeBackend('15.1', { failExportDomains: ['com.apple.dock'] });
+    const result = await applySettings(backend, TEST_TUCK_DIR, {
+      currentVersion: '15.1',
+      force: true,
+    });
+    expect(result.applied.map((a) => a.id)).toEqual(['macos__com.apple.dock__autohide']);
+    expect(backend.applied).toEqual(['macos__com.apple.dock__autohide']);
+  });
+
+  // ── Finding 5: warn when captured on a different OS major version ──
+  it('flags applied settings captured on a different OS major version', async () => {
+    await recordSetting(TEST_TUCK_DIR, {
+      os: 'macos',
+      domain: 'com.apple.dock',
+      key: 'autohide',
+      action: 'write',
+      type: 'boolean',
+      value: 'true',
+      capturedOsVersion: '14.0',
+    });
+    const backend = new FakeBackend('15.1');
+    const result = await applySettings(backend, TEST_TUCK_DIR, {
+      currentVersion: '15.1',
+      dryRun: true,
+    });
+    expect(result.osVersionMismatch).toEqual([
+      { id: 'macos__com.apple.dock__autohide', capturedOsVersion: '14.0' },
+    ]);
+  });
+
+  it('does not flag settings captured on the same OS major version', async () => {
+    await recordSetting(TEST_TUCK_DIR, {
+      os: 'macos',
+      domain: 'com.apple.dock',
+      key: 'autohide',
+      action: 'write',
+      type: 'boolean',
+      value: 'true',
+      capturedOsVersion: '15.0',
+    });
+    const backend = new FakeBackend('15.1');
+    const result = await applySettings(backend, TEST_TUCK_DIR, {
+      currentVersion: '15.1',
+      dryRun: true,
+    });
+    expect(result.osVersionMismatch).toEqual([]);
   });
 });
 

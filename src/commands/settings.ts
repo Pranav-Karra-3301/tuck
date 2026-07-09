@@ -24,12 +24,14 @@ import { getTuckDir } from '../lib/paths.js';
 import { loadManifest } from '../lib/manifest.js';
 import { collapsePath } from '../lib/paths.js';
 import {
+  TuckError,
   NotInitializedError,
   SettingsError,
   SettingsUnsupportedOsError,
   SettingNotFoundError,
 } from '../errors.js';
-import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
+import { setJsonMode, isJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
+import type { JsonError } from '../lib/jsonOutput.js';
 import { logger, prompts, colors as c } from '../ui/index.js';
 import {
   selectBackend,
@@ -43,6 +45,7 @@ import {
   loadOsSettingsState,
   type OsSettingsBackend,
   type DomainSnapshot,
+  type ApplyResult,
 } from '../lib/osSettings/index.js';
 import { settingTypeSchema, type SettingType } from '../schemas/osSettings.schema.js';
 
@@ -283,8 +286,51 @@ interface ApplyCliOptions {
   id?: string[];
   dryRun?: boolean;
   restart?: boolean; // false when --no-restart passed
+  force?: boolean;
   json?: boolean;
   yes?: boolean;
+}
+
+/** JSON error projection for a partially-failed apply (mirrors RemoteApplyError). */
+interface SettingsApplyJsonError extends JsonError {
+  applied: { id: string; display: string }[];
+  failed: { id: string; display: string; error: string }[];
+  restarted: string[];
+  restartRequired: string[];
+  backupDir: string | null;
+}
+
+/**
+ * Raised when one or more `defaults` commands fail mid-replay. Escalating (vs.
+ * logging and returning) guarantees a non-zero exit for CI/agents, while
+ * {@link toJSON} preserves what was applied, what failed, and the backup dir so
+ * `--json` consumers can still recover — the backups already exist on disk.
+ */
+class SettingsApplyError extends TuckError {
+  constructor(private readonly result: ApplyResult) {
+    super(
+      `Applied ${result.applied.length} setting(s); ${result.failed.length} failed to apply`,
+      'SETTINGS_APPLY_FAILED',
+      [
+        result.backupDir
+          ? `Pre-apply backups are at ${collapsePath(result.backupDir)}`
+          : 'No backup directory was created',
+        'Inspect the failed entries above and re-run once resolved',
+      ]
+    );
+    this.name = 'SettingsApplyError';
+  }
+
+  toJSON(): SettingsApplyJsonError {
+    return {
+      ...super.toJSON(),
+      applied: this.result.applied,
+      failed: this.result.failed,
+      restarted: this.result.restarted,
+      restartRequired: this.result.restartRequired,
+      backupDir: this.result.backupDir,
+    };
+  }
 }
 
 const applyAction = async (opts: ApplyCliOptions): Promise<void> => {
@@ -307,15 +353,32 @@ const applyAction = async (opts: ApplyCliOptions): Promise<void> => {
   if (isJsonMode()) {
     // JSON mode is non-interactive; honor --dry-run, otherwise apply directly.
     if (dryRun) {
+      reportOsVersionMismatchJson(preview.osVersionMismatch);
       emitJsonOk({ dryRun: true, ...preview });
       return;
+    }
+    // Never write OS settings on the strength of a redirected stdout or --json
+    // alone: --json is non-interactive, so a real apply must carry an explicit
+    // --yes. Without it we refuse rather than silently mutating the machine.
+    if (!opts.yes) {
+      throw new SettingsError('Refusing to apply settings in --json mode without --yes', [
+        'Pass --yes to confirm a non-interactive apply (this WRITES OS settings)',
+        'Or add --dry-run to preview the changes without applying them',
+      ]);
     }
     const result = await applySettings(backend, tuckDir, {
       currentVersion,
       dryRun: false,
       restart: opts.restart !== false,
+      force: opts.force === true,
       only,
     });
+    reportOsVersionMismatchJson(result.osVersionMismatch);
+    if (result.failed.length > 0) {
+      // Escalate so the process exits non-zero; the error's JSON envelope
+      // carries the applied/failed/backup report.
+      throw new SettingsApplyError(result);
+    }
     emitJsonOk({ dryRun: false, ...result });
     return;
   }
@@ -335,6 +398,8 @@ const applyAction = async (opts: ApplyCliOptions): Promise<void> => {
   }
   console.log();
 
+  reportOsVersionMismatch(preview.osVersionMismatch);
+
   if (dryRun) {
     reportSkippedAndManual(preview.skipped, preview.pendingManual);
     logger.dim('Dry run — no changes made. Re-run without --dry-run to apply.');
@@ -342,8 +407,8 @@ const applyAction = async (opts: ApplyCliOptions): Promise<void> => {
   }
 
   if (!opts.yes) {
-    // Never write OS settings on the strength of a redirected stdout or --json
-    // alone: prompts.confirm throws OPERATION_CANCELLED on non-TTY stdin, so a
+    // Never write OS settings on the strength of a redirected stdout alone:
+    // prompts.confirm throws OPERATION_CANCELLED on non-TTY stdin, so a
     // non-interactive apply without --yes fails fast instead of proceeding.
     const ok = await prompts.confirm('Apply these settings to this machine?', false);
     if (!ok) {
@@ -356,6 +421,7 @@ const applyAction = async (opts: ApplyCliOptions): Promise<void> => {
     currentVersion,
     dryRun: false,
     restart: opts.restart !== false,
+    force: opts.force === true,
     only,
   });
 
@@ -363,8 +429,47 @@ const applyAction = async (opts: ApplyCliOptions): Promise<void> => {
   if (result.backupDir) logger.dim(`  backup: ${collapsePath(result.backupDir)}`);
   if (result.restarted.length > 0) {
     logger.dim(`  restarted: ${result.restarted.join(', ')}`);
+  } else if (result.restartRequired.length > 0) {
+    // --no-restart (or nothing restarted): tell the user what to restart by hand
+    // rather than falsely claiming apps were restarted.
+    logger.dim(`  restart manually to take effect: ${result.restartRequired.join(', ')}`);
   }
   reportSkippedAndManual(result.skipped, result.pendingManual);
+
+  if (result.failed.length > 0) {
+    console.log();
+    console.log(c.bold(`Failed to apply ${result.failed.length} setting(s):`));
+    for (const f of result.failed) {
+      console.log(`  ${c.dim('•')} ${c.cyan(f.display)} ${c.dim(`— ${f.error}`)}`);
+    }
+    // Exit non-zero so scripts/CI notice; backups already exist on disk.
+    throw new SettingsApplyError(result);
+  }
+};
+
+/** Print a non-blocking warning when applied settings were captured on another OS major. */
+const reportOsVersionMismatch = (
+  mismatches: { id: string; capturedOsVersion: string }[]
+): void => {
+  if (mismatches.length === 0) return;
+  logger.warning(
+    `${mismatches.length} setting(s) were captured on a different macOS major version:`
+  );
+  for (const m of mismatches) {
+    logger.dim(`  • ${m.id} (captured on macOS ${m.capturedOsVersion})`);
+  }
+  logger.dim('These may behave differently here — review after applying.');
+};
+
+/** Queue the same OS-version-mismatch warning into the JSON envelope. */
+const reportOsVersionMismatchJson = (
+  mismatches: { id: string; capturedOsVersion: string }[]
+): void => {
+  for (const m of mismatches) {
+    addJsonWarning(
+      `Setting ${m.id} was captured on macOS ${m.capturedOsVersion}, a different major version than this machine`
+    );
+  }
 };
 
 const reportSkippedAndManual = (
@@ -595,6 +700,7 @@ export const createSettingsCommand = (): Command =>
         .option('--id <id>', 'Only apply this setting id (repeatable)', collectRepeat, [])
         .option('--dry-run', 'Show what would be applied without changing anything')
         .option('--no-restart', 'Do not restart affected apps')
+        .option('--force', 'Apply even if a pre-apply domain backup cannot be taken')
         .option('-y, --yes', 'Skip the confirmation prompt')
         .option('--json', 'Emit JSON envelope to stdout')
         .action(applyAction)

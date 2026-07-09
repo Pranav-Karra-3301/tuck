@@ -4,7 +4,8 @@
  * unit-tested directly with a backend whose `defaults` calls are mocked.
  */
 import { settingId } from './capture.js';
-import { isVersionInRange } from './version.js';
+import { isVersionInRange, parseVersion } from './version.js';
+import { SettingsError } from '../../errors.js';
 import {
   loadOsSettingsManifest,
   saveOsSettingsManifest,
@@ -88,10 +89,28 @@ export interface SkippedSetting {
   id: string;
   reason: string;
 }
+export interface FailedSetting {
+  id: string;
+  display: string;
+  /** The underlying backend error message. */
+  error: string;
+}
+/** A setting whose captured OS major version differs from the current machine's. */
+export interface OsVersionMismatch {
+  id: string;
+  capturedOsVersion: string;
+}
 export interface ApplyResult {
   applied: AppliedSetting[];
   skipped: SkippedSetting[];
+  /** Entries whose `defaults` command failed mid-replay (real apply only). */
+  failed: FailedSetting[];
+  /** Apps actually restarted (empty in dry-run or when restart is disabled). */
   restarted: string[];
+  /** Apps the applied settings declare needing a restart to take effect. */
+  restartRequired: string[];
+  /** Applied entries captured on a different OS major version than the current. */
+  osVersionMismatch: OsVersionMismatch[];
   backupDir: string | null;
   pendingManual: { id: string; title: string }[];
 }
@@ -102,6 +121,11 @@ export interface ApplyOptions {
   restart?: boolean;
   /** If set, only apply settings whose id is in this list. */
   only?: string[];
+  /**
+   * Proceed even if a pre-apply domain backup cannot be taken. Off by default:
+   * a failed backup fails closed so we never write settings we cannot roll back.
+   */
+  force?: boolean;
 }
 
 /**
@@ -124,6 +148,7 @@ export const applySettings = async (
 
   const applied: AppliedSetting[] = [];
   const skipped: SkippedSetting[] = [];
+  const failed: FailedSetting[] = [];
   const restartApps = new Set<string>();
 
   // Decide which entries pass their version guard up front so we only back up
@@ -138,13 +163,35 @@ export const applySettings = async (
     toApply.push(entry);
   }
 
-  // Backup affected domains (real apply only).
+  // Warn (do not block) when a setting was captured on a different OS MAJOR
+  // version than the one we are applying on: minor `defaults` semantics shift
+  // between major macOS releases, so the replay may not do what was intended.
+  const osVersionMismatch = computeOsVersionMismatch(opts.currentVersion, toApply);
+
+  // Backup affected domains before writing anything (real apply only). A backup
+  // that fails to export is fatal by default: we refuse to mutate settings we
+  // cannot roll back. `force` downgrades this to a skipped backup.
   let backupDir: string | null = null;
   if (!opts.dryRun && toApply.length > 0) {
     backupDir = newBackupBatchDir();
     const domains = new Set(toApply.map((e) => e.domain));
     for (const domain of domains) {
-      const raw = await backend.exportRaw(domain);
+      let raw: string;
+      try {
+        raw = await backend.exportRaw(domain);
+      } catch (error) {
+        if (!opts.force) {
+          throw new SettingsError(
+            `Could not back up domain "${domain}" before applying: ${errMessage(error)}`,
+            [
+              'No settings were changed — the domain could not be safely backed up first',
+              'Re-run with --force to apply anyway (WITHOUT a pre-apply backup of this domain)',
+            ]
+          );
+        }
+        // force: proceed without a backup for this domain.
+        continue;
+      }
       await writeDomainBackup(backupDir, domain, raw);
     }
   }
@@ -152,12 +199,23 @@ export const applySettings = async (
   for (const entry of toApply) {
     const plan = backend.plan(entry);
     if (!opts.dryRun) {
-      await backend.apply(entry);
+      try {
+        await backend.apply(entry);
+      } catch (error) {
+        // Record the failure and keep going so the caller gets a complete
+        // applied/failed report (backups already exist on disk) instead of an
+        // exception that discards everything done so far.
+        failed.push({ id: entry.id, display: plan.display, error: errMessage(error) });
+        continue;
+      }
     }
     applied.push({ id: entry.id, display: plan.display });
     for (const app of entry.restartApps) restartApps.add(app);
   }
 
+  // Apps declared by settings that actually applied — what needs a restart to
+  // take effect, whether or not we perform the restart ourselves.
+  const restartRequired = [...restartApps];
   const restarted: string[] = [];
   if (opts.restart && !opts.dryRun) {
     for (const app of restartApps) {
@@ -174,10 +232,42 @@ export const applySettings = async (
   return {
     applied,
     skipped,
-    restarted: opts.restart ? restarted : [...restartApps],
+    failed,
+    // Report only the apps we truly restarted; `restartRequired` carries the
+    // list to restart manually when restart is disabled or in dry-run.
+    restarted,
+    restartRequired,
+    osVersionMismatch,
     backupDir,
     pendingManual,
   };
+};
+
+/** Best-effort message extraction from an unknown thrown value. */
+const errMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+/**
+ * Flag applied entries whose captured OS major version differs from the current
+ * machine's. Blank versions on either side are skipped (nothing to compare).
+ */
+const computeOsVersionMismatch = (
+  currentVersion: string,
+  entries: SettingEntry[]
+): OsVersionMismatch[] => {
+  const cur = currentVersion.trim();
+  if (!cur) return [];
+  const currentMajor = parseVersion(cur)[0] ?? 0;
+  const out: OsVersionMismatch[] = [];
+  for (const entry of entries) {
+    const captured = entry.capturedOsVersion?.trim();
+    if (!captured) continue;
+    const capturedMajor = parseVersion(captured)[0] ?? 0;
+    if (capturedMajor !== currentMajor) {
+      out.push({ id: entry.id, capturedOsVersion: captured });
+    }
+  }
+  return out;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
