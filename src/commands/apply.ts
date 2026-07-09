@@ -31,7 +31,7 @@ import { findPlaceholders, restoreContent, restoreFiles as restoreSecrets, getAl
 import { createResolver } from '../lib/secretBackends/index.js';
 import { loadConfig } from '../lib/config.js';
 import { IS_WINDOWS } from '../lib/platform.js';
-import { RepositoryNotFoundError, MaterializeError, NotInitializedError, ValidationError } from '../errors.js';
+import { RepositoryNotFoundError, MaterializeError, NotInitializedError, ValidationError, RemoteApplyError } from '../errors.js';
 import {
   parseSshTarget,
   buildRemotePlan,
@@ -1698,22 +1698,30 @@ export const runSshApply = async (
     }
   }
 
+  // Escalate any transfer failure into a non-zero exit. Returning normally here
+  // (as a warning) makes `tuck apply --ssh box --json` emit {ok:true, applied:0}
+  // and exit 0 even when every push failed — invisible to CI/scripts. Throwing a
+  // RemoteApplyError still preserves the partial outcome in its JSON envelope.
+  if (failed.length > 0) {
+    if (!isJsonMode()) {
+      logger.blank();
+      logger.warning(`Pushed ${pushed} file(s), ${failed.length} failed`);
+    }
+    throw new RemoteApplyError(target.display, pushed, failed, skipCounts(plan));
+  }
+
   if (isJsonMode()) {
     emitJsonOk({
       applied: pushed,
       target: target.display,
-      failed: failed.map((f) => f.source),
+      failed: [],
       skipped: skipCounts(plan),
     });
     return;
   }
 
   logger.blank();
-  if (failed.length === 0) {
-    logger.success(`Pushed ${pushed} file(s) to ${target.display}`);
-  } else {
-    logger.warning(`Pushed ${pushed} file(s), ${failed.length} failed`);
-  }
+  logger.success(`Pushed ${pushed} file(s) to ${target.display}`);
 };
 
 /** Structured skip counts for the JSON envelope. */

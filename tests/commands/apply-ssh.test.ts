@@ -103,8 +103,9 @@ describe('runSshApply', () => {
     // Two files → for the nested one an ssh mkdir precedes the scp; the top-level
     // one is a bare scp. Assert the scp destinations landed at remote home paths.
     const scps = calls.filter((c) => c.cmd === 'scp').map((c) => c.args[c.args.length - 1]);
-    expect(scps).toContain("me@box:'.zshrc'");
-    expect(scps).toContain("me@box:'.config/nvim/init.lua'");
+    // scp destinations are UNQUOTED (SFTP protocol takes the path verbatim).
+    expect(scps).toContain('me@box:.zshrc');
+    expect(scps).toContain('me@box:.config/nvim/init.lua');
 
     // The nested file's parent dir was created first with the -p ssh port flag.
     const mkdir = calls.find((c) => c.cmd === 'ssh');
@@ -197,7 +198,7 @@ describe('runSshApply', () => {
     expect(loggerWarningMock).toHaveBeenCalledWith('No files to push');
   });
 
-  it('reports per-file failures without aborting the whole push', async () => {
+  it('pushes what it can but escalates any per-file failure to a non-zero exit', async () => {
     seedManifest({
       a: createMockTrackedFile({ source: '~/.zshrc', destination: 'files/shell/zshrc' }),
       b: createMockTrackedFile({ source: '~/.bashrc', destination: 'files/shell/bashrc' }),
@@ -212,8 +213,50 @@ describe('runSshApply', () => {
     });
 
     const { runSshApply } = await import('../../src/commands/apply.js');
-    await runSshApply({ ssh: 'box', yes: true }, runner);
-
+    const { RemoteApplyError } = await import('../../src/errors.js');
+    // The good file still transferred, but the failure must not exit 0.
+    await expect(runSshApply({ ssh: 'box', yes: true }, runner)).rejects.toBeInstanceOf(
+      RemoteApplyError
+    );
     expect(loggerWarningMock).toHaveBeenCalledWith('Pushed 1 file(s), 1 failed');
+  });
+
+  it('escalates a fully-failed push and preserves partial results in the JSON error', async () => {
+    seedManifest({
+      a: createMockTrackedFile({ source: '~/.zshrc', destination: 'files/shell/zshrc' }),
+      b: createMockTrackedFile({ source: '~/.bashrc', destination: 'files/shell/bashrc' }),
+    });
+    writeRepoFile('files/shell/zshrc');
+    writeRepoFile('files/shell/bashrc');
+
+    const { __resetJsonEmitState, isJsonMode } = await import('../../src/lib/jsonOutput.js');
+    __resetJsonEmitState();
+
+    // Every ssh/scp fails, as if the remote refused the connection.
+    const runner = vi.fn(async () => {
+      throw new Error('ssh: connect to host box port 22: Connection refused');
+    });
+
+    const { runSshApply } = await import('../../src/commands/apply.js');
+    const { RemoteApplyError } = await import('../../src/errors.js');
+
+    let thrown: unknown;
+    try {
+      await runSshApply({ ssh: 'box', json: true }, runner);
+    } catch (err) {
+      thrown = err;
+    }
+
+    // JSON mode still throws so handleError emits the error envelope + non-zero exit.
+    expect(thrown).toBeInstanceOf(RemoteApplyError);
+    expect(isJsonMode()).toBe(true);
+
+    // The JSON projection escalates (ok:false envelope) while keeping the outcome.
+    const json = (thrown as InstanceType<typeof RemoteApplyError>).toJSON();
+    expect(json.code).toBe('REMOTE_APPLY_FAILED');
+    expect(json.exit_code).toBeGreaterThan(0);
+    expect(json.applied).toBe(0);
+    expect(json.target).toBe('box');
+    expect(json.failed).toEqual(['~/.bashrc', '~/.zshrc']);
   });
 });
