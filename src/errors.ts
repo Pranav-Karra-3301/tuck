@@ -209,6 +209,15 @@ export class MaterializeError extends TuckError {
   }
 }
 
+export class McpConfigError extends TuckError {
+  constructor(file: string, reason: string) {
+    super(`Cannot parse MCP config ${file}: ${reason}`, 'MCP_CONFIG_INVALID', [
+      'Ensure the file is valid JSON (MCP config files must not contain comments)',
+      'Fix the syntax error, then re-run `tuck secrets extract --mcp`',
+    ]);
+  }
+}
+
 export class SecretsDetectedError extends TuckError {
   constructor(count: number, files: string[]) {
     const fileList =
@@ -405,6 +414,62 @@ export class KeystoreError extends TuckError {
       'Check your system keychain/credential manager is accessible',
       'Try running without encryption or use the fallback keystore',
     ]);
+  }
+}
+
+/**
+ * The JSON error projection for a partially- or fully-failed remote apply.
+ *
+ * Extends the base {@link JsonError} with the structured push outcome so a
+ * `tuck apply --ssh <box> --json` that hit transfer failures still exits
+ * non-zero AND surfaces what got through / what did not, instead of silently
+ * reporting `{ ok: true, applied: 0 }` with exit code 0.
+ */
+export interface RemoteApplyJsonError extends JsonError {
+  /** Files successfully pushed before/around the failures. */
+  applied: number;
+  /** The remote target's display form (e.g. "me@box:2222"). */
+  target: string;
+  /** Sources of the files whose transfer failed. */
+  failed: string[];
+  /** Structured skip counts (repo-scoped, directories, unsafe, missing). */
+  skipped: Record<string, number>;
+}
+
+/**
+ * Raised when one or more files failed to transfer during a remote/SSH apply.
+ *
+ * Escalating (rather than logging a warning and returning) guarantees a
+ * non-zero exit code so CI/scripts can detect a failed push. The partial
+ * outcome is preserved in {@link toJSON} so `--json` consumers still see what
+ * was applied and what failed.
+ */
+export class RemoteApplyError extends TuckError {
+  constructor(
+    private readonly target: string,
+    private readonly applied: number,
+    private readonly failed: Array<{ source: string; error: string }>,
+    private readonly skipped: Record<string, number>
+  ) {
+    super(
+      `Pushed ${applied} file(s) to ${target}, ${failed.length} failed`,
+      'REMOTE_APPLY_FAILED',
+      [
+        'Check the remote is reachable and accepting connections (try: ssh <host>)',
+        'Ensure the remote user can write to their home directory',
+      ]
+    );
+    this.name = 'RemoteApplyError';
+  }
+
+  toJSON(): RemoteApplyJsonError {
+    return {
+      ...super.toJSON(),
+      applied: this.applied,
+      target: this.target,
+      failed: this.failed.map((f) => f.source),
+      skipped: this.skipped,
+    };
   }
 }
 
