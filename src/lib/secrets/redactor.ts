@@ -247,6 +247,15 @@ const redactedBufferHash = (buffer: Buffer, valueMap: Map<string, string>): stri
   // so hash their RAW bytes regardless of what their lossy utf-8 decode contains.
   // Redacting a secret's bytes out of a binary blob here would fabricate drift
   // that can never match the un-redacted repo copy.
+  //
+  // Heuristic seam: the scanner classifies binaries by EXTENSION (patterns.ts
+  // shouldSkipFile) while this compare-time check inspects CONTENT (magic
+  // numbers / NUL byte). Where the two disagree (a secret-bearing text file
+  // with a binary extension, or a NUL-bearing file the scanner still redacted),
+  // the redacted-live checksum won't match the repo copy and the file is
+  // reported as drifted — such edge cases can OVER-report drift, but never
+  // UNDER-report: "clean" requires exact checksum equality, so a real change is
+  // never masked.
   if (isBinaryBuffer(buffer)) {
     return createHash('sha256').update(buffer).digest('hex');
   }

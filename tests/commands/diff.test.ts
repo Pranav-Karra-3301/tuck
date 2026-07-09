@@ -355,6 +355,40 @@ describe('diff command', () => {
       expect(diff?.systemContent).not.toContain(SECRET);
       expect(diff?.systemContent).toContain('export EXTRA=1');
     });
+
+    it('redacts systemContent in the missing-repo branch (never prints cleartext)', async () => {
+      const { getFileDiff } = await import('../../src/commands/diff.js');
+      await setupTracked();
+      // Repo copy is GONE — the branch that dumps the whole live file as
+      // systemContent must still redact known secrets before display.
+      vol.unlinkSync(join(TEST_TUCK_DIR, 'files/shell/zshrc'));
+      vol.writeFileSync('/test-home/.zshrc', `token=${SECRET}\n`);
+
+      const diff = await getFileDiff(TEST_TUCK_DIR, '~/.zshrc');
+      expect(diff?.hasChanges).toBe(true);
+      expect(diff?.systemContent).toContain('{{TOK}}');
+      expect(diff?.systemContent).not.toContain(SECRET);
+    });
+
+    it('never touches the secrets store when raw checksums already match (lazy load)', async () => {
+      const { getFileDiff } = await import('../../src/commands/diff.js');
+      const manifest = createMockManifest();
+      manifest.files['zshrc'] = createMockTrackedFile({
+        source: '~/.zshrc',
+        destination: 'files/shell/zshrc',
+      });
+      vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest));
+      vol.mkdirSync(join(TEST_TUCK_DIR, 'files/shell'), { recursive: true });
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'files/shell/zshrc'), 'plain\n');
+      vol.writeFileSync('/test-home/.zshrc', 'plain\n');
+      // A CORRUPT secrets store makes loadSecretsStore throw — so if the lazy
+      // path (no valueMap threaded) touched the store for a raw-equal file,
+      // this call would reject instead of reporting "no changes".
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'secrets.local.json'), '{not json');
+
+      const diff = await getFileDiff(TEST_TUCK_DIR, '~/.zshrc');
+      expect(diff?.hasChanges).toBe(false);
+    });
   });
 
   describe('--exit-code with --name-only', () => {

@@ -77,6 +77,16 @@ describe('detectChanges — placeholder awareness (issue #100)', () => {
     expect(changes[0].source).toBe('~/.zshrc');
   });
 
+  it('still reports deleted when a secret-bearing live file is removed', async () => {
+    // Adversarial pin: the redacted compare only runs in the checksum-mismatch
+    // branch — it must never short-circuit the missing-file branch above it.
+    // (No live file written.)
+    const changes = await detectChanges(TEST_TUCK_DIR);
+    expect(changes).toHaveLength(1);
+    expect(changes[0].status).toBe('deleted');
+    expect(changes[0].source).toBe('~/.zshrc');
+  });
+
   it('reports modified when a brand-new (unstored) secret is added', async () => {
     // NEWKEY is not in the store, so redacting the live file leaves it in place
     // and the redacted checksum no longer matches the repo copy → real drift.

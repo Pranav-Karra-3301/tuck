@@ -122,7 +122,12 @@ export const getFileDiff = async (
       diff.fileCount = files.length;
     } else {
       const systemContent = await readFile(systemPath, 'utf-8');
-      diff.systemContent = systemContent;
+      // This branch dumps the WHOLE live file as systemContent — redact known
+      // secrets before display so `tuck diff` never prints cleartext (#100).
+      // systemSize stays the real (un-redacted) file length.
+      const store = valueMap ?? (await getStoredValueMap(tuckDir));
+      diff.systemContent =
+        store.size > 0 ? redactValuesInContent(systemContent, store) : systemContent;
       diff.systemSize = systemContent.length;
     }
     return diff;
@@ -236,16 +241,16 @@ export const getFileDiff = async (
   // live file keeps its real secrets, so raw checksums always differ for a
   // secret-bearing file. Compare the live file hashed AS IF its known secrets
   // were redacted, and — critically — display the REDACTED live content so
-  // `tuck diff` never prints a cleartext secret to the terminal.
-  const store = valueMap ?? (await getStoredValueMap(tuckDir));
-  const redactAware = store.size > 0;
+  // `tuck diff` never prints a cleartext secret to the terminal. The lazy store
+  // load lives INSIDE the mismatch branch (like the directory branch above) so a
+  // raw-equal file never touches the secrets store at all.
+  if (systemChecksum !== repoChecksum) {
+    const store = valueMap ?? (await getStoredValueMap(tuckDir));
+    const redactAware = store.size > 0;
+    if (redactAware && (await getRedactedChecksum(systemPath, store)) === repoChecksum) {
+      return diff; // differs from repo ONLY by placeholder substitution — clean
+    }
 
-  let changed = systemChecksum !== repoChecksum;
-  if (changed && redactAware && (await getRedactedChecksum(systemPath, store)) === repoChecksum) {
-    changed = false;
-  }
-
-  if (changed) {
     diff.hasChanges = true;
     const rawSystemContent = await readFile(systemPath, 'utf-8');
     diff.systemContent = redactAware
