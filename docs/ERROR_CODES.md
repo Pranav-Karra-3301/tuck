@@ -38,6 +38,10 @@ This document lists all error codes used by tuck for programmatic error handling
 | `SCAN_LIMIT_ERROR` | `ScanLimitError` | Too many files to scan | Directory exceeds the scan limit | Narrow the scan scope or raise the limit |
 | `VALIDATION_ERROR` | `ValidationError` | Input failed validation | Invalid flag/field value | Correct the input per the message |
 | `KEYSTORE_ERROR` | `KeystoreError` | OS keystore operation failed | Keychain/secret-service unavailable | Check the OS keystore or use the fallback |
+| `RULES_MANIFEST_CORRUPT` | `TuckError` | `rules.json` is not valid JSON | Hand-edit corrupted the rules fan-out manifest | Fix or delete `~/.tuck/rules.json` and re-run `tuck rules track` |
+| `RULES_MANIFEST_INVALID` | `TuckError` | `rules.json` failed schema validation | Unsafe path override or missing repo root | Correct the manifest per the message |
+| `RULES_SET_NOT_FOUND` | `TuckError` | No tracked rule set with the given id | Wrong `--id` / untrack id | Run `tuck rules list` to see tracked sets |
+| `RULES_UNKNOWN_TOOL` | `TuckError` | Unknown `--tool` name | Typo or unsupported tool | Use one of the known tools listed in the hint |
 
 ---
 
