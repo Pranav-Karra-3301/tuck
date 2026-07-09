@@ -35,6 +35,17 @@ export const mergePolicySchema = z.object({
   conflict: conflictResolutionSchema.default('manual'),
 });
 
+/**
+ * Profile/tag name grammar. A tag names a machine PROFILE (work, personal,
+ * server, agent, …). Constrained to a filename-safe, shell-safe subset so a tag
+ * can appear on the CLI and in JSON without quoting surprises — the same
+ * grammar bundle names use, for consistency.
+ */
+export const PROFILE_NAME_PATTERN = /^[a-zA-Z0-9_.-]+$/u;
+
+/** A single profile tag on a tracked file. */
+export const profileTagSchema = z.string().regex(PROFILE_NAME_PATTERN);
+
 export const trackedFileSchema = z
   .object({
     source: z.string(),
@@ -66,6 +77,15 @@ export const trackedFileSchema = z
      */
     bundle: z.string().default('default'),
     /**
+     * Profile tags — the machine PROFILES this file belongs to (work, personal,
+     * server, agent, …). An EMPTY list means the file is "universal": it applies
+     * under every profile (the shared/common set). A non-empty list scopes the
+     * file to `tuck apply --profile <name>` only when `<name>` is a member.
+     * Defaults to `[]` so legacy manifests load unchanged (every legacy file is
+     * treated as universal, preserving today's apply-everything behavior).
+     */
+    tags: z.array(profileTagSchema).default([]),
+    /**
      * Tracking scope. ABSENT (undefined) means a legacy/home-scoped file,
      * resolved against `$HOME` and validated exactly as before — so existing
      * manifests parse byte-identical (these fields are `.optional()`, never
@@ -85,6 +105,21 @@ export const trackedFileSchema = z
      * Undefined for the vast majority of files (plain copy semantics).
      */
     merge: mergePolicySchema.optional(),
+    /**
+     * Declarative dependencies for this entry (IDEAS 2.3). Each value is a
+     * `<manager>:<package>` spec (e.g. `brew:starship`, `apt:zsh`) that must be
+     * installed BEFORE this file is applied. `tuck bootstrap`/`tuck apply`
+     * topologically order packages → files → hooks from these declarations.
+     *
+     * `.optional()` (never `.default()`) so legacy manifests parse
+     * byte-identical: an entry with no requirements omits the field entirely
+     * rather than serializing an empty array. Consumers treat `undefined` as an
+     * empty requirement list. The manifest stores the raw specs verbatim; format
+     * validation lives in `lib/requires.ts` so a manifest carrying an unknown
+     * manager still LOADS (it is surfaced as a warning at plan time, never a
+     * hard load failure).
+     */
+    requires: z.array(z.string()).optional(),
   })
   .superRefine((file, ctx) => {
     if (file.scope === 'repo') {
@@ -114,6 +149,16 @@ export const bundleMetadataSchema = z.object({
   created: z.string(),
 });
 
+/**
+ * Registry metadata for a named profile. Profiles are declared in the shared
+ * (committed) manifest so every machine agrees on which profiles exist; a
+ * machine then BINDS to one locally (never committed) via the state dir.
+ */
+export const profileMetadataSchema = z.object({
+  description: z.string().optional(),
+  created: z.string(),
+});
+
 export const tuckManifestSchema = z.object({
   version: z.string(),
   created: z.string(),
@@ -125,6 +170,14 @@ export const tuckManifestSchema = z.object({
    * load (the manifest loader migrates legacy manifests transparently).
    */
   bundles: z.record(bundleMetadataSchema).default({}),
+  /**
+   * Registry of known profiles (work, personal, server, agent, …). Unlike
+   * bundles there is no mandatory implicit profile: an empty registry means no
+   * profiles are defined and `tuck apply` (with no `--profile`) applies every
+   * file, exactly as before. Defaults to `{}` so legacy manifests load
+   * unchanged.
+   */
+  profiles: z.record(profileMetadataSchema).default({}),
 });
 
 export type TrackedFileInput = z.input<typeof trackedFileSchema>;
@@ -143,5 +196,6 @@ export const createEmptyManifest = (machine?: string): TuckManifestOutput => {
     bundles: {
       default: { created: now },
     },
+    profiles: {},
   };
 };

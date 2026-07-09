@@ -70,6 +70,40 @@ const bufferStartsWith = (buffer: Buffer, magic: Buffer): boolean => {
 };
 
 /**
+ * Best-effort BINARY detection on an in-memory buffer (issue #100).
+ *
+ * Used by redacted-checksum drift detection: the secret scanner SKIPS binary
+ * files, so their repo copies are NEVER redacted. If a binary happened to
+ * contain a stored secret's bytes in its lossy utf-8 decode, redacting it at
+ * compare time would produce a checksum that can never match the un-redacted
+ * repo copy — fabricating drift that never resolves. Treat a buffer as binary
+ * when it starts with a known executable magic number OR contains a NUL byte in
+ * its leading bytes (the same NUL heuristic git uses to classify blobs), so such
+ * files always hash their RAW bytes.
+ */
+export const isBinaryBuffer = (buffer: Buffer): boolean => {
+  if (
+    bufferStartsWith(buffer, MAGIC_NUMBERS.ELF) ||
+    bufferStartsWith(buffer, MAGIC_NUMBERS.MACHO_32) ||
+    bufferStartsWith(buffer, MAGIC_NUMBERS.MACHO_64) ||
+    bufferStartsWith(buffer, MAGIC_NUMBERS.MACHO_UNIVERSAL) ||
+    bufferStartsWith(buffer, MAGIC_NUMBERS.PE)
+  ) {
+    return true;
+  }
+
+  // A NUL byte within the inspected window is the classic "this is binary"
+  // signal. Bounded to the leading bytes to stay cheap on large files.
+  const scanLen = Math.min(buffer.length, 8000);
+  for (let i = 0; i < scanLen; i++) {
+    if (buffer[i] === 0) {
+      return true;
+    }
+  }
+  return false;
+};
+
+/**
  * Check if file is an executable binary by reading magic numbers
  */
 export const isBinaryExecutable = async (path: string): Promise<boolean> => {
