@@ -377,6 +377,33 @@ export const scanContent = (content: string, options: ScanOptions = {}): SecretM
     }
   }
 
+  // Cross-pattern overlap resolution: one secret must yield ONE match. Vendor
+  // (specific) patterns beat GENERIC_PATTERN_IDS; then the longer captured value
+  // wins (a truncated generic capture must not shadow a fuller one); then the
+  // earlier match. Without this, a GitHub PAT is ALSO reported by the generic
+  // token pattern and can end up stored under a generic placeholder (issue #100).
+  const isGeneric = (m: SecretMatch): number => (GENERIC_PATTERN_IDS.has(m.patternId) ? 1 : 0);
+  const byPriority = [...matches].sort(
+    (a, b) => isGeneric(a) - isGeneric(b) || b.end - b.start - (a.end - a.start) || a.start - b.start
+  );
+  const kept: SecretMatch[] = [];
+  for (const m of byPriority) {
+    // Defensive: only exact offsets (set by scanContent) are trustworthy for
+    // overlap comparison. External producers (e.g. gitleaks via external.ts)
+    // approximate start/end; a phantom overlap there would silently DROP a real
+    // secret. So never drop, and never compare against, a non-exact match.
+    if (m.offsetsExact !== true) {
+      kept.push(m);
+      continue;
+    }
+    if (kept.some((k) => k.offsetsExact === true && m.start < k.end && k.start < m.end)) {
+      continue;
+    }
+    kept.push(m);
+  }
+  matches.length = 0;
+  matches.push(...kept);
+
   // Sort by line number, then column
   matches.sort((a, b) => {
     if (a.line !== b.line) return a.line - b.line;

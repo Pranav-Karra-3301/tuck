@@ -57,4 +57,28 @@ describe('scanContent value extraction', () => {
     const [m] = scanContent(content);
     expect(content.slice(m.start, m.end)).toBe(m.value);
   });
+
+  it('vendor pattern beats generic on the same value (PAT not stored as TOKEN)', () => {
+    // A GitHub fine-grained PAT also matches the generic token-assignment pattern
+    // (identifier ends in TOKEN). One secret must yield ONE match: the vendor
+    // pattern (github-fine-grained) wins over GENERIC_PATTERN_IDS (issue #100).
+    const pat =
+      'github_pat_11ABCDEFG0123456789_' +
+      'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUV';
+    const hits = scanContent(`export GITHUB_FINE_GRAINED_TOKEN=${pat}`);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].patternId).toBe('github-fine-grained');
+    expect(hits[0].value).toBe(pat);
+  });
+
+  it('collapses two overlapping generic matches to the longer captured value', () => {
+    // A Postgres connection string matches both `postgres-connection` (whole
+    // match, no capture group) and `password-url` (just the password segment).
+    // Both are generic, so the longer captured value wins — the full
+    // connection string, not the bare password (binding adjustment #3).
+    const content = 'DATABASE_URL=postgres://user:password123@host:5432/db';
+    const hits = scanContent(content);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].patternId).toBe('postgres-connection');
+  });
 });
