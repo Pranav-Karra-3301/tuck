@@ -31,10 +31,10 @@ import {
   getSecretsPath,
   isSecretScanningEnabled,
   processSecretsForRedaction,
-  redactFile,
   scanForSecrets,
   shouldBlockOnSecrets,
   type ScanSummary,
+  type SecretMatch,
 } from './secrets/index.js';
 
 const PRIVATE_KEY_PATTERNS = [
@@ -96,6 +96,14 @@ export interface PreparedTrackFile {
   remoteUrl?: string;
   /** Absolute live path to copy FROM (repo scope only). */
   liveSource?: string;
+  /** Redaction plans for secret-bearing files: applied to the REPO copy after
+   *  the copy step; the live file is never modified (issue #100 RC5). For a
+   *  tracked DIRECTORY, livePath points at the inner file that holds the secret. */
+  redactions?: Array<{
+    livePath: string;
+    matches: SecretMatch[];
+    placeholderMap: Map<string, string>;
+  }>;
 }
 
 export interface PreparePathsForTrackingOptions {
@@ -295,7 +303,7 @@ const applySecretPolicy = async (
     {
       value: 'redact',
       label: 'Replace with placeholders',
-      hint: 'Store originals in secrets.local.json (never committed)',
+      hint: 'Repo copy gets placeholders; live file untouched. Originals in secrets.local.json (never committed)',
     },
     { value: 'ignore', label: 'Add files to .tuckignore', hint: 'Skip these files permanently' },
     { value: 'proceed', label: 'Proceed anyway', hint: 'Track files with secrets (dangerous!)' },
@@ -307,21 +315,29 @@ const applySecretPolicy = async (
   }
 
   if (action === 'redact') {
+    // Repo-only redaction (issue #100 RC5): store the secrets and attach a
+    // redaction PLAN to each owning candidate. The plan is applied to the
+    // repository copy AFTER it is copied (in fileTracking) — the live file in
+    // $HOME is never rewritten, so the user's shell/config keeps working.
     const redactionMaps = await processSecretsForRedaction(summary.results, tuckDir);
-    let totalRedacted = 0;
-
+    let planned = 0;
     for (const result of summary.results) {
       const placeholderMap = redactionMaps.get(result.path);
-      if (placeholderMap && placeholderMap.size > 0) {
-        const redactionResult = await redactFile(result.path, result.matches, placeholderMap);
-        totalRedacted += redactionResult.replacements.length;
-      }
+      if (!placeholderMap || placeholderMap.size === 0) continue;
+      const owner = ownerByScanPath.get(result.path);
+      if (!owner) continue;
+      (owner.redactions ??= []).push({
+        livePath: result.path,
+        matches: result.matches,
+        placeholderMap,
+      });
+      planned += result.matches.length;
     }
 
     console.log();
-    logger.success(`Replaced ${totalRedacted} secret(s) with placeholders`);
+    logger.success(`Will replace ${planned} secret(s) with placeholders in the repository copy`);
+    logger.dim('Your live files are left untouched');
     logger.dim(`Secrets stored in: ${collapsePath(getSecretsPath(tuckDir))} (never committed)`);
-    logger.dim("Run 'tuck secrets list' to see stored secrets");
     console.log();
     return files;
   }

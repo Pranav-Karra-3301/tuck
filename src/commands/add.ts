@@ -56,6 +56,12 @@ const addFiles = async (
       trackedFile.bundle = options.bundle;
     }
 
+    // Carry the repo-only redaction plan across (issue #100 RC5): applied to the
+    // repository copy after the copy step; the live file is never rewritten.
+    if (f.redactions) {
+      trackedFile.redactions = f.redactions;
+    }
+
     if (isRepo) {
       trackedFile.scope = 'repo';
       trackedFile.repoKey = f.repoKey;

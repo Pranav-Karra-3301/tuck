@@ -7,13 +7,16 @@ import {
   getRelativeDestinationFromSource,
   generateFileId,
   detectCategory,
+  validatePathWithinRoot,
 } from './paths.js';
+import { logger } from '../ui/index.js';
+import { redactFile, type SecretMatch } from './secrets/index.js';
 import { addFileToManifest, loadManifest } from './manifest.js';
 import { copyFileOrDir, createSymlink, getFileChecksum, getFileInfo, getSourceStatCache } from './files.js';
 import { loadConfig } from './config.js';
 import { CATEGORIES } from '../constants.js';
 import { ensureDir } from 'fs-extra';
-import { dirname, join } from 'path';
+import { dirname, join, relative } from 'path';
 import type { FileStrategy } from '../types.js';
 import { toPosixPath } from './platform.js';
 import { bindRepo } from './repoScope.js';
@@ -55,6 +58,14 @@ export interface FileToTrack {
   source?: string;
   /** Relative manifest destination to store verbatim (repo scope only). */
   destination?: string;
+  /** Redaction plans for secret-bearing files: applied to the REPO copy after
+   *  the copy step; the live file is never modified (issue #100 RC5). For a
+   *  tracked DIRECTORY, livePath points at the inner file that holds the secret. */
+  redactions?: Array<{
+    livePath: string;
+    matches: SecretMatch[];
+    placeholderMap: Map<string, string>;
+  }>;
 }
 
 export interface FileTrackingOptions {
@@ -242,9 +253,20 @@ export const trackFilesWithProgress = async (
       // (no fields) for directories — they are never short-circuited.
       const statCache = await getSourceStatCache(expandedPath);
 
+      // A symlinked live file IS the repo copy (same inode): redacting the repo
+      // copy would rewrite the user's live config — exactly what issue #100
+      // forbids. Downgrade this file to copy strategy and say so.
+      let effectiveStrategy = strategy;
+      if (strategy === 'symlink' && file.redactions?.length) {
+        effectiveStrategy = 'copy';
+        logger.warning(
+          `${collapsePath(file.path)}: tracked as a copy (not symlink) — placeholder redaction cannot apply to a symlinked file`
+        );
+      }
+
       // Copy or symlink based on strategy. Repo-scoped tracking is copy-only:
       // the live file stays put inside its repo checkout (never symlinked).
-      if (strategy === 'symlink' && !isRepo) {
+      if (effectiveStrategy === 'symlink' && !isRepo) {
         // Symlink strategy keeps the repository as source of truth. Order is
         // safety-critical:
         //   1) Copy source into the repo FIRST so a durable copy exists before
@@ -297,6 +319,22 @@ export const trackFilesWithProgress = async (
         });
       }
 
+      // Apply redaction plans to the REPO copy only (issue #100 RC5). Runs before
+      // the checksum so the manifest records the redacted content. Symlink strategy
+      // is downgraded per-file above; encrypted repo copies are ciphertext (already
+      // at-rest-protected) so plans are skipped for them.
+      if (file.redactions?.length && !encrypt) {
+        for (const plan of file.redactions) {
+          const liveAbs = expandPath(plan.livePath);
+          const repoTarget =
+            liveAbs === expandedPath
+              ? destination
+              : join(destination, relative(expandedPath, liveAbs));
+          validatePathWithinRoot(repoTarget, tuckDir, 'redaction target');
+          await redactFile(repoTarget, plan.matches, plan.placeholderMap);
+        }
+      }
+
       // Get file info
       const checksum = await getFileChecksum(destination);
       const info = await getFileInfo(expandedPath);
@@ -311,7 +349,7 @@ export const trackFilesWithProgress = async (
         destination: relativeDestination,
         category,
         // Repo scope is copy-only regardless of the configured global strategy.
-        strategy: isRepo ? 'copy' : strategy,
+        strategy: isRepo ? 'copy' : effectiveStrategy,
         encrypted: encrypt,
         template,
         permissions: info.permissions,
