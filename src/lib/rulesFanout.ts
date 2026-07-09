@@ -127,7 +127,9 @@ const repoScopeKey = (repoRoot: string): string =>
 
 /** Walk up from `start` looking for a `.git` entry; return the repo root or null. */
 const findGitRoot = async (start: string): Promise<string | null> => {
-  let dir = resolve(start);
+  // expandPath, not resolve(): win32 resolve() stamps the host drive letter
+  // onto drive-less absolute paths, corrupting the returned repo root.
+  let dir = expandPath(start);
   for (let i = 0; i < 64; i++) {
     if (await pathExists(join(dir, '.git'))) return dir;
     const parent = dirname(dir);
