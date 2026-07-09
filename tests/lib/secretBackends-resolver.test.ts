@@ -107,7 +107,6 @@ import type { SecurityConfig } from '../../src/schemas/secrets.schema.js';
 import {
   BackendNotAvailableError,
   BackendAuthenticationError,
-  UnresolvedSecretsError,
 } from '../../src/errors.js';
 
 const TUCK_DIR = '/test-home/.tuck';
@@ -142,14 +141,12 @@ describe('SecretResolver', () => {
     const r = new SecretResolver(TUCK_DIR, baseConfig({ secretBackend: 'auto' }));
     expect(r.getConfiguredBackendName()).toBe('auto');
     expect(r.getPrimaryBackendName()).toBe('local');
-    expect(r.getPrimaryBackend().name).toBe('local');
   });
 
   it('uses an explicitly configured backend as primary', () => {
     const r = new SecretResolver(TUCK_DIR, baseConfig({ secretBackend: 'pass' }));
     expect(r.getConfiguredBackendName()).toBe('pass');
     expect(r.getPrimaryBackendName()).toBe('pass');
-    expect(r.getPrimaryBackend().name).toBe('pass');
   });
 
   it('getBackend returns undefined for an unknown backend name', () => {
@@ -207,37 +204,6 @@ describe('SecretResolver', () => {
     specs['pass'].available = true;
     specs['pass'].authenticated = true;
     expect(await r.getEffectiveBackendName()).toBe('local');
-  });
-
-  // ── Availability / auth helpers ──────────────────────────────────────────
-
-  it('isBackendAvailable / isBackendAuthenticated proxy to the backend', async () => {
-    specs['pass'].available = false;
-    specs['bitwarden'].authenticated = false;
-    const r = new SecretResolver(TUCK_DIR, baseConfig());
-    expect(await r.isBackendAvailable('pass')).toBe(false);
-    expect(await r.isBackendAvailable('local')).toBe(true);
-    expect(await r.isBackendAuthenticated('bitwarden')).toBe(false);
-    // Unknown backend → false, not a throw.
-    // @ts-expect-error invalid name
-    expect(await r.isBackendAvailable('nope')).toBe(false);
-    // @ts-expect-error invalid name
-    expect(await r.isBackendAuthenticated('nope')).toBe(false);
-  });
-
-  it('getAvailableBackends lists only available backends', async () => {
-    specs['1password'].available = false;
-    specs['pass'].available = false;
-    const r = new SecretResolver(TUCK_DIR, baseConfig());
-    expect((await r.getAvailableBackends()).sort()).toEqual(['bitwarden', 'local']);
-  });
-
-  it('authenticateBackend invokes the backend and throws for unknown names', async () => {
-    const r = new SecretResolver(TUCK_DIR, baseConfig());
-    await r.authenticateBackend('pass');
-    expect(specs['pass'].authCalls).toBe(1);
-    // @ts-expect-error invalid name
-    await expect(r.authenticateBackend('nope')).rejects.toBeInstanceOf(BackendNotAvailableError);
   });
 
   // ── resolveSecret ────────────────────────────────────────────────────────
@@ -355,22 +321,6 @@ describe('SecretResolver', () => {
     expect(result.errors.get('C')!.message).toBe('boom C');
   });
 
-  it('resolveAllOrThrow throws UnresolvedSecretsError listing the misses', async () => {
-    specs['local'].secret = null; // everything unresolved
-    const r = new SecretResolver(TUCK_DIR, baseConfig({ secretBackend: 'local' }));
-    await expect(r.resolveAllOrThrow(['A', 'B'])).rejects.toBeInstanceOf(
-      UnresolvedSecretsError
-    );
-  });
-
-  it('resolveAllOrThrow returns the resolved map when all resolve', async () => {
-    specs['local'].secret = 'V';
-    const r = new SecretResolver(TUCK_DIR, baseConfig({ secretBackend: 'local' }));
-    const map = await r.resolveAllOrThrow(['A', 'B']);
-    expect(map.get('A')!.value).toBe('V');
-    expect(map.get('B')!.value).toBe('V');
-  });
-
   it('resolveToMap flattens to name→value, omitting unresolved names', async () => {
     const r = new SecretResolver(TUCK_DIR, baseConfig({ secretBackend: 'local' }));
     vi.spyOn(r, 'resolveSecret').mockImplementation(async (name) => {
@@ -381,18 +331,7 @@ describe('SecretResolver', () => {
     expect(map).toEqual({ A: 'val-A', C: 'val-C' });
   });
 
-  // ── Cache invalidation + lock + status + mappings ────────────────────────
-
-  it('invalidateCache forces a refetch of a specific name', async () => {
-    specs['local'].secret = 'V1';
-    const r = new SecretResolver(TUCK_DIR, baseConfig({ secretBackend: 'local' }));
-    await r.resolveSecret('TOKEN');
-    r.invalidateCache('TOKEN');
-    specs['local'].secret = 'V2';
-    const res = await r.resolveSecret('TOKEN');
-    expect(res!.value).toBe('V2');
-    expect(res!.cached).toBe(false);
-  });
+  // ── lock + status + mappings ─────────────────────────────────────────────
 
   it('lockAll locks every backend and swallows per-backend errors', async () => {
     const r = new SecretResolver(TUCK_DIR, baseConfig());

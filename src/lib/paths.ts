@@ -1,6 +1,6 @@
 import { homedir } from 'os';
-import { join, basename, dirname, relative, isAbsolute, resolve, sep, posix } from 'path';
-import { stat, lstat, access } from 'fs/promises';
+import { join, basename, relative, isAbsolute, resolve, sep, posix } from 'path';
+import { stat, access } from 'fs/promises';
 import { constants } from 'fs';
 import { createHash } from 'crypto';
 import {
@@ -74,14 +74,6 @@ export const getFilesDir = (tuckDir: string): string => {
 
 export const getCategoryDir = (tuckDir: string, category: string): string => {
   return join(getFilesDir(tuckDir), category);
-};
-
-export const getDestinationPath = (tuckDir: string, category: string, filename: string): string => {
-  return join(getCategoryDir(tuckDir, category), filename);
-};
-
-export const getRelativeDestination = (category: string, filename: string): string => {
-  return posix.join(FILES_DIR, toPosixPath(category), toPosixPath(filename));
 };
 
 /**
@@ -200,37 +192,6 @@ export const isFile = async (path: string): Promise<boolean> => {
   } catch {
     return false;
   }
-};
-
-export const isSymlink = async (path: string): Promise<boolean> => {
-  try {
-    const stats = await lstat(path);
-    return stats.isSymbolicLink();
-  } catch {
-    return false;
-  }
-};
-
-export const isReadable = async (path: string): Promise<boolean> => {
-  try {
-    await access(path, constants.R_OK);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-export const isWritable = async (path: string): Promise<boolean> => {
-  try {
-    await access(path, constants.W_OK);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-export const getRelativePath = (from: string, to: string): string => {
-  return relative(dirname(from), to);
 };
 
 /**

@@ -5,7 +5,7 @@
 
 import logSymbols from 'log-symbols';
 import figures from 'figures';
-import { colors as c, indent as ind, divider, DIVIDER_WIDTH } from './theme.js';
+import { colors as c, indent as ind } from './theme.js';
 import { isJsonMode } from '../lib/jsonOutput.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -18,19 +18,10 @@ export interface Logger {
   warning: (msg: string) => void;
   error: (msg: string) => void;
   debug: (msg: string) => void;
-  step: (current: number, total: number, msg: string) => void;
   file: (action: 'add' | 'modify' | 'delete' | 'sync' | 'merge', path: string) => void;
-  tree: (items: TreeItem[]) => void;
   blank: () => void;
   dim: (msg: string) => void;
   heading: (msg: string) => void;
-  divider: () => void;
-}
-
-export interface TreeItem {
-  name: string;
-  isLast: boolean;
-  indent?: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -90,25 +81,10 @@ export const logger: Logger = {
     }
   },
 
-  step: (current: number, total: number, msg: string) => {
-    if (isJsonMode()) return;
-    const counter = c.muted(`[${current}/${total}]`);
-    console.log(counter, msg);
-  },
-
   file: (action: 'add' | 'modify' | 'delete' | 'sync' | 'merge', path: string) => {
     if (isJsonMode()) return;
     const icon = fileIcons[action];
     console.log(`${ind()}${icon} ${c.brand(path)}`);
-  },
-
-  tree: (items: TreeItem[]) => {
-    if (isJsonMode()) return;
-    items.forEach(({ name, isLast, indent = 0 }) => {
-      const indentation = ind(indent);
-      const prefix = isLast ? figures.lineUpRight : figures.lineDownRightArc;
-      console.log(c.muted(indentation + prefix + figures.line), name);
-    });
   },
 
   blank: () => {
@@ -125,15 +101,10 @@ export const logger: Logger = {
     if (isJsonMode()) return;
     console.log(c.brandBold(msg));
   },
-
-  divider: () => {
-    if (isJsonMode()) return;
-    console.log(divider(DIVIDER_WIDTH));
-  },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Formatting Helpers (re-exported from theme for convenience)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export { formatPath, formatCategory, formatCount, formatStatus } from './theme.js';
+export { formatCount, formatStatus } from './theme.js';

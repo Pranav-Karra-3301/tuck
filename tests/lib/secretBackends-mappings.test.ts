@@ -15,12 +15,8 @@ import {
   saveMappings,
   getMapping,
   setMapping,
-  removeMapping,
   listMappings,
   getBackendPath,
-  hasBackendMapping,
-  getSecretsForBackend,
-  importMappings,
 } from '../../src/lib/secretBackends/mappings.js';
 
 const MAPPINGS_FILE = join(TEST_TUCK_DIR, 'secrets.mappings.json');
@@ -114,89 +110,11 @@ describe('secret mappings', () => {
     expect(await getBackendPath(TEST_TUCK_DIR, 'TOKEN', 'local')).toBeNull();
   });
 
-  it('hasBackendMapping reflects configured backends', async () => {
-    await setMapping(TEST_TUCK_DIR, 'TOKEN', 'bitwarden', 'token-item');
-    expect(await hasBackendMapping(TEST_TUCK_DIR, 'TOKEN', 'bitwarden')).toBe(true);
-    expect(await hasBackendMapping(TEST_TUCK_DIR, 'TOKEN', 'pass')).toBe(false);
-    expect(await hasBackendMapping(TEST_TUCK_DIR, 'TOKEN', 'local')).toBe(false);
-    expect(await hasBackendMapping(TEST_TUCK_DIR, 'MISSING', 'bitwarden')).toBe(false);
-
-    await setMapping(TEST_TUCK_DIR, 'TOKEN', 'local', true);
-    expect(await hasBackendMapping(TEST_TUCK_DIR, 'TOKEN', 'local')).toBe(true);
-  });
-
-  it('getSecretsForBackend filters by backend, including local', async () => {
-    await setMapping(TEST_TUCK_DIR, 'A', 'pass', 'a/path');
-    await setMapping(TEST_TUCK_DIR, 'B', 'pass', 'b/path');
-    await setMapping(TEST_TUCK_DIR, 'C', '1password', 'op://v/c/pw');
-    await setMapping(TEST_TUCK_DIR, 'B', 'local', true);
-
-    expect((await getSecretsForBackend(TEST_TUCK_DIR, 'pass')).sort()).toEqual(['A', 'B']);
-    expect(await getSecretsForBackend(TEST_TUCK_DIR, '1password')).toEqual(['C']);
-    expect(await getSecretsForBackend(TEST_TUCK_DIR, 'local')).toEqual(['B']);
-  });
-
-  it('removeMapping can drop a single backend and prune the empty entry', async () => {
-    await setMapping(TEST_TUCK_DIR, 'TOKEN', 'pass', 'work/token');
-    await setMapping(TEST_TUCK_DIR, 'TOKEN', 'bitwarden', 'token-item');
-
-    // Remove only bitwarden; the entry survives with pass.
-    expect(await removeMapping(TEST_TUCK_DIR, 'TOKEN', 'bitwarden')).toBe(true);
-    expect(await getMapping(TEST_TUCK_DIR, 'TOKEN')).toEqual({ pass: 'work/token' });
-
-    // Remove the last backend; the whole entry is pruned.
-    expect(await removeMapping(TEST_TUCK_DIR, 'TOKEN', 'pass')).toBe(true);
-    expect(await getMapping(TEST_TUCK_DIR, 'TOKEN')).toBeNull();
-  });
-
-  it('removeMapping without a backend removes the entire entry', async () => {
-    await setMapping(TEST_TUCK_DIR, 'TOKEN', 'pass', 'work/token');
-    expect(await removeMapping(TEST_TUCK_DIR, 'TOKEN')).toBe(true);
-    expect(await getMapping(TEST_TUCK_DIR, 'TOKEN')).toBeNull();
-  });
-
-  it('removeMapping returns false for a non-existent secret', async () => {
-    expect(await removeMapping(TEST_TUCK_DIR, 'GHOST')).toBe(false);
-  });
-
   it('listMappings returns the full mappings record', async () => {
     await setMapping(TEST_TUCK_DIR, 'A', 'pass', 'a');
     await setMapping(TEST_TUCK_DIR, 'B', 'pass', 'b');
     const all = await listMappings(TEST_TUCK_DIR);
     expect(Object.keys(all).sort()).toEqual(['A', 'B']);
-  });
-
-  it('importMappings adds new entries and skips existing without overwrite', async () => {
-    await setMapping(TEST_TUCK_DIR, 'EXISTING', 'pass', 'orig');
-
-    const { added, skipped } = await importMappings(TEST_TUCK_DIR, {
-      EXISTING: { pass: 'new' },
-      FRESH: { bitwarden: 'fresh-item' },
-    });
-
-    expect(added).toBe(1);
-    expect(skipped).toBe(1);
-    // Existing untouched.
-    expect((await getMapping(TEST_TUCK_DIR, 'EXISTING'))!.pass).toBe('orig');
-    expect((await getMapping(TEST_TUCK_DIR, 'FRESH'))!.bitwarden).toBe('fresh-item');
-  });
-
-  it('importMappings with overwrite merges into existing entries', async () => {
-    await setMapping(TEST_TUCK_DIR, 'EXISTING', 'pass', 'orig');
-
-    const { added, skipped } = await importMappings(
-      TEST_TUCK_DIR,
-      { EXISTING: { bitwarden: 'bw-item' } },
-      true
-    );
-
-    expect(added).toBe(1);
-    expect(skipped).toBe(0);
-    // Merge preserves pass and adds bitwarden.
-    expect(await getMapping(TEST_TUCK_DIR, 'EXISTING')).toEqual({
-      pass: 'orig',
-      bitwarden: 'bw-item',
-    });
   });
 
   it('saveMappings writes pretty JSON terminated by a newline', async () => {

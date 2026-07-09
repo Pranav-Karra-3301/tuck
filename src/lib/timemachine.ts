@@ -480,27 +480,6 @@ export const deleteSnapshot = async (snapshotId: string): Promise<void> => {
 };
 
 /**
- * Clean up old snapshots, keeping only the specified number
- */
-export const cleanOldSnapshots = async (keepCount: number): Promise<number> => {
-  const snapshots = await listSnapshots();
-
-  if (snapshots.length <= keepCount) {
-    return 0;
-  }
-
-  const toDelete = snapshots.slice(keepCount);
-  let deletedCount = 0;
-
-  for (const snapshot of toDelete) {
-    await deleteSnapshot(snapshot.id);
-    deletedCount++;
-  }
-
-  return deletedCount;
-};
-
-/**
  * Get the total size of all snapshots in bytes
  */
 export const getSnapshotsSize = async (): Promise<number> => {

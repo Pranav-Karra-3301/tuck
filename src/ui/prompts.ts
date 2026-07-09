@@ -278,9 +278,3 @@ export const prompts = {
     return (result as string).toLowerCase() === confirmWord.toLowerCase();
   },
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Utility Exports
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const isCancel = p.isCancel;

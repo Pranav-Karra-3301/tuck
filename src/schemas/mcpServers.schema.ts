@@ -109,8 +109,3 @@ export const mcpFleetFileSchema = z.object({
 
 export type McpFleetFileInput = z.input<typeof mcpFleetFileSchema>;
 export type McpFleetFileOutput = z.output<typeof mcpFleetFileSchema>;
-
-export const defaultMcpFleetFile: McpFleetFileOutput = {
-  version: '1',
-  servers: {},
-};

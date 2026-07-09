@@ -11,7 +11,6 @@ import logSymbols from 'log-symbols';
 // Layout Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const TERMINAL_WIDTH = 100;
 export const CONTENT_WIDTH = 80;
 export const DIVIDER_WIDTH = 60;
 export const INDENT = '  ';
@@ -48,8 +47,8 @@ export const colors = {
   white: chalk.white,
 };
 
-// Shorthand alias
-export const c = colors;
+// Shorthand alias (internal use within this module)
+const c = colors;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Icons (with automatic Unicode fallbacks via figures)
@@ -124,28 +123,14 @@ export const divider = (width = DIVIDER_WIDTH): string => c.muted('─'.repeat(w
 /** Create indentation */
 export const indent = (level = 1): string => INDENT.repeat(level);
 
-/** Print a blank line */
-export const spacer = (): void => {
-  console.log();
-};
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Text Formatting Helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
-/** Format a file path with brand color */
-export const formatPath = (path: string): string => c.brand(path);
 
 /** Format a count with proper pluralization: "3 files" */
 export const formatCount = (n: number, singular: string, plural?: string): string => {
   const word = n === 1 ? singular : plural || `${singular}s`;
   return `${c.bold(n.toString())} ${word}`;
-};
-
-/** Format a category with its icon */
-export const formatCategory = (category: string): string => {
-  const style = categoryStyles[category] || categoryStyles.misc;
-  return `${style.color(style.icon)} ${category}`;
 };
 
 /** Format a status string with appropriate color */
@@ -165,9 +150,6 @@ export const formatStatus = (status: string): string => {
 // ─────────────────────────────────────────────────────────────────────────────
 // Message Helpers (concise, consistent)
 // ─────────────────────────────────────────────────────────────────────────────
-
-/** Format a hint message (dimmed, for secondary info) */
-export const hint = (message: string): string => c.muted(message);
 
 /** Format a command suggestion */
 export const cmd = (command: string): string => c.brand(`'${command}'`);

@@ -771,61 +771,6 @@ Learn more: https://cli.github.com/
 `.trim();
 };
 
-export type AuthMethod = 'gh-cli' | 'ssh' | 'fine-grained-token' | 'classic-token';
-
-export interface AuthMethodInfo {
-  id: AuthMethod;
-  name: string;
-  description: string;
-  recommended: boolean;
-  instructions: string;
-}
-
-/**
- * Get all available authentication methods with instructions
- */
-export const getAuthMethods = (repoName?: string, email?: string): AuthMethodInfo[] => {
-  return [
-    {
-      id: 'gh-cli',
-      name: 'GitHub CLI (gh)',
-      description: 'Easiest option - automatic repo creation, no token management',
-      recommended: true,
-      instructions: getGitHubCLIInstallInstructions(),
-    },
-    {
-      id: 'ssh',
-      name: 'SSH Key',
-      description: 'Secure, no password needed after setup, works everywhere',
-      recommended: false,
-      instructions: getSSHKeyInstructions(email),
-    },
-    {
-      id: 'fine-grained-token',
-      name: 'Fine-grained Token',
-      description: 'Limited permissions, more secure, repository-specific',
-      recommended: false,
-      instructions: getFineGrainedTokenInstructions(repoName),
-    },
-    {
-      id: 'classic-token',
-      name: 'Classic Token',
-      description: 'Broader access, simpler setup, works with all repos',
-      recommended: false,
-      instructions: getClassicTokenInstructions(),
-    },
-  ];
-};
-
-/**
- * Check credential helper state without mutating global config.
- * Use configureGitCredentialHelperWithOptions({ allowGlobalConfigChange: true })
- * to explicitly opt into global helper configuration.
- */
-export const configureGitCredentialHelper = async (): Promise<void> => {
-  await configureGitCredentialHelperWithOptions();
-};
-
 interface ConfigureGitCredentialHelperOptions {
   allowGlobalConfigChange?: boolean;
 }
@@ -1075,43 +1020,6 @@ export const getStoredCredentialMetadata = async (): Promise<{
 };
 
 /**
- * Remove stored credentials (both from git helper and metadata)
- */
-export const removeStoredCredentials = async (): Promise<void> => {
-  const { unlink } = await import('fs/promises');
-  const { pathExists } = await import('./paths.js');
-
-  // Remove from git credential helper
-  try {
-    const { spawn } = await import('child_process');
-    await new Promise<void>((resolve) => {
-      const proc = spawn('git', ['credential', 'reject'], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-
-      // Note: git credential protocol requires input to be terminated with a blank line (\n\n)
-      proc.stdin.write('protocol=https\nhost=github.com\n\n');
-      proc.stdin.end();
-
-      proc.on('close', () => resolve());
-      proc.on('error', () => resolve());
-    });
-  } catch {
-    // Ignore errors
-  }
-
-  // Remove metadata file
-  const credentialsPath = await getCredentialsPath();
-  if (await pathExists(credentialsPath)) {
-    try {
-      await unlink(credentialsPath);
-    } catch {
-      // Ignore errors
-    }
-  }
-};
-
-/**
  * Test if stored credentials are still valid
  * Uses GitHub API /user endpoint which requires authentication
  */
@@ -1349,43 +1257,6 @@ export const diagnoseAuthIssue = async (): Promise<{
         ],
       };
   }
-};
-
-/**
- * Update stored credentials with a new token
- */
-export const updateStoredCredentials = async (
-  token: string,
-  type?: 'fine-grained' | 'classic'
-): Promise<void> => {
-  const metadata = await getStoredCredentialMetadata();
-  const username = metadata?.username;
-
-  if (!username) {
-    throw new Error(
-      'GitHub credential metadata is incomplete or corrupted (missing username). ' +
-      'Please remove the credential file and re-authenticate by running `tuck config` or `tuck init`.'
-    );
-  }
-
-  // Determine token type, preferring explicit type, then stored metadata, then detection
-  const detectedType = detectTokenType(token);
-  const tokenType = type ?? metadata?.type ?? detectedType;
-
-  // Ensure we have a valid token type (not 'unknown')
-  if (tokenType !== 'fine-grained' && tokenType !== 'classic') {
-    throw new Error(
-      'Could not determine GitHub token type. The token format is not recognized. ' +
-      'Please verify your token starts with "github_pat_" (fine-grained) or "ghp_" (classic), ' +
-      'or generate a new token at https://github.com/settings/tokens'
-    );
-  }
-
-  // Remove old credentials first
-  await removeStoredCredentials();
-
-  // Store new credentials
-  await storeGitHubCredentials(username, token, tokenType);
 };
 
 /**

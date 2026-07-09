@@ -61,13 +61,9 @@ import {
   restoreSnapshot,
   restoreFileFromSnapshot,
   deleteSnapshot,
-  cleanOldSnapshots,
   formatSnapshotSize,
   formatSnapshotDate,
 } from '../../src/lib/timemachine.js';
-import { getSnapshotsDir } from '../../src/lib/state.js';
-
-const TIMEMACHINE_DIR = getSnapshotsDir();
 
 describe('timemachine', () => {
   beforeEach(() => {
@@ -428,31 +424,6 @@ describe('timemachine', () => {
 
     it('should not throw for non-existent snapshot', async () => {
       await expect(deleteSnapshot('nonexistent')).resolves.not.toThrow();
-    });
-  });
-
-  // ============================================================================
-  // cleanOldSnapshots Tests
-  // ============================================================================
-
-  describe('cleanOldSnapshots', () => {
-    it('should return 0 if fewer snapshots than keep count', async () => {
-      vol.writeFileSync(join(TEST_HOME, '.zshrc'), 'content');
-      await createSnapshot([join(TEST_HOME, '.zshrc')], 'Only one');
-
-      const deleted = await cleanOldSnapshots(5);
-
-      expect(deleted).toBe(0);
-    });
-
-    it('should return number of deleted snapshots', async () => {
-      vol.writeFileSync(join(TEST_HOME, '.zshrc'), 'content');
-      await createSnapshot([join(TEST_HOME, '.zshrc')], 'Test');
-
-      // If we have 1 snapshot and keep 10, nothing is deleted
-      const deleted = await cleanOldSnapshots(10);
-
-      expect(deleted).toBeGreaterThanOrEqual(0);
     });
   });
 

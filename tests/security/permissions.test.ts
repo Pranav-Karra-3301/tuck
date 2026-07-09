@@ -2,9 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { vol } from 'memfs';
 import { join } from 'path';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
-import { isReadable, isWritable } from '../../src/lib/paths.js';
 import {
-  getFilePermissions,
   setFilePermissions,
   getFileInfo,
   copyFileOrDir,
@@ -20,20 +18,6 @@ describe('Permissions Security', () => {
 
   afterEach(() => {
     vol.reset();
-  });
-
-  it('detects readable and writable files correctly', async () => {
-    const filePath = join(TEST_HOME, 'rw.txt');
-    vol.writeFileSync(filePath, 'content');
-
-    expect(await isReadable(filePath)).toBe(true);
-    expect(await isWritable(filePath)).toBe(true);
-  });
-
-  it('reports non-existent files as not readable/writable', async () => {
-    const missing = join(TEST_HOME, 'missing.txt');
-    expect(await isReadable(missing)).toBe(false);
-    expect(await isWritable(missing)).toBe(false);
   });
 
   it('returns structured file metadata for valid files', async () => {
@@ -91,11 +75,11 @@ describe('Permissions Security', () => {
     // observable. If setFilePermissions were a no-op the final assertion would
     // still see 600 and fail, instead of passing vacuously.
     await setFilePermissions(filePath, '600');
-    const before = await getFilePermissions(filePath);
+    const before = (await getFileInfo(filePath)).permissions;
     expect(before).toBe('600');
 
     await expect(setFilePermissions(filePath, '644')).resolves.not.toThrow();
-    const after = await getFilePermissions(filePath);
+    const after = (await getFileInfo(filePath)).permissions;
     expect(after).toBe('644');
   });
 });

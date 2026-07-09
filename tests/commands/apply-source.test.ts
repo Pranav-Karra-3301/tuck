@@ -6,32 +6,7 @@
  * provider:owner/repo, full git URLs, and bare owner/repo.
  */
 import { describe, it, expect } from 'vitest';
-import { classifyApplySource, isTarballPath } from '../../src/commands/apply.js';
-
-describe('classifyApplySource', () => {
-  it('detects a provider-prefixed source', () => {
-    expect(classifyApplySource('gitlab:user/dots', false)).toBe('provider-prefixed');
-  });
-
-  it('treats an existing local path as local (highest precedence)', () => {
-    // Even though "./dots" has no slash-owner form, an existing path wins.
-    expect(classifyApplySource('/home/me/dots', true)).toBe('local');
-    expect(classifyApplySource('user/dots', true)).toBe('local');
-  });
-
-  it('detects a full git URL when no local path exists', () => {
-    expect(classifyApplySource('https://example.com/u/dots.git', false)).toBe('git-url');
-    expect(classifyApplySource('git@example.com:u/dots.git', false)).toBe('git-url');
-  });
-
-  it('detects a bare owner/repo identifier', () => {
-    expect(classifyApplySource('user/dotfiles', false)).toBe('repo-id');
-  });
-
-  it('falls back to username for a bare token', () => {
-    expect(classifyApplySource('someuser', false)).toBe('username');
-  });
-});
+import { isTarballPath } from '../../src/commands/apply.js';
 
 describe('isTarballPath', () => {
   it('recognizes tar archives', () => {

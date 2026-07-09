@@ -606,45 +606,6 @@ export const ensureDirectory = async (dirpath: string): Promise<void> => {
   await ensureDir(expandedPath);
 };
 
-export const moveFile = async (
-  source: string,
-  destination: string,
-  options?: { overwrite?: boolean }
-): Promise<void> => {
-  await copyFileOrDir(source, destination, options);
-  await deleteFileOrDir(source);
-};
-
-export const hasFileChanged = async (
-  file1: string,
-  file2: string
-): Promise<boolean> => {
-  const expandedFile1 = expandPath(file1);
-  const expandedFile2 = expandPath(file2);
-
-  // If either doesn't exist, they're different
-  if (!(await pathExists(expandedFile1)) || !(await pathExists(expandedFile2))) {
-    return true;
-  }
-
-  const checksum1 = await getFileChecksum(expandedFile1);
-  const checksum2 = await getFileChecksum(expandedFile2);
-
-  return checksum1 !== checksum2;
-};
-
-export const getFilePermissions = async (filepath: string): Promise<string> => {
-  // On Windows, return a sensible default since Unix permissions don't apply
-  if (IS_WINDOWS) {
-    const expandedPath = expandPath(filepath);
-    const stats = await stat(expandedPath);
-    return stats.isDirectory() ? '755' : '644';
-  }
-  const expandedPath = expandPath(filepath);
-  const stats = await stat(expandedPath);
-  return (stats.mode & 0o777).toString(8).padStart(3, '0');
-};
-
 export const setFilePermissions = async (filepath: string, mode: string): Promise<void> => {
   // On Windows, chmod is limited and Unix-style permissions don't apply
   // Skip permission setting gracefully

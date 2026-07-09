@@ -10,11 +10,8 @@ import { join } from 'path';
 import {
   getTuckignorePath,
   loadTuckignore,
-  saveTuckignore,
   addToTuckignore,
   isIgnored,
-  removeFromTuckignore,
-  getIgnoredPaths,
 } from '../../src/lib/tuckignore.js';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
 
@@ -86,43 +83,6 @@ describe('tuckignore', () => {
       const ignored = await loadTuckignore(TEST_TUCK_DIR);
 
       expect(ignored.has('~/.secret-file')).toBe(true);
-    });
-  });
-
-  // ============================================================================
-  // saveTuckignore Tests
-  // ============================================================================
-
-  describe('saveTuckignore', () => {
-    it('should save paths to .tuckignore file', async () => {
-      await saveTuckignore(TEST_TUCK_DIR, ['~/.secret-file', '~/.docker/config.json']);
-
-      const ignorePath = join(TEST_TUCK_DIR, '.tuckignore');
-      const content = vol.readFileSync(ignorePath, 'utf-8') as string;
-
-      expect(content).toContain('~/.docker/config.json');
-      expect(content).toContain('~/.secret-file');
-    });
-
-    it('should sort paths alphabetically', async () => {
-      await saveTuckignore(TEST_TUCK_DIR, ['~/.zshrc', '~/.bashrc', '~/.config']);
-
-      const ignorePath = join(TEST_TUCK_DIR, '.tuckignore');
-      const content = vol.readFileSync(ignorePath, 'utf-8') as string;
-      const lines = content.split('\n').filter((l) => l && !l.startsWith('#'));
-
-      expect(lines[0]).toBe('~/.bashrc');
-      expect(lines[1]).toBe('~/.config');
-      expect(lines[2]).toBe('~/.zshrc');
-    });
-
-    it('should include header comments', async () => {
-      await saveTuckignore(TEST_TUCK_DIR, ['~/.secret']);
-
-      const ignorePath = join(TEST_TUCK_DIR, '.tuckignore');
-      const content = vol.readFileSync(ignorePath, 'utf-8') as string;
-
-      expect(content).toContain('# .tuckignore');
     });
   });
 
@@ -219,56 +179,4 @@ describe('tuckignore', () => {
     });
   });
 
-  // ============================================================================
-  // removeFromTuckignore Tests
-  // ============================================================================
-
-  describe('removeFromTuckignore', () => {
-    it('should remove path from .tuckignore', async () => {
-      const ignorePath = join(TEST_TUCK_DIR, '.tuckignore');
-      vol.writeFileSync(ignorePath, '~/.to-remove\n~/.to-keep\n');
-
-      await removeFromTuckignore(TEST_TUCK_DIR, '~/.to-remove');
-
-      const ignored = await loadTuckignore(TEST_TUCK_DIR);
-      expect(ignored.has('~/.to-remove')).toBe(false);
-      expect(ignored.has('~/.to-keep')).toBe(true);
-    });
-
-    it('should do nothing when path is not in file', async () => {
-      const ignorePath = join(TEST_TUCK_DIR, '.tuckignore');
-      vol.writeFileSync(ignorePath, '~/.existing\n');
-
-      await removeFromTuckignore(TEST_TUCK_DIR, '~/.not-in-file');
-
-      const ignored = await loadTuckignore(TEST_TUCK_DIR);
-      expect(ignored.size).toBe(1);
-    });
-
-    it('should do nothing when .tuckignore does not exist', async () => {
-      await expect(
-        removeFromTuckignore(TEST_TUCK_DIR, '~/.anything')
-      ).resolves.not.toThrow();
-    });
-  });
-
-  // ============================================================================
-  // getIgnoredPaths Tests
-  // ============================================================================
-
-  describe('getIgnoredPaths', () => {
-    it('should return sorted array of ignored paths', async () => {
-      const ignorePath = join(TEST_TUCK_DIR, '.tuckignore');
-      vol.writeFileSync(ignorePath, '~/.zshrc\n~/.bashrc\n~/.config\n');
-
-      const paths = await getIgnoredPaths(TEST_TUCK_DIR);
-
-      expect(paths).toEqual(['~/.bashrc', '~/.config', '~/.zshrc']);
-    });
-
-    it('should return empty array when no .tuckignore exists', async () => {
-      const paths = await getIgnoredPaths(TEST_TUCK_DIR);
-      expect(paths).toEqual([]);
-    });
-  });
 });

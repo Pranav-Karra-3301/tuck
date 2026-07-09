@@ -346,7 +346,6 @@ const initFromScratch = async (
 
 interface GitHubSetupResult {
   remoteUrl: string | null;
-  pushed: boolean;
 }
 
 /**
@@ -422,7 +421,7 @@ const setupAlternativeAuth = async (tuckDir: string): Promise<GitHubSetupResult>
   const authMethod = await prompts.select('Choose an authentication method:', authOptions);
 
   if (authMethod === 'skip') {
-    return { remoteUrl: null, pushed: false };
+    return { remoteUrl: null };
   }
 
   if (authMethod === 'gh-cli') {
@@ -435,7 +434,7 @@ const setupAlternativeAuth = async (tuckDir: string): Promise<GitHubSetupResult>
 
     const continueWithToken = await prompts.confirm('Set up token authentication instead?', true);
     if (!continueWithToken) {
-      return { remoteUrl: null, pushed: false };
+      return { remoteUrl: null };
     }
     // Fall through to token setup
     return await setupTokenAuth(tuckDir);
@@ -483,7 +482,7 @@ const setupAlternativeAuth = async (tuckDir: string): Promise<GitHubSetupResult>
         }
       }
     }
-    return { remoteUrl: null, pushed: false };
+    return { remoteUrl: null };
   }
 
   if (authMethod === 'fine-grained' || authMethod === 'classic') {
@@ -493,7 +492,7 @@ const setupAlternativeAuth = async (tuckDir: string): Promise<GitHubSetupResult>
     );
   }
 
-  return { remoteUrl: null, pushed: false };
+  return { remoteUrl: null };
 };
 
 /**
@@ -545,13 +544,13 @@ const setupTokenAuth = async (
 
   if (!token) {
     prompts.log.warning('No token provided');
-    return { remoteUrl: null, pushed: false };
+    return { remoteUrl: null };
   }
 
   // Basic token format validation
   if (token.length < MIN_GITHUB_TOKEN_LENGTH) {
     prompts.log.error('Invalid token: Token appears too short');
-    return { remoteUrl: null, pushed: false };
+    return { remoteUrl: null };
   }
 
   // Check if token starts with expected GitHub token prefixes
@@ -574,7 +573,7 @@ const setupTokenAuth = async (
         'Aborting setup to avoid storing a value that may not be a GitHub token. ' +
           'Please generate a GitHub personal access token and try again.'
       );
-      return { remoteUrl: null, pushed: false };
+      return { remoteUrl: null };
     }
   }
 
@@ -660,7 +659,7 @@ const promptForManualRepoUrl = async (
   const hasRepo = await prompts.confirm('Have you created the repository?');
   if (!hasRepo) {
     prompts.log.info('Create a repository first, then run `tuck init` again');
-    return { remoteUrl: null, pushed: false };
+    return { remoteUrl: null };
   }
 
   const repoUrl = await prompts.text('Paste the repository URL:', {
@@ -672,12 +671,12 @@ const promptForManualRepoUrl = async (
   try {
     await addRemote(tuckDir, 'origin', repoUrl);
     prompts.log.success('Remote configured');
-    return { remoteUrl: repoUrl, pushed: false };
+    return { remoteUrl: repoUrl };
   } catch (error) {
     prompts.log.error(
       `Failed to add remote: ${error instanceof Error ? error.message : String(error)}`
     );
-    return { remoteUrl: null, pushed: false };
+    return { remoteUrl: null };
   }
 };
 
@@ -712,7 +711,7 @@ const setupGitHubRepo = async (tuckDir: string): Promise<GitHubSetupResult> => {
     ]);
 
     if (authChoice === 'skip') {
-      return { remoteUrl: null, pushed: false };
+      return { remoteUrl: null };
     }
 
     if (authChoice === 'alternative') {
@@ -740,7 +739,7 @@ const setupGitHubRepo = async (tuckDir: string): Promise<GitHubSetupResult> => {
       if (useAlt) {
         return await setupAlternativeAuth(tuckDir);
       }
-      return { remoteUrl: null, pushed: false };
+      return { remoteUrl: null };
     }
   }
 
@@ -752,7 +751,7 @@ const setupGitHubRepo = async (tuckDir: string): Promise<GitHubSetupResult> => {
   const createGhRepo = await prompts.confirm('Create a GitHub repository automatically?', true);
 
   if (!createGhRepo) {
-    return { remoteUrl: null, pushed: false };
+    return { remoteUrl: null };
   }
 
   // Ask for repo name
@@ -791,7 +790,7 @@ const setupGitHubRepo = async (tuckDir: string): Promise<GitHubSetupResult> => {
     prompts.log.error(
       `Failed to create repository: ${error instanceof Error ? error.message : String(error)}`
     );
-    return { remoteUrl: null, pushed: false };
+    return { remoteUrl: null };
   }
 
   // Get the remote URL in preferred format
@@ -823,16 +822,16 @@ const setupGitHubRepo = async (tuckDir: string): Promise<GitHubSetupResult> => {
         'Success'
       );
 
-      return { remoteUrl, pushed: true };
+      return { remoteUrl };
     } catch (error) {
       prompts.log.error(
         `Failed to push: ${error instanceof Error ? error.message : String(error)}`
       );
-      return { remoteUrl, pushed: false };
+      return { remoteUrl };
     }
   }
 
-  return { remoteUrl, pushed: false };
+  return { remoteUrl };
 };
 
 type RepositoryAnalysis =
@@ -954,8 +953,6 @@ const analyzeRepository = async (repoDir: string): Promise<RepositoryAnalysis> =
 interface ImportResult {
   success: boolean;
   filesInRepo: number; // Files imported to ~/.tuck
-  filesApplied: number; // Files applied to system (0 if user declined)
-  remoteUrl?: string;
 }
 
 /**
@@ -1025,8 +1022,8 @@ const importExistingRepo = async (
       'Next Steps'
     );
 
-    // filesApplied is always 0 - user must explicitly apply via tuck apply/restore
-    return { success: true, filesInRepo: fileCount, filesApplied: 0, remoteUrl };
+    // Files are imported to ~/.tuck only; the user must explicitly apply via tuck apply/restore.
+    return { success: true, filesInRepo: fileCount };
   }
 
   if (analysis.type === 'plain-dotfiles') {
@@ -1137,7 +1134,7 @@ const importExistingRepo = async (
 
     // For plain-dotfiles, importedCount represents files copied to ~/.tuck
     // No files are applied to system in this flow (user needs to add them manually)
-    return { success: true, filesInRepo: importedCount, filesApplied: 0, remoteUrl };
+    return { success: true, filesInRepo: importedCount };
   }
 
   // Scenario C: Messed up repository
@@ -1163,7 +1160,7 @@ const importExistingRepo = async (
   ]);
 
   if (action === 'cancel') {
-    return { success: false, filesInRepo: 0, filesApplied: 0 };
+    return { success: false, filesInRepo: 0 };
   }
 
   // Initialize tuck
@@ -1196,7 +1193,7 @@ const importExistingRepo = async (
   }
 
   // For messed-up repos, no files are imported or applied
-  return { success: true, filesInRepo: 0, filesApplied: 0, remoteUrl };
+  return { success: true, filesInRepo: 0 };
 };
 
 const initFromRemote = async (tuckDir: string, remoteUrl: string): Promise<void> => {
@@ -1699,13 +1696,9 @@ const runInteractiveInit = async (): Promise<void> => {
               // Always show that repository was imported to ~/.tuck
               if (result.filesInRepo > 0) {
                 prompts.log.success(`Repository imported to ~/.tuck (${result.filesInRepo} files)`);
-                if (result.filesApplied > 0) {
-                  prompts.log.info(`Applied ${result.filesApplied} files to your system`);
-                } else if (result.filesInRepo > 0) {
-                  prompts.log.info(
-                    'Files are ready in ~/.tuck. Run "tuck restore" to apply them to your system'
-                  );
-                }
+                prompts.log.info(
+                  'Files are ready in ~/.tuck. Run "tuck restore" to apply them to your system'
+                );
               } else {
                 prompts.log.success(`Tuck initialized with ${existingRepoName} as remote`);
               }

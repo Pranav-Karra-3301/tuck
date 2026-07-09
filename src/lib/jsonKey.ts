@@ -167,36 +167,6 @@ const getValueAtPath = (
 };
 
 /**
- * Deep-merge `patch` onto `base`. When BOTH are plain objects the merge is
- * recursive and key-wise (base keys absent from patch are preserved); otherwise
- * `patch` replaces `base` wholesale. Arrays are treated as opaque values and
- * replaced, never element-merged (element identity is undefined for config
- * arrays, so a union/index-merge would corrupt them).
- *
- * NOTE: this is a standalone utility. The subtree write-back
- * ({@link mergeSubtreeIntoLive}) deliberately does NOT deep-merge — it replaces
- * the tracked value at its path (see the module header) — so this helper is not
- * on the write-back path. It is retained as a general JSON merge primitive.
- */
-export const deepMergeJson = (base: JsonValue, patch: JsonValue): JsonValue => {
-  if (isPlainObject(base) && isPlainObject(patch)) {
-    // Null-prototype accumulator: a legitimate "__proto__" data key parsed
-    // from JSON must never hit Object.prototype through plain assignment.
-    const out: Record<string, JsonValue> = Object.create(null) as Record<string, JsonValue>;
-    for (const key of Object.keys(base)) {
-      out[key] = base[key];
-    }
-    for (const key of Object.keys(patch)) {
-      out[key] = Object.prototype.hasOwnProperty.call(base, key)
-        ? deepMergeJson(base[key], patch[key])
-        : patch[key];
-    }
-    return out;
-  }
-  return patch;
-};
-
-/**
  * Extract the subtree at `key` from a JSON file's text and return it as
  * canonical JSON (the exact bytes stored as the repo copy).
  *

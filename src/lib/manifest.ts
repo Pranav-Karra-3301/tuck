@@ -174,14 +174,6 @@ export const removeFileFromManifest = async (tuckDir: string, id: string): Promi
   await saveManifest(manifest, tuckDir);
 };
 
-export const getTrackedFile = async (
-  tuckDir: string,
-  id: string
-): Promise<TrackedFileOutput | null> => {
-  const manifest = await loadManifest(tuckDir);
-  return manifest.files[id] || null;
-};
-
 export const getTrackedFileBySource = async (
   tuckDir: string,
   source: string
@@ -232,41 +224,9 @@ export const getAllTrackedFiles = async (
   return manifest.files;
 };
 
-export const getTrackedFilesByCategory = async (
-  tuckDir: string,
-  category: string
-): Promise<Record<string, TrackedFileOutput>> => {
-  const manifest = await loadManifest(tuckDir);
-  const filtered: Record<string, TrackedFileOutput> = {};
-
-  for (const [id, file] of Object.entries(manifest.files)) {
-    if (file.category === category) {
-      filtered[id] = file;
-    }
-  }
-
-  return filtered;
-};
-
 export const isFileTracked = async (tuckDir: string, source: string): Promise<boolean> => {
   const result = await getTrackedFileBySource(tuckDir, source);
   return result !== null;
-};
-
-export const getFileCount = async (tuckDir: string): Promise<number> => {
-  const manifest = await loadManifest(tuckDir);
-  return Object.keys(manifest.files).length;
-};
-
-export const getCategories = async (tuckDir: string): Promise<string[]> => {
-  const manifest = await loadManifest(tuckDir);
-  const categories = new Set<string>();
-
-  for (const file of Object.values(manifest.files)) {
-    categories.add(file.category);
-  }
-
-  return Array.from(categories).sort();
 };
 
 export const ensureBundle = async (
@@ -344,29 +304,6 @@ export const assignFileToBundle = async (
     modified: new Date().toISOString(),
   };
   await saveManifest(manifest, tuckDir);
-};
-
-export const getFilesByBundle = async (
-  tuckDir: string,
-  bundle: string
-): Promise<Record<string, TrackedFileOutput>> => {
-  const manifest = await loadManifest(tuckDir);
-  const filtered: Record<string, TrackedFileOutput> = {};
-
-  for (const [id, file] of Object.entries(manifest.files)) {
-    if (file.bundle === bundle) {
-      filtered[id] = file;
-    }
-  }
-
-  return filtered;
-};
-
-export const getBundles = async (
-  tuckDir: string
-): Promise<Record<string, { description?: string; created: string }>> => {
-  const manifest = await loadManifest(tuckDir);
-  return manifest.bundles;
 };
 
 export const clearManifestCache = (): void => {

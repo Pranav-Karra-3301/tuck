@@ -13,7 +13,6 @@ import {
   removeProfile,
   tagFile,
   untagFile,
-  getFilesByProfile,
   listProfileCounts,
   countUniversalFiles,
   bindProfile,
@@ -159,12 +158,6 @@ describe('profile registry helpers', () => {
     const res = await untagFile(TEST_TUCK_DIR, 'workgit', 'work');
     expect(res.removed).toBe(true);
     expect((await loadManifest(TEST_TUCK_DIR)).files.workgit.tags).toEqual([]);
-  });
-
-  it('getFilesByProfile returns only explicitly tagged files', async () => {
-    await tagFile(TEST_TUCK_DIR, 'workgit', 'work');
-    const files = await getFilesByProfile(TEST_TUCK_DIR, 'work');
-    expect(Object.keys(files)).toEqual(['workgit']);
   });
 
   it('removeProfile strips the tag from every file', async () => {

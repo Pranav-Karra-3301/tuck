@@ -16,7 +16,7 @@
 
 import { Command } from 'commander';
 import { join, relative, resolve, isAbsolute, basename, dirname, posix } from 'path';
-import { readFile, writeFile, mkdir, readdir, stat, rm } from 'fs/promises';
+import { readFile, writeFile, mkdir, rm } from 'fs/promises';
 import { homedir } from 'os';
 import { z } from 'zod';
 import {
@@ -29,7 +29,7 @@ import {
   validatePathWithinRoot,
 } from '../lib/paths.js';
 import { resolveWriteTarget } from '../lib/writeContext.js';
-import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
+import { loadManifest } from '../lib/manifest.js';
 import {
   copyFileOrDir,
   getFileChecksum,
@@ -588,11 +588,6 @@ export const getContextEntries = async (
   const manifest = await loadContextManifest(tuckDir);
   return manifest.entries;
 };
-
-// Suppress unused warnings until these are wired into restore/apply.
-void getAllTrackedFiles;
-void stat;
-void readdir;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Command wiring

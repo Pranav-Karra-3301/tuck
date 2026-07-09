@@ -248,13 +248,3 @@ export const shouldExcludeFromBin = async (path: string): Promise<boolean> => {
   return await isBinaryExecutable(expandedPath);
 };
 
-/**
- * Get a human-readable description of why a file is being excluded
- */
-export const getBinaryExclusionReason = async (path: string): Promise<string | null> => {
-  if (await shouldExcludeFromBin(path)) {
-    return 'Binary executable in bin directory';
-  }
-  return null;
-};
-

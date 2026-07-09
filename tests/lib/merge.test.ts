@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isShellFile, isPowerShellFile } from '../../src/lib/merge.js';
+import { isShellFile } from '../../src/lib/merge.js';
 
 describe('merge', () => {
   describe('isShellFile', () => {
@@ -66,37 +66,6 @@ describe('merge', () => {
         // Only profile.ps1 and Microsoft.PowerShell_profile.ps1 are shell files
         expect(isShellFile('random-script.ps1')).toBe(false);
       });
-    });
-  });
-
-  describe('isPowerShellFile', () => {
-    it('should detect .ps1 files', () => {
-      expect(isPowerShellFile('script.ps1')).toBe(true);
-      expect(isPowerShellFile('Microsoft.PowerShell_profile.ps1')).toBe(true);
-      expect(isPowerShellFile('C:\\Users\\test\\script.ps1')).toBe(true);
-    });
-
-    it('should detect .psm1 module files', () => {
-      expect(isPowerShellFile('module.psm1')).toBe(true);
-      expect(isPowerShellFile('C:\\Modules\\MyModule.psm1')).toBe(true);
-    });
-
-    it('should detect .psd1 data files', () => {
-      expect(isPowerShellFile('manifest.psd1')).toBe(true);
-      expect(isPowerShellFile('C:\\Modules\\MyModule.psd1')).toBe(true);
-    });
-
-    it('should be case-insensitive', () => {
-      expect(isPowerShellFile('SCRIPT.PS1')).toBe(true);
-      expect(isPowerShellFile('Module.PSM1')).toBe(true);
-      expect(isPowerShellFile('Data.PSD1')).toBe(true);
-    });
-
-    it('should not detect non-PowerShell files', () => {
-      expect(isPowerShellFile('script.sh')).toBe(false);
-      expect(isPowerShellFile('script.bash')).toBe(false);
-      expect(isPowerShellFile('config.json')).toBe(false);
-      expect(isPowerShellFile('.zshrc')).toBe(false);
     });
   });
 });

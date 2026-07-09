@@ -7,11 +7,10 @@
 
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { access } from 'fs/promises';
 import type { SecretBackend, SecretReference, PassConfig, SecretInfo } from './types.js';
 import { assertSafeBackendPath } from './types.js';
 import { SecretBackendError } from '../../errors.js';
-import { expandPath } from '../paths.js';
+import { expandPath, pathExists } from '../paths.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -36,18 +35,6 @@ const assertSafeGpgId = (gpgId: string): void => {
         'It must contain no whitespace and must not begin with a dash.',
       ]
     );
-  }
-};
-
-/**
- * Check if a file exists asynchronously
- */
-const fileExists = async (path: string): Promise<boolean> => {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
   }
 };
 
@@ -95,7 +82,7 @@ export class PassBackend implements SecretBackend {
     // 1. The password store exists
     // 2. GPG can decrypt (which we'll find out when we try)
     const gpgIdPath = `${this.storePath}/.gpg-id`;
-    return fileExists(gpgIdPath);
+    return pathExists(gpgIdPath);
   }
 
   /**

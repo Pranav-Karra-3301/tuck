@@ -29,4 +29,3 @@ export const snapshotMetadataSchema = z.object({
 
 export type SnapshotFileInput = z.input<typeof snapshotFileSchema>;
 export type SnapshotMetadataInput = z.input<typeof snapshotMetadataSchema>;
-export type SnapshotMetadataOutput = z.output<typeof snapshotMetadataSchema>;

@@ -116,13 +116,13 @@ describe('setupRemoteForProvider', () => {
     hasRemoteMock.mockResolvedValue(false);
   });
 
-  it('returns {remoteUrl:null, pushed:false} for the local provider without prompting', async () => {
+  it('returns {remoteUrl:null} for the local provider without prompting', async () => {
     const { setupRemoteForProvider } = await import('../../src/lib/remoteSetup.js');
     const local = makeProvider('local', { requiresRemote: false });
 
     const result = await setupRemoteForProvider(local, '/test-home/.tuck');
 
-    expect(result).toEqual({ remoteUrl: null, pushed: false });
+    expect(result).toEqual({ remoteUrl: null });
     // Local mode must not touch git remotes or prompt for a URL.
     expect(addRemoteMock).not.toHaveBeenCalled();
     expect(upsertRemoteMock).not.toHaveBeenCalled();
@@ -165,7 +165,6 @@ describe('setupRemoteForProvider', () => {
     );
 
     expect(result.remoteUrl).toBe(gitlabUrl);
-    expect(result.pushed).toBe(false);
   });
 
   it('shows the provider-specific setup instructions, not GitHub instructions', async () => {
@@ -181,14 +180,14 @@ describe('setupRemoteForProvider', () => {
     expect(noteMock).toHaveBeenCalledWith('setup instructions for gitlab', expect.any(String));
   });
 
-  it('returns {remoteUrl:null, pushed:false} when the user has not created the repo', async () => {
+  it('returns {remoteUrl:null} when the user has not created the repo', async () => {
     const gitlab = manualProvider('gitlab');
     confirmMock.mockResolvedValue(false); // "Have you created the repository?" -> No
 
     const { setupRemoteForProvider } = await import('../../src/lib/remoteSetup.js');
     const result = await setupRemoteForProvider(gitlab, '/test-home/.tuck');
 
-    expect(result).toEqual({ remoteUrl: null, pushed: false });
+    expect(result).toEqual({ remoteUrl: null });
     expect(addRemoteMock).not.toHaveBeenCalled();
     expect(upsertRemoteMock).not.toHaveBeenCalled();
   });
@@ -264,7 +263,6 @@ describe('setupRemoteForProvider', () => {
 
     expect(result).toEqual({
       remoteUrl: 'git@gitlab.com:me/dotfiles.git',
-      pushed: false,
     });
   });
 

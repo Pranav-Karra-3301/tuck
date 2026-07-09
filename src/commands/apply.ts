@@ -450,23 +450,8 @@ const printApplyDiffSummary = (summary: ApplyDiffSummary): void => {
   logger.info(formatApplyDiffLine(summary));
 };
 
-export type ApplySourceKind = 'provider-prefixed' | 'git-url' | 'local' | 'repo-id' | 'username';
-
 /** True for tar archives we know how to extract. */
 export const isTarballPath = (p: string): boolean => /\.(tar\.gz|tgz|tar)$/i.test(p);
-
-/**
- * Classify an `apply <source>` argument. An existing LOCAL path wins over the
- * URL/owner-repo/username interpretations (after the explicit provider: prefix),
- * so tuck can apply from a directory or tarball with no remote — and no GitHub.
- */
-export const classifyApplySource = (source: string, localExists: boolean): ApplySourceKind => {
-  if (/^(github|gitlab|custom):/u.test(source)) return 'provider-prefixed';
-  if (localExists) return 'local';
-  if (source.includes('://') || source.startsWith('git@')) return 'git-url';
-  if (source.includes('/')) return 'repo-id';
-  return 'username';
-};
 
 const buildProviderCloneUrl = (
   providerMode: Extract<ProviderMode, 'github' | 'gitlab'>,

@@ -125,13 +125,11 @@ const resolvePreset = async (nameOrPath: string): Promise<{ path: string; preset
   ]);
 };
 
-const renderIfTemplate = async (
+const renderTemplateFile = async (
   src: string,
-  isTemplate: boolean | undefined,
   vars: Record<string, string>
-): Promise<string | Buffer> => {
+): Promise<string> => {
   const buf = await readFile(src);
-  if (!isTemplate) return buf;
   return renderTemplate(buf.toString('utf-8'), vars);
 };
 
@@ -308,8 +306,8 @@ export const applyAction = async (
     }
     await mkdir(dirname(e.target), { recursive: true });
     if (e.template) {
-      const rendered = await renderIfTemplate(e.source, true, vars);
-      await writeFile(e.target, rendered as string, 'utf-8');
+      const rendered = await renderTemplateFile(e.source, vars);
+      await writeFile(e.target, rendered, 'utf-8');
     } else {
       await copyFileOrDir(e.source, e.target, { overwrite: true });
     }

@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   parseJsonKeyPath,
   canonicalJson,
-  deepMergeJson,
   extractSubtree,
   hasSubtree,
   mergeSubtreeIntoLive,
@@ -47,34 +46,6 @@ describe('canonicalJson', () => {
 
   it('ends with a trailing newline', () => {
     expect(canonicalJson({ a: 1 }).endsWith('}\n')).toBe(true);
-  });
-});
-
-describe('deepMergeJson', () => {
-  it('recursively merges plain objects, preserving base keys absent from patch', () => {
-    const base = { a: 1, nested: { keep: true, override: 'old' } };
-    const patch = { b: 2, nested: { override: 'new' } };
-    expect(deepMergeJson(base, patch)).toEqual({
-      a: 1,
-      b: 2,
-      nested: { keep: true, override: 'new' },
-    });
-  });
-
-  it('replaces arrays wholesale rather than element-merging', () => {
-    expect(deepMergeJson({ list: [1, 2, 3] }, { list: [9] })).toEqual({ list: [9] });
-  });
-
-  it('replaces a scalar base with a patch object', () => {
-    expect(deepMergeJson(5, { a: 1 })).toEqual({ a: 1 });
-  });
-
-  it('does not mutate its inputs', () => {
-    const base = { nested: { a: 1 } };
-    const patch = { nested: { b: 2 } };
-    deepMergeJson(base, patch);
-    expect(base).toEqual({ nested: { a: 1 } });
-    expect(patch).toEqual({ nested: { b: 2 } });
   });
 });
 

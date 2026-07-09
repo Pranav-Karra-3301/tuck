@@ -23,8 +23,6 @@ import type { GitProvider } from './providers/types.js';
 export interface RemoteSetupResult {
   /** The configured remote URL, or null if no remote was set up. */
   remoteUrl: string | null;
-  /** Whether an initial push was performed (always false here; push is handled by the caller). */
-  pushed: boolean;
 }
 
 export interface SetupRemoteOptions {
@@ -115,7 +113,7 @@ const tryAutoCreate = async (
     const url = await provider.getPreferredRepoUrl(repo);
     await upsertRemote(tuckDir, 'origin', url);
     prompts.log.success(`Created ${provider.displayName} repository`);
-    return { remoteUrl: url, pushed: false };
+    return { remoteUrl: url };
   } catch (error) {
     // Auto-create failed: warn and fall back to the manual flow (do not throw).
     prompts.log.warning(
@@ -132,7 +130,7 @@ const tryAutoCreate = async (
  *
  * Behavior by provider:
  * - `local` (or any provider where `requiresRemote === false`): no-op,
- *   returns `{ remoteUrl: null, pushed: false }`.
+ *   returns `{ remoteUrl: null }`.
  * - `github` / `gitlab`: if the provider's CLI is installed AND authenticated,
  *   offers to create the repo automatically (provider-neutral — gh and glab use
  *   the identical code path). On decline/failure, falls back to the manual flow.
@@ -149,7 +147,7 @@ export const setupRemoteForProvider = async (
 ): Promise<RemoteSetupResult> => {
   // Local mode (or any provider that doesn't require a remote): nothing to do.
   if (!provider.requiresRemote || provider.mode === 'local') {
-    return { remoteUrl: null, pushed: false };
+    return { remoteUrl: null };
   }
 
   const repoName = opts.repoName ?? 'dotfiles';
@@ -171,7 +169,7 @@ export const setupRemoteForProvider = async (
 
   const created = await prompts.confirm('Have you created the repository?', true);
   if (!created) {
-    return { remoteUrl: null, pushed: false };
+    return { remoteUrl: null };
   }
 
   // Prefer an SSH example for providers that can build one; gracefully fall
@@ -189,7 +187,7 @@ export const setupRemoteForProvider = async (
   });
 
   if (!url) {
-    return { remoteUrl: null, pushed: false };
+    return { remoteUrl: null };
   }
 
   try {
@@ -197,11 +195,11 @@ export const setupRemoteForProvider = async (
     // repo doesn't hit the remove-then-add race.
     await upsertRemote(tuckDir, 'origin', url);
     prompts.log.success('Remote added successfully');
-    return { remoteUrl: url, pushed: false };
+    return { remoteUrl: url };
   } catch (error) {
     prompts.log.error(
       `Failed to add remote: ${error instanceof Error ? error.message : String(error)}`
     );
-    return { remoteUrl: null, pushed: false };
+    return { remoteUrl: null };
   }
 };

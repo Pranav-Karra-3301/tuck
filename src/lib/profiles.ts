@@ -216,21 +216,6 @@ export const untagFile = async (
   return { removed: true };
 };
 
-/** All files that explicitly carry `profile` (universal files excluded). */
-export const getFilesByProfile = async (
-  tuckDir: string,
-  profile: string
-): Promise<Record<string, TrackedFileOutput>> => {
-  const manifest = await loadManifest(tuckDir);
-  const filtered: Record<string, TrackedFileOutput> = {};
-  for (const [id, file] of Object.entries(manifest.files)) {
-    if ((file.tags ?? []).includes(profile)) {
-      filtered[id] = file;
-    }
-  }
-  return filtered;
-};
-
 export interface ProfileCounts {
   name: string;
   description?: string;

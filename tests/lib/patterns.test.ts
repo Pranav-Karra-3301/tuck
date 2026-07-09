@@ -11,13 +11,17 @@ import {
   API_TOKEN_PATTERNS,
   PRIVATE_KEY_PATTERNS,
   GENERIC_PATTERNS,
-  getPatternById,
-  getPatternsBySeverity,
   getPatternsAboveSeverity,
   createCustomPattern,
   shouldSkipFile,
   BINARY_EXTENSIONS,
+  type SecretPattern,
 } from '../../src/lib/secrets/patterns.js';
+
+// Local lookup helper: the tests below exercise individual patterns' regexes by
+// id. Production code no longer needs an id lookup, so this stays in the test.
+const getPatternById = (id: string): SecretPattern | undefined =>
+  ALL_SECRET_PATTERNS.find((p) => p.id === id);
 
 describe('patterns', () => {
   // ============================================================================
@@ -247,27 +251,6 @@ b3BlbnNzaC1rZXktdjEAAAAA
   // ============================================================================
   // Pattern Helper Function Tests
   // ============================================================================
-
-  describe('getPatternById', () => {
-    it('should return pattern by ID', () => {
-      const pattern = getPatternById('aws-access-key');
-      expect(pattern).toBeDefined();
-      expect(pattern!.id).toBe('aws-access-key');
-    });
-
-    it('should return undefined for unknown ID', () => {
-      const pattern = getPatternById('nonexistent');
-      expect(pattern).toBeUndefined();
-    });
-  });
-
-  describe('getPatternsBySeverity', () => {
-    it('should filter patterns by severity', () => {
-      const criticalPatterns = getPatternsBySeverity('critical');
-      expect(criticalPatterns.length).toBeGreaterThan(0);
-      expect(criticalPatterns.every((p) => p.severity === 'critical')).toBe(true);
-    });
-  });
 
   describe('getPatternsAboveSeverity', () => {
     it('should return patterns at or above severity', () => {

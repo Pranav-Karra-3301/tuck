@@ -2,8 +2,6 @@ import simpleGit, { SimpleGit, StatusResult } from 'simple-git';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { GitError } from '../errors.js';
-import { pathExists } from './paths.js';
-import { join } from 'path';
 import { readdir } from 'fs/promises';
 import { REPO_STAGE_BLOCKLIST } from './state.js';
 import { GIT_OPERATION_TIMEOUTS } from './validation.js';
@@ -80,11 +78,6 @@ const createGit = (dir: string): SimpleGit => {
     git.env(env);
   }
   return git;
-};
-
-export const isGitRepo = async (dir: string): Promise<boolean> => {
-  const gitDir = join(dir, '.git');
-  return pathExists(gitDir);
 };
 
 export const initRepo = async (dir: string): Promise<void> => {
@@ -203,15 +196,6 @@ export const getStatus = async (dir: string): Promise<GitStatus> => {
     };
   } catch (error) {
     throw new GitError('Failed to get status', String(error));
-  }
-};
-
-export const stageFiles = async (dir: string, files: string[]): Promise<void> => {
-  try {
-    const git = createGit(dir);
-    await git.add(files);
-  } catch (error) {
-    throw new GitError('Failed to stage files', String(error));
   }
 };
 

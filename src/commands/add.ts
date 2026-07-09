@@ -215,7 +215,9 @@ const runInteractiveAdd = async (tuckDir: string, options: AddOptions = {}): Pro
 };
 
 /**
- * Add files programmatically (used by scan/sync flows)
+ * Add files programmatically from a list of paths, mirroring the non-interactive
+ * `tuck add <paths>` flow (prepare → track). Exposed as a reusable entry point
+ * for programmatic callers and the integration/command test suite.
  * Note: Throws SecretsDetectedError when configured to block.
  */
 export const addFilesFromPaths = async (

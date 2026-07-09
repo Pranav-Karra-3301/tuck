@@ -23,9 +23,6 @@ export { CustomProvider, customProvider } from './custom.js';
 // Provider Registry
 // ============================================================================
 
-/** All available provider modes */
-export const PROVIDER_MODES: ProviderMode[] = ['github', 'gitlab', 'local', 'custom'];
-
 /** Provider display info for selection UI */
 export interface ProviderOption {
   mode: ProviderMode;
@@ -185,26 +182,6 @@ export function describeProviderConfig(config: RemoteConfig): string {
     default:
       return 'Unknown provider';
   }
-}
-
-/**
- * Validate that a provider configuration is complete
- */
-export function validateProviderConfig(config: RemoteConfig): { valid: boolean; errors: string[] } {
-  const errors: string[] = [];
-
-  if (!config.mode) {
-    errors.push('Provider mode is not set');
-  }
-
-  if (config.mode === 'custom' && !config.url) {
-    errors.push('Custom provider requires a remote URL');
-  }
-
-  return {
-    valid: errors.length === 0,
-    errors,
-  };
 }
 
 /**

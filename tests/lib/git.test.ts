@@ -71,9 +71,7 @@ vi.mock('child_process', () => ({ execFile: execFileMock }));
 // Import after mocking
 import {
   initRepo,
-  isGitRepo,
   getStatus,
-  stageFiles,
   stageAll,
   commit,
   push,
@@ -110,24 +108,6 @@ describe('git', () => {
 
   afterEach(() => {
     vol.reset();
-  });
-
-  // ============================================================================
-  // isGitRepo Tests
-  // ============================================================================
-
-  describe('isGitRepo', () => {
-    it('should return true if .git directory exists', async () => {
-      vol.mkdirSync(join(TEST_TUCK_DIR, '.git'), { recursive: true });
-
-      const result = await isGitRepo(TEST_TUCK_DIR);
-      expect(result).toBe(true);
-    });
-
-    it('should return false if .git directory does not exist', async () => {
-      const result = await isGitRepo(TEST_TUCK_DIR);
-      expect(result).toBe(false);
-    });
   });
 
   // ============================================================================
@@ -282,12 +262,6 @@ describe('git', () => {
   // ============================================================================
   // Staging and Committing
   // ============================================================================
-
-  describe('stageFiles', () => {
-    it('should stage specified files', async () => {
-      await expect(stageFiles(TEST_TUCK_DIR, ['file1.txt', 'file2.txt'])).resolves.not.toThrow();
-    });
-  });
 
   describe('stageAll', () => {
     it('should stage all changes', async () => {
