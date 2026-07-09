@@ -145,6 +145,7 @@ tuck restore --all
 | Command             | Description                                                       |
 | ------------------- | ---------------------------------------------------------------- |
 | `tuck bundle`       | Manage bundles — logical groups of tracked files                 |
+| `tuck profile`      | Profiles / tags — apply work/personal/server/agent subsets       |
 | `tuck encryption`   | Manage at-rest backup encryption (AES-256-GCM, password-based)   |
 | `tuck secrets`      | Manage local secrets / placeholder replacement                   |
 | `tuck context`      | Track AI agent configs across home and per-repo scopes           |
@@ -178,6 +179,72 @@ tuck stores your dotfiles in `~/.tuck`, organized by category:
 ```
 
 Run `tuck sync` anytime to detect changes and push. On a new machine, run `tuck apply username` to grab anyone's dotfiles.
+
+## Profiles (work / personal / server / agent)
+
+One repo, different machines. Tag any tracked file with one or more **profiles**,
+then apply just the subset a machine needs. A file with **no tags** is
+**universal** — it applies under every profile (your shared/common set).
+
+```bash
+# Tag files as you track them…
+tuck add ~/.work-gitconfig --tag work
+tuck add ~/.claude --tag agent
+
+# …or tag existing files later
+tuck profile tag personal ~/.hammerspoon
+
+# See profiles, counts, and this machine's binding
+tuck profile list
+
+# Apply only a subset
+tuck apply you/dotfiles --profile work        # universal + work
+```
+
+**Remembered per machine.** Bind a machine once and `tuck apply` uses that
+profile by default (the binding is machine-local and never committed):
+
+```bash
+tuck profile bind work
+tuck apply you/dotfiles        # applies the "work" subset automatically
+```
+
+`tuck status` shows the bound profile and **flags cross-profile leaks** — files
+belonging to other profiles that ended up on this machine.
+
+### Ephemeral environments (devcontainers, Codespaces, agent sandboxes)
+
+Nobody wants their whole dotfiles — or their credentials — in every throwaway
+sandbox. Tag just your agent configs and apply that subset headlessly:
+
+```bash
+tuck profile create agent
+tuck profile tag agent ~/.claude ~/.codex
+
+# Scaffold a devcontainer.json + Codespaces dotfiles bootstrap
+tuck profile devcontainer .
+```
+
+The generated `.devcontainer/devcontainer.json` and `install.sh` run:
+
+```bash
+tuck apply you/dotfiles --profile agent --yes
+```
+
+so only the agent-config subset lands in the container — no secrets, no
+personal or work files.
+
+| Command                          | Description                                            |
+| -------------------------------- | ------------------------------------------------------ |
+| `tuck profile list`              | List profiles, file counts, and the bound profile      |
+| `tuck profile create <name>`     | Register a new profile                                  |
+| `tuck profile rm <name>`         | Remove a profile (strips its tag from files)           |
+| `tuck profile tag <p> <path…>`   | Tag tracked file(s) with a profile                     |
+| `tuck profile untag <p> <path…>` | Remove a profile tag from tracked file(s)              |
+| `tuck profile bind <name>`       | Bind THIS machine to a profile (machine-local)         |
+| `tuck profile unbind`            | Clear this machine's binding                           |
+| `tuck profile show`              | Show the bound profile and any cross-profile leaks     |
+| `tuck profile devcontainer [dir]`| Scaffold devcontainer.json + Codespaces bootstrap      |
 
 ## Git Providers
 
