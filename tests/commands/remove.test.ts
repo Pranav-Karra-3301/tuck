@@ -271,6 +271,38 @@ describe('remove command pre-delete snapshot (IDEAS 6.5)', () => {
     expect(remaining['zshrc']).toBeUndefined();
   });
 
+  it('takes ONE snapshot covering EVERY deleted repo copy (multi-file --delete)', async () => {
+    const { listSnapshots } = await import('../../src/lib/timemachine.js');
+
+    const manifest = createMockManifest();
+    manifest.files['zshrc'] = createMockTrackedFile({
+      source: '~/.zshrc',
+      destination: 'files/shell/zshrc',
+    });
+    manifest.files['gitconfig'] = createMockTrackedFile({
+      source: '~/.gitconfig',
+      destination: 'files/git/gitconfig',
+    });
+    vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest));
+    vol.mkdirSync(join(TEST_TUCK_DIR, 'files/shell'), { recursive: true });
+    vol.mkdirSync(join(TEST_TUCK_DIR, 'files/git'), { recursive: true });
+    vol.writeFileSync(join(TEST_TUCK_DIR, 'files/shell/zshrc'), 'export A=1');
+    vol.writeFileSync(join(TEST_TUCK_DIR, 'files/git/gitconfig'), '[user]');
+
+    await runRemove(['~/.zshrc', '~/.gitconfig'], { delete: true });
+
+    // A per-file snapshot would pin the undo breadcrumb to a checkpoint that
+    // restores only the LAST file — there must be exactly one snapshot and it
+    // must contain BOTH repo copies.
+    const snapshots = (await listSnapshots()).filter((s) =>
+      s.reason.startsWith('Pre-remove delete backup')
+    );
+    expect(snapshots).toHaveLength(1);
+    const files = snapshots[0].files.map((f) => f.originalPath ?? f.path ?? String(f));
+    expect(files.join(' ')).toContain('zshrc');
+    expect(files.join(' ')).toContain('gitconfig');
+  });
+
   it('does not snapshot when untracking without --delete', async () => {
     const { listSnapshots } = await import('../../src/lib/timemachine.js');
 

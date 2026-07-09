@@ -151,9 +151,32 @@ const removeFiles = async (
   tuckDir: string,
   options: RemoveOptions
 ): Promise<void> => {
-  // The id of the last pre-delete snapshot taken this run, used to pin the undo
-  // breadcrumb to a concrete recovery checkpoint.
-  let lastSnapshotId: string | undefined;
+  // ONE snapshot covering every repo copy this run will delete, taken BEFORE
+  // the loop — a per-file snapshot would leave the undo breadcrumb pointing at
+  // a checkpoint that restores only the LAST file. A snapshot hiccup must not
+  // block the removal.
+  let snapshotId: string | undefined;
+  if (options.delete) {
+    const deletablePaths: string[] = [];
+    for (const file of filesToRemove) {
+      if (await pathExists(file.destination)) deletablePaths.push(file.destination);
+    }
+    if (deletablePaths.length > 0) {
+      try {
+        const snapshot = await createSnapshot(
+          deletablePaths,
+          `Pre-remove delete backup: ${filesToRemove.map((f) => f.source).join(', ')}`
+        );
+        snapshotId = snapshot.id;
+      } catch (error) {
+        if (!isJsonMode()) {
+          logger.dim(
+            `  Pre-delete snapshot skipped: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+    }
+  }
 
   for (const file of filesToRemove) {
     // Restore a symlinked original to a real file first (unless --keep-original),
@@ -170,23 +193,6 @@ const removeFiles = async (
     // Delete from repository if requested
     if (options.delete) {
       if (await pathExists(file.destination)) {
-        // Never delete the repo copy without a recoverable checkpoint first. The
-        // committed repo copy may be the only surviving one (an initial add that
-        // was never pushed), so snapshot it into the time-machine so `tuck undo`
-        // can bring it back. A snapshot hiccup must not block the removal.
-        try {
-          const snapshot = await createSnapshot(
-            [file.destination],
-            `Pre-remove delete backup: ${file.source}`
-          );
-          lastSnapshotId = snapshot.id;
-        } catch (error) {
-          if (!isJsonMode()) {
-            logger.dim(
-              `  Pre-delete snapshot skipped: ${error instanceof Error ? error.message : String(error)}`
-            );
-          }
-        }
         await withSpinner(`Deleting ${file.source} from repository...`, async () => {
           await deleteFileOrDir(file.destination);
         });
@@ -207,8 +213,8 @@ const removeFiles = async (
   // Surface the recovery path after a destructive delete (IDEAS 6.5). Only shown
   // when --delete actually removed a repo copy we snapshotted — a plain untrack
   // leaves the repo copy intact, so `tuck undo` would not be the right recovery.
-  if (!isJsonMode() && lastSnapshotId) {
-    logger.info(undoBreadcrumb(lastSnapshotId));
+  if (!isJsonMode() && snapshotId) {
+    logger.info(undoBreadcrumb(snapshotId));
   }
 };
 

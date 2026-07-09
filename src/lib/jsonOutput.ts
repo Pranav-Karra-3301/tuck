@@ -19,6 +19,8 @@ export interface JsonError {
   hint?: string;
   suggestions?: string[];
   exit_code: number;
+  /** Raw git stderr/stdout for GIT_ERROR failures — the unclassified evidence. */
+  git_output?: string;
 }
 
 export interface JsonEnvelopeOk<T> {

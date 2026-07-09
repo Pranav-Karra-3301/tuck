@@ -82,8 +82,23 @@ export class FileAlreadyTrackedError extends TuckError {
 }
 
 export class GitError extends TuckError {
-  constructor(message: string, gitError?: string) {
-    super(`Git operation failed: ${message}`, 'GIT_ERROR', gitError ? [gitError] : undefined);
+  /** Raw git stderr/stdout, preserved for debugging even when tailored suggestions are supplied. */
+  public readonly gitOutput?: string;
+
+  constructor(message: string, gitError?: string, suggestions?: string[]) {
+    // When callers provide contextual `suggestions` (see `describeGitError` in
+    // lib/git.ts), use them as the actionable next steps. Otherwise fall back to
+    // surfacing the raw git output as a single suggestion (legacy behavior).
+    super(`Git operation failed: ${message}`, 'GIT_ERROR', suggestions ?? (gitError ? [gitError] : undefined));
+    this.gitOutput = gitError;
+  }
+
+  override toJSON(): JsonError {
+    const json = super.toJSON();
+    if (this.gitOutput) {
+      json.git_output = this.gitOutput;
+    }
+    return json;
   }
 }
 
@@ -190,6 +205,15 @@ export class MaterializeError extends TuckError {
     super(`Cannot materialize ${source}: ${reason}`, 'MATERIALIZE_FAILED', [
       'Check the encryption password (run `tuck encryption setup`)',
       'Verify the repo file is not corrupted or truncated',
+    ]);
+  }
+}
+
+export class McpConfigError extends TuckError {
+  constructor(file: string, reason: string) {
+    super(`Cannot parse MCP config ${file}: ${reason}`, 'MCP_CONFIG_INVALID', [
+      'Ensure the file is valid JSON (MCP config files must not contain comments)',
+      'Fix the syntax error, then re-run `tuck secrets extract --mcp`',
     ]);
   }
 }
@@ -384,12 +408,97 @@ export class ValidationError extends TuckError {
   }
 }
 
+export class InvalidRequirementError extends TuckError {
+  constructor(spec: string, reason: string) {
+    super(`Invalid dependency requirement "${spec}": ${reason}`, 'INVALID_REQUIREMENT', [
+      'Use the form <manager>:<package> (e.g. brew:starship, apt:zsh)',
+      'Supported managers: brew, apt, dnf, pacman, winget, scoop, cargo, npm, pnpm, pipx, go, gem',
+    ]);
+  }
+}
+
+export class CyclicDependencyError extends TuckError {
+  /** The node ids that participate in the detected cycle. */
+  public readonly cycle: string[];
+
+  constructor(cycle: string[]) {
+    const chain = cycle.length > 0 ? `${cycle.join(' → ')} → ${cycle[0]}` : 'unknown';
+    super(`Cyclic dependency detected: ${chain}`, 'CYCLIC_DEPENDENCY', [
+      'Remove one of the `requires:` edges that forms the cycle',
+      'Dependencies must form a directed acyclic graph (a package cannot depend on itself)',
+    ]);
+    this.cycle = cycle;
+  }
+}
+
+export class BootstrapError extends TuckError {
+  constructor(message: string, suggestions?: string[]) {
+    super(`Bootstrap failed: ${message}`, 'BOOTSTRAP_ERROR', suggestions);
+  }
+}
+
 export class KeystoreError extends TuckError {
   constructor(keystore: string, message: string, suggestions?: string[]) {
     super(`${keystore} error: ${message}`, 'KEYSTORE_ERROR', suggestions || [
       'Check your system keychain/credential manager is accessible',
       'Try running without encryption or use the fallback keystore',
     ]);
+  }
+}
+
+/**
+ * The JSON error projection for a partially- or fully-failed remote apply.
+ *
+ * Extends the base {@link JsonError} with the structured push outcome so a
+ * `tuck apply --ssh <box> --json` that hit transfer failures still exits
+ * non-zero AND surfaces what got through / what did not, instead of silently
+ * reporting `{ ok: true, applied: 0 }` with exit code 0.
+ */
+export interface RemoteApplyJsonError extends JsonError {
+  /** Files successfully pushed before/around the failures. */
+  applied: number;
+  /** The remote target's display form (e.g. "me@box:2222"). */
+  target: string;
+  /** Sources of the files whose transfer failed. */
+  failed: string[];
+  /** Structured skip counts (repo-scoped, directories, unsafe, missing). */
+  skipped: Record<string, number>;
+}
+
+/**
+ * Raised when one or more files failed to transfer during a remote/SSH apply.
+ *
+ * Escalating (rather than logging a warning and returning) guarantees a
+ * non-zero exit code so CI/scripts can detect a failed push. The partial
+ * outcome is preserved in {@link toJSON} so `--json` consumers still see what
+ * was applied and what failed.
+ */
+export class RemoteApplyError extends TuckError {
+  constructor(
+    private readonly target: string,
+    private readonly applied: number,
+    private readonly failed: Array<{ source: string; error: string }>,
+    private readonly skipped: Record<string, number>
+  ) {
+    super(
+      `Pushed ${applied} file(s) to ${target}, ${failed.length} failed`,
+      'REMOTE_APPLY_FAILED',
+      [
+        'Check the remote is reachable and accepting connections (try: ssh <host>)',
+        'Ensure the remote user can write to their home directory',
+      ]
+    );
+    this.name = 'RemoteApplyError';
+  }
+
+  toJSON(): RemoteApplyJsonError {
+    return {
+      ...super.toJSON(),
+      applied: this.applied,
+      target: this.target,
+      failed: this.failed.map((f) => f.source),
+      skipped: this.skipped,
+    };
   }
 }
 
@@ -408,6 +517,11 @@ export const handleError = (error: unknown): never => {
       console.error();
       console.error(chalk.dim('Suggestions:'));
       error.suggestions.forEach((s) => console.error(chalk.dim(`  → ${s}`)));
+    }
+    if (error instanceof GitError && error.gitOutput && process.env.DEBUG) {
+      console.error();
+      console.error(chalk.dim('Raw git output:'));
+      console.error(chalk.dim(error.gitOutput.trim()));
     }
     process.exit(error.exitCode);
   }

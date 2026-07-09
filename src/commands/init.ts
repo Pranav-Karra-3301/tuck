@@ -1563,6 +1563,11 @@ const runAdoptExistingInit = async (tuckDir: string): Promise<void> => {
         // GitHub auto-create / manual repo setup wizard.
         const ghResult = await setupGitHubRepo(tuckDir);
         remoteUrl = ghResult.remoteUrl;
+      } else if (providerResult.mode !== 'local') {
+        // GitLab/custom providers return no remoteUrl from setupProvider —
+        // mirror the fresh-init flow so answering YES to the remote prompt
+        // never silently falls through with no origin configured.
+        remoteUrl = await setupRemoteForChosenProvider(providerResult.mode, tuckDir);
       }
     }
   }
