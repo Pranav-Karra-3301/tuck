@@ -1613,8 +1613,18 @@ const runAllowAdd = async (options: AllowAddOptions = {}): Promise<void> => {
  * then the OS keystore (the same password `tuck encryption setup` stores and
  * apply/restore use for whole-file decryption), then an interactive prompt.
  * Throws {@link EncryptionError} when none is available and we cannot prompt.
+ *
+ * When `confirmNew` is set, the interactive prompt is treated as INTRODUCING a
+ * brand-new passphrase (encryption) rather than supplying an existing one
+ * (decryption): it is entered twice and must match. This guards against a typo
+ * silently encrypting live files under a passphrase nobody knows. Decryption
+ * needs no confirmation — a wrong passphrase simply fails to decrypt existing
+ * tokens, loudly and non-destructively.
  */
-const resolveEncryptionPassphrase = async (interactive: boolean): Promise<string> => {
+const resolveEncryptionPassphrase = async (
+  interactive: boolean,
+  options: { confirmNew?: boolean } = {}
+): Promise<string> => {
   const fromEnv = process.env.TUCK_ENCRYPTION_PASSWORD;
   if (fromEnv && fromEnv.length > 0) {
     return fromEnv;
@@ -1629,6 +1639,26 @@ const resolveEncryptionPassphrase = async (interactive: boolean): Promise<string
     throw new EncryptionError('No encryption password available', [
       'Run `tuck encryption setup` to configure a password in your OS keystore',
       'Or set TUCK_ENCRYPTION_PASSWORD in the environment for non-interactive use',
+    ]);
+  }
+
+  // Introducing a new passphrase (encrypt): confirm it to catch typos before we
+  // rewrite live files under it.
+  if (options.confirmNew) {
+    const maxAttempts = 3;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const entered = await prompts.password('Enter a new encryption passphrase:');
+      if (!entered || entered.trim().length === 0) {
+        throw new EncryptionError('Encryption passphrase cannot be empty');
+      }
+      const confirmed = await prompts.password('Confirm encryption passphrase:');
+      if (entered === confirmed) {
+        return entered;
+      }
+      logger.warning('Passphrases did not match — please try again');
+    }
+    throw new EncryptionError('Encryption passphrases did not match', [
+      'Re-run the command and enter the same passphrase both times',
     ]);
   }
 
@@ -1723,7 +1753,9 @@ export const runSecretsEncryptValues = async (
     }
   }
 
-  const passphrase = await resolveEncryptionPassphrase(interactive);
+  // Encryption INTRODUCES the passphrase: confirm it (when prompted) so a typo
+  // never encrypts live files under a passphrase nobody can reproduce.
+  const passphrase = await resolveEncryptionPassphrase(interactive, { confirmNew: true });
 
   // Safety net: back up every target before mutating it so `tuck undo` can revert.
   await createSnapshot(

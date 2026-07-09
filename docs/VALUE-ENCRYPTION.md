@@ -97,6 +97,37 @@ message rather than guessing.
 - **Never leaks values** — human and `--json` output only ever report counts and
   paths, never the plaintext.
 
+## Security notes
+
+### No context binding (token transplant)
+
+Each `ENC[tuck:v1:…]` token is authenticated with AES-GCM, so tampering with a
+token's *bytes* is detected — decryption fails loudly. What the auth tag does
+**not** cover is the token's **context**: it authenticates only the encrypted
+value, not the key name it sits beside or the file it lives in. tuck's tokens
+carry no associated data (AAD) and there is no file-level MAC (the mechanism
+[SOPS](https://github.com/getsops/sops) uses to bind every value to the file).
+
+The practical consequence: an attacker who already has **write access to the
+repo** can move a valid token from one place to another — swap two keys' values,
+or copy a token between files — and it will still decrypt cleanly under the
+correct passphrase. Because the value was legitimately encrypted, nothing at
+decrypt time flags the substitution.
+
+- This is **not** a confidentiality break: the attacker never learns any
+  plaintext, and cannot forge a token for a value they don't already have in
+  ciphertext.
+- The token format is intentionally frozen for v1 compatibility, so context
+  binding is **not** added by changing the token.
+- **Mitigation:** a transplant is a change to tracked files, so it shows up in
+  `git diff` and `git log`. Review diffs and protect the repo's write access
+  (branch protection, signed commits, trusted remotes) — the same discipline that
+  protects any config in version control.
+
+If you need cryptographic guarantees against reordering/transplant within a
+single file, use whole-file encryption (`tuck add --encrypt`) for that file
+instead, at the cost of losing per-value diffs.
+
 ## Scope (v1)
 
 - Works on any UTF-8 text file; it is designed for and tested against **env-style**

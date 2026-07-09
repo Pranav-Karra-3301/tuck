@@ -5,7 +5,7 @@
  * fs mock from tests/setup.ts for the file-level helpers. Value counts are kept
  * small so the 600k-iteration KDF stays well under the suite timeout.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { vol } from 'memfs';
 import { join } from 'path';
 import {
@@ -22,6 +22,7 @@ import {
   encryptFileValues,
   decryptFileValues,
   fileHasEncryptedValues,
+  keyDerivation,
 } from '../../src/lib/secrets/valueEncryption.js';
 import { scanContent } from '../../src/lib/secrets/scanner.js';
 import type { SecretMatch } from '../../src/lib/secrets/scanner.js';
@@ -207,6 +208,53 @@ describe('valueEncryption', () => {
       expect(encrypted).toBe(0);
       expect(skipped).toBe(1);
       expect(enc2).toBe(enc);
+    });
+
+    it('does not corrupt an earlier token when a later value occurs inside it', async () => {
+      // Deterministic collision: every token literally contains the fixed prefix
+      // `ENC[tuck:v1:`, so a secret value of `tuck:v1` is GUARANTEED to appear
+      // inside the first (longer) value's token. A single-pass value→token swap
+      // would splice the `tuck:v1` value's token into the middle of the first
+      // token's base64, destroying it. The two-pass replacement must not.
+      const longValue = 'AKIAIOSFODNN7EXAMPLELONGSECRET';
+      const collidingValue = 'tuck:v1';
+      const content = `LONG=${longValue}\nSHORT=${collidingValue}`;
+      const matches = matchesOf(longValue, collidingValue);
+
+      const { content: enc, encrypted } = await encryptContentValues(content, matches, PASS);
+      expect(encrypted).toBe(2);
+      // Both plaintext values are gone and two intact tokens remain.
+      expect(enc).not.toContain(longValue);
+      expect(findValueTokens(enc)).toHaveLength(2);
+
+      // The real proof: a clean round trip. Under the old single-pass code the
+      // first token is corrupted and this decrypt would fail / not restore.
+      const { content: dec, decrypted } = await decryptContentValues(enc, PASS);
+      expect(decrypted).toBe(2);
+      expect(dec).toBe(content);
+    });
+
+    it('derives the key once for many same-salt tokens (per-salt cache)', async () => {
+      // All tokens from a single encrypt call share one salt.
+      const values = Array.from({ length: 6 }, (_, i) => `secretvalue${i}xyz`);
+      const content = values.map((v, i) => `K${i}=${v}`).join('\n');
+      const { content: enc, encrypted } = await encryptContentValues(
+        content,
+        matchesOf(...values),
+        PASS
+      );
+      expect(encrypted).toBe(6);
+
+      const deriveSpy = vi.spyOn(keyDerivation, 'derive');
+      try {
+        const { content: dec, decrypted } = await decryptContentValues(enc, PASS);
+        expect(decrypted).toBe(6);
+        expect(dec).toBe(content);
+        // One derivation for all six same-salt tokens, not six.
+        expect(deriveSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        deriveSpy.mockRestore();
+      }
     });
 
     it('leaves existing tokens byte-identical when encrypting a newly added value', async () => {

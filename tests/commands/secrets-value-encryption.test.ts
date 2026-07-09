@@ -74,6 +74,11 @@ import {
   runSecretsEncryptValues,
   runSecretsDecryptValues,
 } from '../../src/commands/secrets.js';
+// The UI module is mocked above; this import yields the mocked prompts object so
+// individual tests can script prompts.password() for the interactive path.
+import { prompts } from '../../src/ui/index.js';
+
+const passwordMock = prompts.password as unknown as ReturnType<typeof vi.fn>;
 
 describe('tuck secrets encrypt/decrypt (integration)', () => {
   const envPath = join(TEST_HOME, '.env');
@@ -138,6 +143,56 @@ describe('tuck secrets encrypt/decrypt (integration)', () => {
     vol.writeFileSync(envPath, 'HOST=localhost\nPORT=8080\n');
     await runSecretsEncryptValues([], { yes: true });
     expect(vol.readFileSync(envPath, 'utf-8')).toBe('HOST=localhost\nPORT=8080\n');
+  });
+
+  it('confirms a newly introduced passphrase (double prompt) before encrypting', async () => {
+    // No env / keystore password + a TTY => the passphrase is introduced here,
+    // so encrypt must prompt for it twice and require a match.
+    delete process.env.TUCK_ENCRYPTION_PASSWORD;
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+    getStoredPasswordMock.mockResolvedValue(null);
+    vol.writeFileSync(envPath, 'GITHUB_TOKEN=ghp_0123456789abcdefABCDEF0123456789abcd\n');
+
+    passwordMock.mockReset();
+    passwordMock.mockResolvedValueOnce('s3kret-pass').mockResolvedValueOnce('s3kret-pass');
+
+    await runSecretsEncryptValues([], {}); // interactive: no yes/json
+
+    // Entered once + confirmed once.
+    expect(passwordMock).toHaveBeenCalledTimes(2);
+    const encrypted = vol.readFileSync(envPath, 'utf-8') as string;
+    expect(encrypted).toContain('ENC[tuck:v1:');
+    expect(encrypted).not.toContain('ghp_0123456789abcdefABCDEF0123456789abcd');
+
+    // Decrypt introduces nothing new — a single prompt, no confirmation.
+    passwordMock.mockReset();
+    passwordMock.mockResolvedValue('s3kret-pass');
+    await runSecretsDecryptValues([], {});
+    expect(passwordMock).toHaveBeenCalledTimes(1);
+    expect(vol.readFileSync(envPath, 'utf-8')).toContain(
+      'ghp_0123456789abcdefABCDEF0123456789abcd'
+    );
+  });
+
+  it('re-prompts on a passphrase mismatch, then encrypts once they match', async () => {
+    delete process.env.TUCK_ENCRYPTION_PASSWORD;
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+    getStoredPasswordMock.mockResolvedValue(null);
+    vol.writeFileSync(envPath, 'GITHUB_TOKEN=ghp_0123456789abcdefABCDEF0123456789abcd\n');
+
+    passwordMock.mockReset();
+    passwordMock
+      .mockResolvedValueOnce('typo-a') // attempt 1 entry
+      .mockResolvedValueOnce('typo-b') // attempt 1 confirm (mismatch)
+      .mockResolvedValueOnce('good-pass') // attempt 2 entry
+      .mockResolvedValueOnce('good-pass'); // attempt 2 confirm (match)
+
+    await runSecretsEncryptValues([], {});
+
+    expect(passwordMock).toHaveBeenCalledTimes(4);
+    const encrypted = vol.readFileSync(envPath, 'utf-8') as string;
+    expect(encrypted).toContain('ENC[tuck:v1:');
+    expect(encrypted).not.toContain('ghp_0123456789abcdefABCDEF0123456789abcd');
   });
 
   it('emits a JSON envelope without leaking secret values', async () => {
