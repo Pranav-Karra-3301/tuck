@@ -38,6 +38,9 @@ This document lists all error codes used by tuck for programmatic error handling
 | `SCAN_LIMIT_ERROR` | `ScanLimitError` | Too many files to scan | Directory exceeds the scan limit | Narrow the scan scope or raise the limit |
 | `VALIDATION_ERROR` | `ValidationError` | Input failed validation | Invalid flag/field value | Correct the input per the message |
 | `KEYSTORE_ERROR` | `KeystoreError` | OS keystore operation failed | Keychain/secret-service unavailable | Check the OS keystore or use the fallback |
+| `SETTINGS_UNSUPPORTED_OS` | `SettingsUnsupportedOsError` | `tuck settings` not supported on this OS | Running on a non-macOS platform | macOS is supported today; Linux/dconf is planned |
+| `SETTINGS_ERROR` | `SettingsError` | OS-settings operation failed | Missing capture flags, no TTY for interactive capture | Follow the message; pass `--domain/--key/--type/--value` for non-interactive capture |
+| `SETTING_NOT_FOUND` | `SettingNotFoundError` | No tracked setting/manual step with that id | Wrong id passed to `remove`/`manual done` | Run `tuck settings list` to see valid ids |
 
 ---
 
