@@ -31,6 +31,7 @@ export {
   scanContent,
   scanFile,
   scanFiles,
+  redactSecret,
   generateUniquePlaceholder,
   getSecretsWithPlaceholders,
 } from './scanner.js';
@@ -79,6 +80,24 @@ export {
 
 // Re-export schema types
 export type { SecurityConfig, CustomPattern, SecretEntry, SecretsStore } from '../../schemas/secrets.schema.js';
+
+// Re-export MCP extraction types and functions
+export {
+  type McpScope,
+  type McpTargetPath,
+  type McpReferenceFormat,
+  type McpExtraction,
+  type McpExtractionResult,
+  type ExtractMcpOptions,
+  getMcpTargetPaths,
+  discoverMcpConfigFiles,
+  isCredentialKey,
+  isReferenceValue,
+  shouldExtractValue,
+  buildReference,
+  analyzeMcpConfig,
+  extractMcpSecrets,
+} from './mcp.js';
 
 // Re-export external scanner types and functions
 export {

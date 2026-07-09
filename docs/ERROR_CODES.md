@@ -29,6 +29,7 @@ This document lists all error codes used by tuck for programmatic error handling
 | `BACKEND_AUTH_ERROR` | `BackendAuthenticationError` | Backend not authenticated | Session expired | Re-authenticate with backend |
 | `UNRESOLVED_SECRETS` | `UnresolvedSecretsError` | Could not resolve secrets | Missing in backend | Ensure secrets are configured |
 | `MATERIALIZE_FAILED` | `MaterializeError` | Could not materialize a template/encrypted file on apply | Bad template, decryption failure | Check the source file and encryption password |
+| `MCP_CONFIG_INVALID` | `McpConfigError` | An MCP config file could not be parsed during `secrets extract --mcp` | Invalid JSON, comments in the config | Fix the JSON syntax, then re-run the extraction |
 | `OPERATION_CANCELLED` | `OperationCancelledError` | Operation was cancelled | User aborted, or a prompt required in a non-TTY context | Re-run interactively, or pass `-y/--yes` |
 | `PRIVATE_KEY_ERROR` | `PrivateKeyError` | Refused to track a private key | Attempting to add an SSH/GPG private key | Store keys in a secret manager, not dotfiles |
 | `REPOSITORY_NOT_FOUND` | `RepositoryNotFoundError` | No dotfiles repository found for the source | Bad user/repo, missing remote | Check the source argument and remote access |

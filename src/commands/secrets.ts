@@ -13,11 +13,14 @@
  *   tuck secrets test          - Test backend connectivity
  */
 
+import { readFile } from 'fs/promises';
 import { Command } from 'commander';
 import { prompts, logger, colors as c } from '../ui/index.js';
-import { getTuckDir, expandPath, pathExists } from '../lib/paths.js';
+import { getTuckDir, expandPath, collapsePath, pathExists } from '../lib/paths.js';
 import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import { loadConfig, saveConfig } from '../lib/config.js';
+import { atomicWriteFile } from '../lib/files.js';
+import { createSnapshot } from '../lib/timemachine.js';
 import {
   listSecrets,
   setSecret,
@@ -26,7 +29,12 @@ import {
   isValidSecretName,
   normalizeSecretName,
   scanForSecrets,
+  redactSecret,
+  discoverMcpConfigFiles,
+  extractMcpSecrets,
   type ScanSummary,
+  type McpExtraction,
+  type McpReferenceFormat,
 } from '../lib/secrets/index.js';
 import {
   createResolver,
@@ -939,6 +947,294 @@ const runTest = async (options: TestOptions): Promise<void> => {
 };
 
 // ============================================================================
+// Extract Command (MCP secrets)
+// ============================================================================
+
+interface ExtractOptions {
+  mcp?: boolean;
+  format?: string;
+  dryRun?: boolean;
+  yes?: boolean;
+  json?: boolean;
+}
+
+/** A single file's extraction outcome (kept together for reporting). */
+interface FileExtraction {
+  path: string; // expanded
+  collapsedPath: string;
+  rewritten: string;
+  original: string;
+  extractions: McpExtraction[];
+}
+
+const isReferenceFormat = (value: string): value is McpReferenceFormat =>
+  value === 'placeholder' || value === 'env';
+
+/**
+ * Resolve the set of files to scan for MCP secrets.
+ *
+ * Explicit paths are always included; `--mcp` adds every known MCP config file
+ * that currently exists on disk.
+ */
+const resolveExtractTargets = async (
+  explicitPaths: string[],
+  useMcp: boolean
+): Promise<string[]> => {
+  const targets = new Set<string>();
+
+  for (const p of explicitPaths) {
+    targets.add(expandPath(p));
+  }
+
+  if (useMcp) {
+    const discovered = await discoverMcpConfigFiles();
+    for (const target of discovered) {
+      targets.add(target.expandedPath);
+    }
+  }
+
+  return [...targets];
+};
+
+export const runExtract = async (paths: string[], options: ExtractOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets extract');
+
+  const tuckDir = getTuckDir();
+
+  try {
+    await loadManifest(tuckDir);
+  } catch {
+    throw new NotInitializedError();
+  }
+
+  // Only MCP extraction is supported today; require --mcp (or explicit paths)
+  // so the flag stays meaningful as more extractors are added.
+  const useMcp = options.mcp === true;
+  if (!useMcp && paths.length === 0) {
+    if (isJsonMode()) {
+      throw new TuckError(
+        'Nothing to extract',
+        'EXTRACT_NO_TARGET',
+        ['Pass --mcp to scan known MCP config files, or provide explicit paths']
+      );
+    }
+    logger.error('Nothing to extract');
+    logger.dim('Pass --mcp to scan known MCP config files, or provide explicit file paths.');
+    return;
+  }
+
+  const format: McpReferenceFormat = (() => {
+    const raw = options.format ?? 'placeholder';
+    if (!isReferenceFormat(raw)) {
+      throw new TuckError(`Invalid --format: ${raw}`, 'EXTRACT_BAD_FORMAT', [
+        'Valid formats: placeholder (tuck {{NAME}}), env (${env:NAME})',
+      ]);
+    }
+    return raw;
+  })();
+
+  const targetFiles = await resolveExtractTargets(paths, useMcp);
+
+  if (targetFiles.length === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ files: [], totalExtracted: 0, changed: false });
+      return;
+    }
+    logger.info('No MCP config files found');
+    logger.dim('Checked known locations (Claude Desktop, ~/.claude.json, .cursor/mcp.json, …).');
+    return;
+  }
+
+  // Analyze each file. A shared placeholder set keeps names unique across files.
+  const existingPlaceholders = new Set<string>();
+  const fileResults: FileExtraction[] = [];
+  let totalExtracted = 0;
+
+  for (const expandedPath of targetFiles) {
+    if (!(await pathExists(expandedPath))) {
+      if (!isJsonMode()) logger.warning(`File not found: ${collapsePath(expandedPath)}`);
+      continue;
+    }
+
+    let content: string;
+    try {
+      content = await readFile(expandedPath, 'utf-8');
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (!isJsonMode()) logger.warning(`Cannot read ${collapsePath(expandedPath)}: ${msg}`);
+      continue;
+    }
+
+    let result;
+    try {
+      result = extractMcpSecrets(content, { format, existingPlaceholders }, collapsePath(expandedPath));
+    } catch (error) {
+      // Invalid JSON (McpConfigError) — skip the file but keep going.
+      const msg = error instanceof Error ? error.message : String(error);
+      if (!isJsonMode()) logger.warning(msg);
+      continue;
+    }
+
+    for (const extraction of result.extractions) {
+      existingPlaceholders.add(extraction.placeholder);
+    }
+
+    if (result.extractions.length > 0) {
+      totalExtracted += result.extractions.length;
+      fileResults.push({
+        path: expandedPath,
+        collapsedPath: collapsePath(expandedPath),
+        rewritten: result.rewritten,
+        original: result.original,
+        extractions: result.extractions,
+      });
+    }
+  }
+
+  if (totalExtracted === 0) {
+    if (isJsonMode()) {
+      emitJsonOk({ files: [], totalExtracted: 0, changed: false });
+      return;
+    }
+    logger.success('No inline MCP credentials found');
+    logger.dim('Your MCP config files are already free of plaintext secrets.');
+    return;
+  }
+
+  // ---- Preview (redacted) ----
+  if (!isJsonMode()) {
+    console.log();
+    console.log(
+      c.bold.cyan(
+        `Found ${totalExtracted} inline credential(s) in ${fileResults.length} MCP config file(s)`
+      )
+    );
+    console.log(c.dim('─'.repeat(60)));
+    for (const file of fileResults) {
+      console.log();
+      console.log(c.cyan(file.collapsedPath));
+      for (const ex of file.extractions) {
+        console.log(
+          `  ${c.dim(`${ex.server}.${ex.field}.${ex.key}`)} → ${c.green(ex.reference)} ${c.dim(
+            redactSecret(ex.value)
+          )}`
+        );
+      }
+    }
+    console.log();
+  }
+
+  // ---- Dry-run stops here ----
+  if (options.dryRun) {
+    if (isJsonMode()) {
+      emitJsonOk({
+        dryRun: true,
+        changed: true,
+        totalExtracted,
+        files: fileResults.map((f) => buildRedactedExtractionSummary(f)),
+      });
+      return;
+    }
+    logger.info('Dry run: no files were modified and no secrets were stored.');
+    logger.dim('Re-run without --dry-run to apply the changes.');
+    return;
+  }
+
+  // ---- Confirm (interactive only) ----
+  if (!isJsonMode() && !options.yes) {
+    logger.warning('This will rewrite the files above and store the extracted values.');
+    const confirmed = await prompts.confirm(
+      `Extract ${totalExtracted} credential(s) into ${format === 'env' ? '${env:…}' : 'tuck placeholders'}?`,
+      false
+    );
+    if (!confirmed) {
+      logger.info('Extraction cancelled — no changes made.');
+      return;
+    }
+  }
+
+  // ---- Snapshot backup before any mutation ----
+  const snapshot = await createSnapshot(
+    fileResults.map((f) => f.path),
+    'Pre-extract backup before tuck secrets extract'
+  );
+
+  // ---- Store secrets + record mappings, then rewrite files ----
+  const storedPlaceholders = new Set<string>();
+  for (const file of fileResults) {
+    for (const ex of file.extractions) {
+      if (storedPlaceholders.has(ex.placeholder)) continue;
+      storedPlaceholders.add(ex.placeholder);
+
+      // Store the real value locally (0600, gitignored) so `tuck apply` can
+      // inject it, and record a committed `local` mapping so other machines
+      // know the placeholder exists.
+      await setSecret(tuckDir, ex.placeholder, ex.value, {
+        description: `MCP credential (${ex.server}.${ex.key})`,
+        source: file.collapsedPath,
+      });
+      await setMapping(tuckDir, ex.placeholder, 'local', true);
+    }
+
+    // Only write when the content actually changed.
+    if (file.rewritten !== file.original) {
+      await atomicWriteFile(file.path, file.rewritten);
+    }
+  }
+
+  if (isJsonMode()) {
+    emitJsonOk({
+      changed: true,
+      totalExtracted,
+      snapshotId: snapshot.id,
+      backend: 'local',
+      format,
+      files: fileResults.map((f) => buildRedactedExtractionSummary(f)),
+    });
+    return;
+  }
+
+  logger.success(
+    `Extracted ${totalExtracted} credential(s) from ${fileResults.length} file(s)`
+  );
+  console.log();
+  logger.dim(`Snapshot saved: ${snapshot.id} (run 'tuck undo' to revert)`);
+  console.log();
+  prompts.note(
+    [
+      `Track the rewritten file(s) so 'tuck apply' can re-inject the values:`,
+      ...fileResults.map((f) => `  tuck add ${f.collapsedPath}`),
+      ...(format === 'env'
+        ? ['', 'Using ${env:…}: export the matching env vars before launching the client.']
+        : ['', "Values are stored locally. Run 'tuck apply' on a new machine to inject them."]),
+      '',
+      'To move a value into an external backend (1Password/pass):',
+      '  tuck secrets map <NAME> --1password "op://vault/item/field"',
+    ].join('\n'),
+    'Next steps'
+  );
+};
+
+/**
+ * Build a REDACTED per-file summary for JSON output.
+ *
+ * SECURITY-CRITICAL: never include the raw credential value. Only emit the
+ * placeholder/reference metadata and location.
+ */
+const buildRedactedExtractionSummary = (file: FileExtraction) => ({
+  path: file.collapsedPath,
+  extracted: file.extractions.length,
+  credentials: file.extractions.map((ex) => ({
+    server: ex.server,
+    scope: ex.scope,
+    field: ex.field,
+    key: ex.key,
+    placeholder: ex.placeholder,
+    reference: ex.reference,
+  })),
+});
+
+// ============================================================================
 // Command Definition
 // ============================================================================
 
@@ -981,6 +1277,21 @@ export const secretsCommand = new Command('secrets')
       .argument('[paths...]', 'Files to scan')
       .option('--json', 'Emit JSON envelope to stdout')
       .action(runScanFiles)
+  )
+  .addCommand(
+    new Command('extract')
+      .description('Rewrite inline credentials into tuck placeholders (MCP config files)')
+      .argument('[paths...]', 'Explicit files to extract from')
+      .option('--mcp', 'Scan known MCP config files (Claude Desktop, ~/.claude.json, .cursor/mcp.json, …)')
+      .option(
+        '--format <format>',
+        'Reference format: placeholder (tuck {{NAME}}) or env (${env:NAME})',
+        'placeholder'
+      )
+      .option('--dry-run', 'Preview changes without writing files or storing secrets')
+      .option('-y, --yes', 'Non-interactive: skip the confirmation prompt')
+      .option('--json', 'Emit JSON envelope to stdout (values are never included)')
+      .action((paths: string[], options: ExtractOptions) => runExtract(paths, options))
   )
   .addCommand(
     new Command('scan-history')
