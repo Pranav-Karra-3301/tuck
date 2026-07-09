@@ -25,9 +25,10 @@ import { loadConfig } from '../lib/config.js';
 import { copyFileOrDir, createSymlink, setFilePermissions } from '../lib/files.js';
 import { ensureDir } from 'fs-extra';
 import { materializeForLive, keystorePassphrase, buildMaterializeCtx } from '../lib/materialize.js';
+import { mergeSubtreeIntoLive } from '../lib/jsonKey.js';
 import { createBackup } from '../lib/backup.js';
 import { runPreRestoreHook, runPostRestoreHook, type HookOptions } from '../lib/hooks.js';
-import { NotInitializedError, FileNotFoundError, TuckError, MaterializeError } from '../errors.js';
+import { NotInitializedError, FileNotFoundError, TuckError, MaterializeError, JsonKeyError } from '../errors.js';
 import { CATEGORIES } from '../constants.js';
 import type { RestoreOptions } from '../types.js';
 import { setJsonMode, isJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
@@ -104,6 +105,11 @@ interface FileToRestore {
   template: boolean;
   /** Decrypt the repo source (TCKE1) before writing to the live system. */
   encrypted: boolean;
+  /**
+   * Dot-delimited JSON key path when the repo copy is only a subtree. On restore
+   * it is deep-merged back into the live file rather than overwriting it.
+   */
+  jsonKey?: string;
 }
 
 interface RestoreResult {
@@ -157,6 +163,7 @@ const prepareFilesToRestore = async (
         permissions: tracked.file.permissions,
         template: tracked.file.template,
         encrypted: tracked.file.encrypted,
+        jsonKey: tracked.file.jsonKey,
       });
     }
   } else {
@@ -182,6 +189,7 @@ const prepareFilesToRestore = async (
         permissions: file.permissions,
         template: file.template,
         encrypted: file.encrypted,
+        jsonKey: file.jsonKey,
       });
     }
   }
@@ -296,7 +304,9 @@ const restoreFilesInternal = async (
     // place, never SYMLINKED — a symlink would expose raw TCKE1 ciphertext or the
     // {{ }} template source at the live path. Force copy+materialize for them even
     // when the symlink strategy is otherwise in effect (--symlink / config).
-    const linkThisFile = useSymlink && !file.template && !file.encrypted;
+    // JSON-key files are ALSO copy/merge-only: symlinking would expose the
+    // subtree AS the whole live file and drop every other key.
+    const linkThisFile = useSymlink && !file.template && !file.encrypted && !file.jsonKey;
 
     // Pre-materialize template/encrypted files (decrypt/render) BEFORE any write,
     // so a failed / absent-passphrase decryption skips this file and never ships
@@ -320,9 +330,36 @@ const restoreFilesInternal = async (
       }
     }
 
+    // JSON-key merge is computed BEFORE the spinner so a corrupt/JSONC live
+    // file skips THIS entry loudly (like MaterializeError above) and the rest
+    // of the run continues.
+    let jsonKeyMerged: string | null = null;
+    if (file.jsonKey) {
+      try {
+        const repoSubtree = await readFile(file.destination, 'utf8');
+        const liveContent = (await pathExists(targetPath)) ? await readFile(targetPath, 'utf8') : null;
+        jsonKeyMerged = mergeSubtreeIntoLive(liveContent, repoSubtree, file.jsonKey);
+      } catch (err) {
+        if (err instanceof JsonKeyError) {
+          const msg = `Skipped ${file.source}: ${err.message}`;
+          logger.warning(msg);
+          if (isJsonMode()) addJsonWarning(msg);
+          skipped.push(file.source);
+          continue;
+        }
+        throw err;
+      }
+    }
+
     // Restore file
     await withSpinner(`Restoring ${file.source}...`, async () => {
-      if (linkThisFile) {
+      if (file.jsonKey && jsonKeyMerged !== null) {
+        // Write the tracked subtree back into the live file, preserving every
+        // other key (tokens, caches, machine state). A backup was already
+        // taken above when the live file existed.
+        await ensureDir(dirname(targetPath));
+        await writeFile(targetPath, jsonKeyMerged, 'utf-8');
+      } else if (linkThisFile) {
         await createSymlink(file.destination, targetPath, { overwrite: true });
       } else if (materialized !== null) {
         // Decrypted/rendered content written directly (not a raw repo copy).

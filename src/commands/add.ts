@@ -87,6 +87,10 @@ const addFiles = async (
       trackedFile.name = f.nameOverride;
     }
 
+    if (f.jsonKey) {
+      trackedFile.jsonKey = f.jsonKey;
+    }
+
     if (options.bundle) {
       trackedFile.bundle = options.bundle;
     }
@@ -160,6 +164,7 @@ const runInteractiveAdd = async (tuckDir: string, options: AddOptions = {}): Pro
       encrypt: options.encrypt,
       repo: options.repo,
       repoKey: options.repoKey,
+      jsonKey: options.key,
     });
   } catch (error) {
     if (error instanceof Error) {
@@ -242,6 +247,7 @@ export const addFilesFromPaths = async (
     encrypt: options.encrypt,
     repo: options.repo,
     repoKey: options.repoKey,
+    jsonKey: options.key,
   });
 
   if (filesToAdd.length === 0) {
@@ -442,6 +448,7 @@ const runAdd = async (paths: string[], options: AddOptions): Promise<void> => {
       encrypt: options.encrypt,
       repo: options.repo,
       repoKey: options.repoKey,
+      jsonKey: options.key,
     });
 
     const bundle = options.bundle ?? 'default';
@@ -474,6 +481,7 @@ const runAdd = async (paths: string[], options: AddOptions): Promise<void> => {
     encrypt: options.encrypt,
     repo: options.repo,
     repoKey: options.repoKey,
+    jsonKey: options.key,
   });
 
   if (filesToAdd.length === 0) {
@@ -534,6 +542,10 @@ export const addCommand = new Command('add')
   .option(
     '--repo-key <key>',
     'Explicit stable repo identity (advanced; default derives from the remote)'
+  )
+  .option(
+    '--key <json.path>',
+    'Track only the JSON subtree at this dot-delimited key path (e.g. mcpServers); written back into the live file at that path on apply/restore'
   )
   .option('-f, --force', 'Skip secret scanning (not recommended)')
   .option('-b, --bundle <name>', 'Bundle to assign the file to (defaults to "default")')

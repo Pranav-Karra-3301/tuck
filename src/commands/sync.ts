@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { join, basename, relative, isAbsolute } from 'path';
 import { realpath, readFile, writeFile } from 'fs/promises';
+import { createHash } from 'node:crypto';
 import { prompts, logger, withSpinner, colors as c } from '../ui/index.js';
 import {
   getTuckDir,
@@ -46,6 +47,7 @@ import { checkLocalMode } from '../lib/remoteChecks.js';
 import { loadConfig } from '../lib/config.js';
 import { assertRemoteAvailable } from '../lib/providers/index.js';
 import { runPreSyncHook, runPostSyncHook, type HookOptions } from '../lib/hooks.js';
+import { extractSubtree, hasSubtree } from '../lib/jsonKey.js';
 import {
   NotInitializedError,
   SecretsDetectedError,
@@ -187,6 +189,30 @@ export const detectChanges = async (tuckDir: string): Promise<TrackedFileChange[
       continue;
     }
 
+    // JSON-key files: compare only the SUBTREE extracted from the live file to
+    // the recorded checksum (which is of the repo's canonical subtree). A raw
+    // whole-file checksum would always differ — the live file also holds tokens/
+    // caches we deliberately never track — and would make sync capture the whole
+    // file back into the repo, leaking those keys. If the key was removed from
+    // the live file, SKIP (never wipe the tracked subtree from the repo).
+    if (file.jsonKey) {
+      try {
+        const content = await readFile(sourcePath, 'utf8');
+        if (!hasSubtree(content, file.jsonKey)) {
+          continue;
+        }
+        const subtree = extractSubtree(content, file.jsonKey);
+        const subtreeChecksum = createHash('sha256').update(Buffer.from(subtree, 'utf8')).digest('hex');
+        if (subtreeChecksum !== file.checksum) {
+          changes.push({ path: file.source, status: 'modified', source: file.source, destination: file.destination, id });
+        }
+      } catch {
+        // Live file unreadable / not valid JSON — skip rather than capture a
+        // malformed whole file into the repo.
+      }
+      continue;
+    }
+
     // Check if file has changed compared to stored checksum
     try {
       const sourceChecksum = await getFileChecksum(sourcePath);
@@ -240,6 +266,12 @@ const resolveModifiedChangeTargets = async (
   for (const change of changes) {
     if (change.status !== 'modified') continue;
     const entry = Object.values(trackedFiles).find((f) => f.source === change.source);
+    // JSON-key files are deliberately EXCLUDED from the whole-file secret scan:
+    // the live file (e.g. ~/.claude.json) mixes the tracked subtree with OAuth
+    // tokens and history that tuck never captures, so scanning the whole file
+    // would false-positive on secrets that can never reach the repo. Their
+    // subtree is secret-scanned at `tuck add` time instead.
+    if (entry?.jsonKey) continue;
     const live = entry ? await resolveLiveTarget(entry) : expandPath(change.source);
     if (live !== null) targets.push({ change, live });
   }
@@ -572,6 +604,25 @@ const syncFiles = async (
     validatePathWithinRoot(destPath, tuckDir, 'sync destination');
 
     if (change.status === 'modified') {
+      // JSON-key files re-extract ONLY the tracked subtree from the live file
+      // into the repo copy — never the whole file — so machine state/tokens that
+      // live alongside the tracked key are never captured or committed.
+      if (trackedEntry?.jsonKey) {
+        await withSpinner(`Syncing ${change.path}...`, async () => {
+          const content = await readFile(sourcePath, 'utf8');
+          const subtree = extractSubtree(content, trackedEntry.jsonKey as string);
+          await writeFile(destPath, subtree);
+          const newChecksum = await getFileChecksum(destPath);
+          if (fileId) {
+            await updateFileInManifest(tuckDir, fileId, {
+              checksum: newChecksum,
+              modified: new Date().toISOString(),
+            });
+          }
+        });
+        result.modified.push(basename(change.path) || change.path);
+        continue;
+      }
       // Redaction plans whose live file is this change's source, or lies inside
       // it (a tracked DIRECTORY whose inner file holds the secret). Compared on
       // expanded absolute paths.
@@ -715,6 +766,45 @@ const syncFiles = async (
   return result;
 };
 
+
+/**
+ * Secret-scan the extracted SUBTREE of every modified JSON-key entry — the
+ * exact bytes sync would capture into the repo. Whole-file scanning is wrong
+ * for these files (machine tokens outside the subtree would false-positive),
+ * but skipping them entirely made --key files strictly weaker than whole-file
+ * tracking: a secret added INSIDE the subtree after `tuck add` flowed into the
+ * repo unwarned.
+ */
+const scanJsonKeySubtrees = async (
+  tuckDir: string,
+  changes: FileChange[]
+): Promise<Array<{ source: string; count: number; patterns: string[] }>> => {
+  const { scanContent } = await import('../lib/secrets/scanner.js');
+  const trackedFiles = await getAllTrackedFiles(tuckDir);
+  const findings: Array<{ source: string; count: number; patterns: string[] }> = [];
+  for (const change of changes) {
+    if (change.status !== 'modified') continue;
+    const entry = Object.values(trackedFiles).find((f) => f.source === change.source);
+    if (!entry?.jsonKey) continue;
+    const live = await resolveLiveTarget(entry);
+    if (live === null || !(await pathExists(live))) continue;
+    try {
+      const subtree = extractSubtree(await readFile(live, 'utf-8'), entry.jsonKey);
+      const matches = scanContent(subtree);
+      if (matches.length > 0) {
+        findings.push({
+          source: change.source,
+          count: matches.length,
+          patterns: [...new Set(matches.map((m) => m.patternName))],
+        });
+      }
+    } catch {
+      // Corrupt live JSON / missing key path is surfaced by the capture step.
+    }
+  }
+  return findings;
+};
+
 /**
  * Scan modified files for secrets and handle user interaction.
  *
@@ -767,7 +857,29 @@ const scanAndHandleSecrets = async (
   const spinner = prompts.spinner();
   spinner.start('Scanning for secrets...');
   const summary = await scanForSecrets(modifiedPaths, tuckDir);
+  const subtreeFindings = await scanJsonKeySubtrees(tuckDir, changes);
   spinner.stop('Scan complete');
+
+  if (subtreeFindings.length > 0) {
+    console.log();
+    console.log(c.yellow('Potential secrets inside tracked JSON subtrees:'));
+    for (const f of subtreeFindings) {
+      console.log(c.dim(`  • ${f.source} — ${f.count} finding(s): ${f.patterns.join(', ')}`));
+    }
+    console.log();
+    const choice = await prompts.select(
+      'These values WOULD be captured into the repo. Continue?',
+      [
+        { value: 'abort', label: 'Abort sync (remove or extract the secret first)' },
+        { value: 'proceed', label: 'Proceed anyway (the secret will be committed)' },
+      ]
+    );
+    if (choice !== 'proceed') {
+      prompts.cancel('Sync aborted - secrets detected in a tracked JSON subtree');
+      return { proceed: false, redactionPlans: [] };
+    }
+    await logForceSecretBypass('tuck sync (proceed past jsonKey subtree findings)', subtreeFindings.length);
+  }
 
   if (summary.totalSecrets === 0) {
     return { proceed: true, redactionPlans: [] };
@@ -1447,6 +1559,20 @@ const scanChangesForSecretsOrThrow = async (
   if (!(await isSecretScanningEnabled(tuckDir))) return;
 
   const modifiedPaths = await resolveModifiedLivePaths(tuckDir, changes);
+  const subtreeFindings = await scanJsonKeySubtrees(tuckDir, changes);
+
+  if (subtreeFindings.length > 0 && (await shouldBlockOnSecrets(tuckDir))) {
+    throw new SecretsDetectedError(
+      subtreeFindings.reduce((n, f) => n + f.count, 0),
+      subtreeFindings.map((f) => f.source)
+    );
+  }
+  if (subtreeFindings.length > 0) {
+    const msg = `${subtreeFindings.length} tracked JSON subtree(s) contain potential secrets but blockOnSecrets is disabled — proceeding`;
+    if (options.json) addJsonWarning(msg);
+    else logger.warning(msg);
+  }
+
   if (modifiedPaths.length === 0) return;
 
   const summary = await scanForSecrets(modifiedPaths, tuckDir);
