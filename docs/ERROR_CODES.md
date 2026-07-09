@@ -44,6 +44,7 @@ This document lists all error codes used by tuck for programmatic error handling
 | `INVALID_REQUIREMENT` | `InvalidRequirementError` | A `requires:` dependency spec is malformed | Missing `<manager>:` prefix or unknown manager | Use `<manager>:<package>` (e.g. `brew:starship`) |
 | `CYCLIC_DEPENDENCY` | `CyclicDependencyError` | The `requires:` graph contains a cycle | A package/file dependency loops back on itself | Remove one edge so dependencies form a DAG |
 | `BOOTSTRAP_ERROR` | `BootstrapError` | `tuck bootstrap` could not complete a phase | Missing git, unclonable repo, or no manifest | Follow the error's suggestions and re-run (idempotent) |
+| `ALLOW_REASON_REQUIRED` | `TuckError` | `tuck secrets allow add` needs a reason | Ran non-interactively without `--reason` | Pass `--reason "<why safe>"` |
 
 ---
 
