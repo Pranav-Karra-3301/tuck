@@ -32,6 +32,7 @@ import { scanForSecrets } from '../lib/secrets/index.js';
 import { snapshotWriteContext, setWriteContext, restoreWriteContext } from '../lib/writeContext.js';
 import { resolveLiveTarget } from '../lib/repoScope.js';
 import { join, relative } from 'path';
+import { mcpFleetCommands } from './mcpFleet.js';
 
 /** Max accepted stdin line length (1 MiB) — guards against memory abuse. */
 const MAX_LINE_BYTES = 1024 * 1024;
@@ -564,3 +565,9 @@ export const mcpCommand = new Command('mcp')
         }
       })
   );
+
+// Fleet management subcommands (add/list/remove/show/clients/render/apply):
+// declare MCP servers once and render each client's native config on apply.
+for (const fleetCommand of mcpFleetCommands) {
+  mcpCommand.addCommand(fleetCommand);
+}
