@@ -49,7 +49,7 @@ vi.mock('../../src/ui/index.js', () => ({
 import { runExtract } from '../../src/commands/secrets.js';
 import { clearManifestCache } from '../../src/lib/manifest.js';
 import { clearConfigCache } from '../../src/lib/config.js';
-import { getSecret } from '../../src/lib/secrets/store.js';
+import { getSecret, setSecret } from '../../src/lib/secrets/store.js';
 import { getMapping } from '../../src/lib/secretBackends/mappings.js';
 
 const TUCK = '/test-home/.tuck';
@@ -170,6 +170,82 @@ describe('tuck secrets extract --mcp', () => {
     await runExtract([], { mcp: true, yes: true });
 
     expect(vol.readFileSync(MCP_PATH, 'utf-8')).toBe(original);
+  });
+
+  it('never overwrites a pre-existing stored secret on a name collision', async () => {
+    // A secret named GITHUB_TOKEN already exists with a DIFFERENT value. The
+    // secrets store is the only cleartext copy and is not covered by the
+    // pre-extract snapshot, so overwriting it would be unrecoverable.
+    const PRE_EXISTING = 'ghp_' + 'preexisting'.padEnd(36, 'z');
+    await setSecret(TUCK, 'GITHUB_TOKEN', PRE_EXISTING, { description: 'set by hand' });
+
+    vol.writeFileSync(
+      MCP_PATH,
+      JSON.stringify({ mcpServers: { github: { env: { GITHUB_TOKEN: GH_TOKEN } } } }, null, 2)
+    );
+
+    await runExtract([], { mcp: true, yes: true });
+
+    // The original secret is intact...
+    expect(await getSecret(TUCK, 'GITHUB_TOKEN')).toBe(PRE_EXISTING);
+    // ...and the newly-extracted value landed under a suffixed name instead.
+    expect(await getSecret(TUCK, 'GITHUB_TOKEN_1')).toBe(GH_TOKEN);
+
+    // The file references the NEW (suffixed) placeholder, not the old one.
+    const rewritten = vol.readFileSync(MCP_PATH, 'utf-8') as string;
+    expect(rewritten).not.toContain(GH_TOKEN);
+    expect(rewritten).toContain('{{GITHUB_TOKEN_1}}');
+  });
+
+  it('avoids collisions with names that exist only as a mapping', async () => {
+    const { setMapping } = await import('../../src/lib/secretBackends/mappings.js');
+    // A committed mapping references API_KEY even though no value is stored yet.
+    await setMapping(TUCK, 'API_KEY', 'local', true);
+
+    vol.writeFileSync(
+      MCP_PATH,
+      JSON.stringify({ mcpServers: { s: { env: { API_KEY: 'freshsecretvalue123456' } } } })
+    );
+
+    await runExtract([], { mcp: true, yes: true });
+
+    // The extracted value is stored under the suffixed name, leaving the
+    // pre-existing mapping's namespace untouched.
+    expect(await getSecret(TUCK, 'API_KEY_1')).toBe('freshsecretvalue123456');
+  });
+
+  it('does not store/rewrite values it cannot match verbatim (escape variants)', async () => {
+    // `\/`-escaped value: valid JSON, parses to a slash, but re-encodes without
+    // the escaped slash, so the token cannot be located in the source.
+    const original = '{"mcpServers":{"s":{"env":{"API_KEY":"secret\\/value\\/abcdef123456"}}}}';
+    vol.writeFileSync(MCP_PATH, original);
+
+    await runExtract([], { mcp: true, yes: true });
+
+    // File is untouched — the plaintext is (intentionally) still present.
+    expect(vol.readFileSync(MCP_PATH, 'utf-8')).toBe(original);
+    // Nothing was stored or mapped for the unmatched value.
+    expect(await getSecret(TUCK, 'API_KEY')).toBeUndefined();
+    expect(await getMapping(TUCK, 'API_KEY')).toBeNull();
+  });
+
+  it('does not report skipped values as extracted in JSON output', async () => {
+    const original = '{"mcpServers":{"s":{"env":{"API_KEY":"secret\\/value\\/abcdef123456"}}}}';
+    vol.writeFileSync(MCP_PATH, original);
+
+    const writes: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    });
+
+    await runExtract([], { mcp: true, json: true, yes: true });
+
+    const envelope = JSON.parse(writes.join('').trim());
+    expect(envelope.ok).toBe(true);
+    expect(envelope.data.totalExtracted).toBe(0);
+    expect(envelope.data.totalSkipped).toBe(1);
+    expect(envelope.data.changed).toBe(false);
   });
 
   it('emits a redacted JSON envelope without leaking values', async () => {

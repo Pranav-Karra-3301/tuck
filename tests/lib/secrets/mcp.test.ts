@@ -245,6 +245,57 @@ describe('extractMcpSecrets', () => {
     expect(result.changed).toBe(false);
     expect(result.extractions).toHaveLength(0);
   });
+
+  it('skips (does NOT extract) values encoded with escape variants it cannot match', () => {
+    // Hand-written JSON where the secret uses `\/` — valid JSON that parses to
+    // `secret/value/abcdef123456`, but JSON.stringify re-encodes without the
+    // escaped slash, so a byte-for-byte search of the source finds nothing.
+    const config = '{"mcpServers":{"s":{"env":{"API_KEY":"secret\\/value\\/abcdef123456"}}}}';
+    // Sanity: this is valid JSON and the raw value round-trips with a slash.
+    expect(JSON.parse(config).mcpServers.s.env.API_KEY).toBe('secret/value/abcdef123456');
+
+    const result = extractMcpSecrets(config);
+    // The value cannot be located verbatim → nothing is rewritten or extracted.
+    expect(result.changed).toBe(false);
+    expect(result.rewritten).toBe(config);
+    expect(result.extractions).toHaveLength(0);
+    // …but it is surfaced as skipped so callers can warn instead of no-oping.
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0].key).toBe('API_KEY');
+    // The plaintext secret is (deliberately) still present in the source.
+    expect(result.rewritten).toContain('secret\\/value\\/abcdef123456');
+  });
+
+  it('skips unicode-escaped values while still rewriting matchable ones in the same file', () => {
+    const matchable = 'ghp_' + 'a'.repeat(36);
+    // `cafésecret...` parses to `café…` which stringifies as literal `é`.
+    const config =
+      '{"mcpServers":{' +
+      `"ok":{"env":{"GITHUB_TOKEN":"${matchable}"}},` +
+      '"bad":{"env":{"API_KEY":"caf\\u00e9secretvalue123456"}}' +
+      '}}';
+
+    const result = extractMcpSecrets(config);
+    // The matchable token is rewritten and reported.
+    expect(result.changed).toBe(true);
+    expect(result.extractions).toHaveLength(1);
+    expect(result.extractions[0].placeholder).toBe('GITHUB_TOKEN');
+    expect(result.rewritten).not.toContain(matchable);
+    expect(result.rewritten).toContain('{{GITHUB_TOKEN}}');
+    // The escape-variant value is skipped and left in place.
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0].key).toBe('API_KEY');
+    expect(result.rewritten).toContain('caf\\u00e9secretvalue123456');
+  });
+
+  it('reports an empty skipped list when every value is rewritten', () => {
+    const config = JSON.stringify({
+      mcpServers: { s: { env: { API_KEY: 'realapikeyvalue123456' } } },
+    });
+    const result = extractMcpSecrets(config);
+    expect(result.extractions).toHaveLength(1);
+    expect(result.skipped).toHaveLength(0);
+  });
 });
 
 describe('getMcpTargetPaths', () => {

@@ -220,8 +220,26 @@ export interface McpExtraction {
 
 export interface McpExtractionResult {
   original: string;
+  /**
+   * Content with every *successfully located* credential replaced by its
+   * reference. Values that could not be found verbatim in the source are left
+   * untouched (see `skipped`).
+   */
   rewritten: string;
+  /**
+   * Credentials that were located in the source and rewritten. These are the
+   * only extractions safe to store/map — the plaintext is genuinely gone from
+   * `rewritten`.
+   */
   extractions: McpExtraction[];
+  /**
+   * Credentials that parsed out of the config but whose JSON-encoded value
+   * could NOT be found verbatim in the source (e.g. the source used escape
+   * variants like `\/` or `\uXXXX` that re-encode differently). These were NOT
+   * rewritten and MUST NOT be stored/mapped or reported as extracted — doing so
+   * would leave the plaintext secret in the file while claiming success.
+   */
+  skipped: McpExtraction[];
   /** Number of MCP server definitions inspected. */
   serverCount: number;
   changed: boolean;
@@ -351,7 +369,7 @@ export const extractMcpSecrets = (
 
   const usedPlaceholders = new Set(options.existingPlaceholders ?? []);
   const valueToPlaceholder = new Map<string, string>();
-  const extractions: McpExtraction[] = [];
+  const candidates: McpExtraction[] = [];
 
   for (const item of pending) {
     let placeholder = valueToPlaceholder.get(item.value);
@@ -367,7 +385,7 @@ export const extractMcpSecrets = (
       valueToPlaceholder.set(item.value, placeholder);
     }
 
-    extractions.push({
+    candidates.push({
       server: item.server,
       scope: item.scope,
       field: item.field,
@@ -381,21 +399,40 @@ export const extractMcpSecrets = (
   // Rewrite: replace each unique JSON-encoded value token with its reference.
   // Longest value first (temp markers) so a value that is a substring of
   // another does not get partially rewritten.
+  //
+  // CRITICAL: a value parsed out of the JSON does not necessarily appear
+  // byte-for-byte in the source — JSON permits multiple valid encodings of the
+  // same string (`\/` vs `/`, `é` vs `é`, etc.). `JSON.stringify(value)`
+  // re-encodes canonically, so the search token can differ from the source and
+  // the replacement silently no-ops. If we then stored/mapped/reported such a
+  // value, the plaintext secret would remain in the file while we claim to have
+  // removed it. So we only treat a value as extracted when its token is actually
+  // located; unlocated values are reported as `skipped`.
   let rewritten = content;
+  const locatedValues = new Set<string>();
   const uniqueValues = [...valueToPlaceholder.keys()].sort((a, b) => b.length - a.length);
   for (const value of uniqueValues) {
     const placeholder = valueToPlaceholder.get(value)!;
     const valueToken = JSON.stringify(value); // e.g. "\"ghp_xxx\""
+    if (!rewritten.includes(valueToken)) {
+      // Token not present verbatim — leave the source untouched for this value.
+      continue;
+    }
+    locatedValues.add(value);
     const referenceToken = JSON.stringify(buildReference(placeholder, format));
     const marker = `__TUCK_MCP_${randomBytes(16).toString('hex')}__`;
     rewritten = rewritten.replace(new RegExp(escapeRegExp(valueToken), 'g'), marker);
     rewritten = rewritten.split(marker).join(referenceToken);
   }
 
+  const extractions = candidates.filter((ex) => locatedValues.has(ex.value));
+  const skipped = candidates.filter((ex) => !locatedValues.has(ex.value));
+
   return {
     original: content,
     rewritten,
     extractions,
+    skipped,
     serverCount,
     changed: rewritten !== content,
   };

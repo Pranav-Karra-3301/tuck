@@ -1046,9 +1046,23 @@ export const runExtract = async (paths: string[], options: ExtractOptions = {}):
   }
 
   // Analyze each file. A shared placeholder set keeps names unique across files.
+  //
+  // SAFETY: seed the set with the names of secrets that are ALREADY stored and
+  // with existing mapping names so a generated placeholder can never collide
+  // with — and silently overwrite — a pre-existing stored value. The secrets
+  // store is the only cleartext copy of those values and is not covered by the
+  // pre-extract snapshot, so a collision would be unrecoverable. Colliding names
+  // get the `_1`, `_2`, … suffix instead (e.g. `GITHUB_TOKEN` → `GITHUB_TOKEN_1`).
   const existingPlaceholders = new Set<string>();
+  for (const secret of await listSecrets(tuckDir)) {
+    existingPlaceholders.add(secret.name);
+  }
+  for (const mappingName of Object.keys(await listMappings(tuckDir))) {
+    existingPlaceholders.add(mappingName);
+  }
   const fileResults: FileExtraction[] = [];
   let totalExtracted = 0;
+  let totalSkipped = 0;
 
   for (const expandedPath of targetFiles) {
     if (!(await pathExists(expandedPath))) {
@@ -1079,6 +1093,23 @@ export const runExtract = async (paths: string[], options: ExtractOptions = {}):
       existingPlaceholders.add(extraction.placeholder);
     }
 
+    totalSkipped += result.skipped.length;
+
+    // Warn about credentials tuck detected but could NOT locate verbatim in the
+    // source (JSON escape variants re-encode differently). These are left in the
+    // file as-is and are NOT stored/mapped/reported as extracted — surfacing the
+    // plaintext secret is exactly what this command exists to prevent.
+    if (result.skipped.length > 0 && !isJsonMode()) {
+      logger.warning(
+        `Could not rewrite ${result.skipped.length} credential(s) in ${collapsePath(expandedPath)} ` +
+          `(the value uses a JSON encoding tuck cannot match). Left untouched — the plaintext ` +
+          `secret is still in the file. Re-save the value without escape sequences and re-run.`
+      );
+      for (const ex of result.skipped) {
+        logger.dim(`  skipped: ${ex.server}.${ex.field}.${ex.key}`);
+      }
+    }
+
     if (result.extractions.length > 0) {
       totalExtracted += result.extractions.length;
       fileResults.push({
@@ -1093,7 +1124,16 @@ export const runExtract = async (paths: string[], options: ExtractOptions = {}):
 
   if (totalExtracted === 0) {
     if (isJsonMode()) {
-      emitJsonOk({ files: [], totalExtracted: 0, changed: false });
+      emitJsonOk({ files: [], totalExtracted: 0, totalSkipped, changed: false });
+      return;
+    }
+    if (totalSkipped > 0) {
+      // Everything detected was left untouched (unmatchable encoding). Do NOT
+      // claim the files are clean — the plaintext is still there.
+      logger.warning(
+        `Detected ${totalSkipped} credential(s) but could not safely rewrite any of them.`
+      );
+      logger.dim('The plaintext values remain in place — see the warnings above.');
       return;
     }
     logger.success('No inline MCP credentials found');
@@ -1131,6 +1171,7 @@ export const runExtract = async (paths: string[], options: ExtractOptions = {}):
         dryRun: true,
         changed: true,
         totalExtracted,
+        totalSkipped,
         files: fileResults.map((f) => buildRedactedExtractionSummary(f)),
       });
       return;
@@ -1186,6 +1227,7 @@ export const runExtract = async (paths: string[], options: ExtractOptions = {}):
     emitJsonOk({
       changed: true,
       totalExtracted,
+      totalSkipped,
       snapshotId: snapshot.id,
       backend: 'local',
       format,
