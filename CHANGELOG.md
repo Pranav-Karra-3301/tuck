@@ -1,3 +1,5 @@
+<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
+
 # [1.11.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.10.0...v1.11.0) (2026-07-09)
 
 
@@ -24,8 +26,6 @@
 * **secrets:** MCP inline-credential extraction (secrets extract --mcp) ([#103](https://github.com/Pranav-Karra-3301/tuck/issues/103)) ([2692fe4](https://github.com/Pranav-Karra-3301/tuck/commit/2692fe4a8f4263301af0f62fe4ed8af939ec1d90))
 * **secrets:** redacted-content checksum helpers for drift detection (issue [#100](https://github.com/Pranav-Karra-3301/tuck/issues/100)) ([0168a21](https://github.com/Pranav-Karra-3301/tuck/commit/0168a2186b53e08fbce37301e2d4aef4d0fd415a))
 * tuck bootstrap — one-command idempotent machine setup + declarative requires ([#117](https://github.com/Pranav-Karra-3301/tuck/issues/117)) ([5dd2c5e](https://github.com/Pranav-Karra-3301/tuck/commit/5dd2c5e1ae6f23e37afdbeb559c4e58aa232af61))
-
-<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
 # [1.10.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.9.0...v1.10.0) (2026-07-09)
 
