@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { vol } from 'memfs';
 import { writeFile, mkdir, readFile } from 'fs/promises';
 import { join } from 'path';
@@ -198,6 +198,18 @@ describe('profile registry helpers', () => {
 });
 
 describe('machine-local binding', () => {
+  // The state dir honors XDG_STATE_HOME / LOCALAPPDATA before falling back to
+  // the (mocked) home directory; CI runners set these for real, which would
+  // point the binding path outside the test sandbox (same trick as
+  // tests/e2e/helpers/runCli.ts).
+  beforeEach(() => {
+    vi.stubEnv('XDG_STATE_HOME', '');
+    vi.stubEnv('LOCALAPPDATA', '');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('binds, reads, and unbinds the machine profile', async () => {
     expect(await getBoundProfile()).toBeNull();
 
