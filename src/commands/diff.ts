@@ -28,6 +28,8 @@ import {
   keystorePassphrase,
   buildMaterializeCtx,
 } from '../lib/materialize.js';
+import { enterReadOnlyMode, isReadOnlyMode } from '../lib/readOnlyMode.js';
+import { compareLiveToCache } from '../lib/crypto/driftCache.js';
 import {
   getStoredValueMap,
   getRedactedChecksum,
@@ -47,6 +49,12 @@ export interface FileDiff {
   repoSize?: number;
   systemContent?: string;
   repoContent?: string;
+  /**
+   * Set for an ENCRYPTED file whose drift was detected in read-only mode via the
+   * keyed-HMAC cache: we know it changed but deliberately did NOT decrypt the
+   * repo copy, so the line-level diff is withheld (no keystore unlock, no prompt).
+   */
+  encryptedHidden?: boolean;
 }
 
 const isBinary = async (path: string): Promise<boolean> => {
@@ -173,6 +181,22 @@ export const getFileDiff = async (
   // change. Compare the live file against materialize(repo) instead — matching
   // the state model that `tuck verify`/`tuck status` use.
   if (tracked.file.template || tracked.file.encrypted) {
+    // Read-only + ENCRYPTED: never decrypt. Decide changed/unchanged from the
+    // keyed-HMAC cache (zero decryption, no keystore, no prompt) and withhold the
+    // line-level diff rather than unlocking the repo copy. Pure templates touch
+    // no secret and render cheaply, so they fall through to the normal path.
+    if (tracked.file.encrypted && isReadOnlyMode()) {
+      const liveBytes = await readFile(systemPath);
+      const repoChecksum = await getFileChecksum(repoPath);
+      const cmp = await compareLiveToCache(tracked.id, liveBytes, repoChecksum);
+      if (cmp === 'mismatch') {
+        diff.hasChanges = true;
+        diff.encryptedHidden = true;
+      }
+      // 'match' or 'unknown' → no reportable diff in read-only mode.
+      return diff;
+    }
+
     let materialized: string;
     try {
       const ctx = await buildMaterializeCtx(tuckDir);
@@ -294,6 +318,13 @@ const formatUnifiedDiff = (diff: FileDiff): string => {
     return lines.join('\n');
   }
 
+  if (diff.encryptedHidden) {
+    lines.push(c.yellow('Encrypted file changed'));
+    lines.push(c.dim('  Contents hidden — read-only diff never decrypts.'));
+    lines.push(c.dim("  Run 'tuck verify' or 'tuck apply' for a full comparison."));
+    return lines.join('\n');
+  }
+
   const { systemContent, repoContent } = diff;
 
   // Check if systemContent is explicitly undefined (missing) vs empty string
@@ -393,6 +424,9 @@ const formatUnifiedDiff = (diff: FileDiff): string => {
 };
 
 const runDiff = async (paths: string[], options: DiffOptions): Promise<void> => {
+  // diff is a read-only inspection command: it must never unlock the keystore or
+  // touch a secret backend. This guarantees zero prompts (see lib/readOnlyMode).
+  enterReadOnlyMode();
   if (options.json) setJsonMode(true, 'tuck diff');
   const tuckDir = getTuckDir();
 

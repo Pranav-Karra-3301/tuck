@@ -6,6 +6,7 @@ import { clearManifestCache, getTrackedFileBySource, loadManifest } from '../../
 import { initTestTuck, createTestDotfile, TEST_TUCK_DIR } from '../utils/testHelpers.js';
 import { isEncryptedFile, decryptFileContent } from '../../src/lib/crypto/fileEncryption.js';
 import { setJsonMode } from '../../src/lib/jsonOutput.js';
+import { clearSessionKeyCache } from '../../src/lib/crypto/sessionKeyCache.js';
 
 const retrieveMock = vi.fn();
 vi.mock('../../src/lib/crypto/keystore/index.js', () => ({
@@ -18,11 +19,16 @@ describe('fileTracking symlink strategy', () => {
   beforeEach(() => {
     vol.reset();
     clearManifestCache();
+    // The keystore passphrase is cached per session (one prompt per session). In
+    // one process each test must start with a cold cache, or a passphrase unlocked
+    // by an earlier test would satisfy a later "no password configured" case.
+    clearSessionKeyCache();
   });
 
   afterEach(() => {
     vol.reset();
     clearManifestCache();
+    clearSessionKeyCache();
     vi.restoreAllMocks();
   });
 

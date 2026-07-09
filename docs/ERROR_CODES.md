@@ -49,6 +49,7 @@ This document lists all error codes used by tuck for programmatic error handling
 | `SETTINGS_UNSUPPORTED_OS` | `SettingsUnsupportedOsError` | `tuck settings` not supported on this OS | Running on a non-macOS platform | macOS is supported today; Linux/dconf is planned |
 | `SETTINGS_ERROR` | `SettingsError` | OS-settings operation failed | Missing capture flags, no TTY for interactive capture | Follow the message; pass `--domain/--key/--type/--value` for non-interactive capture |
 | `SETTING_NOT_FOUND` | `SettingNotFoundError` | No tracked setting/manual step with that id | Wrong id passed to `remove`/`manual done` | Run `tuck settings list` to see valid ids |
+| `READ_ONLY_VIOLATION` | `ReadOnlyViolationError` | A read-only command (status/diff/list) attempted a secret/keystore operation | Bug — these commands guarantee zero prompts | Use `tuck apply`/`tuck sync`/`tuck verify` for operations that need secrets |
 
 ---
 
