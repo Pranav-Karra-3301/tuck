@@ -37,6 +37,10 @@ tuck is a modern dotfiles manager that provides a beautiful CLI for managing you
 ## OPTIONS
 * **-h, --help**: Show help
 * **-v, --version**: Show version
+* **--non-interactive**: Never prompt; fail fast with a typed error if a prompt would be required. Implied by **--json** and by a non-TTY stdin. Pair with **-y, --yes** to auto-confirm.
+* **--json**: (per-command) Emit a single stable JSON envelope on stdout for agents/CI; suppresses human output and color.
+* **-y, --yes**: (per-command) Auto-confirm prompts.
+* **--root** *dir*: Confine all writes under *dir* (sandbox / dry-home mode; also **TUCK_TARGET_ROOT**).
 
 ## FILES
 * `~/.tuck`: Default tuck directory

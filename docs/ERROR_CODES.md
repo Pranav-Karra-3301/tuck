@@ -13,7 +13,7 @@ This document lists all error codes used by tuck for programmatic error handling
 | `FILE_NOT_FOUND` | `FileNotFoundError` | Specified file doesn't exist | Wrong path, deleted file | Check path, use absolute paths |
 | `FILE_NOT_TRACKED` | `FileNotTrackedError` | File isn't being tracked | File not added with `tuck add` | Run `tuck add <path>` first |
 | `FILE_ALREADY_TRACKED` | `FileAlreadyTrackedError` | File is already tracked | Adding same file twice | Use `tuck sync` to update |
-| `GIT_ERROR` | `GitError` | Git operation failed | Auth issues, network, conflicts | Check git credentials and network |
+| `GIT_ERROR` | `GitError` | Git operation failed (push/pull/fetch classify the cause: rejected/non-fast-forward, missing upstream, auth, unreachable host, conflicts, local changes) | Auth issues, network, conflicts | Follow the tailored suggestions (e.g. `tuck pull` then push; `gh auth login`) |
 | `MERGE_CONFLICTS` | `MergeConflictsError` | Merge left unresolved conflicts (**exit code 3**, distinct for agent branching) | Overlapping local/remote edits | Resolve conflicts, then re-run the operation |
 | `CONFIG_ERROR` | `ConfigError` | Configuration problem | Corrupted config, invalid values | Run `tuck config reset` |
 | `MANIFEST_ERROR` | `ManifestError` | Manifest file issue | Corrupted JSON, schema mismatch | Restore from remote with `tuck init --from` |
@@ -113,7 +113,13 @@ Suggestions:
 
 Using `--force` to bypass secret scanning is logged to the audit trail for security tracking, which helps identify when potentially sensitive operations occurred. The active audit log lives in the platform state directory — on macOS `~/Library/Application Support/tuck/audit.log`, on Linux `$XDG_STATE_HOME/tuck/audit.log` (falling back to `~/.local/state/tuck/audit.log`). (`~/.tuck/audit.log` is the deprecated legacy location.)
 
-### Non-Interactive Mode (CI/Scripts)
+### Non-Interactive Mode (CI/Scripts/Agents)
+
+Pass `--non-interactive` (or `--json`, which implies it) to guarantee tuck never
+blocks on a prompt: any command that would need to ask a question fails fast with
+`OPERATION_CANCELLED` instead of hanging. This is also the default whenever stdin
+is not a TTY. Combine with `-y/--yes` to auto-confirm ordinary prompts. See
+[AGENT-MODE.md](./AGENT-MODE.md) for the full JSON-envelope and exit-code contract.
 
 When running tuck in non-interactive environments (CI pipelines, scripts), dangerous operations that normally require typed confirmation will fail by default.
 
