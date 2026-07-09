@@ -257,6 +257,24 @@ values are resolved from the same secret backends tuck uses for dotfiles; if any
 can't be resolved, apply refuses to write rather than leak an unresolved token.
 Supported clients: Claude Desktop, Claude Code, Cursor, Windsurf, VS Code.
 
+### Agent-native automation
+
+tuck is safe to drive from AI agents, scripts, and CI. Every command supports:
+
+- `--json` — one stable JSON envelope on stdout (`{ ok, command, data | error }`); human output and color are suppressed, diagnostics go to stderr.
+- `--non-interactive` — never prompt; fail fast with a typed error (`OPERATION_CANCELLED`) instead of hanging. Implied by `--json` and by a non-TTY stdin.
+- `-y, --yes` — auto-confirm prompts. Combine with `--json` for full automation.
+
+ANSI color is stripped automatically when output is not a terminal, in `--json`
+mode, or when `NO_COLOR` is set. Errors carry machine-readable codes, actionable
+suggestions, and specific exit codes (`2` = not initialized, `3` = merge conflicts).
+
+```bash
+tuck status --json | jq '.data'
+tuck add ~/.zshrc --json --yes    # never hangs; fails fast if a prompt is needed
+```
+
+See [docs/AGENT-MODE.md](docs/AGENT-MODE.md) and [docs/ERROR_CODES.md](docs/ERROR_CODES.md) for the full contract.
 
 ## How It Works
 

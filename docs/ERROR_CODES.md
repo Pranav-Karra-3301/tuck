@@ -122,7 +122,13 @@ Suggestions:
 
 Using `--force` to bypass secret scanning is logged to the audit trail for security tracking, which helps identify when potentially sensitive operations occurred. The active audit log lives in the platform state directory — on macOS `~/Library/Application Support/tuck/audit.log`, on Linux `$XDG_STATE_HOME/tuck/audit.log` (falling back to `~/.local/state/tuck/audit.log`). (`~/.tuck/audit.log` is the deprecated legacy location.)
 
-### Non-Interactive Mode (CI/Scripts)
+### Non-Interactive Mode (CI/Scripts/Agents)
+
+Pass `--non-interactive` (or `--json`, which implies it) to guarantee tuck never
+blocks on a prompt: any command that would need to ask a question fails fast with
+`OPERATION_CANCELLED` instead of hanging. This is also the default whenever stdin
+is not a TTY. Combine with `-y/--yes` to auto-confirm ordinary prompts. See
+[AGENT-MODE.md](./AGENT-MODE.md) for the full JSON-envelope and exit-code contract.
 
 When running tuck in non-interactive environments (CI pipelines, scripts), dangerous operations that normally require typed confirmation will fail by default.
 
