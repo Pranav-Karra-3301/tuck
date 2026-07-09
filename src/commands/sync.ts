@@ -34,6 +34,7 @@ import { createSnapshot } from '../lib/timemachine.js';
 import { undoBreadcrumb } from '../lib/undoHint.js';
 import { resolveLiveTarget } from '../lib/repoScope.js';
 import { isJsonMode } from '../lib/jsonOutput.js';
+import { isNonInteractive } from '../lib/agentMode.js';
 import {
   copyFileOrDir,
   getFileChecksum,
@@ -60,8 +61,14 @@ import {
   persistPendingMergeBases,
   loadPendingMergeBases,
   clearPendingMergeBases,
+  combineMergeBases,
+  type MergeDecision,
 } from '../lib/jsonMergeSync.js';
-import { resolveMergePolicy, type ConflictResolution } from '../lib/jsonMerge.js';
+import {
+  resolveMergePolicy,
+  type ConflictResolution,
+  type MergePolicy,
+} from '../lib/jsonMerge.js';
 import { setJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
 import type { SyncOptions, FileChange } from '../types.js';
 import { detectDotfiles, DETECTION_CATEGORIES, type DetectedFile } from '../lib/detect.js';
@@ -403,8 +410,12 @@ const pullIfBehind = async (
 
       // Non-interactive / JSON callers cannot drive the resolution UI. Throw
       // a structured error so agents can detect and report it via the JSON
-      // envelope.
-      const nonInteractive = options.json === true || options.yes === true || isJsonMode();
+      // envelope. isNonInteractive() also covers the global `--non-interactive`
+      // flag and a non-TTY stdin — without it, `--non-interactive` alone fell
+      // through to resolveConflictsInline, whose prompt throws mid-rebase and
+      // wedges ~/.tuck (the abort below never ran).
+      const nonInteractive =
+        options.json === true || options.yes === true || isJsonMode() || isNonInteractive();
       if (nonInteractive) {
         // Abort the in-progress rebase BEFORE throwing so ~/.tuck is left in a
         // clean state — an automated/JSON caller cannot resolve conflicts, and
@@ -450,6 +461,16 @@ const pullIfBehind = async (
   } catch (error) {
     if (error instanceof MergeConflictsError) {
       throw error;
+    }
+    // A prompt-cancel or unexpected error may have escaped while a rebase was
+    // still in progress (e.g. a resolve prompt that threw in a non-TTY context).
+    // Never leave a half-finished rebase behind — it wedges every later git op,
+    // and the caller continues into stage/commit. Abort defensively; this is a
+    // no-op when no rebase/merge is in progress.
+    try {
+      await abortRebase(tuckDir);
+    } catch {
+      // Nothing in progress, or abort failed — surface the original error below.
     }
     return {
       pulled: false,
@@ -780,7 +801,15 @@ const scanJsonKeySubtrees = async (
   changes: FileChange[]
 ): Promise<Array<{ source: string; count: number; patterns: string[] }>> => {
   const { scanContent } = await import('../lib/secrets/scanner.js');
+  const { loadAllowlist, isMatchAllowed } = await import('../lib/secrets/allowlist.js');
   const trackedFiles = await getAllTrackedFiles(tuckDir);
+  // Respect the allowlist so findings the user has already marked safe never
+  // re-prompt on every sync. The whole-file scan a few lines up goes through
+  // scanForSecrets (which loads + applies the allowlist); the raw scanContent
+  // used here does not, so we filter its matches with the same allowlist. Load
+  // it lazily on the first raw match so a sync with no --key files (or none with
+  // findings) never touches the allowlist file.
+  let allowlistEntries: Awaited<ReturnType<typeof loadAllowlist>>['entries'] | null = null;
   const findings: Array<{ source: string; count: number; patterns: string[] }> = [];
   for (const change of changes) {
     if (change.status !== 'modified') continue;
@@ -790,7 +819,15 @@ const scanJsonKeySubtrees = async (
     if (live === null || !(await pathExists(live))) continue;
     try {
       const subtree = extractSubtree(await readFile(live, 'utf-8'), entry.jsonKey);
-      const matches = scanContent(subtree);
+      const rawMatches = scanContent(subtree);
+      if (rawMatches.length === 0) continue;
+      if (allowlistEntries === null) {
+        allowlistEntries = (await loadAllowlist(tuckDir)).entries;
+      }
+      const collapsedLive = collapsePath(live);
+      const matches = rawMatches.filter(
+        (m) => !isMatchAllowed(m, collapsedLive, allowlistEntries!)
+      );
       if (matches.length > 0) {
         findings.push({
           source: change.source,
@@ -1012,33 +1049,38 @@ const scanAndHandleSecrets = async (
   return { proceed: true, redactionPlans: [] };
 };
 
+/** A merge-policy file resolved to concrete paths + its three versions. */
+interface MergeItem {
+  source: string;
+  change: TrackedFileChange;
+  livePath: string;
+  destPath: string;
+  baseText: string;
+  liveText: string;
+  remoteText: string;
+  policy: MergePolicy;
+  decision: MergeDecision;
+}
+
 /**
- * Structured three-way merge for tracked JSON files after a pull.
- *
- * When a merge-policy file was modified locally AND the pull advanced its repo
- * copy, a naive live→repo capture would silently discard the incoming changes.
- * Instead we three-way merge base(pre-pull repo) × local(live) × remote(post-
- * pull repo), union allowlists/plugin lists, and write the reconciled document
- * to BOTH the live file and the repo copy so the two machines converge. The
- * later `syncFiles` copy then captures the already-merged content.
- *
- * Returns `false` when the user aborts on an unresolvable conflict (the caller
- * stops the sync), `true` otherwise.
+ * For each modified merge-policy change with a captured base, resolve its paths,
+ * read its three versions and compute a merge decision — WITHOUT writing
+ * anything. jsonKey (`--key`) files are excluded: their repo copy is a subtree
+ * document, not the whole file, so a whole-file three-way merge would corrupt
+ * both copies (they sync via the subtree-aware path instead).
  */
-const reconcileJsonMerges = async (
+const collectMergeItems = async (
   tuckDir: string,
   changes: TrackedFileChange[],
-  mergeBases: Map<string, string>,
-  options: SyncOptions
-): Promise<boolean> => {
-  if (mergeBases.size === 0) return true;
-
+  mergeBases: Map<string, string>
+): Promise<MergeItem[]> => {
   const trackedFiles = await getAllTrackedFiles(tuckDir);
   const bySource = new Map<string, (typeof trackedFiles)[string]>();
   for (const file of Object.values(trackedFiles)) {
     bySource.set(file.source, file);
   }
 
+  const items: MergeItem[] = [];
   for (const change of changes) {
     if (change.status !== 'modified') continue;
 
@@ -1047,6 +1089,9 @@ const reconcileJsonMerges = async (
 
     const entry = bySource.get(change.source);
     if (!entry) continue;
+    // jsonKey files are never whole-file merged (their repo copy is only the
+    // tracked subtree); leave them entirely to the subtree-aware sync path.
+    if (entry.jsonKey) continue;
 
     const policy = resolveMergePolicy(entry.source, entry.merge);
     if (!policy) continue;
@@ -1066,31 +1111,134 @@ const reconcileJsonMerges = async (
       continue;
     }
 
-    let decision = decideFileMerge(baseText, liveText, remoteText, policy);
+    const decision = decideFileMerge(baseText, liveText, remoteText, policy);
+    items.push({
+      source: change.source,
+      change,
+      livePath,
+      destPath,
+      baseText,
+      liveText,
+      remoteText,
+      policy,
+      decision,
+    });
+  }
+  return items;
+};
 
-    if (decision.kind === 'skip') continue;
+/** Write a reconciled document to both the live file and the repo copy. */
+const applyMergedText = async (item: MergeItem, mergedText: string): Promise<void> => {
+  // Snapshot the live file before we rewrite it so `tuck undo` can recover the
+  // pre-merge version even if the union surprises the user.
+  try {
+    await createSnapshot([item.livePath], `Pre-merge backup: ${item.change.path}`);
+  } catch (error) {
+    logger.dim(
+      `Pre-merge snapshot skipped: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  await writeFile(item.livePath, mergedText, 'utf-8');
+  await writeFile(item.destPath, mergedText, 'utf-8');
+  logger.file('merge', collapsePath(item.livePath));
+};
+
+/**
+ * Persist the bases that must survive to the NEXT sync and drop the rest.
+ *
+ * A base is retained only when its file still needs attention — it is
+ * `unparsable` (couldn't be structurally merged) or, interactively, a conflict
+ * the user has not yet resolved. Reconciled/clean, `skip` (remote unchanged),
+ * and files no longer present in this run's changes are all dropped, so a base
+ * left over from an out-of-band resolution never resurfaces as a spurious
+ * conflict against an ancient ancestor.
+ */
+const persistRetainedBases = async (retain: Map<string, string>): Promise<void> => {
+  if (retain.size > 0) {
+    await persistPendingMergeBases(retain);
+  } else {
+    await clearPendingMergeBases();
+  }
+};
+
+/**
+ * Structured three-way merge for tracked JSON files after a pull.
+ *
+ * When a merge-policy file was modified locally AND the pull advanced its repo
+ * copy, a naive live→repo capture would silently discard the incoming changes.
+ * Instead we three-way merge base(pre-pull repo) × local(live) × remote(post-
+ * pull repo), union allowlists/plugin lists, and write the reconciled document
+ * to BOTH the live file and the repo copy so the two machines converge. The
+ * later `syncFiles` copy then captures the already-merged content.
+ *
+ * Non-interactive callers (JSON / --yes / --non-interactive / non-TTY) cannot
+ * choose a resolution. If ANY file conflicts we persist the bases for recovery
+ * and throw {@link JsonMergeConflictsError} (exit 3) BEFORE writing anything —
+ * so the later capture/commit/push can never overwrite the conflicted remote.
+ * Clean merges are still auto-applied when no file conflicts.
+ *
+ * Returns `false` when the user aborts on an unresolvable conflict (the caller
+ * stops the sync), `true` otherwise.
+ */
+const reconcileJsonMerges = async (
+  tuckDir: string,
+  changes: TrackedFileChange[],
+  mergeBases: Map<string, string>,
+  options: SyncOptions,
+  forceNonInteractive = false
+): Promise<boolean> => {
+  // Even with no changes, we may hold stale persisted bases (e.g. an out-of-band
+  // resolution). collectMergeItems returns nothing, retain stays empty, and the
+  // clear below drops them.
+  if (mergeBases.size === 0) return true;
+
+  // `forceNonInteractive` is set by the non-prompting commit paths (`-m msg`,
+  // which throws rather than prompts even on a TTY, mirroring its secret gate).
+  const nonInteractive =
+    forceNonInteractive ||
+    options.yes === true ||
+    options.json === true ||
+    isJsonMode() ||
+    isNonInteractive();
+
+  const items = await collectMergeItems(tuckDir, changes, mergeBases);
+
+  // Non-interactive: a single conflict aborts the whole reconcile up front, so
+  // no clean merge is written before we bail. Persist ALL bases (nothing was
+  // applied this run) so the next sync re-detects and can reconcile the rest.
+  if (nonInteractive) {
+    const conflicted = items.find((i) => i.decision.kind === 'conflict');
+    if (conflicted && conflicted.decision.kind === 'conflict') {
+      await persistPendingMergeBases(mergeBases);
+      throw new JsonMergeConflictsError(
+        collapsePath(conflicted.livePath),
+        conflicted.decision.conflicts.map((cf) => cf.path)
+      );
+    }
+  }
+
+  // Bases to keep for the next run: unparsable files always, plus (interactive)
+  // conflicts the user leaves unresolved on abort.
+  const retain = new Map<string, string>();
+
+  for (const item of items) {
+    let decision = item.decision;
+
+    if (decision.kind === 'skip') continue; // remote unchanged → base no longer needed
 
     if (decision.kind === 'unparsable') {
       logger.warning(
-        `Could not structurally merge ${collapsePath(livePath)} (not valid JSON on one side) — keeping local version`
+        `Could not structurally merge ${collapsePath(item.livePath)} (not valid JSON on one side) — keeping local version`
       );
+      // Never discard a base for a file we could not reconcile.
+      retain.set(item.source, item.baseText);
       continue;
     }
 
     if (decision.kind === 'conflict') {
-      // Non-interactive callers cannot choose a resolution: surface a structured
-      // error (exit code 3) instead of silently picking a side.
-      const nonInteractive = options.yes === true || options.json === true || isJsonMode();
-      if (nonInteractive) {
-        await persistPendingMergeBases(mergeBases);
-        throw new JsonMergeConflictsError(
-          collapsePath(livePath),
-          decision.conflicts.map((cf) => cf.path)
-        );
-      }
-
+      // Non-interactive callers already threw above; only interactive reaches here.
       console.log();
-      console.log(c.yellow(`Merge conflicts in ${collapsePath(livePath)}:`));
+      console.log(c.yellow(`Merge conflicts in ${collapsePath(item.livePath)}:`));
       for (const cf of decision.conflicts) {
         console.log(c.dim(`  • ${cf.path} — ${cf.reason}`));
       }
@@ -1103,10 +1251,15 @@ const reconcileJsonMerges = async (
       ]);
 
       if (choice === 'abort') {
-        // The base lives only in memory this run — persist it so the NEXT sync
-        // can still detect the divergence instead of silently committing local
-        // values over the remote's.
-        await persistPendingMergeBases(mergeBases);
+        // Keep every still-unresolved base (this conflict and any other
+        // conflict/unparsable file) so the NEXT sync can re-detect the
+        // divergence instead of silently committing local values over remote.
+        for (const other of items) {
+          if (other.decision.kind === 'conflict' || other.decision.kind === 'unparsable') {
+            retain.set(other.source, other.baseText);
+          }
+        }
+        await persistPendingMergeBases(retain);
         prompts.cancel('Sync aborted - unresolved JSON merge conflicts');
         prompts.log.info(
           'The merge base was saved; the next `tuck sync` will re-detect these conflicts.'
@@ -1115,33 +1268,20 @@ const reconcileJsonMerges = async (
       }
 
       // Re-run with the chosen strategy so every conflicting leaf resolves.
-      decision = decideFileMerge(baseText, liveText, remoteText, {
-        ...policy,
+      decision = decideFileMerge(item.baseText, item.liveText, item.remoteText, {
+        ...item.policy,
         conflict: choice as ConflictResolution,
       });
     }
 
     if (decision.kind !== 'clean' && decision.kind !== 'conflict') continue;
-    const mergedText = decision.text;
-
-    // Snapshot the live file before we rewrite it so `tuck undo` can recover the
-    // pre-merge version even if the union surprises the user.
-    try {
-      await createSnapshot([livePath], `Pre-merge backup: ${change.path}`);
-    } catch (error) {
-      logger.dim(
-        `Pre-merge snapshot skipped: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-
-    await writeFile(livePath, mergedText, 'utf-8');
-    await writeFile(destPath, mergedText, 'utf-8');
-    logger.file('merge', collapsePath(livePath));
+    await applyMergedText(item, decision.text);
+    // Reconciled → its base is no longer needed (not added to retain).
   }
 
-  // Every conflict was reconciled (or none applied) — drop any abort-recovery
-  // bases from a previous run so stale ancestors never resurface.
-  await clearPendingMergeBases();
+  // Drop reconciled/skipped/stale bases; keep only unparsable (and, on abort
+  // above, unresolved conflicts — but that path already returned).
+  await persistRetainedBases(retain);
   return true;
 };
 
@@ -1150,8 +1290,11 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
 
   // Repo-copy snapshots captured before a pull, used for the structured JSON
   // merge in STEP 2.6. Seeded from any bases persisted by a previous aborted
-  // run (abort recovery); bases captured by THIS run's pull take precedence.
-  let mergeBases = await loadPendingMergeBases();
+  // run (abort recovery). PERSISTED pending bases take precedence over bases
+  // captured by THIS run's pull: after an abort the repo copy already holds the
+  // previously-pulled remote, so a "fresh" base would be the wrong ancestor.
+  const pendingBases = await loadPendingMergeBases();
+  let mergeBases = new Map(pendingBases);
 
   // ========== STEP 1: Pull from remote if behind ==========
   if (options.pull !== false && (await hasRemote(tuckDir))) {
@@ -1160,7 +1303,9 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
 
     const pullResult = await pullIfBehind(tuckDir, options);
     if (pullResult.mergeBases) {
-      mergeBases = new Map([...mergeBases, ...pullResult.mergeBases]);
+      // Fresh bases fill in files with no pending base; persisted pending bases
+      // win on collision.
+      mergeBases = combineMergeBases(pullResult.mergeBases, pendingBases);
     }
     if (pullResult.error) {
       pullSpinner.stop(`Could not pull: ${pullResult.error}`);
@@ -1193,8 +1338,10 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
   // ========== STEP 2.4: Structured three-way merge for JSON policy files ==========
   // Reconcile locally-modified JSON files against the freshly-pulled repo copy
   // BEFORE scanning/committing, so an agent-rewritten config never silently
-  // overwrites the incoming changes. Only does work when a pull captured bases.
-  if (changes.length > 0 && mergeBases.size > 0) {
+  // overwrites the incoming changes. Runs whenever we hold any base (fresh or
+  // persisted) — even with no changes, so stale persisted bases from an
+  // out-of-band resolution get cleared instead of lingering.
+  if (mergeBases.size > 0) {
     const shouldContinue = await reconcileJsonMerges(tuckDir, changes, mergeBases, options);
     if (!shouldContinue) {
       return;
@@ -1530,6 +1677,48 @@ export const runSync = async (options: SyncOptions = {}): Promise<void> => {
 };
 
 /**
+ * Non-interactive pull + structured JSON reconcile, shared by the `--json` /
+ * `--yes` and message (`-m`) sync paths. Mirrors STEP 1 + STEP 2.4 of the
+ * interactive flow: pull if behind, capture the pre-pull repo copies as merge
+ * bases (persisted pending bases win over freshly-pulled ones), then three-way
+ * merge every diverged JSON-policy file.
+ *
+ * This MUST run before the caller's detectChanges / syncFiles / commit / push.
+ * On an unresolvable conflict {@link reconcileJsonMerges} persists the bases and
+ * throws {@link JsonMergeConflictsError} (exit 3) BEFORE returning — so the
+ * later live→repo capture can never overwrite the conflicted remote (permanent
+ * data loss). Clean merges are auto-applied in place; the caller's own
+ * detectChanges then captures the merged content as an ordinary modification.
+ */
+const pullAndReconcileNonInteractive = async (
+  tuckDir: string,
+  options: SyncOptions
+): Promise<void> => {
+  const pendingBases = await loadPendingMergeBases();
+  let mergeBases = new Map(pendingBases);
+
+  if (options.pull !== false && (await hasRemote(tuckDir))) {
+    const pullResult = await pullIfBehind(tuckDir, options);
+    if (pullResult.mergeBases) {
+      // Fresh bases fill in files with no pending base; persisted bases win.
+      mergeBases = combineMergeBases(pullResult.mergeBases, pendingBases);
+    }
+    if (pullResult.error) {
+      const msg = `Could not pull: ${pullResult.error} — continuing with local changes`;
+      if (options.json) addJsonWarning(msg);
+      else logger.warning(msg);
+    }
+  }
+
+  if (mergeBases.size > 0) {
+    const changes = await detectChanges(tuckDir);
+    // forceNonInteractive: throw JsonMergeConflictsError on any conflict (after
+    // persisting bases) rather than prompt — these paths never present prompts.
+    await reconcileJsonMerges(tuckDir, changes, mergeBases, options, true);
+  }
+};
+
+/**
  * Scan the about-to-be-synced changes for secrets and either block or warn,
  * honoring `security.blockOnSecrets`. This is the SINGLE secret gate shared by
  * every non-interactive sync path (`--json`, `--yes`, and the message path) so
@@ -1631,6 +1820,11 @@ export const runSyncCommand = async (
 
   // If JSON or auto-yes mode and we have a path through, use non-interactive flow.
   if (options.json || options.yes) {
+    // Pull + structured-merge BEFORE detecting/committing so an incoming remote
+    // change is unioned into the live file rather than silently overwritten. On
+    // an unresolvable conflict this throws JsonMergeConflictsError (exit 3) with
+    // the bases persisted for recovery — before anything is committed/pushed.
+    await pullAndReconcileNonInteractive(tuckDir, options);
     const changes = await detectChanges(tuckDir);
     if (changes.length === 0) {
       // No tracked-file DRIFT — but the working tree may still hold uncommitted
@@ -1723,6 +1917,11 @@ export const runSyncCommand = async (
     await runInteractiveSync(tuckDir, options);
     return;
   }
+
+  // Pull + structured-merge BEFORE detecting/committing (same contract as the
+  // JSON/--yes path): union incoming remote changes into the live file, or throw
+  // JsonMergeConflictsError (exit 3) with bases persisted, before any commit/push.
+  await pullAndReconcileNonInteractive(tuckDir, options);
 
   // Detect changes
   const changes = await detectChanges(tuckDir);

@@ -40,6 +40,12 @@ export type MergeDecision =
  * pull so the captured contents are the common ancestor for the three-way
  * merge. Keyed by the manifest `source` identity. Template/encrypted files are
  * one-directional and never merged, so they are skipped.
+ *
+ * jsonKey (`--key`) files are ALSO skipped: their repo copy is only the tracked
+ * subtree document while the live file is the whole config, so the whole-file
+ * three-way merge here would splice subtree keys into the live root and
+ * transiently write the whole live file (tokens included) back into the repo.
+ * They have their own subtree-aware sync path instead.
  */
 export const captureMergeBases = async (
   tuckDir: string,
@@ -47,7 +53,7 @@ export const captureMergeBases = async (
 ): Promise<Map<string, string>> => {
   const bases = new Map<string, string>();
   for (const file of Object.values(files)) {
-    if (file.template || file.encrypted) continue;
+    if (file.template || file.encrypted || file.jsonKey) continue;
     if (!hasMergePolicy(file.source, file.merge)) continue;
     const destPath = join(tuckDir, file.destination);
     if (await pathExists(destPath)) {
@@ -105,10 +111,23 @@ export const decideFileMerge = (
  * the branch no longer behind, capture no bases, and silently commit local
  * values over the remote's. To keep the conflict recoverable, an aborted run
  * persists its bases to the machine-local state dir and the next sync seeds
- * from them (freshly-pulled bases always win). Cleared after a run that
- * reconciles successfully.
+ * from them. Persisted pending bases take PRECEDENCE over freshly-pulled ones:
+ * after an abort the repo copy already holds the previously-pulled remote, so a
+ * "fresh" base captured this run would be the wrong (post-pull) ancestor.
+ * Cleared per-file once that file is reconciled (or no longer diverges).
  */
 const PENDING_MERGE_BASES_FILE = 'pending-json-merge-bases.json';
+
+/**
+ * Combine freshly-captured merge bases with persisted pending bases. Persisted
+ * bases WIN on collision: after an abort the repo copy already holds the
+ * previously-pulled remote, so a base captured fresh this run would be the wrong
+ * (post-pull) ancestor. Fresh bases only fill in files that have no pending base.
+ */
+export const combineMergeBases = (
+  fresh: Map<string, string>,
+  persisted: Map<string, string>
+): Map<string, string> => new Map([...fresh, ...persisted]);
 
 export const getPendingMergeBasesPath = (): string =>
   join(getStateDir(), PENDING_MERGE_BASES_FILE);

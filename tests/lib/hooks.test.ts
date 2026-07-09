@@ -43,6 +43,7 @@ import {
 } from '../../src/lib/hooks.js';
 import { loadConfig } from '../../src/lib/config.js';
 import { prompts } from '../../src/ui/prompts.js';
+import { setNonInteractive } from '../../src/lib/agentMode.js';
 
 describe('hooks', () => {
   beforeEach(() => {
@@ -128,6 +129,38 @@ describe('hooks', () => {
         // Must take the skip path, never attempt a prompt on a non-TTY stdin.
         expect(prompts.confirm).not.toHaveBeenCalled();
       } finally {
+        process.stdout.isTTY = origStdout;
+        process.stdin.isTTY = origStdin;
+      }
+    });
+
+    it('skips an untrusted hook under --non-interactive even on a full TTY', async () => {
+      // Regression (finding 7): the gate read isJsonMode()/TTY only and ignored
+      // the explicit --non-interactive flag. On a PTY (both std streams TTY),
+      // `tuck sync --non-interactive` with a configured hook then hit the prompt
+      // and died OPERATION_CANCELLED instead of skipping with a warning.
+      vi.mocked(loadConfig).mockResolvedValue({
+        repository: { path: TEST_TUCK_DIR },
+        files: { backupDir: 'backups', symlink: false },
+        hooks: { preSync: 'echo "test"' },
+        templates: {},
+        encryption: {},
+        ui: { color: true, verbose: false },
+      } as never);
+
+      const origStdout = process.stdout.isTTY;
+      const origStdin = process.stdin.isTTY;
+      process.stdout.isTTY = true;
+      process.stdin.isTTY = true;
+      setNonInteractive(true);
+      try {
+        const result = await runHook('preSync', TEST_TUCK_DIR, { silent: true });
+        expect(result.success).toBe(true);
+        expect(result.skipped).toBe(true);
+        // The flag alone must force the skip path — never a prompt.
+        expect(prompts.confirm).not.toHaveBeenCalled();
+      } finally {
+        setNonInteractive(false);
         process.stdout.isTTY = origStdout;
         process.stdin.isTTY = origStdin;
       }

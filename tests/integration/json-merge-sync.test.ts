@@ -18,7 +18,11 @@ vi.unmock('os');
 import { promises as fs, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { captureMergeBases, decideFileMerge } from '../../src/lib/jsonMergeSync.js';
+import {
+  captureMergeBases,
+  decideFileMerge,
+  combineMergeBases,
+} from '../../src/lib/jsonMergeSync.js';
 import { resolveMergePolicy } from '../../src/lib/jsonMerge.js';
 import type { TrackedFileOutput } from '../../src/schemas/manifest.schema.js';
 
@@ -67,6 +71,24 @@ describe('sync-time JSON merge (real temp dirs)', () => {
     };
     const bases = await captureMergeBases(tuckDir, files);
     expect(bases.size).toBe(0);
+  });
+
+  it('NEVER captures a base for a jsonKey (--key) file, even under a merge-policy path', async () => {
+    // The repo copy of a --key file is only the tracked SUBTREE document, while
+    // the live file is the whole config. Whole-file three-way merging it would
+    // splice subtree keys into the live root and transiently write the whole
+    // live file (tokens included) into the repo — data corruption. It must be
+    // skipped so its subtree-aware sync path is the only one that touches it.
+    const subtreeDoc = JSON.stringify({ allow: ['Read'] }, null, 2) + '\n';
+    await fs.writeFile(join(tuckDir, DEST_REL), subtreeDoc, 'utf-8');
+
+    // A source path that WOULD otherwise get a merge policy, but marked jsonKey.
+    const files: Record<string, TrackedFileOutput> = {
+      f1: makeTrackedFile({ source: '~/.claude.json', jsonKey: 'projects.foo' }),
+    };
+    const bases = await captureMergeBases(tuckDir, files);
+    expect(bases.size).toBe(0);
+    expect(bases.has('~/.claude.json')).toBe(false);
   });
 
   it('unions divergent permission allowlists across two machines end to end', async () => {
@@ -127,5 +149,32 @@ describe('sync-time JSON merge (real temp dirs)', () => {
     expect(decision.kind).toBe('conflict');
     if (decision.kind !== 'conflict') throw new Error('expected conflict');
     expect(decision.conflicts.map((c) => c.path)).toContain('model');
+  });
+});
+
+describe('combineMergeBases precedence (persisted wins over fresh)', () => {
+  it('keeps the persisted base on collision, fills gaps from fresh', () => {
+    const fresh = new Map<string, string>([
+      ['~/.claude/settings.json', 'FRESH-WRONG'],
+      ['~/.gitconfig', 'FRESH-ONLY'],
+    ]);
+    const persisted = new Map<string, string>([['~/.claude/settings.json', 'PERSISTED-RIGHT']]);
+
+    const combined = combineMergeBases(fresh, persisted);
+
+    // Persisted ancestor wins — after an abort the repo copy already holds the
+    // previously-pulled remote, so a fresh base captured this run is the wrong
+    // (post-pull) ancestor.
+    expect(combined.get('~/.claude/settings.json')).toBe('PERSISTED-RIGHT');
+    // Files with no pending base still get the fresh base.
+    expect(combined.get('~/.gitconfig')).toBe('FRESH-ONLY');
+    expect(combined.size).toBe(2);
+  });
+
+  it('returns the fresh map contents when nothing is persisted', () => {
+    const fresh = new Map<string, string>([['~/.zshrc', 'BASE']]);
+    const combined = combineMergeBases(fresh, new Map());
+    expect(combined.get('~/.zshrc')).toBe('BASE');
+    expect(combined.size).toBe(1);
   });
 });
