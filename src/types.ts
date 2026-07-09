@@ -176,6 +176,12 @@ export interface AddOptions extends CommonOptions {
 export interface RemoveOptions extends CommonOptions {
   delete?: boolean;
   keepOriginal?: boolean;
+  /**
+   * Proceed with `--delete` even if the pre-delete backup snapshot fails.
+   * Without it, a snapshot failure aborts the deletion (fail-closed) so a
+   * destructive delete never runs without a recovery point.
+   */
+  force?: boolean;
 }
 
 export interface SyncOptions extends CommonOptions {

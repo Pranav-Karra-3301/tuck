@@ -322,4 +322,69 @@ describe('remove command pre-delete snapshot (IDEAS 6.5)', () => {
     // Untrack-only leaves the repo copy in place (recover via git / re-add).
     expect(vol.existsSync(join(TEST_TUCK_DIR, 'files/shell/zshrc'))).toBe(true);
   });
+
+  it('aborts a --delete (fail-closed) when the pre-delete snapshot fails and --force is not set', async () => {
+    const timemachine = await import('../../src/lib/timemachine.js');
+    const snapSpy = vi
+      .spyOn(timemachine, 'createSnapshot')
+      .mockRejectedValueOnce(new Error('disk full'));
+
+    const manifest = createMockManifest();
+    manifest.files['zshrc'] = createMockTrackedFile({
+      source: '~/.zshrc',
+      destination: 'files/shell/zshrc',
+    });
+    vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest));
+    vol.mkdirSync(join(TEST_TUCK_DIR, 'files/shell'), { recursive: true });
+    vol.writeFileSync(join(TEST_TUCK_DIR, 'files/shell/zshrc'), 'export FROM_REPO=1');
+
+    // Snapshot failed and --force was NOT given → the deletion must abort.
+    await expect(runRemove(['~/.zshrc'], { delete: true })).rejects.toThrow(
+      /Refusing to delete without a recovery point/
+    );
+
+    // Nothing was deleted or untracked — fail-closed.
+    expect(vol.existsSync(join(TEST_TUCK_DIR, 'files/shell/zshrc'))).toBe(true);
+    const remaining = await getAllTrackedFiles(TEST_TUCK_DIR);
+    expect(remaining['zshrc']).toBeDefined();
+
+    snapSpy.mockRestore();
+  });
+
+  it('proceeds under --force when the snapshot fails, surfacing a JSON warning', async () => {
+    const timemachine = await import('../../src/lib/timemachine.js');
+    const snapSpy = vi
+      .spyOn(timemachine, 'createSnapshot')
+      .mockRejectedValueOnce(new Error('disk full'));
+
+    const manifest = createMockManifest();
+    manifest.files['zshrc'] = createMockTrackedFile({
+      source: '~/.zshrc',
+      destination: 'files/shell/zshrc',
+    });
+    vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest));
+    vol.mkdirSync(join(TEST_TUCK_DIR, 'files/shell'), { recursive: true });
+    vol.writeFileSync(join(TEST_TUCK_DIR, 'files/shell/zshrc'), 'export FROM_REPO=1');
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    await runRemove(['~/.zshrc'], { delete: true, force: true, json: true });
+
+    writeSpy.mockRestore();
+
+    // --force proceeded with the delete despite the missing backup...
+    expect(vol.existsSync(join(TEST_TUCK_DIR, 'files/shell/zshrc'))).toBe(false);
+    // ...and the missing backup is surfaced in the JSON envelope's warnings.
+    const env = JSON.parse(writes.join('').trim());
+    expect(env.ok).toBe(true);
+    expect((env.warnings ?? []).join(' ')).toMatch(/proceeding without a backup because --force/);
+
+    snapSpy.mockRestore();
+  });
 });

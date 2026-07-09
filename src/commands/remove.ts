@@ -15,8 +15,8 @@ import { deleteFileOrDir, copyFileOrDir } from '../lib/files.js';
 import { resolveLiveTarget } from '../lib/repoScope.js';
 import { createSnapshot } from '../lib/timemachine.js';
 import { undoBreadcrumb } from '../lib/undoHint.js';
-import { NotInitializedError, FileNotTrackedError } from '../errors.js';
-import { setJsonMode, isJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
+import { NotInitializedError, FileNotTrackedError, BackupError } from '../errors.js';
+import { setJsonMode, isJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
 import type { RemoveOptions, FileStrategy } from '../types.js';
 import type { TrackedFileOutput } from '../schemas/manifest.schema.js';
 
@@ -169,11 +169,23 @@ const removeFiles = async (
         );
         snapshotId = snapshot.id;
       } catch (error) {
-        if (!isJsonMode()) {
-          logger.dim(
-            `  Pre-delete snapshot skipped: ${error instanceof Error ? error.message : String(error)}`
+        const reason = error instanceof Error ? error.message : String(error);
+        // Fail CLOSED: a destructive `--delete` must not proceed without a
+        // recovery snapshot. Abort with a clear error unless the user explicitly
+        // opted into `--force`, in which case proceed but surface a warning
+        // (into the JSON envelope in --json mode) so the missing backup is never
+        // silent.
+        if (!options.force) {
+          throw new BackupError(
+            `Could not create a pre-delete backup snapshot: ${reason}. ` +
+              'Refusing to delete without a recovery point.',
+            ['Re-run with --force to delete anyway (no backup will be made)', 'Check available disk space']
           );
         }
+        const warning =
+          `Pre-delete snapshot failed (${reason}); proceeding without a backup because --force was given.`;
+        if (isJsonMode()) addJsonWarning(warning);
+        else logger.warning(warning);
       }
     }
   }
@@ -281,6 +293,7 @@ const runInteractiveRemove = async (tuckDir: string, options: RemoveOptions = {}
   await removeFiles(filesToRemove, tuckDir, {
     delete: shouldDelete,
     keepOriginal: options.keepOriginal,
+    force: options.force,
   });
 
   prompts.outro(`Removed ${selectedFiles.length} ${selectedFiles.length === 1 ? 'file' : 'files'}`);
@@ -325,6 +338,7 @@ export const removeCommand = new Command('remove')
   .description('Stop tracking dotfiles')
   .argument('[paths...]', 'Paths to dotfiles to untrack')
   .option('--delete', 'Also delete from tuck repository')
+  .option('--force', 'With --delete, proceed even if the pre-delete backup snapshot fails (no backup)')
   .option('--keep-original', "Don't restore symlinks to regular files")
   .option('--json', 'Emit JSON envelope to stdout (suppresses interactive UI)')
   .option('-y, --yes', 'Auto-confirm prompts (required with --json for the interactive picker)')

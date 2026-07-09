@@ -4,6 +4,12 @@ import { join } from 'path';
 import { createMockManifest, createMockTrackedFile } from '../utils/factories.js';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
 import { encryptFileContent } from '../../src/lib/crypto/fileEncryption.js';
+import { getFileChecksum } from '../../src/lib/files.js';
+import {
+  getDriftEntry,
+  compareLiveToCache,
+  resetDriftKeyCache,
+} from '../../src/lib/crypto/driftCache.js';
 
 const cloneRepoMock = vi.fn();
 const createPreApplySnapshotMock = vi.fn();
@@ -665,5 +671,85 @@ describe('apply command behavior', () => {
     await runApply('gitlab:team/dotfiles', { dryRun: true });
 
     expect(cloneRepoMock).toHaveBeenCalledWith('https://gitlab.com/team/dotfiles.git', expect.any(String));
+  });
+
+  it('includes the pre-apply snapshot id and undo command in the JSON envelope', async () => {
+    cloneSetup = (dir: string) => {
+      const manifest = createMockManifest({
+        files: {
+          safe: createMockTrackedFile({ source: '~/.zshrc', destination: 'files/shell/zshrc' }),
+        },
+      });
+      vol.mkdirSync(join(dir, 'files', 'shell'), { recursive: true });
+      vol.writeFileSync(join(dir, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
+      vol.writeFileSync(join(dir, 'files', 'shell', 'zshrc'), 'export NEW=1');
+    };
+
+    createPreApplySnapshotMock.mockResolvedValueOnce({ id: '2026-07-09-113355' });
+
+    const { __resetJsonEmitState } = await import('../../src/lib/jsonOutput.js');
+    __resetJsonEmitState();
+
+    const writes: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+    const { runApply } = await import('../../src/commands/apply.js');
+    await runApply('user/repo', { json: true, yes: true } as never);
+
+    writeSpy.mockRestore();
+
+    const env = JSON.parse(writes.join('').trim());
+    expect(env.ok).toBe(true);
+    // Agents get a concrete recovery pointer: the snapshot id and the exact undo command.
+    expect(env.data.snapshot).toBe('2026-07-09-113355');
+    expect(env.data.undo).toBe('Undo this change: tuck undo 2026-07-09-113355  (or tuck undo --latest)');
+  });
+
+  it('warms the encrypted-file drift cache after applying an encrypted file', async () => {
+    resetDriftKeyCache();
+    const plaintext = 'SECRET=1';
+    const ciphertext = await encryptFileContent(Buffer.from(plaintext), 'pw');
+
+    // A local directory source so the repo copy content (and thus its checksum)
+    // is deterministic and readable after the apply.
+    const localSrc = join(TEST_HOME, 'dotfiles-src');
+    const manifest = createMockManifest({
+      files: {
+        enc: createMockTrackedFile({
+          source: '~/.netrc',
+          destination: 'files/shell/netrc',
+          encrypted: true,
+        }),
+      },
+    });
+    vol.mkdirSync(join(localSrc, 'files', 'shell'), { recursive: true });
+    vol.writeFileSync(join(localSrc, '.tuckmanifest.json'), JSON.stringify(manifest, null, 2));
+    vol.writeFileSync(join(localSrc, 'files', 'shell', 'netrc'), ciphertext);
+
+    const { setJsonMode } = await import('../../src/lib/jsonOutput.js');
+    setJsonMode(false);
+
+    const { runApply } = await import('../../src/commands/apply.js');
+    await runApply(localSrc, { replace: true });
+
+    // The decrypted plaintext landed on the live system.
+    expect(vol.readFileSync(join(TEST_HOME, '.netrc'), 'utf-8')).toBe(plaintext);
+
+    // A drift entry was recorded, keyed by the manifest id, and the live bytes
+    // now match the recorded last-known-good fingerprint — so a later read-only
+    // status/diff can detect drift WITHOUT decrypting.
+    const entry = await getDriftEntry('enc');
+    expect(entry).not.toBeNull();
+
+    // The repo copy content is identical to the local source (getFileChecksum
+    // hashes content), so recompute the checksum the recorder used.
+    const repoChecksum = await getFileChecksum(join(localSrc, 'files', 'shell', 'netrc'));
+    const liveBytes = vol.readFileSync(join(TEST_HOME, '.netrc')) as Buffer;
+    expect(await compareLiveToCache('enc', liveBytes, repoChecksum)).toBe('match');
   });
 });

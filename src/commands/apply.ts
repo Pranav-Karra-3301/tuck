@@ -17,7 +17,8 @@ import {
   getTuckDir,
 } from '../lib/paths.js';
 import { resolveWriteTarget, setKnownRepoRoots, allowedRoots, type RepoWriteTarget } from '../lib/writeContext.js';
-import { setFilePermissions, copyFileOrDir } from '../lib/files.js';
+import { setFilePermissions, copyFileOrDir, getFileChecksum } from '../lib/files.js';
+import { recordDriftEntry } from '../lib/crypto/driftCache.js';
 import { resolveLiveTarget, resolveRepoRoot, bindRepo } from '../lib/repoScope.js';
 import { cloneRepo } from '../lib/git.js';
 import { isGhInstalled, ghCloneRepo, repoExists } from '../lib/github.js';
@@ -258,12 +259,12 @@ const prepareWriteTarget = async (writeTarget: string): Promise<void> => {
  * is per-file and does not apply to a directory tree.
  */
 const applyDirectoryEntry = async (file: ApplyFile, dryRun: boolean): Promise<void> => {
-  const exists = await pathExists(file.destination);
+  const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
+  const exists = await pathExists(writeTarget);
   if (dryRun) {
     logger.file(exists ? 'modify' : 'add', `${collapsePath(file.destination)} (directory)`);
     return;
   }
-  const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
   await prepareWriteTarget(writeTarget);
   await copyFileOrDir(file.repoPath, writeTarget, { overwrite: true });
   await applyRecordedPermissions(writeTarget, file.permissions);
@@ -296,12 +297,12 @@ export const isValidUtf8 = (buf: Buffer): boolean => {
  * materialized).
  */
 const applyBinaryEntry = async (file: ApplyFile, dryRun: boolean): Promise<void> => {
-  const exists = await pathExists(file.destination);
+  const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
+  const exists = await pathExists(writeTarget);
   if (dryRun) {
     logger.file(exists ? 'modify' : 'add', collapsePath(file.destination));
     return;
   }
-  const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
   await prepareWriteTarget(writeTarget);
   await copyFileOrDir(file.repoPath, writeTarget, { overwrite: true });
   await applyRecordedPermissions(writeTarget, file.permissions);
@@ -338,6 +339,8 @@ export interface ApplyOptions {
 }
 
 export interface ApplyFile {
+  /** Manifest file id — used to key the encrypted-file drift cache. */
+  id: string;
   source: string;
   /** Absolute LIVE write target on this machine (home path or repo checkout path). */
   destination: string;
@@ -375,6 +378,14 @@ interface ApplyResult {
      * home file, escaping the sandbox.
      */
     writeTarget: string;
+    /**
+     * True when the written file is a JSON-key subtree entry. Such files carry
+     * UNTRACKED keys tuck does not manage, so the whole-file local-store secret
+     * restore must SKIP them — their subtree secrets are resolved in-place during
+     * apply. Rewriting the whole file could splice a secret into (or emit a bogus
+     * unresolved warning about) an untracked key.
+     */
+    jsonKey?: boolean;
   }>;
   /** repo-scoped sources skipped because their repo is unbound on this machine. */
   skippedUnboundRepos: string[];
@@ -383,8 +394,31 @@ interface ApplyResult {
 const execFileAsync = promisify(execFile);
 
 /**
+ * Warm the encrypted-file drift cache after apply writes an encrypted file's
+ * plaintext. Records a keyed-HMAC fingerprint pinned to the repo copy's checksum
+ * so a later read-only `tuck status`/`tuck diff` can detect local drift WITHOUT
+ * decrypting (see lib/crypto/driftCache.ts). Best-effort: a cache miss/failure
+ * must NEVER fail the apply — the worst case is the next status degrades to
+ * "unknown" for this file.
+ */
+const recordEncryptedDrift = async (
+  fileId: string,
+  repoPath: string,
+  plaintext: string
+): Promise<void> => {
+  try {
+    const repoChecksum = await getFileChecksum(repoPath);
+    await recordDriftEntry(fileId, plaintext, repoChecksum);
+  } catch {
+    // Never fail an apply over a drift-cache write.
+  }
+};
+
+/**
  * Resolve the new/modify status of every file about to be applied by checking
- * whether its live destination already exists. Feeds the pre-apply diff summary
+ * whether its RESOLVED write target already exists. Under --root the write
+ * target is the sandbox copy, so a file present in the real home but absent in
+ * the sandbox correctly labels as "(new)". Feeds the pre-apply diff summary
  * (IDEAS 2.4) shown before anything is touched.
  */
 const buildApplyDiffItems = async (files: ApplyFile[]): Promise<ApplyDiffItem[]> =>
@@ -392,7 +426,9 @@ const buildApplyDiffItems = async (files: ApplyFile[]): Promise<ApplyDiffItem[]>
     files.map(async (file) => ({
       destination: collapsePath(file.destination),
       category: file.category,
-      status: (await pathExists(file.destination)) ? ('modify' as const) : ('new' as const),
+      status: (await pathExists(resolveWriteTarget(file.destination, file.repoTarget)))
+        ? ('modify' as const)
+        : ('new' as const),
     }))
   );
 
@@ -734,7 +770,7 @@ export const prepareFilesToApply = async (
   const skipped: string[] = [];
   const unsafe: string[] = [];
 
-  for (const [_id, file] of Object.entries(manifest.files)) {
+  for (const [id, file] of Object.entries(manifest.files)) {
     // Scope to a single bundle when requested. Treat missing/legacy bundle
     // values as "default" so legacy manifests stay applicable.
     if (bundle && (file.bundle ?? 'default') !== bundle) {
@@ -817,6 +853,7 @@ export const prepareFilesToApply = async (
     }
 
     files.push({
+      id,
       source: file.source,
       destination: liveTarget,
       category: file.category,
@@ -877,9 +914,19 @@ const resolveFileSecrets = async (
  * Apply a JSON-key entry: deep-merge the repo's stored subtree back into the
  * live file, leaving every other key untouched. Used by BOTH the merge and
  * replace strategies — a JSON subtree is never allowed to clobber the whole
- * file, so "replace" still means "replace only the tracked key". Secret
- * placeholders inside the subtree are resolved on the merged content, exactly
- * like whole-file entries.
+ * file, so "replace" still means "replace only the tracked key".
+ *
+ * The live/merge-base JSON is read from the RESOLVED write target (the sandbox
+ * copy under --root), never `file.destination` (the real home) — otherwise a
+ * sandboxed apply would copy the operator's real-home untracked keys (tokens,
+ * machine state) into the agent-readable sandbox and ignore existing sandbox
+ * content as the merge base.
+ *
+ * Secret placeholders are resolved on the TRACKED SUBTREE ONLY, before it is
+ * merged into the live file — never on the untracked remainder, which tuck does
+ * not manage. Resolving over the whole merged file would splice a tuck secret
+ * into an untracked key that happens to contain `{{NAME}}` text (corrupting data
+ * tuck doesn't own) or emit a bogus "unresolved placeholder" warning for it.
  */
 const applyJsonKeyEntry = async (
   file: ApplyFile,
@@ -888,27 +935,33 @@ const applyJsonKeyEntry = async (
   dryRun: boolean,
   result: ApplyResult
 ): Promise<void> => {
+  const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
   const repoSubtree = rawBytes.toString('utf8');
-  const exists = await pathExists(file.destination);
-  const liveContent = exists ? await readFile(file.destination, 'utf8') : null;
-  let merged = mergeSubtreeIntoLive(liveContent, repoSubtree, file.jsonKey as string);
 
-  const secretsResult = await resolveFileSecrets(merged, tuckDir);
-  merged = secretsResult.content;
+  // Resolve secrets in the tracked subtree BEFORE merging it into the live file.
+  const secretsResult = await resolveFileSecrets(repoSubtree, tuckDir);
+  const resolvedSubtree = secretsResult.content;
   if (secretsResult.unresolved.length > 0) {
     result.filesWithPlaceholders.push({
       path: collapsePath(file.destination),
       placeholders: secretsResult.unresolved,
-      writeTarget: resolveWriteTarget(file.destination, file.repoTarget),
+      writeTarget,
+      // Flag so the whole-file local-store restore skips this file — its subtree
+      // secrets were already handled here and its untracked keys must not be
+      // rewritten.
+      jsonKey: true,
     });
   }
+
+  const exists = await pathExists(writeTarget);
+  const liveContent = exists ? await readFile(writeTarget, 'utf8') : null;
+  const merged = mergeSubtreeIntoLive(liveContent, resolvedSubtree, file.jsonKey as string);
 
   if (dryRun) {
     logger.file(exists ? 'modify' : 'add', `${collapsePath(file.destination)} (--key ${file.jsonKey})`);
     return;
   }
 
-  const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
   await prepareWriteTarget(writeTarget);
   await writeFile(writeTarget, merged, 'utf-8');
   await applyRecordedPermissions(writeTarget, file.permissions);
@@ -988,6 +1041,11 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
       throw err;
     }
 
+    // The materialized plaintext BEFORE secret resolution — this is the drift
+    // fingerprint stateModel compares against (it records materialize(repo), not
+    // the post-resolution bytes), so warm the cache with the same value.
+    const materialized = fileContent;
+
     // Resolve placeholders using configured backend (1Password, Bitwarden, pass, or local)
     const secretsResult = await resolveFileSecrets(fileContent, tuckDir);
     fileContent = secretsResult.content;
@@ -1003,9 +1061,15 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
       });
     }
 
-    if (isShellFile(file.source) && (await pathExists(file.destination))) {
-      // Use smart merge for shell files
-      const mergeResult = await smartMerge(file.destination, fileContent);
+    // Confine the write under --root (no-op when not sandboxed). Repo files route
+    // through their repo descriptor so the target is the local checkout. Existence
+    // (merge decision + labels) is tested on the RESOLVED target, not the real
+    // home — under --root a home-present/sandbox-absent file must label "(add)".
+    const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
+
+    if (isShellFile(file.source) && (await pathExists(writeTarget))) {
+      // Use smart merge for shell files, merging against the resolved target.
+      const mergeResult = await smartMerge(writeTarget, fileContent);
 
       if (dryRun) {
         logger.file(
@@ -1013,25 +1077,18 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
           `${collapsePath(file.destination)} (${mergeResult.preservedBlocks} blocks preserved)`
         );
       } else {
-        // Confine the write under --root (no-op when not sandboxed). Repo files
-        // route through their repo descriptor so the target is the local checkout.
-        const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
         await prepareWriteTarget(writeTarget);
         await writeFile(writeTarget, mergeResult.content, 'utf-8');
         await applyRecordedPermissions(writeTarget, file.permissions);
+        if (file.encrypted) await recordEncryptedDrift(file.id, file.repoPath, materialized);
         logger.file('merge', collapsePath(file.destination));
       }
     } else {
       // Copy non-shell files directly
+      const fileExists = await pathExists(writeTarget);
       if (dryRun) {
-        if (await pathExists(file.destination)) {
-          logger.file('modify', collapsePath(file.destination));
-        } else {
-          logger.file('add', collapsePath(file.destination));
-        }
+        logger.file(fileExists ? 'modify' : 'add', collapsePath(file.destination));
       } else {
-        const fileExists = await pathExists(file.destination);
-        const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
         // Write file content directly instead of copying (to preserve resolved secrets)
         await prepareWriteTarget(writeTarget);
         await writeFile(writeTarget, fileContent, 'utf-8');
@@ -1039,6 +1096,7 @@ const applyWithMerge = async (files: ApplyFile[], dryRun: boolean): Promise<Appl
         // then the SSH/GPG fixup enforces its stricter floor for those dirs.
         await applyRecordedPermissions(writeTarget, file.permissions);
         await fixSecurePermissions(writeTarget);
+        if (file.encrypted) await recordEncryptedDrift(file.id, file.repoPath, materialized);
         logger.file(fileExists ? 'modify' : 'add', collapsePath(file.destination));
       }
     }
@@ -1122,6 +1180,10 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
       throw err;
     }
 
+    // The materialized plaintext BEFORE secret resolution — the drift
+    // fingerprint stateModel compares against (materialize(repo)).
+    const materialized = fileContent;
+
     // Resolve placeholders using configured backend (1Password, Bitwarden, pass, or local)
     const secretsResult = await resolveFileSecrets(fileContent, tuckDir);
     fileContent = secretsResult.content;
@@ -1137,15 +1199,17 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
       });
     }
 
+    // Existence (labels) is tested on the RESOLVED write target, not the real
+    // home — under --root a home-present/sandbox-absent file must label "(add)".
+    const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
+    const fileExists = await pathExists(writeTarget);
     if (dryRun) {
-      if (await pathExists(file.destination)) {
+      if (fileExists) {
         logger.file('modify', `${collapsePath(file.destination)} (replace)`);
       } else {
         logger.file('add', collapsePath(file.destination));
       }
     } else {
-      const fileExists = await pathExists(file.destination);
-      const writeTarget = resolveWriteTarget(file.destination, file.repoTarget);
       // Write file content directly instead of copying (to preserve resolved secrets)
       await prepareWriteTarget(writeTarget);
       await writeFile(writeTarget, fileContent, 'utf-8');
@@ -1153,6 +1217,7 @@ const applyWithReplace = async (files: ApplyFile[], dryRun: boolean): Promise<Ap
       // then the SSH/GPG fixup enforces its stricter floor for those dirs.
       await applyRecordedPermissions(writeTarget, file.permissions);
       await fixSecurePermissions(writeTarget);
+      if (file.encrypted) await recordEncryptedDrift(file.id, file.repoPath, materialized);
       logger.file(fileExists ? 'modify' : 'add', collapsePath(file.destination));
     }
 
@@ -1276,7 +1341,12 @@ export const tryRestoreSecretsFromLocalStore = async (
     // target (already absolute and sandbox-confined under --root), never
     // expandPath(f.path) — that would resolve the operator's REAL ~ file and
     // rewrite it with plaintext secrets, escaping the sandbox.
-    const pathsToRestore = filesWithPlaceholders.map(f => f.writeTarget);
+    //
+    // JSON-key files are EXCLUDED: their written form carries untracked keys tuck
+    // does not manage, and their tracked subtree's secrets were already resolved
+    // during apply. A whole-file rewrite here could splice a secret into (or warn
+    // about) an untracked key that happens to contain `{{NAME}}` text.
+    const pathsToRestore = filesWithPlaceholders.filter(f => !f.jsonKey).map(f => f.writeTarget);
     const result = await restoreSecrets(pathsToRestore, tuckDir);
 
     if (interactive && result.totalRestored > 0) {
@@ -1479,15 +1549,28 @@ const runInteractiveApply = async (source: string, options: ApplyOptions): Promi
     // as existed:false, and restoreSnapshot (undo) deletes those on rollback — so
     // a `tuck undo` after this apply also removes files this apply newly created,
     // returning the system to its true pre-apply state.
-    const snapshotPaths = files.map((f) => f.destination);
+    //
+    // The snapshot must cover the ACTUAL write targets (resolveWriteTarget), not
+    // `file.destination` (the real live path). Under --root every write is rebased
+    // into the sandbox, so snapshotting the real home would both back up untouched
+    // files AND make `tuck undo` overwrite real-home originals the apply never
+    // touched. resolveWriteTarget is identity when not sandboxed.
+    const snapshotPaths = files.map((f) => resolveWriteTarget(f.destination, f.repoTarget));
 
     let snapshotId: string | undefined;
     if (snapshotPaths.length > 0 && !options.dryRun) {
       const spinner = prompts.spinner();
       spinner.start('Creating backup snapshot...');
-      const snapshot = await createPreApplySnapshot(snapshotPaths, repoId);
-      snapshotId = snapshot.id;
-      spinner.stop(`Backup created: ${snapshot.id}`);
+      // try/finally so a snapshot throw stops the clack spinner instead of
+      // leaving it hung; the abort itself remains fail-closed (error propagates).
+      try {
+        const snapshot = await createPreApplySnapshot(snapshotPaths, repoId);
+        snapshotId = snapshot.id;
+        spinner.stop(`Backup created: ${snapshot.id}`);
+      } catch (err) {
+        spinner.stop('Backup snapshot failed');
+        throw err;
+      }
       console.log();
     }
 
@@ -1629,10 +1712,13 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
     // Create backup if not dry run. Snapshot EVERY destination (not just existing
     // ones) so `tuck undo` can also delete files this apply newly created —
     // createSnapshot records missing paths as existed:false and restoreSnapshot
-    // removes them on undo.
+    // removes them on undo. Snapshot the ACTUAL write targets (resolveWriteTarget)
+    // — under --root the writes are rebased into the sandbox, so snapshotting the
+    // real home would back up untouched files and let undo overwrite real-home
+    // originals. Identity when not sandboxed.
     let snapshotId: string | undefined;
     if (!options.dryRun) {
-      const snapshotPaths = files.map((f) => f.destination);
+      const snapshotPaths = files.map((f) => resolveWriteTarget(f.destination, f.repoTarget));
 
       if (snapshotPaths.length > 0) {
         if (!isJsonMode()) logger.info('Creating backup snapshot...');
@@ -1665,6 +1751,10 @@ export const runApply = async (source: string, options: ApplyOptions): Promise<v
         dryRun: !!options.dryRun,
         skipped: allSkipped,
         profile: activeProfile ?? undefined,
+        // Recovery pointer for agents: the pre-apply snapshot id and the exact
+        // command to roll this apply back.
+        snapshot: snapshotId,
+        undo: snapshotId ? undoBreadcrumb(snapshotId) : undefined,
       });
       return;
     }
@@ -1759,7 +1849,10 @@ export const applyRepoDir = async (
   }
 
   if (!options.dryRun) {
-    const snapshotPaths = files.map((f) => f.destination);
+    // Snapshot the ACTUAL write targets so a sandboxed (--root) bootstrap backs
+    // up the sandbox files, not the untouched real home. Identity when not
+    // sandboxed.
+    const snapshotPaths = files.map((f) => resolveWriteTarget(f.destination, f.repoTarget));
     if (snapshotPaths.length > 0) {
       await createPreApplySnapshot(snapshotPaths, source);
     }

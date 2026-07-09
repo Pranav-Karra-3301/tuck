@@ -22,7 +22,8 @@ import {
   loadReposRegistry,
 } from '../lib/repoScope.js';
 import { loadConfig } from '../lib/config.js';
-import { copyFileOrDir, createSymlink, setFilePermissions } from '../lib/files.js';
+import { copyFileOrDir, createSymlink, setFilePermissions, getFileChecksum } from '../lib/files.js';
+import { recordDriftEntry } from '../lib/crypto/driftCache.js';
 import { ensureDir } from 'fs-extra';
 import { materializeForLive, keystorePassphrase, buildMaterializeCtx } from '../lib/materialize.js';
 import { mergeSubtreeIntoLive } from '../lib/jsonKey.js';
@@ -32,7 +33,7 @@ import { NotInitializedError, FileNotFoundError, TuckError, MaterializeError, Js
 import { CATEGORIES } from '../constants.js';
 import type { RestoreOptions } from '../types.js';
 import { setJsonMode, isJsonMode, emitJsonOk, addJsonWarning } from '../lib/jsonOutput.js';
-import { restoreFiles as restoreSecrets, getSecretCount } from '../lib/secrets/index.js';
+import { restoreFiles as restoreSecrets, restoreContent, getAllSecrets, getSecretCount } from '../lib/secrets/index.js';
 
 /**
  * Fix permissions for SSH files after restore
@@ -208,6 +209,17 @@ const restoreFilesInternal = async (
   const ctx = await buildMaterializeCtx(tuckDir);
   const shouldBackup = options.backup ?? config.files.backupOnRestore;
 
+  // Load stored secrets ONCE when any restore may need them (non-dry-run, not
+  // --no-secrets, and the store is non-empty). getSecretCount gates getAllSecrets
+  // so a zero-secret run never reads the store. jsonKey subtrees resolve their
+  // placeholders in-place during the merge below (subtree-scoped, never the
+  // untracked remainder); whole (non-jsonKey) files run the batch restore pass at
+  // the end.
+  const wantSecrets = !options.noSecrets && !options.dryRun;
+  const secretCount = wantSecrets ? await getSecretCount(tuckDir) : 0;
+  const secretsMap = secretCount > 0 ? await getAllSecrets(tuckDir) : {};
+  const hasSecrets = Object.keys(secretsMap).length > 0;
+
   // Prepare hook options
   const hookOptions: HookOptions = {
     skipHooks: options.noHooks,
@@ -230,6 +242,12 @@ const restoreFilesInternal = async (
 
   let restoredCount = 0;
   const restoredPaths: string[] = [];
+  // Non-jsonKey targets get the whole-file batch secret restore. jsonKey files
+  // are EXCLUDED — their untracked keys must not be rewritten — and their subtree
+  // secrets are resolved in-place during the merge (accumulated below).
+  const wholeFileRestorePaths: string[] = [];
+  let jsonKeySecretsRestored = 0;
+  const jsonKeyUnresolved = new Set<string>();
   const skipped: string[] = [];
 
   for (const file of files) {
@@ -336,7 +354,17 @@ const restoreFilesInternal = async (
     let jsonKeyMerged: string | null = null;
     if (file.jsonKey) {
       try {
-        const repoSubtree = await readFile(file.destination, 'utf8');
+        let repoSubtree = await readFile(file.destination, 'utf8');
+        // Resolve secrets in the tracked SUBTREE ONLY, before merging it into the
+        // live file — never over the untracked remainder, which tuck does not
+        // manage. This is why jsonKey files are excluded from the whole-file
+        // batch restore pass at the end.
+        if (hasSecrets) {
+          const r = restoreContent(repoSubtree, secretsMap);
+          repoSubtree = r.restoredContent;
+          jsonKeySecretsRestored += r.restored;
+          for (const u of r.unresolved) jsonKeyUnresolved.add(u);
+        }
         const liveContent = (await pathExists(targetPath)) ? await readFile(targetPath, 'utf8') : null;
         jsonKeyMerged = mergeSubtreeIntoLive(liveContent, repoSubtree, file.jsonKey);
       } catch (err) {
@@ -388,20 +416,36 @@ const restoreFilesInternal = async (
       await fixGPGPermissions(targetPath);
     });
 
+    // Warm the encrypted-file drift cache with the materialized plaintext we just
+    // wrote, pinned to the repo copy's checksum, so a later read-only status/diff
+    // can detect local drift WITHOUT decrypting (lib/crypto/driftCache.ts).
+    // Best-effort — a cache failure must never fail the restore.
+    if (file.encrypted && materialized !== null) {
+      try {
+        const repoChecksum = await getFileChecksum(file.destination);
+        await recordDriftEntry(file.id, materialized, repoChecksum);
+      } catch {
+        // Never fail a restore over a drift-cache write.
+      }
+    }
+
     restoredCount++;
     restoredPaths.push(targetPath);
+    // jsonKey files are excluded from the whole-file batch restore (their subtree
+    // secrets were already handled above); everything else runs it.
+    if (!file.jsonKey) wholeFileRestorePaths.push(targetPath);
   }
 
-  // Restore secrets (replace placeholders with actual values)
-  let secretsRestored = 0;
-  let unresolvedPlaceholders: string[] = [];
+  // Restore secrets (replace placeholders with actual values) for whole
+  // (non-jsonKey) files. jsonKey subtree secrets were resolved in-place above.
+  let secretsRestored = jsonKeySecretsRestored;
+  const unresolvedPlaceholders: string[] = [...jsonKeyUnresolved];
 
-  if (!options.noSecrets && !options.dryRun && restoredPaths.length > 0) {
-    const secretCount = await getSecretCount(tuckDir);
-    if (secretCount > 0) {
-      const secretResult = await restoreSecrets(restoredPaths, tuckDir);
-      secretsRestored = secretResult.totalRestored;
-      unresolvedPlaceholders = secretResult.allUnresolved;
+  if (hasSecrets && wholeFileRestorePaths.length > 0) {
+    const secretResult = await restoreSecrets(wholeFileRestorePaths, tuckDir);
+    secretsRestored += secretResult.totalRestored;
+    for (const u of secretResult.allUnresolved) {
+      if (!unresolvedPlaceholders.includes(u)) unresolvedPlaceholders.push(u);
     }
   }
 
