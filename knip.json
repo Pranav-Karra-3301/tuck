@@ -2,7 +2,6 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": ["scripts/*.{ts,mjs,js}"],
   "project": ["src/**/*.ts", "scripts/**/*.{ts,mjs,js}"],
-  "ignore": ["src/lib/index.ts"],
   "ignoreDependencies": ["lint-staged"],
   "ignoreBinaries": ["secret-tool", "security", "pwsh", "powershell.exe"],
   "ignoreExportsUsedInFile": true,
