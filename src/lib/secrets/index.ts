@@ -172,7 +172,16 @@ export const processSecretsForRedaction = async (
   // mint API_KEY_1, API_KEY_2, ... and orphan the earlier names.
   const existing = await getAllSecrets(tuckDir);
   const valueToExisting = new Map<string, string>();
-  for (const [name, value] of Object.entries(existing)) valueToExisting.set(value, name);
+  // FIRST-wins inversion — this MUST match getStoredValueMap's inversion order
+  // in redactor.ts. When a store holds the SAME value under two names (legacy
+  // pre-fix duplicate-name bug, or `tuck secrets set` twice), redaction and
+  // drift compare must pick the IDENTICAL placeholder. If they diverge (one
+  // last-wins, one first-wins), redaction writes `{{API_KEY_1}}` into the repo
+  // copy while drift compare redacts live content as `{{API_KEY}}`, the
+  // checksums never converge, and the file is re-prompted forever.
+  for (const [name, value] of Object.entries(existing)) {
+    if (!valueToExisting.has(value)) valueToExisting.set(value, name);
+  }
   // Reserve every stored name so a NEW distinct value can't steal it.
   for (const name of Object.keys(existing)) usedPlaceholders.add(name);
 

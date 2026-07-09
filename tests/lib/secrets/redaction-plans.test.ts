@@ -7,7 +7,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdir } from 'fs/promises';
 import { processSecretsForRedaction } from '../../../src/lib/secrets/index.js';
-import { getAllSecrets } from '../../../src/lib/secrets/store.js';
+import { getStoredValueMap } from '../../../src/lib/secrets/redactor.js';
+import { getAllSecrets, setSecret } from '../../../src/lib/secrets/store.js';
 import type { FileScanResult, SecretMatch } from '../../../src/lib/secrets/scanner.js';
 import { TEST_TUCK_DIR } from '../../setup.js';
 
@@ -99,6 +100,31 @@ describe('processSecretsForRedaction store-seeded reuse', () => {
     const stored = await getAllSecrets(tuckDir);
     expect(stored['API_KEY']).toBe(valueA);
     expect(stored['API_KEY_1']).toBe(valueB);
+  });
+
+  it('when a value is stored under two names, redaction picks the SAME first-wins name as getStoredValueMap (drift-compare parity)', async () => {
+    const tuckDir = TEST_TUCK_DIR;
+    const value = 'shared_value_deadbeefdeadbeefdeadbeef';
+
+    // Simulate a legacy/duplicate store: the SAME value committed under two names
+    // (e.g. `tuck secrets set` twice, or the pre-fix duplicate-name bug). Object
+    // insertion order puts API_KEY first, API_KEY_1 second.
+    await setSecret(tuckDir, 'API_KEY', value);
+    await setSecret(tuckDir, 'API_KEY_1', value);
+
+    // Drift compare inverts the store FIRST-wins → API_KEY.
+    const driftMap = await getStoredValueMap(tuckDir);
+    expect(driftMap.get(value)).toBe('API_KEY');
+
+    // Redaction must produce the IDENTICAL placeholder, or the repo copy gets
+    // `{{API_KEY_1}}` while drift compare redacts live content as `{{API_KEY}}`
+    // and checksums never converge (permanent re-prompt churn).
+    const plan = await processSecretsForRedaction(
+      [makeResult('/test-home/a', [makeMatch(value, 'API_KEY')])],
+      tuckDir
+    );
+    expect(plan.get('/test-home/a')!.get(value)).toBe('API_KEY');
+    expect(plan.get('/test-home/a')!.get(value)).toBe(driftMap.get(value));
   });
 
   it('reuses the stored name even when the scanner now derives a different placeholder', async () => {

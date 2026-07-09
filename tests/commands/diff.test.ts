@@ -296,6 +296,35 @@ describe('diff command', () => {
       expect(diff?.repoContent).not.toContain('{{');
     });
 
+    it('redacts a stored secret in template systemContent/repoContent (never prints cleartext)', async () => {
+      const { getFileDiff } = await import('../../src/commands/diff.js');
+      const SECRET = 'S3CRET-tmpl-777';
+      const manifest = createMockManifest();
+      manifest.files['tmpl'] = createMockTrackedFile({
+        source: '~/.tmpl',
+        destination: 'files/misc/tmpl',
+        template: true,
+      });
+      vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest));
+      vol.mkdirSync(join(TEST_TUCK_DIR, 'files/misc'), { recursive: true });
+      // Repo template renders to a body that embeds the cleartext secret, and the
+      // live file also carries the cleartext secret plus a real edit so a diff is
+      // produced.
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'files/misc/tmpl'), `token=${SECRET}\nH={{ home }}\n`);
+      vol.writeFileSync('/test-home/.tmpl', `token=${SECRET}\nH=/test-home\nexport EXTRA=1\n`);
+      const { setSecret } = await import('../../src/lib/secrets/store.js');
+      await setSecret(TEST_TUCK_DIR, 'TOK', SECRET);
+
+      const diff = await getFileDiff(TEST_TUCK_DIR, '~/.tmpl');
+      expect(diff?.hasChanges).toBe(true);
+      // Both displayed strings are redacted — the real secret never leaks into
+      // `tuck diff` output for template/encrypted files.
+      expect(diff?.systemContent).toContain('{{TOK}}');
+      expect(diff?.systemContent).not.toContain(SECRET);
+      expect(diff?.repoContent).toContain('{{TOK}}');
+      expect(diff?.repoContent).not.toContain(SECRET);
+    });
+
     it('should return null for a repo-scoped file whose repo is not bound on this machine', async () => {
       const { getFileDiff } = await import('../../src/commands/diff.js');
       const manifest = createMockManifest();

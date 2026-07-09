@@ -189,8 +189,18 @@ export const getFileDiff = async (
     const systemContent = await readFile(systemPath, 'utf-8');
     if (systemContent !== materialized) {
       diff.hasChanges = true;
-      diff.systemContent = systemContent;
-      diff.repoContent = materialized;
+      // Both strings can carry cleartext secret values (raw live text, and the
+      // materialized plaintext of an encrypted/template repo copy). Redact known
+      // secrets before display so `tuck diff` never prints cleartext (#100) —
+      // same lazy store load the plain-text branch below uses.
+      const store = valueMap ?? (await getStoredValueMap(tuckDir));
+      if (store.size > 0) {
+        diff.systemContent = redactValuesInContent(systemContent, store);
+        diff.repoContent = redactValuesInContent(materialized, store);
+      } else {
+        diff.systemContent = systemContent;
+        diff.repoContent = materialized;
+      }
     }
     return diff;
   }
