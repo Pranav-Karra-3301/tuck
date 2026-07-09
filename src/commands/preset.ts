@@ -25,7 +25,7 @@
  */
 
 import { Command } from 'commander';
-import { readFile, writeFile, mkdir, readdir, stat, symlink, rm } from 'fs/promises';
+import { readFile, writeFile, mkdir, readdir, stat, symlink, rm, realpath } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, isAbsolute, resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -384,6 +384,27 @@ const resolveTranslationSource = async (source?: string): Promise<string> => {
   ]);
 };
 
+/**
+ * True when `a` and `b` resolve — through any symlinks — to the same real file
+ * on disk. Returns false when either path cannot be resolved (e.g. the target
+ * does not exist yet, or is a broken symlink), since a missing target cannot be
+ * clobbered.
+ *
+ * A lexical `resolve()` compare is not enough for the translation self-target
+ * guard: if a target is a symlink pointing at the source (e.g. the user ran
+ * `ln -s ~/.codex/AGENTS.md ~/.claude/CLAUDE.md`), the two paths differ
+ * lexically but reference one file. Translating with `--link` would then `rm`
+ * the real source and create a circular symlink, leaving both instruction files
+ * unreadable (ELOOP) while reporting success — a silent data-loss bug.
+ */
+const sameRealFile = async (a: string, b: string): Promise<boolean> => {
+  try {
+    return resolve(await realpath(a)) === resolve(await realpath(b));
+  } catch {
+    return false;
+  }
+};
+
 interface TranslateEntry {
   agent: string;
   label: string;
@@ -432,6 +453,10 @@ export const translateAction = async (
     const resolved = resolveWriteTarget(target.path);
     // Never translate a file onto itself (source may already be one target).
     if (resolve(resolved) === resolve(sourcePath)) continue;
+    // Also skip when the target resolves to the source *through symlinks* — a
+    // lexical compare misses `~/.claude/CLAUDE.md -> ~/.codex/AGENTS.md`, and
+    // `--link` would otherwise rm the real source and create a circular symlink.
+    if (await sameRealFile(resolved, sourcePath)) continue;
     entries.push({ agent: target.agent, label: target.label, target: resolved });
   }
 

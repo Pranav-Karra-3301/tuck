@@ -370,6 +370,30 @@ describe('preset translate', () => {
     expect(vol.readFileSync(CODEX, 'utf-8')).toBe('# claude rules');
   });
 
+  it('skips a target that is a symlink resolving to the source (no circular symlink)', async () => {
+    // User previously ran `ln -s ~/.codex/AGENTS.md ~/.claude/CLAUDE.md`, then
+    // translates from the Claude path. The Codex target is the real file that
+    // the Claude symlink points at. A lexical compare misses this; with --link
+    // the old code would rm the real AGENTS.md and create a circular symlink,
+    // leaving both files unreadable. The realpath guard must skip Codex.
+    vol.mkdirSync(resolve(TEST_HOME, '.codex'), { recursive: true });
+    vol.mkdirSync(resolve(TEST_HOME, '.claude'), { recursive: true });
+    vol.writeFileSync(CODEX, '# canonical rules');
+    vol.symlinkSync(CODEX, CLAUDE);
+
+    await translateAction(CLAUDE, { json: true, yes: true, link: true });
+
+    const env = jsonEnvelope();
+    expect(env.ok).toBe(true);
+    // Nothing to translate: both requested targets resolve to the one file.
+    expect(env.data.translated).toBe(0);
+    // The real source survives with its content intact (not rm'd).
+    expect(vol.readFileSync(CODEX, 'utf-8')).toBe('# canonical rules');
+    // The Claude symlink still points at the real file (readable, no ELOOP).
+    expect(vol.readFileSync(CLAUDE, 'utf-8')).toBe('# canonical rules');
+    expect(createPreApplySnapshotMock).not.toHaveBeenCalled();
+  });
+
   it('refuses to overwrite non-interactively without --yes and writes nothing', async () => {
     vol.writeFileSync(SOURCE, 'NEW');
     vol.mkdirSync(resolve(TEST_HOME, '.codex'), { recursive: true });
