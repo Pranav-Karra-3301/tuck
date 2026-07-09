@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { vol } from 'memfs';
 import { NotInitializedError, SecretsDetectedError } from '../../src/errors.js';
 
 const loadManifestMock = vi.fn();
@@ -25,6 +26,7 @@ const hasRemoteMock = vi.fn();
 const pushMock = vi.fn();
 const loggerInfoMock = vi.fn();
 const getStatusMock = vi.fn();
+const checkFileSizeThresholdMock = vi.fn();
 
 vi.mock('../../src/ui/index.js', () => ({
   prompts: {
@@ -57,9 +59,9 @@ vi.mock('../../src/ui/index.js', () => ({
     dim: vi.fn(),
   },
   withSpinner: vi.fn(async (_label: string, fn: () => Promise<unknown>) => fn()),
-  colors: {
-    dim: (x: string) => x,
-  },
+  // The interactive flow styles output with c.bold/c.yellow/c.red/c.cyan/c.dim —
+  // a Proxy keeps every color an identity passthrough.
+  colors: new Proxy({}, { get: () => (x: string) => x }),
 }));
 
 vi.mock('../../src/lib/paths.js', () => ({
@@ -105,7 +107,7 @@ vi.mock('../../src/lib/files.js', () => ({
   copyFileOrDir: copyFileOrDirMock,
   getFileChecksum: getFileChecksumMock,
   deleteFileOrDir: deleteFileOrDirMock,
-  checkFileSizeThreshold: vi.fn().mockResolvedValue({ warn: false, block: false, size: 10 }),
+  checkFileSizeThreshold: checkFileSizeThresholdMock,
   formatFileSize: vi.fn((n: number) => `${n} B`),
   SIZE_BLOCK_THRESHOLD: 100 * 1024 * 1024,
 }));
@@ -184,6 +186,7 @@ describe('sync command behavior', () => {
     pathExistsMock.mockResolvedValue(true);
     isIgnoredMock.mockResolvedValue(false);
     getFileChecksumMock.mockResolvedValue('new-checksum');
+    checkFileSizeThresholdMock.mockResolvedValue({ warn: false, block: false, size: 10 });
     hasRemoteMock.mockResolvedValue(false);
     commitMock.mockResolvedValue('abc123def456');
     // Default: a clean working tree (no uncommitted changes). Tests that need a
@@ -800,5 +803,271 @@ describe('sync command behavior', () => {
     } finally {
       vi.mocked(ui.prompts.select).mockResolvedValue('abort' as never);
     }
+  });
+
+  // ==========================================================================
+  // Repo-only redaction during sync (issue #100 RC5): choosing 'redact' must
+  // apply placeholders to the REPO copy only — the live file in $HOME is never
+  // rewritten.
+  // ==========================================================================
+
+  const SECRET_VALUE = 'supersecret_value_1234567890';
+
+  /** Minimal SecretMatch carrying only what the redaction path consumes. */
+  const makeMatch = (value: string, placeholder: string) => ({
+    patternId: 'generic-api-key',
+    patternName: 'Generic API Key',
+    severity: 'high',
+    value,
+    redactedValue: '***',
+    line: 1,
+    column: 1,
+    context: '',
+    placeholder,
+    start: 0,
+    end: value.length,
+    offsetsExact: true,
+  });
+
+  /** Content-derived checksum so manifest assertions can compare real bytes. */
+  const contentChecksum = async (p: string) => `sum:${vol.readFileSync(p, 'utf-8')}`;
+
+  /** memfs-backed copy so the repo copy holds the live file's real bytes. */
+  const memfsCopy = async (src: string, dest: string) => {
+    vol.mkdirSync(dirname(dest), { recursive: true });
+    vol.writeFileSync(dest, vol.readFileSync(src));
+  };
+
+  /** memfs-backed redactFile stand-in: replaces values with {{PLACEHOLDER}}. */
+  const memfsRedactFile = async (
+    filepath: string,
+    matches: Array<{ value: string }>,
+    placeholderMap: Map<string, string>
+  ) => {
+    let content = vol.readFileSync(filepath, 'utf-8') as string;
+    for (const m of matches) {
+      content = content.split(m.value).join(`{{${placeholderMap.get(m.value)}}}`);
+    }
+    vol.writeFileSync(filepath, content);
+    return { originalContent: '', redactedContent: content, replacements: [] };
+  };
+
+  it("redacts the REPO copy only when the user picks 'redact' — live file untouched", async () => {
+    const livePath = '/test-home/.secretrc';
+    const liveContent = `export API_KEY=${SECRET_VALUE}\nalias ll="ls -la"\n`;
+    vol.writeFileSync(livePath, liveContent);
+
+    getAllTrackedFilesMock.mockResolvedValue({
+      secretrc: { source: '~/.secretrc', destination: 'files/shell/secretrc', checksum: 'old' },
+    });
+    getFileChecksumMock.mockImplementation(contentChecksum);
+    copyFileOrDirMock.mockImplementation(memfsCopy);
+
+    const secrets = await import('../../src/lib/secrets/index.js');
+    vi.mocked(secrets.isSecretScanningEnabled).mockResolvedValue(true);
+    vi.mocked(secrets.scanForSecrets).mockResolvedValue({
+      totalSecrets: 1,
+      results: [
+        {
+          path: livePath,
+          collapsedPath: '~/.secretrc',
+          hasSecrets: true,
+          matches: [makeMatch(SECRET_VALUE, 'API_KEY')],
+        },
+      ],
+    } as unknown as Awaited<ReturnType<typeof secrets.scanForSecrets>>);
+    vi.mocked(secrets.processSecretsForRedaction).mockResolvedValue(
+      new Map([[livePath, new Map([[SECRET_VALUE, 'API_KEY']])]])
+    );
+    vi.mocked(secrets.redactFile).mockImplementation(memfsRedactFile as never);
+
+    const ui = await import('../../src/ui/index.js');
+    vi.mocked(ui.prompts.select).mockResolvedValue('redact' as never);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+    await runSyncCommand(undefined, { noHooks: true, scan: false, pull: false } as never);
+
+    const destPath = join('/test-home/.tuck', 'files/shell/secretrc');
+
+    // LIVE FILE: byte-identical — issue #100's core contract.
+    expect(vol.readFileSync(livePath, 'utf-8')).toBe(liveContent);
+
+    // REPO COPY: placeholder in, cleartext out.
+    const repoContent = vol.readFileSync(destPath, 'utf-8') as string;
+    expect(repoContent).toContain('{{API_KEY}}');
+    expect(repoContent).not.toContain(SECRET_VALUE);
+
+    // redactFile targeted the REPO copy, never the live path.
+    expect(vi.mocked(secrets.redactFile)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(secrets.redactFile).mock.calls[0][0]).toBe(destPath);
+
+    // Manifest checksum reflects the REDACTED repo content.
+    expect(updateFileInManifestMock).toHaveBeenCalledTimes(1);
+    expect(updateFileInManifestMock.mock.calls[0][2].checksum).toBe(
+      await contentChecksum(destPath)
+    );
+    expect(commitMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps directory redaction plans onto inner repo targets and skips missing ones', async () => {
+    const liveDir = '/test-home/.config/tool';
+    getAllTrackedFilesMock.mockResolvedValue({
+      tool: { source: '~/.config/tool', destination: 'files/misc/tool', checksum: 'old' },
+    });
+
+    const destPath = join('/test-home/.tuck', 'files/misc/tool');
+    const innerTarget = join(destPath, 'credentials');
+    const missingTarget = join(destPath, 'nested', 'excluded.env');
+    // The excluded inner file never reached the repo copy; everything else exists.
+    pathExistsMock.mockImplementation(async (p: string) => p !== missingTarget);
+
+    const secrets = await import('../../src/lib/secrets/index.js');
+    vi.mocked(secrets.isSecretScanningEnabled).mockResolvedValue(true);
+    vi.mocked(secrets.scanForSecrets).mockResolvedValue({
+      totalSecrets: 2,
+      results: [
+        {
+          path: join(liveDir, 'credentials'),
+          collapsedPath: '~/.config/tool/credentials',
+          hasSecrets: true,
+          matches: [makeMatch(SECRET_VALUE, 'AWS_KEY')],
+        },
+        {
+          path: join(liveDir, 'nested', 'excluded.env'),
+          collapsedPath: '~/.config/tool/nested/excluded.env',
+          hasSecrets: true,
+          matches: [makeMatch('other_secret_9876543210', 'OTHER_KEY')],
+        },
+      ],
+    } as unknown as Awaited<ReturnType<typeof secrets.scanForSecrets>>);
+    vi.mocked(secrets.processSecretsForRedaction).mockResolvedValue(
+      new Map([
+        [join(liveDir, 'credentials'), new Map([[SECRET_VALUE, 'AWS_KEY']])],
+        [join(liveDir, 'nested', 'excluded.env'), new Map([['other_secret_9876543210', 'OTHER_KEY']])],
+      ])
+    );
+
+    const ui = await import('../../src/ui/index.js');
+    vi.mocked(ui.prompts.select).mockResolvedValue('redact' as never);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+    await runSyncCommand(undefined, { noHooks: true, scan: false, pull: false } as never);
+
+    // The plan for the inner file that EXISTS in the repo copy is applied to the
+    // mapped repo target (destPath + relative live path)...
+    expect(vi.mocked(secrets.redactFile)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(secrets.redactFile).mock.calls[0][0]).toBe(innerTarget);
+    // ...and its containment was validated against the tuck root.
+    expect(validatePathWithinRootMock).toHaveBeenCalledWith(
+      innerTarget,
+      '/test-home/.tuck',
+      'sync redaction target'
+    );
+    // The plan whose repo target was excluded from the copy is skipped, and the
+    // sync still completes.
+    expect(commitMock).toHaveBeenCalledTimes(1);
+    expect(updateFileInManifestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('warns and does NOT redact a symlink-tracked file whose live file IS the repo copy', async () => {
+    // Symlink strategy: the live path is a symlink to the repo copy (same inode).
+    // Redacting the repo copy would rewrite the live file — forbidden. Sync must
+    // warn, skip redaction, and still complete.
+    const destPath = join('/test-home/.tuck', 'files/shell/zshrc');
+    const liveContent = `export TOKEN=${SECRET_VALUE}\n`;
+    vol.mkdirSync(dirname(destPath), { recursive: true });
+    vol.writeFileSync(destPath, liveContent);
+    vol.symlinkSync(destPath, '/test-home/.zshrc');
+
+    getAllTrackedFilesMock.mockResolvedValue({
+      zshrc: { source: '~/.zshrc', destination: 'files/shell/zshrc', checksum: 'old' },
+    });
+
+    const secrets = await import('../../src/lib/secrets/index.js');
+    vi.mocked(secrets.isSecretScanningEnabled).mockResolvedValue(true);
+    vi.mocked(secrets.scanForSecrets).mockResolvedValue({
+      totalSecrets: 1,
+      results: [
+        {
+          path: '/test-home/.zshrc',
+          collapsedPath: '~/.zshrc',
+          hasSecrets: true,
+          matches: [makeMatch(SECRET_VALUE, 'TOKEN')],
+        },
+      ],
+    } as unknown as Awaited<ReturnType<typeof secrets.scanForSecrets>>);
+    vi.mocked(secrets.processSecretsForRedaction).mockResolvedValue(
+      new Map([['/test-home/.zshrc', new Map([[SECRET_VALUE, 'TOKEN']])]])
+    );
+
+    const ui = await import('../../src/ui/index.js');
+    vi.mocked(ui.prompts.select).mockResolvedValue('redact' as never);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+    await runSyncCommand(undefined, { noHooks: true, scan: false, pull: false } as never);
+
+    // Neither copied (same inode) nor redacted (would rewrite the live file).
+    expect(copyFileOrDirMock).not.toHaveBeenCalled();
+    expect(vi.mocked(secrets.redactFile)).not.toHaveBeenCalled();
+    // Both files (one inode) still hold the original bytes.
+    expect(vol.readFileSync(destPath, 'utf-8')).toBe(liveContent);
+    expect(vol.readFileSync('/test-home/.zshrc', 'utf-8')).toBe(liveContent);
+    // The user was told why, with a re-track suggestion — and sync did not fail.
+    expect(vi.mocked(ui.logger.warning)).toHaveBeenCalledWith(
+      expect.stringContaining('symlink-tracked')
+    );
+    expect(commitMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes the repo copy and fails the file sync loudly when redaction fails', async () => {
+    // A genuinely failed redaction must never leave a CLEARTEXT repo copy behind
+    // for stageAll to commit, and must not record the manifest checksum.
+    const livePath = '/test-home/.secretrc';
+    vol.writeFileSync(livePath, `export API_KEY=${SECRET_VALUE}\n`);
+
+    getAllTrackedFilesMock.mockResolvedValue({
+      secretrc: { source: '~/.secretrc', destination: 'files/shell/secretrc', checksum: 'old' },
+    });
+    copyFileOrDirMock.mockImplementation(memfsCopy);
+
+    const secrets = await import('../../src/lib/secrets/index.js');
+    vi.mocked(secrets.isSecretScanningEnabled).mockResolvedValue(true);
+    vi.mocked(secrets.scanForSecrets).mockResolvedValue({
+      totalSecrets: 1,
+      results: [
+        {
+          path: livePath,
+          collapsedPath: '~/.secretrc',
+          hasSecrets: true,
+          matches: [makeMatch(SECRET_VALUE, 'API_KEY')],
+        },
+      ],
+    } as unknown as Awaited<ReturnType<typeof secrets.scanForSecrets>>);
+    vi.mocked(secrets.processSecretsForRedaction).mockResolvedValue(
+      new Map([[livePath, new Map([[SECRET_VALUE, 'API_KEY']])]])
+    );
+    vi.mocked(secrets.redactFile).mockRejectedValue(new Error('disk full'));
+
+    const ui = await import('../../src/ui/index.js');
+    vi.mocked(ui.prompts.select).mockResolvedValue('redact' as never);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const { runSyncCommand } = await import('../../src/commands/sync.js');
+    await expect(
+      runSyncCommand(undefined, { noHooks: true, scan: false, pull: false } as never)
+    ).rejects.toThrow('disk full');
+
+    const destPath = join('/test-home/.tuck', 'files/shell/secretrc');
+    // The cleartext repo copy is removed before the error propagates...
+    expect(deleteFileOrDirMock).toHaveBeenCalledWith(destPath);
+    // ...and the manifest checksum was never updated, nothing staged/committed.
+    expect(updateFileInManifestMock).not.toHaveBeenCalled();
+    expect(stageAllMock).not.toHaveBeenCalled();
+    expect(commitMock).not.toHaveBeenCalled();
+    // The live file is untouched.
+    expect(vol.readFileSync(livePath, 'utf-8')).toBe(`export API_KEY=${SECRET_VALUE}\n`);
   });
 });
