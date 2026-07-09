@@ -23,6 +23,7 @@ This document lists all error codes used by tuck for programmatic error handling
 | `ENCRYPTION_ERROR` | `EncryptionError` | Encryption failed | Wrong password, key issues | Check encryption password |
 | `DECRYPTION_ERROR` | `DecryptionError` | Decryption failed | Wrong password, corrupted data | Verify correct password is used |
 | `SECRETS_DETECTED` | `SecretsDetectedError` | Secrets found in files | API keys, passwords in dotfiles | Review and remove secrets, or use `--force` |
+| `ALLOW_REASON_REQUIRED` | `TuckError` | `tuck secrets allow add` needs a reason | Ran non-interactively without `--reason` | Pass `--reason "<why safe>"` |
 | `SECRET_BACKEND_ERROR` | `SecretBackendError` | Password manager issue | Not installed, not authenticated | Check CLI installation and auth |
 | `SECRET_NOT_FOUND` | `SecretNotFoundError` | Secret not in backend | Missing mapping, deleted secret | Check secrets.mappings.json |
 | `BACKEND_NOT_AVAILABLE` | `BackendNotAvailableError` | Backend CLI missing | 1Password/Bitwarden not installed | Install the backend CLI |
