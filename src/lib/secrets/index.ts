@@ -122,16 +122,52 @@ import { setSecret, ensureSecretsGitignored, getAllSecrets } from './store.js';
 import { createCustomPattern, type SecretPattern } from './patterns.js';
 import type { CustomPattern } from '../../schemas/secrets.schema.js';
 import { scanWithScanner, isGitleaksInstalled, isTrufflehogInstalled, type ExternalScanner } from './external.js';
+import { loadAllowlist, filterSummaryWithAllowlist } from './allowlist.js';
+
+// Re-export allowlist API from the barrel so callers use `secrets/index.js`.
+export {
+  getAllowlistPath,
+  computeFingerprint,
+  loadAllowlist,
+  saveAllowlist,
+  addAllowlistEntryByFingerprint,
+  addAllowlistEntryForValue,
+  removeAllowlistEntries,
+  listAllowlistEntries,
+  isMatchAllowed,
+  filterSummaryWithAllowlist,
+  type AddAllowlistOptions,
+} from './allowlist.js';
+export type { AllowlistEntry, SecretsAllowlist } from '../../schemas/secretsAllowlist.schema.js';
 
 /**
  * Scan files for secrets using config-aware settings
  *
  * Supports external scanners (gitleaks, trufflehog) via config.
  * Falls back to built-in scanner if external tool not available.
+ *
+ * Findings that appear in the committed allowlist (`secrets.allow.json`) are
+ * filtered out here so every caller — `tuck add`, `tuck sync`, the scan command
+ * and the MCP server — honors the same centralized, auditable allowlist rather
+ * than scattered inline ignore comments.
  */
-export const scanForSecrets = async (filepaths: string[], tuckDir: string): Promise<ScanSummary> => {
+export const scanForSecrets = async (
+  filepaths: string[],
+  tuckDir: string,
+  options: {
+    /**
+     * Return findings even when they are allowlisted. Used by
+     * `tuck secrets allow add`, which must see the same findings the gate
+     * sees (same scanner, custom patterns, and pattern ids) BEFORE the
+     * allowlist filter — otherwise recorded scopes never match the gate.
+     */
+    includeAllowlisted?: boolean;
+  } = {}
+): Promise<ScanSummary> => {
   const config = await loadConfig(tuckDir);
   const security = config.security || {};
+
+  const allowlist = await loadAllowlist(tuckDir);
 
   // Check if an external scanner is configured
   const configuredScanner = (security.scanner || 'builtin') as ExternalScanner;
@@ -147,7 +183,10 @@ export const scanForSecrets = async (filepaths: string[], tuckDir: string): Prom
     }
 
     if (useExternal) {
-      return scanWithScanner(filepaths, configuredScanner);
+      const externalSummary = await scanWithScanner(filepaths, configuredScanner);
+      return options.includeAllowlisted
+        ? externalSummary
+        : filterSummaryWithAllowlist(externalSummary, allowlist.entries);
     }
     // Fall through to built-in if external not available
   }
@@ -162,12 +201,16 @@ export const scanForSecrets = async (filepaths: string[], tuckDir: string): Prom
     })
   );
 
-  return scanFiles(filepaths, {
+  const summary = await scanFiles(filepaths, {
     customPatterns: customPatterns.length > 0 ? customPatterns : undefined,
     excludePatternIds: security.excludePatterns,
     minSeverity: security.minSeverity,
     maxFileSize: security.maxFileSize,
   });
+
+  return options.includeAllowlisted
+    ? summary
+    : filterSummaryWithAllowlist(summary, allowlist.entries);
 };
 
 /**

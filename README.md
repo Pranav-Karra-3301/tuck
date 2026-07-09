@@ -531,6 +531,8 @@ tuck is designed with security in mind:
 - **Placeholder support** — Replace secrets with `{{PLACEHOLDER}}` syntax
 - **External-first secrets** — `security.secretBackend` defaults to `auto`, preferring external password managers before local fallback
 - **Local fallback secrets** — Store actual values in `secrets.local.json` when needed; it is gitignored by default
+- **Fix, don't just block** — When a secret is flagged at `tuck add`/`tuck sync` time, choose to redact-and-store it (rewriting the tracked copy as a template) or mark a false positive as safe — no more disabling the whole check
+- **Centralized allowlist** — Mark scanner false positives once with `tuck secrets allow`; entries are stored (as fingerprints, never raw values) in a committed, reviewable `secrets.allow.json` instead of scattered inline ignore comments
 - **Runtime state isolation** — Audit logs, snapshots, and fallback keystore data live outside the tracked tuck repo
 
 ```bash
@@ -539,8 +541,23 @@ tuck secrets scan
 
 # Set a secret value locally
 tuck secrets set API_KEY
+
+# Mark a scanner false positive as safe (auditable, committed allowlist)
+tuck secrets allow add --file ~/.config/app.conf --reason "example value from docs"
+
+# Review or revoke allowlisted findings
+tuck secrets allow list
+tuck secrets allow remove <fingerprint>
 ```
 
+### The secret allowlist
+
+`secrets.allow.json` records findings you have deliberately marked safe (false
+positives or intentionally-tracked non-secrets). It stores only a SHA-256
+**fingerprint** of each value — never the value itself — so it is safe to commit
+and share with teammates. Every scan path (`tuck add`, `tuck sync`,
+`tuck secrets scan`, the MCP server) honors it, and each add/remove is recorded
+in the audit log.
 ### MCP secrets extraction
 
 MCP clients (Claude Desktop, Claude Code, Cursor, VS Code) often store API keys

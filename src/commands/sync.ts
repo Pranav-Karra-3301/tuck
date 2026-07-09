@@ -72,10 +72,13 @@ import {
   redactFile,
   getStoredValueMap,
   getRedactedChecksum,
+  addAllowlistEntryByFingerprint,
+  computeFingerprint,
+  getAllowlistPath,
   type SecretMatch,
 } from '../lib/secrets/index.js';
 import { displayScanResults } from './secrets.js';
-import { logForceSecretBypass } from '../lib/audit.js';
+import { logForceSecretBypass, logSecretAllowlisted } from '../lib/audit.js';
 
 interface SyncResult {
   modified: string[];
@@ -776,6 +779,7 @@ const scanAndHandleSecrets = async (
   const action = await prompts.select('What would you like to do?', [
     { value: 'abort', label: 'Abort sync' },
     { value: 'redact', label: 'Redact secrets (placeholders in repo copy; live file untouched)' },
+    { value: 'allow', label: 'Mark as safe (allowlist false positives)' },
     { value: 'ignore', label: 'Add files to .tuckignore and skip them' },
     { value: 'proceed', label: 'Proceed anyway (secrets will be committed)' },
   ]);
@@ -783,6 +787,39 @@ const scanAndHandleSecrets = async (
   if (action === 'abort') {
     prompts.cancel('Sync aborted - secrets detected');
     return { proceed: false, redactionPlans: [] };
+  }
+
+  if (action === 'allow') {
+    const reason = await prompts.text(
+      'Why are these findings safe? (recorded in the allowlist)',
+      { placeholder: 'e.g. example values from docs, not real secrets' }
+    );
+    if (!reason || reason.trim().length === 0) {
+      prompts.cancel('Sync aborted - a reason is required to allowlist');
+      return { proceed: false, redactionPlans: [] };
+    }
+    let allowlisted = 0;
+    for (const result of summary.results) {
+      if (!result.hasSecrets) continue;
+      for (const match of result.matches) {
+        const entry = await addAllowlistEntryByFingerprint(
+          tuckDir,
+          computeFingerprint(match.value),
+          { reason: reason.trim(), pattern: match.patternId, path: result.collapsedPath }
+        );
+        await logSecretAllowlisted(entry.fingerprint, entry.reason, {
+          pattern: entry.pattern,
+          path: entry.path,
+        });
+        allowlisted++;
+      }
+    }
+    prompts.log.success(
+      `Allowlisted ${allowlisted} finding${allowlisted === 1 ? '' : 's'} in ${collapsePath(getAllowlistPath(tuckDir))}`
+    );
+    prompts.note('Commit secrets.allow.json so teammates share the allowlist', 'Tip');
+    // Everything flagged was just allowlisted — proceed with no redactions.
+    return { proceed: true, redactionPlans: [] };
   }
 
   if (action === 'redact') {

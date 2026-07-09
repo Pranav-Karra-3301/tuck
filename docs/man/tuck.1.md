@@ -25,6 +25,7 @@ tuck is a modern dotfiles manager that provides a beautiful CLI for managing you
 * **bootstrap**: One-command, idempotent machine setup (install packages, apply dotfiles, run doctor)
 * **undo**: Restore files from a Time Machine backup snapshot
 * **scan**: Scan the system for dotfiles and select which to track
+* **secrets**: Manage local secrets, backends, and the allowlist for placeholder replacement. Subcommands include **secrets allow add|list|remove** to manage a committed, auditable allowlist of scanner false positives (stored as fingerprints in *secrets.allow.json*, never raw values)
 * **secrets**: Manage local secrets for placeholder replacement (incl. `secrets extract --mcp` to pull inline credentials out of MCP config files)
 * **encryption**: Manage backup encryption (AES-256-GCM, password-based)
 * **doctor**: Run repository health and safety diagnostics
