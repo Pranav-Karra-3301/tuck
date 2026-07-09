@@ -57,6 +57,8 @@ import {
   shouldBlockOnSecrets,
   processSecretsForRedaction,
   redactFile,
+  getStoredValueMap,
+  getRedactedChecksum,
   type SecretMatch,
 } from '../lib/secrets/index.js';
 import { displayScanResults } from './secrets.js';
@@ -108,9 +110,12 @@ const pathsResolveToSameLocation = async (sourcePath: string, destinationPath: s
   }
 };
 
-const detectChanges = async (tuckDir: string): Promise<TrackedFileChange[]> => {
+export const detectChanges = async (tuckDir: string): Promise<TrackedFileChange[]> => {
   const files = await getAllTrackedFiles(tuckDir);
   const ignoredPaths = await loadTuckignore(tuckDir);
+  // Load the stored-secret value map ONCE per run (issue #100). Empty map ⇒ no
+  // stored secrets ⇒ raw checksum comparison is authoritative (fast path).
+  const valueMap = await getStoredValueMap(tuckDir);
   const changes: TrackedFileChange[] = [];
 
   for (const [id, file] of Object.entries(files)) {
@@ -169,6 +174,18 @@ const detectChanges = async (tuckDir: string): Promise<TrackedFileChange[]> => {
     try {
       const sourceChecksum = await getFileChecksum(sourcePath);
       if (sourceChecksum !== file.checksum) {
+        // The repo copy is redacted (secret placeholders), while the LIVE file
+        // keeps its real secrets, so raw checksums ALWAYS differ for a
+        // secret-bearing file. Re-check against the LIVE file hashed AS IF its
+        // known secrets were redacted: if that matches the stored (redacted)
+        // checksum, the only difference is the placeholder substitution — clean,
+        // not modified (issue #100). Skipped entirely when no secrets are stored.
+        if (
+          valueMap.size > 0 &&
+          (await getRedactedChecksum(sourcePath, valueMap)) === file.checksum
+        ) {
+          continue;
+        }
         changes.push({
           path: file.source,
           status: 'modified',

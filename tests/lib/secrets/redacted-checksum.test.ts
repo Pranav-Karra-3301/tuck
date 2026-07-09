@@ -18,6 +18,7 @@ import { redactContent, formatPlaceholder } from '../../../src/lib/secrets/redac
 import {
   getStoredValueMap,
   getRedactedChecksum,
+  redactValuesInContent,
 } from '../../../src/lib/secrets/redactor.js';
 import { setSecret } from '../../../src/lib/secrets/store.js';
 import type { SecretMatch } from '../../../src/lib/secrets/scanner.js';
@@ -65,6 +66,17 @@ describe('getStoredValueMap', () => {
     expect(map.get('dup')).toBe('KEY');
     expect(map.size).toBe(1);
   });
+
+  it('skips empty-string secret values (an empty value would match every file)', async () => {
+    await setSecret(TEST_TUCK_DIR, 'EMPTY', '');
+    await setSecret(TEST_TUCK_DIR, 'REAL', 'realvalue');
+    const map = await getStoredValueMap(TEST_TUCK_DIR);
+    // The empty value must NOT enter the map — otherwise every file would
+    // "contain" it and every redacted checksum would be corrupted.
+    expect(map.has('')).toBe(false);
+    expect(map.get('realvalue')).toBe('REAL');
+    expect(map.size).toBe(1);
+  });
 });
 
 describe('getRedactedChecksum (single file)', () => {
@@ -108,6 +120,26 @@ describe('getRedactedChecksum (single file)', () => {
     expect(redacted).toBe(raw);
   });
 
+  it('hashes a binary file RAW even when a stored secret appears in its utf-8 decode', async () => {
+    // The secret scanner SKIPS binary files, so their repo copies are never
+    // redacted. If getRedactedChecksum redacted the secret's bytes out of a
+    // binary's lossy utf-8 decode, the live checksum would never match the
+    // (un-redacted) repo copy → phantom, unresolvable drift. A binary must hash
+    // raw regardless of what its decode happens to contain.
+    const secret = 'EMBEDDED-SECRET-123';
+    const bin = Buffer.concat([
+      Buffer.from('prefix'),
+      Buffer.from([0x00, 0x01, 0x02]), // NUL byte ⇒ binary
+      Buffer.from(secret, 'utf8'), // secret bytes literally present in the decode
+      Buffer.from([0xff, 0x00]),
+    ]);
+    vol.writeFileSync(LIVE, bin);
+    const valueMap = new Map<string, string>([[secret, 'EMBEDDED']]);
+    const redacted = await getRedactedChecksum(LIVE, valueMap);
+    const raw = await getFileChecksum(LIVE);
+    expect(redacted).toBe(raw);
+  });
+
   it('equals getFileChecksum when valueMap is empty', async () => {
     const content = 'export API_KEY=super-secret-token-123\n';
     vol.writeFileSync(LIVE, content);
@@ -140,6 +172,32 @@ describe('getRedactedChecksum (single file)', () => {
     // The longer secret must not be corrupted by the shorter replacement.
     expect(redactedContent).toContain(formatPlaceholder('LONG'));
     expect(redactedContent).toContain(formatPlaceholder('SHORT'));
+  });
+});
+
+describe('redactValuesInContent', () => {
+  it('replaces stored values with their {{placeholder}} longest-first', () => {
+    const long = 'AKIAEXAMPLE1234567890';
+    const short = 'AKIAEXAMPLE';
+    const content = `id=${short}\nfull=${long}\n`;
+    const valueMap = new Map<string, string>([
+      [short, 'SHORT'],
+      [long, 'LONG'],
+    ]);
+    const out = redactValuesInContent(content, valueMap);
+    expect(out).toBe(`id=${formatPlaceholder('SHORT')}\nfull=${formatPlaceholder('LONG')}\n`);
+  });
+
+  it('returns content unchanged when no stored value is present', () => {
+    const content = 'nothing secret here\n';
+    const valueMap = new Map<string, string>([['absent', 'NOPE']]);
+    expect(redactValuesInContent(content, valueMap)).toBe(content);
+  });
+
+  it('ignores empty-string values (never rewrites the whole file)', () => {
+    const content = 'abc\n';
+    const valueMap = new Map<string, string>([['', 'EMPTY']]);
+    expect(redactValuesInContent(content, valueMap)).toBe(content);
   });
 });
 

@@ -10,6 +10,7 @@ import { randomBytes, createHash } from 'crypto';
 import { dirname, basename, join, relative } from 'path';
 import { expandPath, pathExists, isDirectory } from '../paths.js';
 import { getDirectoryFiles } from '../files.js';
+import { isBinaryBuffer } from '../binary.js';
 import type { SecretMatch } from './scanner.js';
 import { getAllSecrets } from './store.js';
 
@@ -188,11 +189,48 @@ export const getStoredValueMap = async (tuckDir: string): Promise<Map<string, st
   // Object.entries preserves store insertion order, so the first name that
   // claims a value wins and later duplicates are ignored.
   for (const [name, value] of Object.entries(secrets)) {
+    // Skip empty-string values: an empty value is a substring of EVERY file, so
+    // it would match everywhere and corrupt every redacted checksum.
+    if (!value) continue;
     if (!map.has(value)) {
       map.set(value, name);
     }
   }
   return map;
+};
+
+/**
+ * Replace every stored secret value in `content` with its `{{placeholder}}`.
+ *
+ * Longest value first — identical ordering to redactContent — so a shorter
+ * secret that is a literal substring of a longer one cannot corrupt it. Values
+ * not present in `content` (and empty-string values) are skipped, and when
+ * nothing matches the ORIGINAL string is returned unchanged (same reference).
+ * Shared by getRedactedChecksum and by `tuck diff`, which redacts the live
+ * content before display so cleartext secrets never reach the terminal.
+ */
+export const redactValuesInContent = (
+  content: string,
+  valueMap: Map<string, string>
+): string => {
+  // Only non-empty values actually present in the text can affect the result.
+  const present = [...valueMap.entries()].filter(([value]) => value && content.includes(value));
+  if (present.length === 0) {
+    return content;
+  }
+
+  present.sort((a, b) => b[0].length - a[0].length);
+
+  let redacted = content;
+  for (const [value, name] of present) {
+    const placeholder = formatPlaceholder(name);
+    // Two-phase split/join through a random marker, exactly as redactContent,
+    // so already-substituted placeholders are never re-matched.
+    const tempMarker = `__TUCK_TEMP_${randomBytes(16).toString('hex')}__`;
+    redacted = redacted.split(value).join(tempMarker);
+    redacted = redacted.split(tempMarker).join(placeholder);
+  }
+  return redacted;
 };
 
 /**
@@ -205,29 +243,23 @@ export const getStoredValueMap = async (tuckDir: string): Promise<Map<string, st
  * split/join + formatPlaceholder semantics — and the resulting string is hashed.
  */
 const redactedBufferHash = (buffer: Buffer, valueMap: Map<string, string>): string => {
-  const text = buffer.toString('utf8');
-
-  // Only values actually present in the decoded text can affect the redaction.
-  // Invalid utf-8 bytes decode to U+FFFD, so a real secret won't match and the
-  // file falls through to the raw-buffer hash below.
-  const present = [...valueMap.entries()].filter(([value]) => text.includes(value));
-
-  if (present.length === 0) {
+  // BINARY files are never redacted in the repo (the secret scanner skips them),
+  // so hash their RAW bytes regardless of what their lossy utf-8 decode contains.
+  // Redacting a secret's bytes out of a binary blob here would fabricate drift
+  // that can never match the un-redacted repo copy.
+  if (isBinaryBuffer(buffer)) {
     return createHash('sha256').update(buffer).digest('hex');
   }
 
-  // Replace LONGEST values first — identical ordering to redactContent — so a
-  // shorter secret that is a substring of a longer one cannot corrupt it.
-  present.sort((a, b) => b[0].length - a[0].length);
+  const text = buffer.toString('utf8');
+  const redacted = redactValuesInContent(text, valueMap);
 
-  let redacted = text;
-  for (const [value, name] of present) {
-    const placeholder = formatPlaceholder(name);
-    // Two-phase split/join through a random marker, exactly as redactContent,
-    // so already-substituted placeholders are never re-matched.
-    const tempMarker = `__TUCK_TEMP_${randomBytes(16).toString('hex')}__`;
-    redacted = redacted.split(value).join(tempMarker);
-    redacted = redacted.split(tempMarker).join(placeholder);
+  // No stored value was present (redactValuesInContent returned the SAME string)
+  // — hash the ORIGINAL buffer so non-secret text is byte-identical to
+  // getFileChecksum. Invalid utf-8 bytes decode to U+FFFD and never match, so
+  // they fall through here too.
+  if (redacted === text) {
+    return createHash('sha256').update(buffer).digest('hex');
   }
 
   return createHash('sha256').update(redacted).digest('hex');

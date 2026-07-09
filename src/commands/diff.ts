@@ -28,6 +28,11 @@ import {
   keystorePassphrase,
   buildMaterializeCtx,
 } from '../lib/materialize.js';
+import {
+  getStoredValueMap,
+  getRedactedChecksum,
+  redactValuesInContent,
+} from '../lib/secrets/index.js';
 import type { DiffOptions } from '../types.js';
 import { readFile } from 'fs/promises';
 
@@ -51,7 +56,14 @@ const isBinary = async (path: string): Promise<boolean> => {
   return await isBinaryExecutable(path);
 };
 
-export const getFileDiff = async (tuckDir: string, source: string): Promise<FileDiff | null> => {
+export const getFileDiff = async (
+  tuckDir: string,
+  source: string,
+  // Stored-secret value map (issue #100). Threaded from runDiff so it is built
+  // ONCE per run; standalone callers may omit it and it is loaded lazily only in
+  // the plain text/directory compare branches that actually need it.
+  valueMap?: Map<string, string>
+): Promise<FileDiff | null> => {
   const tracked = await getTrackedFileBySource(tuckDir, source);
   if (!tracked) {
     throw new FileNotFoundError(`Not tracked: ${source}`);
@@ -136,7 +148,17 @@ export const getFileDiff = async (tuckDir: string, source: string): Promise<File
     // Compare checksums for directories too
     const systemChecksum = await getFileChecksum(systemPath);
     const repoChecksum = await getFileChecksum(repoPath);
-    diff.hasChanges = systemChecksum !== repoChecksum;
+    let dirChanged = systemChecksum !== repoChecksum;
+    // Placeholder-aware compare (issue #100): a tracked directory whose repo copy
+    // holds redacted secrets always reads changed raw. Re-hash the live tree AS
+    // IF its known secrets were redacted before deciding.
+    if (dirChanged) {
+      const store = valueMap ?? (await getStoredValueMap(tuckDir));
+      if (store.size > 0 && (await getRedactedChecksum(systemPath, store)) === repoChecksum) {
+        dirChanged = false;
+      }
+    }
+    diff.hasChanges = dirChanged;
 
     return diff;
   }
@@ -210,9 +232,25 @@ export const getFileDiff = async (tuckDir: string, source: string): Promise<File
   const systemChecksum = await getFileChecksum(systemPath);
   const repoChecksum = await getFileChecksum(repoPath);
 
-  if (systemChecksum !== repoChecksum) {
+  // Placeholder-aware compare (issue #100): the repo copy is redacted while the
+  // live file keeps its real secrets, so raw checksums always differ for a
+  // secret-bearing file. Compare the live file hashed AS IF its known secrets
+  // were redacted, and — critically — display the REDACTED live content so
+  // `tuck diff` never prints a cleartext secret to the terminal.
+  const store = valueMap ?? (await getStoredValueMap(tuckDir));
+  const redactAware = store.size > 0;
+
+  let changed = systemChecksum !== repoChecksum;
+  if (changed && redactAware && (await getRedactedChecksum(systemPath, store)) === repoChecksum) {
+    changed = false;
+  }
+
+  if (changed) {
     diff.hasChanges = true;
-    diff.systemContent = await readFile(systemPath, 'utf-8');
+    const rawSystemContent = await readFile(systemPath, 'utf-8');
+    diff.systemContent = redactAware
+      ? redactValuesInContent(rawSystemContent, store)
+      : rawSystemContent;
     diff.repoContent = await readFile(repoPath, 'utf-8');
   }
 
@@ -369,6 +407,10 @@ const runDiff = async (paths: string[], options: DiffOptions): Promise<void> => 
   const allFiles = await getAllTrackedFiles(tuckDir);
   const changedFiles: FileDiff[] = [];
 
+  // Build the stored-secret value map ONCE and thread it into every getFileDiff
+  // call so placeholder-aware compare doesn't re-read the store per file (#100).
+  const valueMap = await getStoredValueMap(tuckDir);
+
   // If no paths specified, check all files
   const filesToCheck =
     paths.length === 0
@@ -396,7 +438,7 @@ const runDiff = async (paths: string[], options: DiffOptions): Promise<void> => 
     }
 
     try {
-      const diff = await getFileDiff(tuckDir, file.source);
+      const diff = await getFileDiff(tuckDir, file.source, valueMap);
       if (diff && diff.hasChanges) {
         changedFiles.push(diff);
       }

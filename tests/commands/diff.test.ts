@@ -315,6 +315,48 @@ describe('diff command', () => {
     });
   });
 
+  describe('secret-placeholder awareness (issue #100)', () => {
+    const SECRET = 'S3CRET-diff-999';
+
+    const setupTracked = async (): Promise<void> => {
+      const manifest = createMockManifest();
+      manifest.files['zshrc'] = createMockTrackedFile({
+        source: '~/.zshrc',
+        destination: 'files/shell/zshrc',
+      });
+      vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest));
+      vol.mkdirSync(join(TEST_TUCK_DIR, 'files/shell'), { recursive: true });
+      // Repo copy holds the placeholder; the manifest checksum is irrelevant to
+      // getFileDiff (it compares live vs repo directly).
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'files/shell/zshrc'), 'token={{TOK}}\n');
+      const { setSecret } = await import('../../src/lib/secrets/store.js');
+      await setSecret(TEST_TUCK_DIR, 'TOK', SECRET);
+    };
+
+    it('reports no change when the live file differs only by the redacted secret', async () => {
+      const { getFileDiff } = await import('../../src/commands/diff.js');
+      await setupTracked();
+      vol.writeFileSync('/test-home/.zshrc', `token=${SECRET}\n`);
+
+      const diff = await getFileDiff(TEST_TUCK_DIR, '~/.zshrc');
+      expect(diff?.hasChanges).toBe(false);
+    });
+
+    it('reports a real edit AND never prints the cleartext secret in systemContent', async () => {
+      const { getFileDiff } = await import('../../src/commands/diff.js');
+      await setupTracked();
+      vol.writeFileSync('/test-home/.zshrc', `token=${SECRET}\nexport EXTRA=1\n`);
+
+      const diff = await getFileDiff(TEST_TUCK_DIR, '~/.zshrc');
+      expect(diff?.hasChanges).toBe(true);
+      // The displayed system content is REDACTED — the real secret never leaks
+      // into `tuck diff` output.
+      expect(diff?.systemContent).toContain('{{TOK}}');
+      expect(diff?.systemContent).not.toContain(SECRET);
+      expect(diff?.systemContent).toContain('export EXTRA=1');
+    });
+  });
+
   describe('--exit-code with --name-only', () => {
     it('should exit 1 when drift exists even in name-only mode', async () => {
       const { runDiff } = await import('../../src/commands/diff.js');

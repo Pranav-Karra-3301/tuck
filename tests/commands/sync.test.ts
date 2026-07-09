@@ -143,6 +143,10 @@ vi.mock('../../src/lib/secrets/index.js', () => ({
   shouldBlockOnSecrets: vi.fn().mockResolvedValue(true),
   processSecretsForRedaction: vi.fn(),
   redactFile: vi.fn(),
+  // detectChanges loads the stored-secret value map once per run (#100). An
+  // empty map keeps the raw-checksum fast path (existing behavior).
+  getStoredValueMap: vi.fn().mockResolvedValue(new Map()),
+  getRedactedChecksum: vi.fn(),
 }));
 
 vi.mock('../../src/commands/secrets.js', () => ({

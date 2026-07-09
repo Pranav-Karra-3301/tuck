@@ -65,6 +65,7 @@ export {
   redactFile,
   getStoredValueMap,
   getRedactedChecksum,
+  redactValuesInContent,
   restoreContent,
   restoreFile,
   findPlaceholders,
