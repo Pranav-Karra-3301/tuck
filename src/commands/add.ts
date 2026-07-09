@@ -70,18 +70,21 @@ const addFiles = async (
     return trackedFile;
   });
 
-  await trackFilesWithProgress(filesToTrack, tuckDir, {
-    showCategory: true,
-    // Repo scope is always copy; --symlink is rejected upstream for repo adds.
-    strategy: options.symlink ? 'symlink' : undefined,
-    encrypt: options.encrypt,
-    template: options.template,
-    actionVerb: 'Tracking',
-  });
-
-  // The redacted copies are in the repo now — put the original values back in
-  // the LIVE files so the user's actual config keeps working (issue #100).
-  await restoreRedactedLiveFiles(filesToAdd, tuckDir);
+  try {
+    await trackFilesWithProgress(filesToTrack, tuckDir, {
+      showCategory: true,
+      // Repo scope is always copy; --symlink is rejected upstream for repo adds.
+      strategy: options.symlink ? 'symlink' : undefined,
+      encrypt: options.encrypt,
+      template: options.template,
+      actionVerb: 'Tracking',
+    });
+  } finally {
+    // The redacted copies are in the repo now (or tracking failed and will be
+    // retried) — either way, put the original values back in the LIVE files so
+    // the user's actual config keeps working (issue #100).
+    await restoreRedactedLiveFiles(filesToAdd, tuckDir);
+  }
 };
 
 const runInteractiveAdd = async (tuckDir: string, options: AddOptions = {}): Promise<void> => {
@@ -129,36 +132,45 @@ const runInteractiveAdd = async (tuckDir: string, options: AddOptions = {}): Pro
     return;
   }
 
-  for (const file of filesToAdd) {
-    prompts.log.step(`${file.source}`);
+  // preparePathsForTracking may have redacted live files. Every exit from here
+  // on — declining the confirm, cancelling a prompt (OperationCancelledError),
+  // or a tracking failure — must put the original values back, or the user's
+  // live config is left with `{{PLACEHOLDER}}` in it (issue #100). addFiles
+  // restores on its own path too; a second restore is a no-op.
+  try {
+    for (const file of filesToAdd) {
+      prompts.log.step(`${file.source}`);
 
-    const categoryOptions = Object.entries(CATEGORIES).map(([name, config]) => ({
-      value: name,
-      label: `${config.icon} ${name}`,
-      hint: file.category === name ? '(auto-detected)' : undefined,
-    }));
+      const categoryOptions = Object.entries(CATEGORIES).map(([name, config]) => ({
+        value: name,
+        label: `${config.icon} ${name}`,
+        hint: file.category === name ? '(auto-detected)' : undefined,
+      }));
 
-    categoryOptions.sort((a, b) => {
-      if (a.value === file.category) return -1;
-      if (b.value === file.category) return 1;
-      return 0;
-    });
+      categoryOptions.sort((a, b) => {
+        if (a.value === file.category) return -1;
+        if (b.value === file.category) return 1;
+        return 0;
+      });
 
-    const selectedCategory = await prompts.select('Category:', categoryOptions);
-    file.category = selectedCategory as string;
+      const selectedCategory = await prompts.select('Category:', categoryOptions);
+      file.category = selectedCategory as string;
+    }
+
+    const confirm = await prompts.confirm(
+      `Add ${filesToAdd.length} ${filesToAdd.length === 1 ? 'file' : 'files'}?`,
+      true
+    );
+
+    if (!confirm) {
+      prompts.cancel('Operation cancelled');
+      return;
+    }
+
+    await addFiles(filesToAdd, tuckDir, options);
+  } finally {
+    await restoreRedactedLiveFiles(filesToAdd, tuckDir);
   }
-
-  const confirm = await prompts.confirm(
-    `Add ${filesToAdd.length} ${filesToAdd.length === 1 ? 'file' : 'files'}?`,
-    true
-  );
-
-  if (!confirm) {
-    prompts.cancel('Operation cancelled');
-    return;
-  }
-
-  await addFiles(filesToAdd, tuckDir, options);
 
   prompts.outro(`Added ${filesToAdd.length} ${filesToAdd.length === 1 ? 'file' : 'files'}`);
   logger.info("Run 'tuck sync' to commit changes");
@@ -250,6 +262,11 @@ const runAdd = async (paths: string[], options: AddOptions): Promise<void> => {
       repoKey: options.repoKey,
     });
 
+    // A plan never copies anything into the repo, but the interactive secret
+    // prompt above may have redacted live files — put the values back NOW or a
+    // dry run leaves the user's real config broken (issue #100).
+    await restoreRedactedLiveFiles(plannedFiles, tuckDir);
+
     const bundle = options.bundle ?? 'default';
     if (isJsonMode()) {
       emitJsonOk({
@@ -321,12 +338,18 @@ export const addCommand = new Command('add')
   .option('-n, --name <name>', 'Custom name for the file in manifest')
   .option('--symlink', 'Copy into tuck repo, then replace source path with a symlink')
   .option('--template', 'Mark as a template: rendered on apply (sync will not capture live edits)')
-  .option('--encrypt', 'Encrypt the file at rest in the repo (decrypted on apply; needs an encryption password)')
+  .option(
+    '--encrypt',
+    'Encrypt the file at rest in the repo (decrypted on apply; needs an encryption password)'
+  )
   .option(
     '--repo [dir]',
     'Track as repo-scoped (file lives in a git repo; auto-detects the root from the path when no dir is given)'
   )
-  .option('--repo-key <key>', 'Explicit stable repo identity (advanced; default derives from the remote)')
+  .option(
+    '--repo-key <key>',
+    'Explicit stable repo identity (advanced; default derives from the remote)'
+  )
   .option('-f, --force', 'Skip secret scanning (not recommended)')
   .option('-b, --bundle <name>', 'Bundle to assign the file to (defaults to "default")')
   .option('--json', 'Emit JSON envelope to stdout (non-interactive)')

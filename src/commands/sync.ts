@@ -56,7 +56,14 @@ import {
   restoreRedactedLivePaths,
   type PreparedTrackFile,
 } from '../lib/trackPipeline.js';
-import { scanForSecrets, isSecretScanningEnabled, shouldBlockOnSecrets, processSecretsForRedaction, redactFile, liveMatchesRestoredRepo } from '../lib/secrets/index.js';
+import {
+  scanForSecrets,
+  isSecretScanningEnabled,
+  shouldBlockOnSecrets,
+  processSecretsForRedaction,
+  redactFile,
+  liveMatchesRestoredRepo,
+} from '../lib/secrets/index.js';
 import { displayScanResults } from './secrets.js';
 import { logForceSecretBypass } from '../lib/audit.js';
 
@@ -81,7 +88,10 @@ interface SyncResult {
  */
 type TrackedFileChange = FileChange & { id?: string };
 
-const pathsResolveToSameLocation = async (sourcePath: string, destinationPath: string): Promise<boolean> => {
+const pathsResolveToSameLocation = async (
+  sourcePath: string,
+  destinationPath: string
+): Promise<boolean> => {
   try {
     const [resolvedSource, resolvedDestination] = await Promise.all([
       realpath(sourcePath),
@@ -223,9 +233,7 @@ const snapshotBeforePull = async (tuckDir: string, reason: string): Promise<void
     const tracked = await getAllTrackedFiles(tuckDir);
     // Resolve LIVE paths; drop unbound repo files (null) so we never snapshot a
     // bogus "key:rel" pseudo-path for a repo this machine hasn't linked.
-    const resolved = await Promise.all(
-      Object.values(tracked).map((f) => resolveLiveTarget(f))
-    );
+    const resolved = await Promise.all(Object.values(tracked).map((f) => resolveLiveTarget(f)));
     const sources = resolved.filter((p): p is string => p !== null);
     if (sources.length === 0) return;
     await createSnapshot(sources, reason);
@@ -325,8 +333,7 @@ const pullIfBehind = async (
         try {
           await abortRebase(tuckDir);
         } catch (abortError) {
-          const abortMsg =
-            abortError instanceof Error ? abortError.message : String(abortError);
+          const abortMsg = abortError instanceof Error ? abortError.message : String(abortError);
           logger.dim(`Could not abort in-progress rebase automatically: ${abortMsg}`);
         }
         // The dedicated exit code (3) + stable MERGE_CONFLICTS code + recovery
@@ -712,9 +719,7 @@ const scanAndHandleSecrets = async (
     // silently escaped both the .tuckignore write AND the filter and were
     // committed anyway. detectChanges keys .tuckignore on change.source, so that
     // is the correct value to record for BOTH scopes.
-    const secretLivePaths = new Set(
-      summary.results.filter((r) => r.hasSecrets).map((r) => r.path)
-    );
+    const secretLivePaths = new Set(summary.results.filter((r) => r.hasSecrets).map((r) => r.path));
     const sourcesToRemove = new Set<string>();
     for (const { change, live } of targets) {
       if (!secretLivePaths.has(live)) continue;
@@ -724,11 +729,7 @@ const scanAndHandleSecrets = async (
     }
     // Filter out ignored files from changes list
     // Note: This intentionally mutates the 'changes' array in place so callers see the filtered list
-    changes.splice(
-      0,
-      changes.length,
-      ...changes.filter((c) => !sourcesToRemove.has(c.source))
-    );
+    changes.splice(0, changes.length, ...changes.filter((c) => !sourcesToRemove.has(c.source)));
 
     if (changes.length === 0) {
       prompts.log.info('No remaining changes to sync');
@@ -783,284 +784,298 @@ const runInteractiveSync = async (tuckDir: string, options: SyncOptions = {}): P
     redactedLivePaths = outcome.redactedLivePaths;
   }
 
-  // ========== STEP 3: Scan for new dotfiles (if enabled) ==========
-  let newFiles: DetectedFile[] = [];
-  if (options.scan !== false) {
-    const scanSpinner = prompts.spinner();
-    scanSpinner.start('Scanning for new dotfiles...');
-    newFiles = await detectNewDotfiles(tuckDir);
-    scanSpinner.stop(`Found ${newFiles.length} new dotfile${newFiles.length !== 1 ? 's' : ''}`);
-  }
-
-  // ========== STEP 4: Handle case where nothing to do ==========
-  if (changes.length === 0 && newFiles.length === 0) {
-    const gitStatus = await getStatus(tuckDir);
-    if (gitStatus.hasChanges) {
-      prompts.log.info('No dotfile changes, but repository has uncommitted changes');
-
-      const commitAnyway = await prompts.confirm('Commit repository changes?');
-      if (commitAnyway) {
-        const message = await prompts.text('Commit message:', {
-          defaultValue: 'Update dotfiles',
-        });
-
-        await stageAll(tuckDir);
-        const hash = await commit(tuckDir, message);
-        prompts.log.success(`Committed: ${hash.slice(0, 7)}`);
-
-        // Push if remote exists
-        if (options.push !== false && !(await checkLocalMode(tuckDir)) && (await hasRemote(tuckDir))) {
-          await pushWithSpinner(tuckDir, options);
-        }
-      }
-    } else {
-      prompts.log.success('Everything is up to date');
-    }
-    return;
-  }
-
-  // ========== STEP 5: Show changes to tracked files ==========
-  if (changes.length > 0) {
-    console.log();
-    console.log(c.bold('Changes to tracked files:'));
-    for (const change of changes) {
-      if (change.status === 'modified') {
-        console.log(c.yellow(`  ~ ${change.path}`));
-      } else if (change.status === 'deleted') {
-        console.log(c.red(`  - ${change.path}`));
-      }
-    }
-  }
-
-  // ========== STEP 6: Interactive selection for new files ==========
-  let filesToTrackCandidates: Array<{ path: string; category?: string }> = [];
-  let filesToTrack: FileToTrack[] = [];
-
-  if (newFiles.length > 0) {
-    console.log();
-    console.log(c.bold(`New dotfiles found (${newFiles.length}):`));
-
-    // Group by category for display
-    const grouped: Record<string, DetectedFile[]> = {};
-    for (const file of newFiles) {
-      if (!grouped[file.category]) grouped[file.category] = [];
-      grouped[file.category].push(file);
-    }
-
-    for (const [category, files] of Object.entries(grouped)) {
-      const categoryInfo = DETECTION_CATEGORIES[category] || { icon: '-', name: category };
-      console.log(
-        c.cyan(
-          `  ${categoryInfo.icon} ${categoryInfo.name}: ${files.length} file${files.length > 1 ? 's' : ''}`
-        )
-      );
-    }
-
-    console.log();
-    const trackNewFiles = await prompts.confirm(
-      'Would you like to track some of these new files?',
-      true
-    );
-
-    if (trackNewFiles) {
-      // Create multiselect options (pre-select non-sensitive files)
-      const selectOptions = newFiles.map((f) => ({
-        value: f.path,
-        label: `${collapsePath(expandPath(f.path))}${f.sensitive ? c.yellow(' [sensitive]') : ''}`,
-        hint: f.category,
-      }));
-
-      const nonSensitiveFiles = newFiles.filter((f) => !f.sensitive);
-      const initialValues = nonSensitiveFiles.map((f) => f.path);
-
-      const selected = await prompts.multiselect('Select files to track:', selectOptions, {
-        initialValues,
-      });
-
-      filesToTrackCandidates = (selected as string[]).map((path) => {
-        const matched = newFiles.find((file) => file.path === path);
-        return {
-          path,
-          category: matched?.category,
-        };
-      });
-    }
-  }
-
-  // ========== STEP 7: Handle large files in tracked changes ==========
-  const largeFiles: Array<{ path: string; size: string; sizeBytes: number }> = [];
-
-  for (const change of changes) {
-    if (change.status !== 'deleted') {
-      const expandedPath = expandPath(change.source);
-      const sizeCheck = await checkFileSizeThreshold(expandedPath);
-
-      if (sizeCheck.warn || sizeCheck.block) {
-        largeFiles.push({
-          path: change.path,
-          size: formatFileSize(sizeCheck.size),
-          sizeBytes: sizeCheck.size,
-        });
-      }
-    }
-  }
-
-  if (largeFiles.length > 0) {
-    console.log();
-    console.log(c.yellow('Large files detected:'));
-    for (const file of largeFiles) {
-      console.log(c.yellow(`  ${file.path} (${file.size})`));
-    }
-    console.log();
-    console.log(c.dim('GitHub has a 50MB warning and 100MB hard limit.'));
-    console.log();
-
-    const hasBlockers = largeFiles.some((f) => f.sizeBytes >= SIZE_BLOCK_THRESHOLD);
-
-    if (hasBlockers) {
-      const action = await prompts.select('Some files exceed 100MB. What would you like to do?', [
-        { value: 'ignore', label: 'Add large files to .tuckignore' },
-        { value: 'continue', label: 'Try to commit anyway (may fail)' },
-        { value: 'cancel', label: 'Cancel sync' },
-      ]);
-
-      if (action === 'ignore') {
-        for (const file of largeFiles) {
-          const fullPath = changes.find((c) => c.path === file.path)?.source;
-          if (fullPath) {
-            await addToTuckignore(tuckDir, fullPath);
-            const index = changes.findIndex((c) => c.path === file.path);
-            if (index > -1) changes.splice(index, 1);
-          }
-        }
-        prompts.log.success('Added large files to .tuckignore');
-
-        if (changes.length === 0 && filesToTrackCandidates.length === 0) {
-          prompts.log.info('No changes remaining to sync');
-          return;
-        }
-      } else if (action === 'cancel') {
-        prompts.cancel('Operation cancelled');
-        return;
-      }
-    } else {
-      const action = await prompts.select('Large files detected. What would you like to do?', [
-        { value: 'continue', label: 'Continue with sync' },
-        { value: 'ignore', label: 'Add to .tuckignore and skip' },
-        { value: 'cancel', label: 'Cancel sync' },
-      ]);
-
-      if (action === 'ignore') {
-        for (const file of largeFiles) {
-          const fullPath = changes.find((c) => c.path === file.path)?.source;
-          if (fullPath) {
-            await addToTuckignore(tuckDir, fullPath);
-            const index = changes.findIndex((c) => c.path === file.path);
-            if (index > -1) changes.splice(index, 1);
-          }
-        }
-        prompts.log.success('Added large files to .tuckignore');
-
-        if (changes.length === 0 && filesToTrackCandidates.length === 0) {
-          prompts.log.info('No changes remaining to sync');
-          return;
-        }
-      } else if (action === 'cancel') {
-        prompts.cancel('Operation cancelled');
-        return;
-      }
-    }
-  }
-
-  // ========== STEP 8: Track new files ==========
+  // Everything below can exit early (cancel prompts, large-file branches, "No
+  // changes remaining") or throw AFTER live files were redacted above / during
+  // new-file tracking. The finally at the bottom guarantees the original
+  // values always go back into the LIVE files (issue #100).
   let preparedNewFiles: PreparedTrackFile[] = [];
-  if (filesToTrackCandidates.length > 0) {
-    preparedNewFiles = await preparePathsForTracking(filesToTrackCandidates, tuckDir, {
-      secretHandling: 'interactive',
-    });
-    filesToTrack = preparedNewFiles.map((file) => ({
-      path: file.source,
-      category: file.category,
-    }));
-  }
+  try {
+    // ========== STEP 3: Scan for new dotfiles (if enabled) ==========
+    let newFiles: DetectedFile[] = [];
+    if (options.scan !== false) {
+      const scanSpinner = prompts.spinner();
+      scanSpinner.start('Scanning for new dotfiles...');
+      newFiles = await detectNewDotfiles(tuckDir);
+      scanSpinner.stop(`Found ${newFiles.length} new dotfile${newFiles.length !== 1 ? 's' : ''}`);
+    }
 
-  if (changes.length === 0 && filesToTrack.length === 0 && filesToTrackCandidates.length > 0) {
-    prompts.log.info('No changes remaining to sync');
-    return;
-  }
+    // ========== STEP 4: Handle case where nothing to do ==========
+    if (changes.length === 0 && newFiles.length === 0) {
+      const gitStatus = await getStatus(tuckDir);
+      if (gitStatus.hasChanges) {
+        prompts.log.info('No dotfile changes, but repository has uncommitted changes');
 
-  if (filesToTrack.length > 0) {
-    console.log();
-    await trackFilesWithProgress(filesToTrack, tuckDir, {
-      showCategory: true,
-      actionVerb: 'Tracking',
-    });
+        const commitAnyway = await prompts.confirm('Commit repository changes?');
+        if (commitAnyway) {
+          const message = await prompts.text('Commit message:', {
+            defaultValue: 'Update dotfiles',
+          });
 
-    // The redacted copies are in the repo now — put the original values back
-    // in the LIVE files so the user's actual config keeps working (issue #100).
-    await restoreRedactedLiveFiles(preparedNewFiles, tuckDir);
-  }
+          await stageAll(tuckDir);
+          const hash = await commit(tuckDir, message);
+          prompts.log.success(`Committed: ${hash.slice(0, 7)}`);
 
-  // ========== STEP 9: Sync changes to tracked files ==========
-  let result: SyncResult = { modified: [], deleted: [] };
+          // Push if remote exists
+          if (
+            options.push !== false &&
+            !(await checkLocalMode(tuckDir)) &&
+            (await hasRemote(tuckDir))
+          ) {
+            await pushWithSpinner(tuckDir, options);
+          }
+        }
+      } else {
+        prompts.log.success('Everything is up to date');
+      }
+      return;
+    }
 
-  if (changes.length > 0) {
-    // Generate commit message
-    const message =
-      options.message ||
-      generateCommitMessage({
-        modified: changes.filter((c) => c.status === 'modified').map((c) => c.path),
-        deleted: changes.filter((c) => c.status === 'deleted').map((c) => c.path),
+    // ========== STEP 5: Show changes to tracked files ==========
+    if (changes.length > 0) {
+      console.log();
+      console.log(c.bold('Changes to tracked files:'));
+      for (const change of changes) {
+        if (change.status === 'modified') {
+          console.log(c.yellow(`  ~ ${change.path}`));
+        } else if (change.status === 'deleted') {
+          console.log(c.red(`  - ${change.path}`));
+        }
+      }
+    }
+
+    // ========== STEP 6: Interactive selection for new files ==========
+    let filesToTrackCandidates: Array<{ path: string; category?: string }> = [];
+    let filesToTrack: FileToTrack[] = [];
+
+    if (newFiles.length > 0) {
+      console.log();
+      console.log(c.bold(`New dotfiles found (${newFiles.length}):`));
+
+      // Group by category for display
+      const grouped: Record<string, DetectedFile[]> = {};
+      for (const file of newFiles) {
+        if (!grouped[file.category]) grouped[file.category] = [];
+        grouped[file.category].push(file);
+      }
+
+      for (const [category, files] of Object.entries(grouped)) {
+        const categoryInfo = DETECTION_CATEGORIES[category] || { icon: '-', name: category };
+        console.log(
+          c.cyan(
+            `  ${categoryInfo.icon} ${categoryInfo.name}: ${files.length} file${files.length > 1 ? 's' : ''}`
+          )
+        );
+      }
+
+      console.log();
+      const trackNewFiles = await prompts.confirm(
+        'Would you like to track some of these new files?',
+        true
+      );
+
+      if (trackNewFiles) {
+        // Create multiselect options (pre-select non-sensitive files)
+        const selectOptions = newFiles.map((f) => ({
+          value: f.path,
+          label: `${collapsePath(expandPath(f.path))}${f.sensitive ? c.yellow(' [sensitive]') : ''}`,
+          hint: f.category,
+        }));
+
+        const nonSensitiveFiles = newFiles.filter((f) => !f.sensitive);
+        const initialValues = nonSensitiveFiles.map((f) => f.path);
+
+        const selected = await prompts.multiselect('Select files to track:', selectOptions, {
+          initialValues,
+        });
+
+        filesToTrackCandidates = (selected as string[]).map((path) => {
+          const matched = newFiles.find((file) => file.path === path);
+          return {
+            path,
+            category: matched?.category,
+          };
+        });
+      }
+    }
+
+    // ========== STEP 7: Handle large files in tracked changes ==========
+    const largeFiles: Array<{ path: string; size: string; sizeBytes: number }> = [];
+
+    for (const change of changes) {
+      if (change.status !== 'deleted') {
+        const expandedPath = expandPath(change.source);
+        const sizeCheck = await checkFileSizeThreshold(expandedPath);
+
+        if (sizeCheck.warn || sizeCheck.block) {
+          largeFiles.push({
+            path: change.path,
+            size: formatFileSize(sizeCheck.size),
+            sizeBytes: sizeCheck.size,
+          });
+        }
+      }
+    }
+
+    if (largeFiles.length > 0) {
+      console.log();
+      console.log(c.yellow('Large files detected:'));
+      for (const file of largeFiles) {
+        console.log(c.yellow(`  ${file.path} (${file.size})`));
+      }
+      console.log();
+      console.log(c.dim('GitHub has a 50MB warning and 100MB hard limit.'));
+      console.log();
+
+      const hasBlockers = largeFiles.some((f) => f.sizeBytes >= SIZE_BLOCK_THRESHOLD);
+
+      if (hasBlockers) {
+        const action = await prompts.select('Some files exceed 100MB. What would you like to do?', [
+          { value: 'ignore', label: 'Add large files to .tuckignore' },
+          { value: 'continue', label: 'Try to commit anyway (may fail)' },
+          { value: 'cancel', label: 'Cancel sync' },
+        ]);
+
+        if (action === 'ignore') {
+          for (const file of largeFiles) {
+            const fullPath = changes.find((c) => c.path === file.path)?.source;
+            if (fullPath) {
+              await addToTuckignore(tuckDir, fullPath);
+              const index = changes.findIndex((c) => c.path === file.path);
+              if (index > -1) changes.splice(index, 1);
+            }
+          }
+          prompts.log.success('Added large files to .tuckignore');
+
+          if (changes.length === 0 && filesToTrackCandidates.length === 0) {
+            prompts.log.info('No changes remaining to sync');
+            return;
+          }
+        } else if (action === 'cancel') {
+          prompts.cancel('Operation cancelled');
+          return;
+        }
+      } else {
+        const action = await prompts.select('Large files detected. What would you like to do?', [
+          { value: 'continue', label: 'Continue with sync' },
+          { value: 'ignore', label: 'Add to .tuckignore and skip' },
+          { value: 'cancel', label: 'Cancel sync' },
+        ]);
+
+        if (action === 'ignore') {
+          for (const file of largeFiles) {
+            const fullPath = changes.find((c) => c.path === file.path)?.source;
+            if (fullPath) {
+              await addToTuckignore(tuckDir, fullPath);
+              const index = changes.findIndex((c) => c.path === file.path);
+              if (index > -1) changes.splice(index, 1);
+            }
+          }
+          prompts.log.success('Added large files to .tuckignore');
+
+          if (changes.length === 0 && filesToTrackCandidates.length === 0) {
+            prompts.log.info('No changes remaining to sync');
+            return;
+          }
+        } else if (action === 'cancel') {
+          prompts.cancel('Operation cancelled');
+          return;
+        }
+      }
+    }
+
+    // ========== STEP 8: Track new files ==========
+    if (filesToTrackCandidates.length > 0) {
+      preparedNewFiles = await preparePathsForTracking(filesToTrackCandidates, tuckDir, {
+        secretHandling: 'interactive',
+      });
+      filesToTrack = preparedNewFiles.map((file) => ({
+        path: file.source,
+        category: file.category,
+      }));
+    }
+
+    if (changes.length === 0 && filesToTrack.length === 0 && filesToTrackCandidates.length > 0) {
+      prompts.log.info('No changes remaining to sync');
+      return;
+    }
+
+    if (filesToTrack.length > 0) {
+      console.log();
+      await trackFilesWithProgress(filesToTrack, tuckDir, {
+        showCategory: true,
+        actionVerb: 'Tracking',
       });
 
-    console.log();
-    console.log(c.dim('Commit message:'));
-    console.log(
-      c.cyan(
-        message
-          .split('\n')
-          .map((line) => `  ${line}`)
-          .join('\n')
-      )
-    );
-    console.log();
-
-    try {
-      result = await syncFiles(tuckDir, changes, { ...options, message });
-    } finally {
-      // The redacted content has been copied into the repo (or sync failed and
-      // will be retried) — either way, put the original values back in the
-      // LIVE files so the user's actual config keeps working (issue #100).
-      await restoreRedactedLivePaths(redactedLivePaths, tuckDir);
+      // The redacted copies are in the repo now — put the original values back
+      // in the LIVE files so the user's actual config keeps working (issue #100).
+      await restoreRedactedLiveFiles(preparedNewFiles, tuckDir);
     }
-  } else if (filesToTrack.length > 0) {
-    // Only new files were added, commit them
-    if (!options.noCommit) {
+
+    // ========== STEP 9: Sync changes to tracked files ==========
+    let result: SyncResult = { modified: [], deleted: [] };
+
+    if (changes.length > 0) {
+      // Generate commit message
       const message =
         options.message ||
-        `Add ${filesToTrack.length} new dotfile${filesToTrack.length > 1 ? 's' : ''}`;
-      await stageAll(tuckDir);
-      result.commitHash = await commit(tuckDir, message);
+        generateCommitMessage({
+          modified: changes.filter((c) => c.status === 'modified').map((c) => c.path),
+          deleted: changes.filter((c) => c.status === 'deleted').map((c) => c.path),
+        });
+
+      console.log();
+      console.log(c.dim('Commit message:'));
+      console.log(
+        c.cyan(
+          message
+            .split('\n')
+            .map((line) => `  ${line}`)
+            .join('\n')
+        )
+      );
+      console.log();
+
+      result = await syncFiles(tuckDir, changes, { ...options, message });
+    } else if (filesToTrack.length > 0) {
+      // Only new files were added, commit them
+      if (!options.noCommit) {
+        const message =
+          options.message ||
+          `Add ${filesToTrack.length} new dotfile${filesToTrack.length > 1 ? 's' : ''}`;
+        await stageAll(tuckDir);
+        result.commitHash = await commit(tuckDir, message);
+      }
     }
-  }
 
-  // ========== STEP 10: Push to remote ==========
-  console.log();
-  let pushFailed = false;
+    // ========== STEP 10: Push to remote ==========
+    console.log();
+    let pushFailed = false;
 
-  if (result.commitHash) {
-    prompts.log.success(`Committed: ${result.commitHash.slice(0, 7)}`);
+    if (result.commitHash) {
+      prompts.log.success(`Committed: ${result.commitHash.slice(0, 7)}`);
 
-    if (options.push !== false && !(await checkLocalMode(tuckDir)) && (await hasRemote(tuckDir))) {
-      pushFailed = !(await pushWithSpinner(tuckDir, options));
-    } else if (options.push === false) {
-      prompts.log.info("Run 'tuck push' when ready to upload");
+      if (
+        options.push !== false &&
+        !(await checkLocalMode(tuckDir)) &&
+        (await hasRemote(tuckDir))
+      ) {
+        pushFailed = !(await pushWithSpinner(tuckDir, options));
+      } else if (options.push === false) {
+        prompts.log.info("Run 'tuck push' when ready to upload");
+      }
     }
-  }
 
-  // Only show success if no push failure occurred
-  if (!pushFailed) {
-    prompts.outro('Synced successfully!');
+    // Only show success if no push failure occurred
+    if (!pushFailed) {
+      prompts.outro('Synced successfully!');
+    }
+  } finally {
+    // Redacted content is in the repo (or the run was cancelled/failed before
+    // it got there — then the repo simply keeps its old copy). Either way the
+    // LIVE files get their original values back. Both calls are no-ops when
+    // nothing was redacted or a restore already ran.
+    await restoreRedactedLivePaths(redactedLivePaths, tuckDir);
+    await restoreRedactedLiveFiles(preparedNewFiles, tuckDir);
   }
 };
 
@@ -1222,7 +1237,11 @@ export const runSyncCommand = async (
       await stageAll(tuckDir);
       const commitHash = await commit(tuckDir, messageArg || options.message || 'Update dotfiles');
       let pushError: string | undefined;
-      if (options.push !== false && !(await checkLocalMode(tuckDir)) && (await hasRemote(tuckDir))) {
+      if (
+        options.push !== false &&
+        !(await checkLocalMode(tuckDir)) &&
+        (await hasRemote(tuckDir))
+      ) {
         const config = await loadConfig(tuckDir);
         assertRemoteAvailable(config.remote, 'push');
         try {
@@ -1301,7 +1320,10 @@ export const runSyncCommand = async (
   }
 
   // Scan for secrets (non-interactive message path) — shared gate.
-  await scanChangesForSecretsOrThrow(tuckDir, changes, { force: options.force, json: options.json });
+  await scanChangesForSecretsOrThrow(tuckDir, changes, {
+    force: options.force,
+    json: options.json,
+  });
 
   // Show changes
   logger.heading('Changes detected:');

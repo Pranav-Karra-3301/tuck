@@ -23,6 +23,9 @@ const isIgnoredMock = vi.fn();
 const shouldExcludeFromBinMock = vi.fn();
 const getDirectoryFileCountMock = vi.fn();
 const checkFileSizeThresholdMock = vi.fn();
+const processSecretsForRedactionMock = vi.fn();
+const redactFileMock = vi.fn();
+const restoreLiveFilesAfterRedactionMock = vi.fn();
 
 vi.mock('../../src/ui/index.js', () => ({
   prompts: {
@@ -50,6 +53,8 @@ vi.mock('../../src/ui/index.js', () => ({
     warning: vi.fn(),
     error: vi.fn(),
     dim: vi.fn(),
+    heading: vi.fn(),
+    file: vi.fn(),
   },
   colors: {
     error: (x: string) => x,
@@ -90,9 +95,11 @@ vi.mock('../../src/lib/secrets/index.js', () => ({
   scanForSecrets: scanForSecretsMock,
   shouldBlockOnSecrets: shouldBlockOnSecretsMock,
   isSecretScanningEnabled: isSecretScanningEnabledMock,
-  processSecretsForRedaction: vi.fn(),
-  redactFile: vi.fn(),
-  getSecretsPath: vi.fn(),
+  processSecretsForRedaction: processSecretsForRedactionMock,
+  redactFile: redactFileMock,
+  restoreLiveFilesAfterRedaction: restoreLiveFilesAfterRedactionMock,
+  liveMatchesRestoredRepo: vi.fn().mockResolvedValue(false),
+  getSecretsPath: vi.fn(() => '/test-home/.tuck/secrets.local.json'),
 }));
 
 vi.mock('../../src/lib/tuckignore.js', () => ({
@@ -328,5 +335,84 @@ describe('add command behavior', () => {
         strategy: undefined,
       })
     );
+  });
+  describe('live-file restoration on early exits (issue #100)', () => {
+    const SECRET_SUMMARY = {
+      totalSecrets: 1,
+      filesWithSecrets: 1,
+      results: [
+        {
+          path: '/test-home/.zshrc',
+          collapsedPath: '~/.zshrc',
+          hasSecrets: true,
+          matches: [
+            {
+              patternId: 'api-key-assignment',
+              patternName: 'API Key Assignment',
+              severity: 'high',
+              value: 'secret_0123456789abcdef0123456789abcdef',
+              redactedValue: '[REDACTED SECRET]',
+              line: 1,
+              column: 1,
+              context: 'export MY_API_KEY=[REDACTED]',
+              placeholder: 'API_KEY',
+            },
+          ],
+        },
+      ],
+    };
+
+    const armRedaction = () => {
+      scanForSecretsMock.mockResolvedValue(SECRET_SUMMARY);
+      processSecretsForRedactionMock.mockResolvedValue(
+        new Map([
+          ['/test-home/.zshrc', new Map([['secret_0123456789abcdef0123456789abcdef', 'API_KEY']])],
+        ])
+      );
+      redactFileMock.mockResolvedValue({
+        originalContent: '',
+        redactedContent: '',
+        replacements: [{ placeholder: 'API_KEY', originalValue: 'x', line: 1 }],
+      });
+      restoreLiveFilesAfterRedactionMock.mockResolvedValue({ restoredFiles: 1, skippedSymlinks: [] });
+    };
+
+    it('restores redacted live files when the user declines the final interactive confirm', async () => {
+      armRedaction();
+      const { prompts } = await import('../../src/ui/index.js');
+      (prompts.text as ReturnType<typeof vi.fn>).mockResolvedValue('~/.zshrc');
+      // 1st select: secret action -> redact; 2nd select: category
+      (prompts.select as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce('redact')
+        .mockResolvedValueOnce('shell');
+      // Final "Add 1 file?" confirm -> user cancels AFTER redaction already ran
+      (prompts.confirm as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+
+      const { addCommand } = await import('../../src/commands/add.js');
+      await addCommand.parseAsync(['node', 'tuck']);
+
+      expect(redactFileMock).toHaveBeenCalledTimes(1);
+      expect(trackFilesWithProgressMock).not.toHaveBeenCalled();
+      expect(restoreLiveFilesAfterRedactionMock).toHaveBeenCalledWith(
+        ['/test-home/.zshrc'],
+        '/test-home/.tuck'
+      );
+    });
+
+    it('restores redacted live files immediately in --plan mode (nothing is tracked)', async () => {
+      armRedaction();
+      const { prompts } = await import('../../src/ui/index.js');
+      (prompts.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce('redact');
+
+      const { addCommand } = await import('../../src/commands/add.js');
+      await addCommand.parseAsync(['node', 'tuck', '~/.zshrc', '--plan']);
+
+      expect(redactFileMock).toHaveBeenCalledTimes(1);
+      expect(trackFilesWithProgressMock).not.toHaveBeenCalled();
+      expect(restoreLiveFilesAfterRedactionMock).toHaveBeenCalledWith(
+        ['/test-home/.zshrc'],
+        '/test-home/.tuck'
+      );
+    });
   });
 });
