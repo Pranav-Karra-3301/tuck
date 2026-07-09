@@ -138,6 +138,16 @@ describe('patterns', () => {
       const pattern = getPatternById('stripe-test-secret');
       expect(pattern).toBeDefined();
       expect(pattern!.severity).toBe('medium');
+
+      // The name promises matching behavior — exercise the regex, not just the
+      // severity constant, so a broken sk_test_ pattern fails here.
+      const validKey = `sk_test_${'a'.repeat(24)}`;
+      pattern!.pattern.lastIndex = 0;
+      expect(pattern!.pattern.test(validKey)).toBe(true);
+      // A live-key prefix must NOT be caught by the test-key pattern.
+      pattern!.pattern.lastIndex = 0;
+      expect(pattern!.pattern.test(`sk_live_${'a'.repeat(24)}`)).toBe(false);
+      pattern!.pattern.lastIndex = 0;
     });
   });
 
@@ -170,8 +180,14 @@ b3BlbnNzaC1rZXktdjEAAAAA
 
     it('should have length limits on private key patterns', () => {
       PRIVATE_KEY_PATTERNS.forEach((pattern) => {
-        // All private key patterns should have length limits to prevent ReDoS
-        expect(pattern.pattern.source).toMatch(/\{.*,.*\}|\?/);
+        const source = pattern.pattern.source;
+        // Must carry an explicit, FINITE upper-bounded quantifier {min,max}.
+        // `{n,}` (unbounded) or a bare `?` elsewhere must not satisfy this.
+        expect(source).toMatch(/\{\d+,\d+\}/);
+        // And must NOT contain an unbounded body quantifier that reintroduces
+        // ReDoS: `[\s\S]*`, `[\s\S]+`, `.*`, `.+`.
+        expect(source).not.toMatch(/\[\\s\\S\][*+]/);
+        expect(source).not.toMatch(/\.[*+]/);
       });
     });
   });

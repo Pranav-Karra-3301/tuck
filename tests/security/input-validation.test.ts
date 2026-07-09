@@ -275,9 +275,13 @@ describe('Input Validation Security', () => {
 
     injectionPayloads.forEach((payload) => {
       it(`should safely handle injection payload: ${payload.slice(0, 20)}...`, () => {
-        // generateFileId should produce safe output
+        // generateFileId should produce safe, NON-EMPTY output. The `+`
+        // quantifier (not `*`) and the explicit length check ensure an
+        // injection path that collapsed the id to '' would fail this test
+        // rather than pass vacuously.
         const id = generateFileId(`~/config/${payload}`);
-        expect(id).toMatch(/^[a-zA-Z0-9_-]*$/);
+        expect(id).toMatch(/^[a-zA-Z0-9_-]+$/);
+        expect(id.length).toBeGreaterThan(0);
 
         // detectCategory should not execute anything
         expect(() => detectCategory(`~/config/${payload}`)).not.toThrow();

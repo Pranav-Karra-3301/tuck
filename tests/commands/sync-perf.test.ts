@@ -196,7 +196,33 @@ describe('sync change-detection perf (W4-B)', () => {
     expect(updatedIds).toEqual(['gitconfig', 'zshrc']);
   });
 
-  it('does not reload the tracked-files map O(changes) times', async () => {
+  // Build `n` tracked files, all modified (checksum 'old' -> 'new'), wire the
+  // mocks, run a sync, and return how many times the tracked-files map was
+  // reloaded. Isolating this in a helper lets us VARY the change count — the only
+  // way to observe independence-from-change-count (a fixed count with a `<= N`
+  // bound cannot distinguish constant from linear).
+  const countTrackedReloadsForChanges = async (n: number): Promise<number> => {
+    vi.clearAllMocks();
+    const tracked: Record<string, { source: string; destination: string; checksum: string }> = {};
+    for (let i = 0; i < n; i++) {
+      tracked[`f${i}`] = { source: `~/.f${i}`, destination: `files/f${i}`, checksum: 'old' };
+    }
+
+    loadManifestMock.mockResolvedValue({ files: {} });
+    loadTuckignoreMock.mockResolvedValue(new Set());
+    getAllTrackedFilesMock.mockResolvedValue(tracked);
+    buildSourceIndexMock.mockImplementation(async () => {
+      const m = new Map<string, { id: string; file: unknown }>();
+      for (const [id, file] of Object.entries(tracked)) m.set(file.source, { id, file });
+      return m;
+    });
+    pathExistsMock.mockResolvedValue(true);
+    isIgnoredMock.mockResolvedValue(false);
+    getFileChecksumMock.mockResolvedValue('new');
+    resolveLiveTargetMock.mockImplementation(async (file: { source: string }) =>
+      file.source.replace(/^~\//, '/test-home/')
+    );
+
     const { runSyncCommand } = await import('../../src/commands/sync.js');
     await runSyncCommand('sync: multi', {
       noCommit: true,
@@ -205,10 +231,20 @@ describe('sync change-detection perf (W4-B)', () => {
       pull: false,
     } as never);
 
-    // With the old code this grew with the number of changes (one reload per
-    // change in syncFiles, plus another inside each branch). After the refactor
-    // the map is loaded a small constant number of times, independent of the
-    // 2 changes processed.
-    expect(getAllTrackedFilesMock.mock.calls.length).toBeLessThanOrEqual(2);
+    return getAllTrackedFilesMock.mock.calls.length;
+  };
+
+  it('reloads the tracked-files map a constant number of times regardless of change count', async () => {
+    const reloadsFor2 = await countTrackedReloadsForChanges(2);
+    const reloadsFor20 = await countTrackedReloadsForChanges(20);
+
+    // Independence from the change count is the actual property under test:
+    // 2 vs 20 modified files must reload the map the SAME number of times. The
+    // old O(changes) code (one reload per change in syncFiles, plus another
+    // inside each branch) would make reloadsFor20 strictly greater than
+    // reloadsFor2.
+    expect(reloadsFor20).toBe(reloadsFor2);
+    // And that shared count stays a small constant, not proportional to changes.
+    expect(reloadsFor2).toBeLessThanOrEqual(2);
   });
 });

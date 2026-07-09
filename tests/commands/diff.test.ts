@@ -156,36 +156,46 @@ describe('diff command', () => {
     });
   });
 
-  describe('FileDiff interface', () => {
-    it('should have required fields', () => {
-      const diff: TestFileDiff = {
-        source: '~/.test.txt',
-        destination: 'files/test.txt',
-        hasChanges: true,
-        systemContent: 'content',
-        repoContent: 'content',
-      };
+  describe('FileDiff shape (real getFileDiff)', () => {
+    const seedPlainText = (repoBody: string, liveBody: string): void => {
+      const manifest = createMockManifest();
+      manifest.files['zshrc'] = createMockTrackedFile({
+        source: '~/.zshrc',
+        destination: 'files/shell/zshrc',
+      });
+      vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest));
+      vol.mkdirSync(join(TEST_TUCK_DIR, 'files/shell'), { recursive: true });
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'files/shell/zshrc'), repoBody);
+      vol.writeFileSync('/test-home/.zshrc', liveBody);
+    };
 
-      expect(diff.source).toBe('~/.test.txt');
-      expect(diff.destination).toBe('files/test.txt');
-      expect(diff.hasChanges).toBe(true);
-      expect(diff.systemContent).toBe('content');
-      expect(diff.repoContent).toBe('content');
+    it('populates the required fields from the manifest entry and live/repo state', async () => {
+      const { getFileDiff } = await import('../../src/commands/diff.js');
+      seedPlainText('repo\n', 'live\n');
+
+      const diff = await getFileDiff(TEST_TUCK_DIR, '~/.zshrc');
+
+      expect(diff).not.toBeNull();
+      // source echoes the requested key; destination comes from the manifest entry.
+      expect(diff?.source).toBe('~/.zshrc');
+      expect(diff?.destination).toBe('files/shell/zshrc');
+      // A real byte difference must be reported as a change with both sides present.
+      expect(diff?.hasChanges).toBe(true);
+      expect(diff?.systemContent).toBe('live\n');
+      expect(diff?.repoContent).toBe('repo\n');
     });
 
-    it('should handle optional fields', () => {
-      const diff: TestFileDiff = {
-        source: '~/.test.txt',
-        destination: 'files/test.txt',
-        hasChanges: false,
-      };
+    it('leaves directory/binary optional fields unset for a plain text file', async () => {
+      const { getFileDiff } = await import('../../src/commands/diff.js');
+      seedPlainText('repo\n', 'live\n');
 
-      expect(diff.source).toBeDefined();
-      expect(diff.destination).toBeDefined();
-      expect(diff.hasChanges).toBe(false);
-      expect(diff.isBinary).toBeUndefined();
-      expect(diff.isDirectory).toBeUndefined();
-      expect(diff.fileCount).toBeUndefined();
+      const diff = await getFileDiff(TEST_TUCK_DIR, '~/.zshrc');
+
+      expect(diff).not.toBeNull();
+      // A plain text change never populates the directory/binary discriminators.
+      expect(diff?.isBinary).toBeUndefined();
+      expect(diff?.isDirectory).toBeUndefined();
+      expect(diff?.fileCount).toBeUndefined();
     });
   });
 

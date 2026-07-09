@@ -105,7 +105,12 @@ describe('init gitlab/custom remote reroute', () => {
     };
     getProviderMock.mockReturnValue(gitlabProvider);
 
-    const gitlabUrl = 'git@gitlab.com:user/dotfiles.git';
+    // Derive the URL from the GITLAB provider's own buildRepoUrl (the code under
+    // test drives its own host) rather than a hardcoded literal, so the
+    // "never github.com" assertion below is a genuine outcome of the gitlab
+    // provider, not a restatement of an injected constant.
+    const gitlabUrl = gitlabProvider.buildRepoUrl('user', 'dotfiles');
+    expect(gitlabUrl).toBe('git@gitlab.com:user/dotfiles.git');
     setupRemoteForProviderMock.mockResolvedValue({ remoteUrl: gitlabUrl, pushed: false });
 
     const { setupRemoteForChosenProvider } = await import('../../src/commands/init.js');
@@ -116,7 +121,7 @@ describe('init gitlab/custom remote reroute', () => {
     // ...and handed that gitlab provider to the shared helper.
     expect(setupRemoteForProviderMock).toHaveBeenCalledWith(gitlabProvider, '/test-home/.tuck');
 
-    // The URL that flows back is the gitlab URL, never github.com.
+    // The URL that flows back is the gitlab provider's URL, never github.com.
     expect(result).toBe(gitlabUrl);
     expect(result).not.toContain('github.com');
   });

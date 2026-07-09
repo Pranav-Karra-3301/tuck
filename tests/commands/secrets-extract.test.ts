@@ -123,10 +123,10 @@ describe('tuck secrets extract --mcp', () => {
   });
 
   it('creates a snapshot backup before rewriting', async () => {
-    vol.writeFileSync(
-      MCP_PATH,
-      JSON.stringify({ mcpServers: { s: { env: { API_KEY: 'realsecretvalue1234567' } } } })
-    );
+    const original = JSON.stringify({
+      mcpServers: { s: { env: { API_KEY: 'realsecretvalue1234567' } } },
+    });
+    vol.writeFileSync(MCP_PATH, original);
 
     await runExtract([], { mcp: true, yes: true });
 
@@ -136,6 +136,24 @@ describe('tuck secrets extract --mcp', () => {
     // At least one snapshot directory was created.
     const entries = vol.readdirSync(snapshotsDir);
     expect(entries.length).toBeGreaterThan(0);
+
+    // The snapshot must actually capture the PRE-REWRITE MCP contents (including
+    // the original inline secret), not merely create an empty/mislabeled dir —
+    // this is the recoverable copy the destructive rewrite depends on.
+    const { listSnapshots } = await import('../../src/lib/timemachine.js');
+    const snapshots = await listSnapshots();
+    expect(snapshots.length).toBeGreaterThan(0);
+    const backedUp = snapshots
+      .flatMap((s) => s.files)
+      .find((f) => f.originalPath === MCP_PATH);
+    expect(backedUp, 'the MCP file must be recorded in the snapshot').toBeDefined();
+    expect(backedUp?.existed).toBe(true);
+    const backedUpContent = vol.readFileSync(backedUp!.backupPath, 'utf-8') as string;
+    // Byte-for-byte the original, and the live file (now rewritten) confirms the
+    // snapshot was taken from the pre-rewrite state.
+    expect(backedUpContent).toBe(original);
+    expect(backedUpContent).toContain('realsecretvalue1234567');
+    expect(vol.readFileSync(MCP_PATH, 'utf-8')).not.toContain('realsecretvalue1234567');
   });
 
   it('dry-run does not modify files or store secrets', async () => {

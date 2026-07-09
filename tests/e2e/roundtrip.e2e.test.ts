@@ -13,6 +13,10 @@ import {
 } from './helpers/runCli.js';
 import { hasGit, gitIdentityEnv } from './helpers/git.js';
 
+// Resolve git availability once (top-level await) so the commit-dependent cases
+// below register as genuinely SKIPPED — not silently PASSED — when git is absent.
+const gitAvailable = await hasGit();
+
 /**
  * Case (a): the flagship lifecycle, end-to-end through the real binary —
  * init (local/bare, no network) → add → sync (commit, no push) → apply FROM the
@@ -28,8 +32,7 @@ describe('e2e: init → add → sync → apply round-trip', () => {
     await Promise.all(homes.splice(0).map(cleanupHome));
   });
 
-  it('tracks a dotfile, commits it, and re-materializes it on a clean machine', async () => {
-    if (!(await hasGit())) return;
+  it.skipIf(!gitAvailable)('tracks a dotfile, commits it, and re-materializes it on a clean machine', async () => {
     const src = await makeHome();
     homes.push(src);
     const env = { ...gitIdentityEnv() };
@@ -62,8 +65,7 @@ describe('e2e: init → add → sync → apply round-trip', () => {
     expect(await readHomeFile(dst, '.zshrc')).toBe('export EDITOR=vim\n');
   });
 
-  it('apply is idempotent — a second apply changes nothing on disk (non-shell file)', async () => {
-    if (!(await hasGit())) return;
+  it.skipIf(!gitAvailable)('apply is idempotent — a second apply changes nothing on disk (non-shell file)', async () => {
     const src = await makeHome();
     homes.push(src);
     const env = { ...gitIdentityEnv() };

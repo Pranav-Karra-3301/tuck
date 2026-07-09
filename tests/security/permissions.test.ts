@@ -87,11 +87,15 @@ describe('Permissions Security', () => {
     const filePath = join(TEST_HOME, 'permissions.txt');
     vol.writeFileSync(filePath, 'secret');
 
+    // Seed a known, non-644 mode so the change made below is actually
+    // observable. If setFilePermissions were a no-op the final assertion would
+    // still see 600 and fail, instead of passing vacuously.
+    await setFilePermissions(filePath, '600');
     const before = await getFilePermissions(filePath);
-    expect(before).toMatch(/^[0-7]{3}$/);
+    expect(before).toBe('600');
 
     await expect(setFilePermissions(filePath, '644')).resolves.not.toThrow();
     const after = await getFilePermissions(filePath);
-    expect(after).toMatch(/^[0-7]{3}$/);
+    expect(after).toBe('644');
   });
 });

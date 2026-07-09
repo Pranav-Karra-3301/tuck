@@ -57,11 +57,6 @@ vi.mock('../../src/ui/index.js', () => ({
   },
 }));
 
-// A spy that should NEVER be invoked for non-github providers. If the rerouted
-// code accidentally falls back into GitHub-specific validation, this would be
-// called and the test would catch it.
-const githubValidatorSpy = vi.fn(() => 'Please enter a valid GitHub URL');
-
 /**
  * Build a minimal fake GitProvider for a given mode. Only the methods used by
  * setupRemoteForProvider are implemented; everything else throws so an
@@ -116,7 +111,6 @@ function manualProvider(mode: ProviderMode, overrides: Partial<GitProvider> = {}
 describe('setupRemoteForProvider', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    githubValidatorSpy.mockClear();
     upsertRemoteMock.mockResolvedValue(undefined);
     addRemoteMock.mockResolvedValue(undefined);
     hasRemoteMock.mockResolvedValue(false);
@@ -156,9 +150,11 @@ describe('setupRemoteForProvider', () => {
     const { setupRemoteForProvider } = await import('../../src/lib/remoteSetup.js');
     const result = await setupRemoteForProvider(gitlab, '/test-home/.tuck');
 
-    // The gitlab validator was consulted; the github validator never was.
+    // The gitlab validator was consulted. That it REJECTS a github URL (asserted
+    // inside the textMock validate check above) is what proves the code did not
+    // fall back to github-specific validation — no separate github spy needed.
     expect(gitlabValidate).toHaveBeenCalled();
-    expect(githubValidatorSpy).not.toHaveBeenCalled();
+    expect(gitlabValidate).toHaveBeenCalledWith('https://github.com/u/d.git');
 
     // Remote was upserted with the gitlab URL (NOT a github.com URL).
     expect(upsertRemoteMock).toHaveBeenCalledWith('/test-home/.tuck', 'origin', gitlabUrl);

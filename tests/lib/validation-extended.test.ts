@@ -268,11 +268,11 @@ describe('validation-extended', () => {
     it('should normalize unicode', async () => {
       const { sanitizeInput } = await import('../../src/lib/validation.js');
 
-      // e + combining acute accent should normalize to single char
+      // 'cafe' + U+0301 (combining acute accent), 5 code units, must NFC-compose
+      // to the single-codepoint form 'caf\u00e9' ('caf' + U+00E9), 4 code units. Pin
+      // the concrete composed result so removing the .normalize('NFC') step fails.
       const combined = 'cafe\u0301';
-      const normalized = sanitizeInput(combined);
-      // After NFC normalization
-      expect(normalized.length).toBeLessThanOrEqual(combined.length);
+      expect(sanitizeInput(combined)).toBe('caf\u00e9');
     });
   });
 
@@ -322,13 +322,22 @@ describe('validation-extended', () => {
         expect(validateGitUrl('C:/Program Files/app')).toBe(false);
       });
 
-      it('should handle file:// prefix for Windows', async () => {
+      it('rejects a file:// drive-letter URL with a leading slash', async () => {
         const { validateGitUrl } = await import('../../src/lib/validation.js');
 
-        // file:// URLs with drive letters
-        const result = validateGitUrl('file:///C:/Users/user/repo');
-        // Result depends on implementation - just verify it doesn't throw
-        expect(typeof result).toBe('boolean');
+        // Stripping `file://` from 'file:///C:/...' leaves '/C:/Users/user/repo';
+        // validateFileUrl requires the drive letter at the very start (no leading
+        // slash), so this canonical file URI form is rejected. Pin that policy so a
+        // change to the drive-letter guard is caught rather than silently accepted.
+        expect(validateGitUrl('file:///C:/Users/user/repo')).toBe(false);
+      });
+
+      it('accepts a file:// drive-letter URL without a leading slash', async () => {
+        const { validateGitUrl } = await import('../../src/lib/validation.js');
+
+        // 'file://C:/...' strips to 'C:/Users/user/repo' which starts with a drive
+        // letter, so it is accepted. Pins the accept side of the same policy.
+        expect(validateGitUrl('file://C:/Users/user/repo')).toBe(true);
       });
     });
   });

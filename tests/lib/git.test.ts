@@ -4,7 +4,7 @@
  * Note: These tests mock simple-git to avoid actual git operations.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { vol } from 'memfs';
 import { join } from 'path';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
@@ -455,8 +455,11 @@ describe('git', () => {
     });
 
     it('should respect maxCount option', async () => {
-      const log = await getLog(TEST_TUCK_DIR, { maxCount: 5 });
-      expect(log).toBeDefined();
+      await getLog(TEST_TUCK_DIR, { maxCount: 5 });
+      // The maxCount must be forwarded to git.log, not silently dropped.
+      expect(mockGitInstance.log).toHaveBeenCalledWith(
+        expect.objectContaining({ maxCount: 5 })
+      );
     });
 
     it('should pass --since to git log when requested', async () => {
@@ -476,18 +479,27 @@ describe('git', () => {
     });
 
     it('should support staged option', async () => {
-      const diff = await getDiff(TEST_TUCK_DIR, { staged: true });
-      expect(typeof diff).toBe('string');
+      await getDiff(TEST_TUCK_DIR, { staged: true });
+      // --staged must reach git.diff, otherwise a staged diff silently becomes
+      // a working-tree diff.
+      expect(mockGitInstance.diff).toHaveBeenCalledWith(
+        expect.arrayContaining(['--staged'])
+      );
     });
 
     it('should support stat option', async () => {
-      const diff = await getDiff(TEST_TUCK_DIR, { stat: true });
-      expect(typeof diff).toBe('string');
+      await getDiff(TEST_TUCK_DIR, { stat: true });
+      expect(mockGitInstance.diff).toHaveBeenCalledWith(
+        expect.arrayContaining(['--stat'])
+      );
     });
 
     it('should support files option', async () => {
-      const diff = await getDiff(TEST_TUCK_DIR, { files: ['file1.txt'] });
-      expect(typeof diff).toBe('string');
+      await getDiff(TEST_TUCK_DIR, { files: ['file1.txt'] });
+      // Files must be forwarded after the `--` separator so git scopes the diff.
+      expect(mockGitInstance.diff).toHaveBeenCalledWith(
+        expect.arrayContaining(['--', 'file1.txt'])
+      );
     });
   });
 });

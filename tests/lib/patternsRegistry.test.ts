@@ -102,8 +102,45 @@ describe('patternsRegistry', () => {
     });
 
     it('returns the canonical DotfilePattern shape', async () => {
-      seedBundledShellFile();
+      // Seed a file whose entries exercise EVERY optional branch of
+      // toDotfilePattern: one minimal entry (sensitive:false, exclude:[], no
+      // platform — all dropped) and one rich entry (sensitive:true, non-empty
+      // exclude, explicit platform — all emitted). Without a rich entry the
+      // sensitive/exclude/platform conditionals below would be dead code.
+      vol.mkdirSync(bundledDir, { recursive: true });
+      vol.writeFileSync(
+        `${bundledDir}/shell.json`,
+        JSON.stringify({
+          $schema: 'https://tuck.sh/schemas/patterns-v1.json',
+          category: 'shell',
+          patterns: [
+            {
+              pattern: '~/.zshrc',
+              category: 'shell',
+              description: 'Zsh interactive shell config',
+              sensitive: false,
+              isDirectory: false,
+              exclude: [],
+            },
+            {
+              pattern: '~/.ssh',
+              category: 'ssh',
+              description: 'SSH client config and keys',
+              sensitive: true,
+              isDirectory: true,
+              exclude: ['known_hosts', 'authorized_keys'],
+              platform: 'darwin',
+            },
+          ],
+        })
+      );
+
       const patterns = await loadPatterns();
+
+      // The most important regression: an empty result must FAIL this test
+      // rather than silently pass a zero-iteration loop.
+      expect(patterns).toHaveLength(2);
+
       for (const p of patterns) {
         expect(typeof p.path).toBe('string');
         expect(typeof p.category).toBe('string');
@@ -114,6 +151,20 @@ describe('patternsRegistry', () => {
           expect(['darwin', 'linux', 'win32', 'all']).toContain(p.platform);
         }
       }
+
+      // Prove the optional branches actually fired for the rich entry.
+      const ssh = patterns.find((p) => p.path === '~/.ssh');
+      expect(ssh).toBeDefined();
+      expect(ssh!.sensitive).toBe(true);
+      expect(ssh!.exclude).toEqual(['known_hosts', 'authorized_keys']);
+      expect(ssh!.platform).toBe('darwin');
+
+      // And prove the falsy/empty optionals are dropped for the minimal entry.
+      const zshrc = patterns.find((p) => p.path === '~/.zshrc');
+      expect(zshrc).toBeDefined();
+      expect(zshrc!.sensitive).toBeUndefined();
+      expect(zshrc!.exclude).toBeUndefined();
+      expect(zshrc!.platform).toBeUndefined();
     });
 
     it('caches the result across calls', async () => {

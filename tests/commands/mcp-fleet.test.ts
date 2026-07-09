@@ -161,14 +161,38 @@ describe('tuck mcp apply', () => {
 
   it('backs up an existing client config before overwriting it', async () => {
     const cursorPath = resolveClientConfigPath('cursor');
-    await seedClientConfig(cursorPath, JSON.stringify({ mcpServers: {} }));
+    const originalContent = JSON.stringify({ mcpServers: {} });
+    await seedClientConfig(cursorPath, originalContent);
 
     await addAction('srv', { command: 'npx' });
     await applyAction({ yes: true, client: ['cursor'] });
 
-    // A dated backup dir is created under ~/.tuck-backups.
+    // A dated backup dir is created under ~/.tuck-backups...
     const backupRoot = '/test-home/.tuck-backups';
     expect(vol.existsSync(backupRoot)).toBe(true);
+
+    // ...and it must actually contain the ORIGINAL, recoverable cursor content —
+    // not merely an empty dir. Walk the backup tree and prove a copy of the
+    // pre-overwrite file is present byte-for-byte.
+    const collectFiles = (dir: string): string[] => {
+      const out: string[] = [];
+      for (const entry of vol.readdirSync(dir) as string[]) {
+        const full = `${dir}/${entry}`;
+        if (vol.statSync(full).isDirectory()) {
+          out.push(...collectFiles(full));
+        } else {
+          out.push(full);
+        }
+      }
+      return out;
+    };
+    const backupFiles = collectFiles(backupRoot);
+    expect(backupFiles.length).toBeGreaterThan(0);
+    const backupContents = backupFiles.map((f) => vol.readFileSync(f, 'utf-8'));
+    // The live file was overwritten (it now carries the new server)...
+    expect(await readFile(cursorPath, 'utf-8')).not.toBe(originalContent);
+    // ...but the original is preserved verbatim in the backup.
+    expect(backupContents).toContain(originalContent);
   });
 
   it('refuses to write when a referenced secret cannot be resolved', async () => {
