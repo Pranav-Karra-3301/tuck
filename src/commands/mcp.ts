@@ -28,7 +28,7 @@ import { setJsonMode, emitJsonOk } from '../lib/jsonOutput.js';
 import { computeStateModel, summarizeStateModel } from '../lib/stateModel.js';
 import { hasDrift, dryApplyIntoSandbox } from './verify.js';
 import { getFileDiff } from './diff.js';
-import { scanForSecrets } from '../lib/secrets/index.js';
+import { scanForSecrets, getStoredValueMap } from '../lib/secrets/index.js';
 import { snapshotWriteContext, setWriteContext, restoreWriteContext } from '../lib/writeContext.js';
 import { resolveLiveTarget } from '../lib/repoScope.js';
 import { join, relative } from 'path';
@@ -206,10 +206,14 @@ const tools: ToolDef[] = [
         (f) => (!paths || paths.includes(f.source)) && (!category || f.category === category)
       );
       const files: Array<Record<string, unknown>> = [];
+      // Build the stored-secret value map ONCE and thread it into every
+      // getFileDiff call — otherwise the lazy path inside getFileDiff would
+      // re-read the secrets store per tracked file (issue #100).
+      const valueMap = await getStoredValueMap(tuckDir);
       for (const f of wanted) {
         // getFileDiff is read-only; swallow per-file errors (permission/missing) so
         // one unreadable file never aborts the whole preview.
-        const d = await getFileDiff(tuckDir, f.source).catch(() => null);
+        const d = await getFileDiff(tuckDir, f.source, valueMap).catch(() => null);
         if (d && d.hasChanges) {
           files.push({
             source: d.source,

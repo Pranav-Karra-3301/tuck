@@ -148,8 +148,8 @@
     {
       "pattern": "~/.mcp.json",
       "category": "agents",
-      "description": "Global MCP server manifest",
-      "sensitive": false,
+      "description": "Global MCP server manifest (may contain inline credentials)",
+      "sensitive": true,
       "isDirectory": false,
       "exclude": []
     },
@@ -157,9 +157,43 @@
       "pattern": "~/.config/mcp",
       "category": "agents",
       "description": "MCP server manifests",
-      "sensitive": false,
+      "sensitive": true,
       "isDirectory": false,
       "exclude": []
+    },
+    {
+      "pattern": "~/.claude.json",
+      "category": "agents",
+      "description": "Claude Code config incl. MCP servers (may contain inline credentials)",
+      "sensitive": true,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/.cursor/mcp.json",
+      "category": "agents",
+      "description": "Cursor MCP servers (may contain inline credentials)",
+      "sensitive": true,
+      "isDirectory": false,
+      "exclude": []
+    },
+    {
+      "pattern": "~/Library/Application Support/Claude/claude_desktop_config.json",
+      "category": "agents",
+      "description": "Claude Desktop MCP config (may contain inline credentials)",
+      "sensitive": true,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "darwin"
+    },
+    {
+      "pattern": "~/.config/Claude/claude_desktop_config.json",
+      "category": "agents",
+      "description": "Claude Desktop MCP config (may contain inline credentials)",
+      "sensitive": true,
+      "isDirectory": false,
+      "exclude": [],
+      "platform": "linux"
     }
   ]
 }
