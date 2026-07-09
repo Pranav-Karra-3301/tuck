@@ -11,7 +11,7 @@ tuck is a modern dotfiles manager that provides a beautiful CLI for managing you
 
 ## COMMANDS
 * **init**: Initialize tuck
-* **add**: Track new dotfiles
+* **add**: Track new dotfiles (use `--key <json.path>` to track only a JSON subtree, deep-merged back on apply/restore)
 * **remove**: Stop tracking dotfiles
 * **sync**: Sync all dotfile changes (pull, detect, scan, track, commit, push)
 * **push**: Push changes to remote

@@ -97,13 +97,21 @@ tuck restore --all
 
 ### Managing Files
 
-| Command               | Description                        |
-| --------------------- | ---------------------------------- |
-| `tuck add <paths>`    | Manually track specific files      |
-| `tuck remove <paths>` | Stop tracking files                |
-| `tuck scan`           | Discover dotfiles without syncing  |
-| `tuck list`           | List all tracked files by category |
-| `tuck diff [file]`    | Show what's changed                |
+| Command                          | Description                                                      |
+| -------------------------------- | --------------------------------------------------------------- |
+| `tuck add <paths>`               | Manually track specific files                                   |
+| `tuck add <file> --key <path>`   | Track only a JSON subtree (e.g. `mcpServers`) — see [JSON-key tracking](docs/JSON-KEY-TRACKING.md) |
+| `tuck remove <paths>`            | Stop tracking files                                             |
+| `tuck scan`                      | Discover dotfiles without syncing                               |
+| `tuck list`                      | List all tracked files by category                              |
+| `tuck diff [file]`               | Show what's changed                                             |
+
+**JSON-key-scoped tracking** lets you track a *subtree* of a JSON file instead of
+the whole thing. `tuck add ~/.claude.json --key mcpServers` extracts only the
+`mcpServers` value into your repo; on `tuck apply`/`tuck restore` it is
+deep-merged back into the live file, leaving OAuth tokens, session caches, and
+every other machine-managed key untouched. See
+[docs/JSON-KEY-TRACKING.md](docs/JSON-KEY-TRACKING.md).
 
 ### Syncing
 
