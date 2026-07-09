@@ -194,6 +194,15 @@ export class MaterializeError extends TuckError {
   }
 }
 
+export class McpConfigError extends TuckError {
+  constructor(file: string, reason: string) {
+    super(`Cannot parse MCP config ${file}: ${reason}`, 'MCP_CONFIG_INVALID', [
+      'Ensure the file is valid JSON (MCP config files must not contain comments)',
+      'Fix the syntax error, then re-run `tuck secrets extract --mcp`',
+    ]);
+  }
+}
+
 export class SecretsDetectedError extends TuckError {
   constructor(count: number, files: string[]) {
     const fileList =

@@ -381,6 +381,29 @@ tuck secrets scan
 tuck secrets set API_KEY
 ```
 
+### MCP secrets extraction
+
+MCP clients (Claude Desktop, Claude Code, Cursor, VS Code) often store API keys
+and tokens as plaintext inside `mcpServers[...].env` blocks. `tuck secrets
+extract` rewrites those inline credentials into placeholders and stores the real
+values in your configured secret backend, so nothing sensitive is committed:
+
+```bash
+# Scan known MCP config files, preview changes, then extract
+tuck secrets extract --mcp --dry-run
+tuck secrets extract --mcp
+
+# Or target specific files, and use client-native ${env:NAME} references
+tuck secrets extract ./.cursor/mcp.json --format env
+```
+
+Known locations that `--mcp` inspects: Claude Desktop (`claude_desktop_config.json`),
+`~/.claude.json`, `~/.cursor/mcp.json`, `~/.mcp.json`, `.mcp.json` / `mcp.json`
+(project), and `.vscode/mcp.json`. A pre-change snapshot is always taken (revert
+with `tuck undo`). With the default `--format placeholder`, `tuck apply`
+re-injects the values from the backend on each machine; with `--format env` you
+export the matching env vars yourself.
+
 ## Hooks
 
 Run custom commands before/after operations:

@@ -40,6 +40,7 @@ This document lists all error codes used by tuck for programmatic error handling
 | `KEYSTORE_ERROR`             | `KeystoreError`              | OS keystore operation failed                                                    | Keychain/secret-service unavailable                     | Check the OS keystore or use the fallback               |
 | `UNKNOWN_AGENT_PRESET`       | `TuckError`                  | `tuck add --preset` was given an unknown agent                                  | Typo or unsupported agent id                            | Use one of: claude-code, cursor, codex, gemini, copilot |
 | `UNKNOWN_TRANSLATION_TARGET` | `TuckError`                  | `tuck preset translate --to` named an unknown agent                             | Typo in the `--to` list                                 | Use claude-code, codex, or gemini                       |
+| `MCP_CONFIG_INVALID` | `McpConfigError` | An MCP config file could not be parsed during `secrets extract --mcp` | Invalid JSON, comments in the config | Fix the JSON syntax, then re-run the extraction |
 
 ---
 
