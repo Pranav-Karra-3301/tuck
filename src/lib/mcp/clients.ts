@@ -50,14 +50,15 @@ const windowsAppData = (
  *
  * The path separator is chosen from `platform` (not the host OS) so that a
  * Windows CI runner still produces posix `darwin`/`linux` paths and vice versa.
- * `%APPDATA%` is injected (defaulting from `process.env`) to keep this function
- * pure and free of global mutation in tests.
+ * `%APPDATA%` is injected by the caller (`resolveClientConfigPath` passes
+ * `process.env.APPDATA`) so this function stays pure — an explicit `undefined`
+ * always exercises the fallback, regardless of the host machine's environment.
  */
 export const clientConfigPathFor = (
   id: McpClientId,
   platform: ClientPlatform,
   home: string,
-  appData: string | undefined = process.env.APPDATA
+  appData?: string
 ): string => {
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
 
@@ -101,4 +102,4 @@ const currentPlatform = (): ClientPlatform => {
 
 /** Absolute config path for a client on the current machine. */
 export const resolveClientConfigPath = (id: McpClientId): string =>
-  clientConfigPathFor(id, currentPlatform(), expandPath('~'));
+  clientConfigPathFor(id, currentPlatform(), expandPath('~'), process.env.APPDATA);
