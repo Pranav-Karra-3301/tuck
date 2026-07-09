@@ -296,6 +296,35 @@ describe('diff command', () => {
       expect(diff?.repoContent).not.toContain('{{');
     });
 
+    it('redacts a stored secret in template systemContent/repoContent (never prints cleartext)', async () => {
+      const { getFileDiff } = await import('../../src/commands/diff.js');
+      const SECRET = 'S3CRET-tmpl-777';
+      const manifest = createMockManifest();
+      manifest.files['tmpl'] = createMockTrackedFile({
+        source: '~/.tmpl',
+        destination: 'files/misc/tmpl',
+        template: true,
+      });
+      vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest));
+      vol.mkdirSync(join(TEST_TUCK_DIR, 'files/misc'), { recursive: true });
+      // Repo template renders to a body that embeds the cleartext secret, and the
+      // live file also carries the cleartext secret plus a real edit so a diff is
+      // produced.
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'files/misc/tmpl'), `token=${SECRET}\nH={{ home }}\n`);
+      vol.writeFileSync('/test-home/.tmpl', `token=${SECRET}\nH=/test-home\nexport EXTRA=1\n`);
+      const { setSecret } = await import('../../src/lib/secrets/store.js');
+      await setSecret(TEST_TUCK_DIR, 'TOK', SECRET);
+
+      const diff = await getFileDiff(TEST_TUCK_DIR, '~/.tmpl');
+      expect(diff?.hasChanges).toBe(true);
+      // Both displayed strings are redacted — the real secret never leaks into
+      // `tuck diff` output for template/encrypted files.
+      expect(diff?.systemContent).toContain('{{TOK}}');
+      expect(diff?.systemContent).not.toContain(SECRET);
+      expect(diff?.repoContent).toContain('{{TOK}}');
+      expect(diff?.repoContent).not.toContain(SECRET);
+    });
+
     it('should return null for a repo-scoped file whose repo is not bound on this machine', async () => {
       const { getFileDiff } = await import('../../src/commands/diff.js');
       const manifest = createMockManifest();
@@ -312,6 +341,82 @@ describe('diff command', () => {
       // fabricate a cwd-relative path.
       const diff = await getFileDiff(TEST_TUCK_DIR, 'someproj-a1b2c3d4:.eslintrc');
       expect(diff).toBeNull();
+    });
+  });
+
+  describe('secret-placeholder awareness (issue #100)', () => {
+    const SECRET = 'S3CRET-diff-999';
+
+    const setupTracked = async (): Promise<void> => {
+      const manifest = createMockManifest();
+      manifest.files['zshrc'] = createMockTrackedFile({
+        source: '~/.zshrc',
+        destination: 'files/shell/zshrc',
+      });
+      vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest));
+      vol.mkdirSync(join(TEST_TUCK_DIR, 'files/shell'), { recursive: true });
+      // Repo copy holds the placeholder; the manifest checksum is irrelevant to
+      // getFileDiff (it compares live vs repo directly).
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'files/shell/zshrc'), 'token={{TOK}}\n');
+      const { setSecret } = await import('../../src/lib/secrets/store.js');
+      await setSecret(TEST_TUCK_DIR, 'TOK', SECRET);
+    };
+
+    it('reports no change when the live file differs only by the redacted secret', async () => {
+      const { getFileDiff } = await import('../../src/commands/diff.js');
+      await setupTracked();
+      vol.writeFileSync('/test-home/.zshrc', `token=${SECRET}\n`);
+
+      const diff = await getFileDiff(TEST_TUCK_DIR, '~/.zshrc');
+      expect(diff?.hasChanges).toBe(false);
+    });
+
+    it('reports a real edit AND never prints the cleartext secret in systemContent', async () => {
+      const { getFileDiff } = await import('../../src/commands/diff.js');
+      await setupTracked();
+      vol.writeFileSync('/test-home/.zshrc', `token=${SECRET}\nexport EXTRA=1\n`);
+
+      const diff = await getFileDiff(TEST_TUCK_DIR, '~/.zshrc');
+      expect(diff?.hasChanges).toBe(true);
+      // The displayed system content is REDACTED — the real secret never leaks
+      // into `tuck diff` output.
+      expect(diff?.systemContent).toContain('{{TOK}}');
+      expect(diff?.systemContent).not.toContain(SECRET);
+      expect(diff?.systemContent).toContain('export EXTRA=1');
+    });
+
+    it('redacts systemContent in the missing-repo branch (never prints cleartext)', async () => {
+      const { getFileDiff } = await import('../../src/commands/diff.js');
+      await setupTracked();
+      // Repo copy is GONE — the branch that dumps the whole live file as
+      // systemContent must still redact known secrets before display.
+      vol.unlinkSync(join(TEST_TUCK_DIR, 'files/shell/zshrc'));
+      vol.writeFileSync('/test-home/.zshrc', `token=${SECRET}\n`);
+
+      const diff = await getFileDiff(TEST_TUCK_DIR, '~/.zshrc');
+      expect(diff?.hasChanges).toBe(true);
+      expect(diff?.systemContent).toContain('{{TOK}}');
+      expect(diff?.systemContent).not.toContain(SECRET);
+    });
+
+    it('never touches the secrets store when raw checksums already match (lazy load)', async () => {
+      const { getFileDiff } = await import('../../src/commands/diff.js');
+      const manifest = createMockManifest();
+      manifest.files['zshrc'] = createMockTrackedFile({
+        source: '~/.zshrc',
+        destination: 'files/shell/zshrc',
+      });
+      vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest));
+      vol.mkdirSync(join(TEST_TUCK_DIR, 'files/shell'), { recursive: true });
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'files/shell/zshrc'), 'plain\n');
+      vol.writeFileSync('/test-home/.zshrc', 'plain\n');
+      // A CORRUPT secrets store makes loadSecretsStore throw — so if the lazy
+      // path (no valueMap threaded) touched the store for a raw-equal file,
+      // this call would reject instead of reporting "no changes".
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'secrets.local.json'), '{not json');
+
+      const diff = await getFileDiff(TEST_TUCK_DIR, '~/.zshrc');
+      expect(diff?.hasChanges).toBe(false);
     });
   });
 
