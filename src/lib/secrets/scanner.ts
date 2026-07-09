@@ -261,8 +261,12 @@ export const scanContent = (content: string, options: ScanOptions = {}): SecretM
         break;
       }
 
-      // Extract the captured value (prefer capture group 1 if exists)
-      const value = match[1] || match[0];
+      // Extract the captured value: the FIRST DEFINED capture group. Generic
+      // assignment patterns place the unquoted value in group 2 (group 1 is
+      // the quoted alternative), so `match[1] || match[0]` fell back to the
+      // whole `KEY=value` span — destroying the key when the span is rewritten
+      // (e.g. value encryption produced `GITHUB_ENC[tuck:v1:…]`).
+      const value = match.slice(1).find((group) => group !== undefined) ?? match[0];
 
       // Skip empty or very short matches
       if (!value || value.length < 4) {

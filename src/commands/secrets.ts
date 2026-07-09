@@ -1097,6 +1097,12 @@ export const runSecretsEncryptValues = async (
 
   console.log();
   logger.success(`Encrypted ${valuesEncrypted} value(s) across ${filesEncrypted} file(s)`);
+  // The live file is rewritten in place, but the tracked repo copy still holds
+  // plaintext until a sync captures the encrypted version — committing without
+  // it pushes the plaintext the user just tried to protect.
+  if (valuesEncrypted > 0) {
+    logger.info("Run 'tuck sync' to capture the encrypted version into the repo before committing.");
+  }
   logger.dim('Keys, structure, and comments stay plaintext — git diff/merge keep working.');
   logger.dim("Run 'tuck secrets decrypt' to restore plaintext, or 'tuck undo' to revert.");
 };

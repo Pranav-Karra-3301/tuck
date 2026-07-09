@@ -37,6 +37,10 @@ tuck encryption setup
 # Encrypt every detected secret value across a file (or all tracked files).
 tuck secrets encrypt ~/.env
 
+# IMPORTANT: encrypt rewrites the LIVE file; the tracked repo copy under
+# ~/.tuck still holds plaintext until a sync captures the encrypted version.
+tuck sync
+
 # ... commit / push the file with encrypted values ...
 git -C ~/.tuck add . && git -C ~/.tuck commit -m "rotate keys"
 
