@@ -522,8 +522,14 @@ export const createSymlink = async (
   // Ensure link parent directory exists
   await ensureDir(dirname(expandedLink));
 
-  // Remove existing file/symlink if overwrite is true
-  if (options?.overwrite && (await pathExists(expandedLink))) {
+  // Remove existing file/symlink if overwrite is true. Existence must be
+  // link-aware (lstat): pathExists FOLLOWS links, so a dangling symlink at the
+  // link path read as missing and the symlink() call crashed with EEXIST.
+  const linkEntryExists = await lstat(expandedLink).then(
+    () => true,
+    () => false
+  );
+  if (options?.overwrite && linkEntryExists) {
     try {
       const linkStats = await lstat(expandedLink);
       if (linkStats.isDirectory()) {

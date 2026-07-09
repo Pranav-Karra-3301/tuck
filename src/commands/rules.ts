@@ -35,7 +35,9 @@ import {
   TOOL_LABELS,
   ALL_TOOLS,
   type ToolStatus,
+  listExistingToolVariants,
 } from '../lib/rulesFanout.js';
+import { createSnapshot } from '../lib/timemachine.js';
 import type { RuleToolName } from '../schemas/rules.schema.js';
 
 const ensureInitialized = async (tuckDir: string): Promise<void> => {
@@ -282,8 +284,18 @@ const untrackAction = async (idArg: string, opts: UntrackOpts): Promise<void> =>
 
   let cleaned: string[] = [];
   if (opts.clean) {
-    const nonInteractive = isJsonMode() || opts.yes || !process.stdout.isTTY;
-    if (!nonInteractive) {
+    // --clean permanently deletes generated files: non-interactive callers
+    // must OPT IN with --yes (a redirected stdout or --json alone is not
+    // consent), and every deletable path is snapshotted first so `tuck undo`
+    // can bring the variants back.
+    if (!opts.yes) {
+      if (isJsonMode() || !process.stdout.isTTY) {
+        throw new TuckError(
+          '--clean deletes generated files and requires --yes when non-interactive',
+          'RULES_CLEAN_REQUIRES_YES',
+          ['Re-run with --yes to confirm the deletion', 'Or drop --clean to untrack only']
+        );
+      }
       const ok = await prompts.confirm(
         `Delete the generated tool variants for ${set.source}?`,
         false
@@ -293,7 +305,14 @@ const untrackAction = async (idArg: string, opts: UntrackOpts): Promise<void> =>
         return;
       }
     }
+    const deletable = await listExistingToolVariants(set);
+    if (deletable.length > 0) {
+      await createSnapshot(deletable, `Pre rules-untrack clean: ${set.source}`);
+    }
     cleaned = await removeToolVariants(set);
+    if (cleaned.length > 0 && !isJsonMode()) {
+      logger.dim('  Restore them with `tuck undo --latest`');
+    }
   }
 
   await untrackRuleSet(tuckDir, idArg);

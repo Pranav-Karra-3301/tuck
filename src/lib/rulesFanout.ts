@@ -17,7 +17,7 @@
  * files that would change are snapshotted (Time Machine) before being touched.
  */
 
-import { join, dirname, basename, relative, resolve, isAbsolute, posix } from 'path';
+import { join, dirname, basename, relative, resolve, posix } from 'path';
 import { readFile, writeFile, lstat, readlink, rm } from 'fs/promises';
 import {
   expandPath,
@@ -217,9 +217,10 @@ export const trackRuleSet = async (
   inputPath: string,
   opts: TrackOptions = {}
 ): Promise<{ id: string; set: RuleSet }> => {
-  const absPath = isAbsolute(inputPath)
-    ? resolve(inputPath)
-    : resolve(process.cwd(), expandPath(inputPath));
+  // expandPath handles ~, absolute, and relative inputs WITHOUT stamping the
+  // host drive letter onto drive-less absolute paths the way win32 resolve()
+  // does (D:\test-home\... breaking home confinement checks on Windows).
+  const absPath = expandPath(inputPath);
   if (!(await pathExists(absPath))) throw new FileNotFoundError(inputPath);
   validateSafeSourcePath(absPath);
   if (await isDirectory(absPath)) {
@@ -356,7 +357,7 @@ const toolStatus = async (
   sourceExists: boolean,
   base: TemplateContext
 ): Promise<ToolStatus> => {
-  const exists = await pathExists(target);
+  const exists = await lstatExists(target);
   if (!exists) return 'missing';
 
   let link: string | null = null;
@@ -475,11 +476,17 @@ const applyOneSet = async (
         ? renderToolContent(sourceText, set, tool.tool, opts.context)
         : null;
     planned.push({ tool, writeTarget, liveTarget, expected });
-    if (await pathExists(writeTarget)) toSnapshot.push(writeTarget);
+    // Snapshot EVERY planned destination — createSnapshot records missing
+    // paths as existed:false, which is what lets `tuck undo` REMOVE variants
+    // a create-only apply produced (a pre-existing-only snapshot made the
+    // printed undo breadcrumb a lie).
+    toSnapshot.push(writeTarget);
   }
 
   if (!opts.dryRun && toSnapshot.length > 0) {
-    await createSnapshot(toSnapshot, `Pre rules-apply backup for ${id}`).catch(() => undefined);
+    // A failed snapshot aborts the apply (same policy as sync/apply): never
+    // mutate files without a recovery point.
+    await createSnapshot(toSnapshot, `Pre rules-apply backup for ${id}`);
   }
 
   const applied: ApplyToolResult[] = [];
@@ -497,7 +504,7 @@ const applyOneTool = async (
   srcAbs: string,
   opts: ApplyRulesOptions
 ): Promise<ApplyToolResult> => {
-  const exists = await pathExists(writeTarget);
+  const exists = await lstatExists(writeTarget);
 
   // Inspect the existing entry's link-ness once.
   let isLink = false;
@@ -564,6 +571,31 @@ const allowOverwrite = async (
 };
 
 /** Delete every generated variant for a set (used by `untrack --clean`). */
+/**
+ * Link-aware existence: a DANGLING symlink still counts as existing (exactly
+ * the state a symlink-strategy apply leaves behind if the canonical source is
+ * later moved) — pathExists follows links and would report it missing, making
+ * overwrite/cleanup logic crash or skip.
+ */
+const lstatExists = async (p: string): Promise<boolean> => {
+  try {
+    await lstat(p);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Write targets of a set's variants that currently exist on disk (link-aware). */
+export const listExistingToolVariants = async (set: RuleSet): Promise<string[]> => {
+  const out: string[] = [];
+  for (const tool of set.tools) {
+    const writeTarget = toolWriteTarget(set, tool);
+    if (await lstatExists(writeTarget)) out.push(writeTarget);
+  }
+  return out;
+};
+
 export const removeToolVariants = async (
   set: RuleSet,
   opts: { dryRun?: boolean } = {}
@@ -571,7 +603,7 @@ export const removeToolVariants = async (
   const removed: string[] = [];
   for (const tool of set.tools) {
     const writeTarget = toolWriteTarget(set, tool);
-    if (!(await pathExists(writeTarget))) continue;
+    if (!(await lstatExists(writeTarget))) continue;
     removed.push(toolLiveTarget(set, tool));
     if (!opts.dryRun) await rm(writeTarget, { force: true }).catch(() => undefined);
   }
