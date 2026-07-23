@@ -701,4 +701,6 @@ MIT — see [LICENSE](LICENSE)
 
 <div align="center">
   <sub>Made with love in San Francisco and State College</sub>
+  <br>
+  <sub>Built by <a href="https://pranavkarra.me">Pranav Karra</a></sub>
 </div>
