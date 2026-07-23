@@ -81,9 +81,9 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn
       `;
       const matches = scanContent(content);
 
-      // Should have no matches or only low-severity ones
-      const criticalMatches = matches.filter((m) => m.severity === 'critical');
-      expect(criticalMatches.length).toBe(0);
+      // Genuinely clean config must produce NO matches at all — not merely no
+      // critical ones. A false positive on DEBUG/NODE_ENV/PORT would fail here.
+      expect(matches.length).toBe(0);
     });
 
     it('should include line and column in matches', () => {
@@ -99,18 +99,23 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn
       const content = 'password="secret123"';
       const matches = scanContent(content);
 
-      if (matches.length > 0) {
-        expect(matches[0].redactedValue).toContain('REDACTED');
-        expect(matches[0].redactedValue).not.toContain('secret123');
-      }
+      // The secret MUST be detected — a regression that stops detecting it must
+      // fail this safety-critical redaction test, not pass vacuously.
+      expect(matches.length).toBeGreaterThan(0);
+      expect(matches[0].redactedValue).toContain('REDACTED');
+      expect(matches[0].redactedValue).not.toContain('secret123');
     });
 
     it('should deduplicate matches', () => {
+      // Two occurrences of the same AWS key at DISTINCT positions must each be
+      // reported (dedup keys on pattern+index, so different offsets are kept)...
       const content = 'AKIAIOSFODNN7EXAMPLE AKIAIOSFODNN7EXAMPLE';
-      scanContent(content);
+      const matches = scanContent(content);
 
-      // Same secret at different positions should still be tracked
-      // but with unique keys
+      const awsMatches = matches.filter((m) => m.patternId === 'aws-access-key');
+      expect(awsMatches.length).toBe(2);
+      // ...and they must be at different offsets, not a single entry double-counted.
+      expect(awsMatches[0].start).not.toBe(awsMatches[1].start);
     });
 
     it('should support custom patterns', () => {
@@ -131,7 +136,9 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn
     });
 
     it('should enforce global matching for custom patterns without g flag', () => {
-      const content = 'CUSTOM_SECRET=abc123xyz';
+      // Two occurrences: a non-global regex would only find the FIRST. Requiring
+      // both proves the scanner re-applies the `g` flag before iterating.
+      const content = 'CUSTOM_SECRET=abc123xyz\nCUSTOM_SECRET=def456uvw';
       const customPatterns = [
         {
           id: 'custom-no-global',
@@ -144,7 +151,8 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn
       ];
 
       const matches = scanContent(content, { customPatterns });
-      expect(matches.some((m) => m.patternId === 'custom-no-global')).toBe(true);
+      const custom = matches.filter((m) => m.patternId === 'custom-no-global');
+      expect(custom.length).toBe(2);
     });
 
     it('should reject unsafe custom patterns during scanning', () => {

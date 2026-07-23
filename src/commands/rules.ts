@@ -38,6 +38,7 @@ import {
   listExistingToolVariants,
 } from '../lib/rulesFanout.js';
 import { createSnapshot } from '../lib/timemachine.js';
+import { parseKeyValuePairs } from './mcpFleet.js';
 import type { RuleToolName } from '../schemas/rules.schema.js';
 
 const ensureInitialized = async (tuckDir: string): Promise<void> => {
@@ -65,17 +66,12 @@ const parseTools = (raw: string[] | undefined): RuleToolName[] => {
 };
 
 /** Parse repeatable `--var k=v` into a flat record. */
-const parseVars = (raw: string[] | undefined): Record<string, string> => {
-  const out: Record<string, string> = {};
-  for (const entry of raw ?? []) {
-    const eq = entry.indexOf('=');
-    if (eq <= 0) {
-      throw new TuckError(`Invalid --var "${entry}" (expected key=value)`, 'RULES_BAD_VAR');
-    }
-    out[entry.slice(0, eq).trim()] = entry.slice(eq + 1);
-  }
-  return out;
-};
+const parseVars = (raw: string[] | undefined): Record<string, string> =>
+  parseKeyValuePairs(raw, {
+    message: (entry) => `Invalid --var "${entry}" (expected key=value)`,
+    errorCode: 'RULES_BAD_VAR',
+    trimKey: true,
+  });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // track

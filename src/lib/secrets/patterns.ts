@@ -392,16 +392,6 @@ export const API_TOKEN_PATTERNS: SecretPattern[] = [
     placeholder: 'TRAVIS_TOKEN',
   },
 
-  // Firebase
-  {
-    id: 'firebase-api-key',
-    name: 'Firebase API Key',
-    pattern: /\b(AIza[0-9A-Za-z_-]{35})\b/g,
-    severity: 'high',
-    description: 'Firebase/Google API Key',
-    placeholder: 'FIREBASE_API_KEY',
-  },
-
   // Supabase
   {
     id: 'supabase-anon-key',
@@ -691,20 +681,6 @@ export const ALL_SECRET_PATTERNS: SecretPattern[] = [
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
-/**
- * Get patterns by severity level
- */
-export const getPatternsBySeverity = (severity: SecretSeverity): SecretPattern[] => {
-  return ALL_SECRET_PATTERNS.filter((p) => p.severity === severity);
-};
-
-/**
- * Get pattern by ID
- */
-export const getPatternById = (id: string): SecretPattern | undefined => {
-  return ALL_SECRET_PATTERNS.find((p) => p.id === id);
-};
 
 /**
  * Get patterns above a minimum severity

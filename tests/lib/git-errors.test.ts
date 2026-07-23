@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { vol } from 'memfs';
 import { join } from 'path';
-import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
+import { TEST_TUCK_DIR } from '../setup.js';
 
 // Create mock git object that throws errors
 const createErrorMockGit = (errorMessage: string) => ({
@@ -58,7 +58,6 @@ import {
   removeRemote,
   getRemotes,
   getStatus,
-  stageFiles,
   stageAll,
   commit,
   push,
@@ -186,16 +185,6 @@ describe('git-errors', () => {
   // ============================================================================
   // Staging Error Tests
   // ============================================================================
-
-  describe('stageFiles errors', () => {
-    it('should throw GitError when staging fails', async () => {
-      mockGitInstance = createErrorMockGit('pathspec did not match');
-
-      await expect(stageFiles(TEST_TUCK_DIR, ['nonexistent.txt'])).rejects.toThrow(
-        'Failed to stage files'
-      );
-    });
-  });
 
   describe('stageAll errors', () => {
     it('should throw GitError when staging all fails', async () => {

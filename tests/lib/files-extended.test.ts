@@ -17,7 +17,6 @@ import {
   createSymlink,
   deleteFileOrDir,
   ensureDirectory,
-  hasFileChanged,
   formatBytes,
   formatFileSize,
   getFileSizeRecursive,
@@ -338,45 +337,6 @@ describe('files-extended', () => {
       vol.mkdirSync(dirPath);
 
       await expect(ensureDirectory(dirPath)).resolves.not.toThrow();
-    });
-  });
-
-  // ============================================================================
-  // hasFileChanged Tests
-  // ============================================================================
-
-  describe('hasFileChanged', () => {
-    it('should return false for identical files', async () => {
-      const file1 = join(TEST_HOME, 'file1.txt');
-      const file2 = join(TEST_HOME, 'file2.txt');
-
-      vol.writeFileSync(file1, 'same content');
-      vol.writeFileSync(file2, 'same content');
-
-      const changed = await hasFileChanged(file1, file2);
-
-      expect(changed).toBe(false);
-    });
-
-    it('should return true for different files', async () => {
-      const file1 = join(TEST_HOME, 'file1.txt');
-      const file2 = join(TEST_HOME, 'file2.txt');
-
-      vol.writeFileSync(file1, 'content one');
-      vol.writeFileSync(file2, 'content two');
-
-      const changed = await hasFileChanged(file1, file2);
-
-      expect(changed).toBe(true);
-    });
-
-    it('should return true if either file does not exist', async () => {
-      const existing = join(TEST_HOME, 'existing.txt');
-      vol.writeFileSync(existing, 'content');
-
-      const changed = await hasFileChanged(existing, join(TEST_HOME, 'nonexistent.txt'));
-
-      expect(changed).toBe(true);
     });
   });
 

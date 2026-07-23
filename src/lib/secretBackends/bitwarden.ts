@@ -213,14 +213,6 @@ export class BitwardenBackend implements SecretBackend {
   }
 
   /**
-   * Sync the Bitwarden vault (optional helper)
-   */
-  async sync(): Promise<void> {
-    const env = this.getEnv();
-    await execFileAsync('bw', ['sync'], { env });
-  }
-
-  /**
    * Get setup instructions for Bitwarden backend
    */
   getSetupInstructions(): string {

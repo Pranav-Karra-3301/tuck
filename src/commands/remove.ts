@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { resolve, sep } from 'path';
+import { resolve } from 'path';
 import { lstat, readlink } from 'fs/promises';
 import { prompts, logger, withSpinner } from '../ui/index.js';
 import {
@@ -9,6 +9,7 @@ import {
   pathExists,
   validateSafeSourcePath,
   getSafeRepoPathFromDestination,
+  validatePathWithinRoot,
 } from '../lib/paths.js';
 import { loadManifest, removeFileFromManifest, getAllTrackedFiles } from '../lib/manifest.js';
 import { deleteFileOrDir, copyFileOrDir } from '../lib/files.js';
@@ -130,9 +131,12 @@ const restoreSymlinkedOriginal = async (
   } catch {
     return false;
   }
-  const repoRoot = resolve(tuckDir);
-  const resolvedTarget = resolve(target);
-  if (resolvedTarget !== repoRoot && !resolvedTarget.startsWith(repoRoot + sep)) {
+  // Reuse the canonical containment check (validatePathWithinRoot throws when a
+  // path escapes the root) instead of re-implementing the resolve + startsWith
+  // idiom here, so the rule lives in exactly one place.
+  try {
+    validatePathWithinRoot(target, tuckDir, 'symlink target');
+  } catch {
     return false;
   }
 

@@ -771,61 +771,6 @@ Learn more: https://cli.github.com/
 `.trim();
 };
 
-export type AuthMethod = 'gh-cli' | 'ssh' | 'fine-grained-token' | 'classic-token';
-
-export interface AuthMethodInfo {
-  id: AuthMethod;
-  name: string;
-  description: string;
-  recommended: boolean;
-  instructions: string;
-}
-
-/**
- * Get all available authentication methods with instructions
- */
-export const getAuthMethods = (repoName?: string, email?: string): AuthMethodInfo[] => {
-  return [
-    {
-      id: 'gh-cli',
-      name: 'GitHub CLI (gh)',
-      description: 'Easiest option - automatic repo creation, no token management',
-      recommended: true,
-      instructions: getGitHubCLIInstallInstructions(),
-    },
-    {
-      id: 'ssh',
-      name: 'SSH Key',
-      description: 'Secure, no password needed after setup, works everywhere',
-      recommended: false,
-      instructions: getSSHKeyInstructions(email),
-    },
-    {
-      id: 'fine-grained-token',
-      name: 'Fine-grained Token',
-      description: 'Limited permissions, more secure, repository-specific',
-      recommended: false,
-      instructions: getFineGrainedTokenInstructions(repoName),
-    },
-    {
-      id: 'classic-token',
-      name: 'Classic Token',
-      description: 'Broader access, simpler setup, works with all repos',
-      recommended: false,
-      instructions: getClassicTokenInstructions(),
-    },
-  ];
-};
-
-/**
- * Check credential helper state without mutating global config.
- * Use configureGitCredentialHelperWithOptions({ allowGlobalConfigChange: true })
- * to explicitly opt into global helper configuration.
- */
-export const configureGitCredentialHelper = async (): Promise<void> => {
-  await configureGitCredentialHelperWithOptions();
-};
-
 interface ConfigureGitCredentialHelperOptions {
   allowGlobalConfigChange?: boolean;
 }
@@ -913,6 +858,48 @@ const getCredentialsPath = async (): Promise<string> => {
 };
 
 /**
+ * Run `git credential <subcommand>` with the given stdin input.
+ *
+ * Owns the shared spawn/stdin/close-promise plumbing used by the credential
+ * store and lookup flows. Resolves with the collected stdout (an empty string
+ * when `captureStdout` is false). Rejects with `git credential <subcommand>
+ * failed` when git exits non-zero, or with the spawn error when the process
+ * cannot be started.
+ */
+const runGitCredential = async (
+  subcommand: 'approve' | 'reject' | 'fill',
+  input: string,
+  { captureStdout = false }: { captureStdout?: boolean } = {}
+): Promise<string> => {
+  const { spawn } = await import('child_process');
+  return new Promise<string>((resolve, reject) => {
+    const proc = spawn('git', ['credential', subcommand], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let output = '';
+    if (captureStdout) {
+      proc.stdout.on('data', (data) => {
+        output += data.toString();
+      });
+    }
+
+    proc.stdin.write(input);
+    proc.stdin.end();
+
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve(output);
+      } else {
+        reject(new Error(`git credential ${subcommand} failed`));
+      }
+    });
+
+    proc.on('error', reject);
+  });
+};
+
+/**
  * Store GitHub credentials securely
  * Uses git credential helper for the actual token storage
  * Stores metadata (type, creation date) in tuck config
@@ -940,25 +927,7 @@ export const storeGitHubCredentials = async (
   const credentialInput = `protocol=https\nhost=github.com\nusername=${username}\npassword=${token}\n\n`; // Note: git credential protocol requires input to be terminated with a blank line (\n\n)
 
   try {
-    const { spawn } = await import('child_process');
-    await new Promise<void>((resolve, reject) => {
-      const proc = spawn('git', ['credential', 'approve'], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-
-      proc.stdin.write(credentialInput);
-      proc.stdin.end();
-
-      proc.on('close', (code) => {
-        if (code === 0) {
-          resolve();
-        } else {
-          reject(new Error('git credential approve failed'));
-        }
-      });
-
-      proc.on('error', reject);
-    });
+    await runGitCredential('approve', credentialInput);
   } catch (error) {
     // If git credential helper fails, we can still continue.
     // The user will just be prompted for credentials on push.
@@ -1075,43 +1044,6 @@ export const getStoredCredentialMetadata = async (): Promise<{
 };
 
 /**
- * Remove stored credentials (both from git helper and metadata)
- */
-export const removeStoredCredentials = async (): Promise<void> => {
-  const { unlink } = await import('fs/promises');
-  const { pathExists } = await import('./paths.js');
-
-  // Remove from git credential helper
-  try {
-    const { spawn } = await import('child_process');
-    await new Promise<void>((resolve) => {
-      const proc = spawn('git', ['credential', 'reject'], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-
-      // Note: git credential protocol requires input to be terminated with a blank line (\n\n)
-      proc.stdin.write('protocol=https\nhost=github.com\n\n');
-      proc.stdin.end();
-
-      proc.on('close', () => resolve());
-      proc.on('error', () => resolve());
-    });
-  } catch {
-    // Ignore errors
-  }
-
-  // Remove metadata file
-  const credentialsPath = await getCredentialsPath();
-  if (await pathExists(credentialsPath)) {
-    try {
-      await unlink(credentialsPath);
-    } catch {
-      // Ignore errors
-    }
-  }
-};
-
-/**
  * Test if stored credentials are still valid
  * Uses GitHub API /user endpoint which requires authentication
  */
@@ -1131,31 +1063,12 @@ export const testStoredCredentials = async (): Promise<{
   let password: string | null = null;
 
   try {
-    const { spawn } = await import('child_process');
-    const credentialOutput = await new Promise<string>((resolve, reject) => {
-      const proc = spawn('git', ['credential', 'fill'], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-
-      // Request credentials for github.com
-      proc.stdin.write('protocol=https\nhost=github.com\n\n');
-      proc.stdin.end();
-
-      let output = '';
-      proc.stdout.on('data', (data) => {
-        output += data.toString();
-      });
-
-      proc.on('close', (code) => {
-        if (code === 0) {
-          resolve(output);
-        } else {
-          reject(new Error('git credential fill failed'));
-        }
-      });
-
-      proc.on('error', reject);
-    });
+    // Request credentials for github.com
+    const credentialOutput = await runGitCredential(
+      'fill',
+      'protocol=https\nhost=github.com\n\n',
+      { captureStdout: true }
+    );
 
     // Parse credential output (format: key=value\n). Values may contain '=' characters,
     // so split into at most two parts: key and the full remaining value.
@@ -1181,9 +1094,6 @@ export const testStoredCredentials = async (): Promise<{
 
   // Test credentials against GitHub API /user endpoint (requires authentication)
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
-
     // Prefer Bearer token auth when the "password" looks like a GitHub token,
     // but fall back to Basic auth for traditional username/password credentials.
     const headers: Record<string, string> = {
@@ -1203,14 +1113,14 @@ export const testStoredCredentials = async (): Promise<{
       headers.Authorization = `Basic ${auth}`;
     }
 
-    try {
+    {
       const response = await fetch('https://api.github.com/user', {
         method: 'GET',
         headers,
-        signal: controller.signal,
+        // AbortSignal.timeout auto-fires and self-unrefs on settle, so there is
+        // no timer to clear and no leak risk from a forgotten clearTimeout.
+        signal: AbortSignal.timeout(API_REQUEST_TIMEOUT_MS),
       });
-
-      clearTimeout(timeoutId);
 
       // 200 OK means credentials are valid
       if (response.status === 200) {
@@ -1250,9 +1160,6 @@ export const testStoredCredentials = async (): Promise<{
 
       // Other status codes are unexpected
       return { valid: false, reason: 'unknown', username: metadata.username };
-    } catch (fetchError) {
-      clearTimeout(timeoutId);
-      throw fetchError;
     }
   } catch (error) {
     const errorStr = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
@@ -1349,43 +1256,6 @@ export const diagnoseAuthIssue = async (): Promise<{
         ],
       };
   }
-};
-
-/**
- * Update stored credentials with a new token
- */
-export const updateStoredCredentials = async (
-  token: string,
-  type?: 'fine-grained' | 'classic'
-): Promise<void> => {
-  const metadata = await getStoredCredentialMetadata();
-  const username = metadata?.username;
-
-  if (!username) {
-    throw new Error(
-      'GitHub credential metadata is incomplete or corrupted (missing username). ' +
-      'Please remove the credential file and re-authenticate by running `tuck config` or `tuck init`.'
-    );
-  }
-
-  // Determine token type, preferring explicit type, then stored metadata, then detection
-  const detectedType = detectTokenType(token);
-  const tokenType = type ?? metadata?.type ?? detectedType;
-
-  // Ensure we have a valid token type (not 'unknown')
-  if (tokenType !== 'fine-grained' && tokenType !== 'classic') {
-    throw new Error(
-      'Could not determine GitHub token type. The token format is not recognized. ' +
-      'Please verify your token starts with "github_pat_" (fine-grained) or "ghp_" (classic), ' +
-      'or generate a new token at https://github.com/settings/tokens'
-    );
-  }
-
-  // Remove old credentials first
-  await removeStoredCredentials();
-
-  // Store new credentials
-  await storeGitHubCredentials(username, token, tokenType);
 };
 
 /**

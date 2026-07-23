@@ -4,10 +4,11 @@
  * Note: These tests mock simple-git to avoid actual git operations.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { vol } from 'memfs';
 import { join } from 'path';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
+import { GitError } from '../../src/errors.js';
 
 // Create mock git object that can be accessed across tests
 const createMockGit = () => ({
@@ -71,9 +72,7 @@ vi.mock('child_process', () => ({ execFile: execFileMock }));
 // Import after mocking
 import {
   initRepo,
-  isGitRepo,
   getStatus,
-  stageFiles,
   stageAll,
   commit,
   push,
@@ -113,24 +112,6 @@ describe('git', () => {
   });
 
   // ============================================================================
-  // isGitRepo Tests
-  // ============================================================================
-
-  describe('isGitRepo', () => {
-    it('should return true if .git directory exists', async () => {
-      vol.mkdirSync(join(TEST_TUCK_DIR, '.git'), { recursive: true });
-
-      const result = await isGitRepo(TEST_TUCK_DIR);
-      expect(result).toBe(true);
-    });
-
-    it('should return false if .git directory does not exist', async () => {
-      const result = await isGitRepo(TEST_TUCK_DIR);
-      expect(result).toBe(false);
-    });
-  });
-
-  // ============================================================================
   // initRepo Tests
   // ============================================================================
 
@@ -155,6 +136,66 @@ describe('git', () => {
         expect.objectContaining({ maxBuffer: expect.any(Number) }),
         expect.any(Function)
       );
+    });
+
+    it('performs a full clone (no --depth) when no depth is given', async () => {
+      const destDir = join(TEST_HOME, 'full-clone');
+      await cloneRepo('https://github.com/user/repo.git', destDir);
+
+      const args = execFileMock.mock.calls[0][1] as string[];
+      expect(args).not.toContain('--depth');
+    });
+
+    it('passes --depth <n> in order before the url when a positive depth is given', async () => {
+      const destDir = join(TEST_HOME, 'shallow-clone');
+      await cloneRepo('https://github.com/user/repo.git', destDir, { depth: 1 });
+
+      expect(execFileMock).toHaveBeenCalledWith(
+        'git',
+        ['clone', '--depth', '1', 'https://github.com/user/repo.git', destDir],
+        expect.objectContaining({ maxBuffer: expect.any(Number) }),
+        expect.any(Function)
+      );
+    });
+
+    it('ignores a non-positive / non-integer depth and falls back to a full clone', async () => {
+      const destDir = join(TEST_HOME, 'bad-depth-clone');
+      await cloneRepo('https://github.com/user/repo.git', destDir, { depth: 0 });
+      await cloneRepo('https://github.com/user/repo.git', destDir, { depth: -5 });
+      await cloneRepo('https://github.com/user/repo.git', destDir, {
+        depth: 1.5,
+      });
+
+      for (const call of execFileMock.mock.calls) {
+        expect(call[1]).not.toContain('--depth');
+      }
+    });
+
+    it('applies the clone timeout and maxBuffer bounds', async () => {
+      const destDir = join(TEST_HOME, 'bounded-clone');
+      await cloneRepo('https://github.com/user/repo.git', destDir, { depth: 1 });
+
+      const opts = execFileMock.mock.calls[0][2] as {
+        timeout: number;
+        maxBuffer: number;
+      };
+      expect(opts.timeout).toBeGreaterThan(0);
+      expect(opts.maxBuffer).toBeGreaterThan(0);
+    });
+
+    it('scrubs credentials from the error when the clone fails', async () => {
+      execFileMock.mockImplementation((_cmd, _args, opts, cb) => {
+        const callback = typeof opts === 'function' ? opts : cb;
+        callback?.(new Error('fatal: could not read from https://user:secret@github.com/x.git'));
+      });
+      const destDir = join(TEST_HOME, 'failed-clone');
+      const err = await cloneRepo('https://user:secret@github.com/x.git', destDir).catch(
+        (e: unknown) => e
+      );
+      expect(err).toBeInstanceOf(GitError);
+      // The raw token must not survive into the thrown error message/output.
+      expect(JSON.stringify(err)).not.toContain('secret');
+      expect((err as Error).message).not.toContain('secret');
     });
   });
 
@@ -282,12 +323,6 @@ describe('git', () => {
   // ============================================================================
   // Staging and Committing
   // ============================================================================
-
-  describe('stageFiles', () => {
-    it('should stage specified files', async () => {
-      await expect(stageFiles(TEST_TUCK_DIR, ['file1.txt', 'file2.txt'])).resolves.not.toThrow();
-    });
-  });
 
   describe('stageAll', () => {
     it('should stage all changes', async () => {
@@ -455,8 +490,11 @@ describe('git', () => {
     });
 
     it('should respect maxCount option', async () => {
-      const log = await getLog(TEST_TUCK_DIR, { maxCount: 5 });
-      expect(log).toBeDefined();
+      await getLog(TEST_TUCK_DIR, { maxCount: 5 });
+      // The maxCount must be forwarded to git.log, not silently dropped.
+      expect(mockGitInstance.log).toHaveBeenCalledWith(
+        expect.objectContaining({ maxCount: 5 })
+      );
     });
 
     it('should pass --since to git log when requested', async () => {
@@ -476,18 +514,27 @@ describe('git', () => {
     });
 
     it('should support staged option', async () => {
-      const diff = await getDiff(TEST_TUCK_DIR, { staged: true });
-      expect(typeof diff).toBe('string');
+      await getDiff(TEST_TUCK_DIR, { staged: true });
+      // --staged must reach git.diff, otherwise a staged diff silently becomes
+      // a working-tree diff.
+      expect(mockGitInstance.diff).toHaveBeenCalledWith(
+        expect.arrayContaining(['--staged'])
+      );
     });
 
     it('should support stat option', async () => {
-      const diff = await getDiff(TEST_TUCK_DIR, { stat: true });
-      expect(typeof diff).toBe('string');
+      await getDiff(TEST_TUCK_DIR, { stat: true });
+      expect(mockGitInstance.diff).toHaveBeenCalledWith(
+        expect.arrayContaining(['--stat'])
+      );
     });
 
     it('should support files option', async () => {
-      const diff = await getDiff(TEST_TUCK_DIR, { files: ['file1.txt'] });
-      expect(typeof diff).toBe('string');
+      await getDiff(TEST_TUCK_DIR, { files: ['file1.txt'] });
+      // Files must be forwarded after the `--` separator so git scopes the diff.
+      expect(mockGitInstance.diff).toHaveBeenCalledWith(
+        expect.arrayContaining(['--', 'file1.txt'])
+      );
     });
   });
 });

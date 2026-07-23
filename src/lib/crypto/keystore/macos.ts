@@ -4,7 +4,9 @@
 
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
+import { commandExists } from '../../commandPath.js';
 import type { Keystore } from './types.js';
+import { validateKeystoreArg } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -46,27 +48,6 @@ function runSecurityInteractive(command: string): Promise<void> {
   });
 }
 
-/**
- * Validate that an argument doesn't contain dangerous characters.
- * Defense-in-depth measure since we use execFile which doesn't invoke a shell.
- */
-function validateArg(arg: string, name: string): void {
-  if (typeof arg !== 'string') {
-    throw new Error(`${name} must be a string`);
-  }
-  if (arg.length === 0) {
-    throw new Error(`${name} cannot be empty`);
-  }
-  if (arg.length > 256) {
-    throw new Error(`${name} too long (max 256 characters)`);
-  }
-  // Reject null bytes and control characters
-  // eslint-disable-next-line no-control-regex
-  if (/[\x00-\x1F\x7F]/.test(arg)) {
-    throw new Error(`${name} contains invalid control characters`);
-  }
-}
-
 export class MacOSKeystore implements Keystore {
   getName(): string {
     return 'macOS Keychain';
@@ -75,17 +56,12 @@ export class MacOSKeystore implements Keystore {
   async isAvailable(): Promise<boolean> {
     if (process.platform !== 'darwin') return false;
 
-    try {
-      await execFileAsync('which', ['security'], { timeout: 5000 });
-      return true;
-    } catch {
-      return false;
-    }
+    return commandExists('security');
   }
 
   async store(service: string, account: string, secret: string): Promise<void> {
-    validateArg(service, 'service');
-    validateArg(account, 'account');
+    validateKeystoreArg(service, 'service');
+    validateKeystoreArg(account, 'account');
     if (!secret || typeof secret !== 'string') {
       throw new Error('Secret must be a non-empty string');
     }
@@ -123,8 +99,8 @@ export class MacOSKeystore implements Keystore {
   }
 
   async retrieve(service: string, account: string): Promise<string | null> {
-    validateArg(service, 'service');
-    validateArg(account, 'account');
+    validateKeystoreArg(service, 'service');
+    validateKeystoreArg(account, 'account');
 
     const args = [
       'find-generic-password',
@@ -145,8 +121,8 @@ export class MacOSKeystore implements Keystore {
   }
 
   async delete(service: string, account: string): Promise<void> {
-    validateArg(service, 'service');
-    validateArg(account, 'account');
+    validateKeystoreArg(service, 'service');
+    validateKeystoreArg(account, 'account');
 
     const args = ['delete-generic-password', '-s', service, '-a', account];
 

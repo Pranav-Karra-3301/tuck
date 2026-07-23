@@ -18,6 +18,9 @@ import {
   canonicalRemoteUrl,
   repoKeyFromIdentity,
   resolveLiveTarget,
+  slugifyPath,
+  repoScopeKey,
+  findGitRoot,
 } from '../../src/lib/repoScope.js';
 
 beforeEach(() => {
@@ -85,6 +88,51 @@ describe('repoKeyFromIdentity', () => {
 
   it('differs for different identities', () => {
     expect(repoKeyFromIdentity('proj', 'a')).not.toBe(repoKeyFromIdentity('proj', 'b'));
+  });
+});
+
+describe('slugifyPath / repoScopeKey (shared by context + rulesFanout fan-out ids)', () => {
+  it('strips a leading ~/, lowercases, and maps unsafe runs to a single dash', () => {
+    expect(slugifyPath('~/My Configs/App!!Rules')).toBe('my-configs-app-rules');
+  });
+
+  it('preserves the dot/underscore/dash grammar and trims only edge dashes', () => {
+    // `._-` are all allowed by the grammar, so underscores survive; only leading/
+    // trailing DASHES are trimmed.
+    expect(slugifyPath('-.foo_bar-baz.md-')).toBe('.foo_bar-baz.md');
+    expect(slugifyPath('AGENTS.md')).toBe('agents.md');
+  });
+
+  it('repoScopeKey is <basename-slug>__<full-path-slug> — collision-safe across repos', () => {
+    // Two repos sharing a basename must NOT collide, because the full path is
+    // folded into the key. This is the invariant the destination scheme relies on.
+    const a = repoScopeKey('/Users/me/work/proj');
+    const b = repoScopeKey('/Users/me/other/proj');
+    expect(a).toBe('proj__users-me-work-proj');
+    expect(b).toBe('proj__users-me-other-proj');
+    expect(a).not.toBe(b);
+  });
+});
+
+describe('findGitRoot', () => {
+  it('walks up to the enclosing .git and returns that root', async () => {
+    vol.mkdirSync('/repo/a/b/c', { recursive: true });
+    vol.mkdirSync('/repo/.git', { recursive: true });
+    expect(await findGitRoot('/repo/a/b/c')).toBe('/repo');
+  });
+
+  it('returns null when no .git is found up to the filesystem root', async () => {
+    vol.mkdirSync('/loose/dir', { recursive: true });
+    expect(await findGitRoot('/loose/dir')).toBeNull();
+  });
+
+  it('expands a leading ~/ (resolve() would leave it verbatim)', async () => {
+    // Regression guard for the consolidated expandPath-seeded variant: a ~-prefixed
+    // start must resolve under $HOME, not a literal "~" directory under cwd.
+    const home = homedir();
+    vol.mkdirSync(join(home, 'proj'), { recursive: true });
+    vol.mkdirSync(join(home, 'proj', '.git'), { recursive: true });
+    expect(await findGitRoot('~/proj')).toBe(join(home, 'proj'));
   });
 });
 

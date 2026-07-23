@@ -345,11 +345,6 @@ export const analyzeMcpConfig = (
 };
 
 /**
- * Escape a string for safe use as the literal part of a RegExp.
- */
-const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-/**
  * Extract inline MCP credentials from `content`, returning the rewritten
  * content plus the list of extractions (value → placeholder).
  *
@@ -421,7 +416,9 @@ export const extractMcpSecrets = (
     locatedValues.add(value);
     const referenceToken = JSON.stringify(buildReference(placeholder, format));
     const marker = `__TUCK_MCP_${randomBytes(16).toString('hex')}__`;
-    rewritten = rewritten.replace(new RegExp(escapeRegExp(valueToken), 'g'), marker);
+    // valueToken is a literal JSON-encoded string (JSON.stringify above), never
+    // a regex — so a literal global replace is correct and needs no escaping.
+    rewritten = rewritten.replaceAll(valueToken, marker);
     rewritten = rewritten.split(marker).join(referenceToken);
   }
 

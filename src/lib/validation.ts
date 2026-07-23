@@ -67,6 +67,39 @@ const PRIVATE_IP_PATTERNS = [
 ] as const;
 
 // ============================================================================
+// Shared blocklists (security guards — keep the policy in exactly one place)
+// ============================================================================
+
+/**
+ * Shell metacharacters that must never appear in a URL, path, or description.
+ * These are the characters a shell would interpret (command substitution,
+ * globbing, redirection, quoting, escaping). Centralized so every validator
+ * enforces the same policy and the copies cannot drift apart.
+ */
+const SHELL_METACHAR_PATTERN = /[;&|`$(){}[\]<>!#*?'"\\]/;
+
+/**
+ * Control characters (NUL, tab, CR, LF, and every other C0 control plus DEL)
+ * that must never appear in user-supplied strings.
+ */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHAR_PATTERN = /[\x00-\x1F\x7F]/;
+
+/**
+ * True if the string contains any shell metacharacter.
+ */
+export function hasShellMetachars(value: string): boolean {
+  return SHELL_METACHAR_PATTERN.test(value);
+}
+
+/**
+ * True if the string contains any control character.
+ */
+export function hasControlChars(value: string): boolean {
+  return CONTROL_CHAR_PATTERN.test(value);
+}
+
+// ============================================================================
 // Repository Name Validation
 // ============================================================================
 
@@ -78,8 +111,7 @@ const PRIVATE_IP_PATTERNS = [
  */
 export function validateRepoName(repoName: string, provider: string): void {
   // Check for control characters and null bytes
-  // eslint-disable-next-line no-control-regex
-  if (/[\x00-\x1F\x7F]/.test(repoName)) {
+  if (hasControlChars(repoName)) {
     throw new Error('Repository name contains invalid control characters');
   }
 
@@ -127,7 +159,7 @@ function validateHttpUrl(url: string, provider: string): void {
   }
 
   // Check for shell metacharacters
-  if (/[;&|`$(){}[\]<>!#*?'"\\]/.test(url)) {
+  if (hasShellMetachars(url)) {
     throw new Error('URL contains invalid characters');
   }
 
@@ -147,7 +179,7 @@ function validateHttpUrl(url: string, provider: string): void {
  */
 function validateSshUrl(url: string, _provider: string): void {
   // Check for shell metacharacters before pattern matching
-  if (/[;&|`$(){}[\]<>!#*?'"\\]/.test(url)) {
+  if (hasShellMetachars(url)) {
     throw new Error('URL contains invalid characters');
   }
 
@@ -189,8 +221,9 @@ export function validateDescription(description: string, maxLength: number = 350
   }
 
   // Check for invalid characters including quotes, newlines, and shell metacharacters
-  // eslint-disable-next-line no-control-regex
-  if (/[;&|`$(){}[\]<>!#*?'"\\\r\n\t\x00-\x1F\x7F]/.test(description)) {
+  // (\r\n\t fall within the control-character range, so the two guards together
+  // cover the original combined class exactly)
+  if (hasShellMetachars(description) || hasControlChars(description)) {
     throw new Error(
       'Description contains invalid characters. Cannot contain: ; & | ` $ ( ) { } [ ] < > ! # * ? \' " \\ newlines or control characters'
     );
@@ -254,8 +287,7 @@ export function validateHostname(hostname: string): void {
  */
 export function validateGitUrl(url: string): boolean {
   // Check for control characters
-  // eslint-disable-next-line no-control-regex
-  if (/[\x00-\x1F\x7F]/.test(url)) {
+  if (hasControlChars(url)) {
     return false;
   }
 
@@ -283,8 +315,11 @@ export function validateGitUrl(url: string): boolean {
     httpsPattern.test(url) ||
     gitPattern.test(url)
   ) {
-    // Additional check: no shell metacharacters
-    if (/[;&|`$(){}[\]<>!#*?]/.test(url.replace(/[/:@.]/g, ''))) {
+    // Additional check: no shell metacharacters. The URL has already matched a
+    // restrictive pattern above, so after stripping the legitimate URL
+    // separators only alphanumerics/underscore/hyphen remain — the shared
+    // (broader) blocklist is behavior-identical here and keeps the policy unified.
+    if (hasShellMetachars(url.replace(/[/:@.]/g, ''))) {
       return false;
     }
     return true;
@@ -354,153 +389,6 @@ function validateFileUrl(url: string): boolean {
     const filePattern = /^\/[a-zA-Z0-9._/-]+$/;
     return filePattern.test(path);
   }
-}
-
-// ============================================================================
-// Path and Input Validation
-// ============================================================================
-
-/**
- * Validate a file path for safety
- * @param path Path to validate
- * @throws Error if path is invalid
- */
-export function validatePath(path: string): void {
-  if (path === null || path === undefined) {
-    throw new Error('Path is required');
-  }
-
-  if (typeof path !== 'string') {
-    throw new Error('Path must be a string');
-  }
-
-  if (path.length === 0) {
-    throw new Error('Path cannot be empty');
-  }
-
-  // Check for null bytes (security vulnerability)
-  if (path.includes('\x00')) {
-    throw new Error('Path contains null byte');
-  }
-
-  // Check for control characters
-  // eslint-disable-next-line no-control-regex
-  if (/[\x01-\x1F\x7F]/.test(path)) {
-    throw new Error('Path contains control characters');
-  }
-
-  // Check for RTL override characters (security vulnerability)
-  if (/[\u202E\u202D\u202C\u202B\u202A]/.test(path)) {
-    throw new Error('Path contains bidirectional override characters');
-  }
-}
-
-/**
- * Validate a filename (not a path)
- * @param filename Filename to validate
- * @throws Error if filename is invalid
- */
-export function validateFilename(filename: string): void {
-  if (!filename || typeof filename !== 'string') {
-    throw new Error('Filename is required');
-  }
-
-  if (filename.length === 0) {
-    throw new Error('Filename cannot be empty');
-  }
-
-  if (filename.length > 255) {
-    throw new Error('Filename too long (max 255 characters)');
-  }
-
-  // Check for path separators
-  if (filename.includes('/') || filename.includes('\\')) {
-    throw new Error('Filename cannot contain path separators');
-  }
-
-  // Check for special directory names
-  if (filename === '.' || filename === '..') {
-    throw new Error('Invalid filename');
-  }
-
-  // Check for null bytes
-  if (filename.includes('\x00')) {
-    throw new Error('Filename contains null byte');
-  }
-
-  // Check for control characters
-  // eslint-disable-next-line no-control-regex
-  if (/[\x01-\x1F\x7F]/.test(filename)) {
-    throw new Error('Filename contains control characters');
-  }
-}
-
-/**
- * Validate a configuration value
- * @param key Config key name
- * @param value Config value to validate
- * @throws Error if value is invalid
- */
-export function validateConfigValue(key: string, value: string): void {
-  if (typeof value !== 'string') {
-    throw new Error(`Config value for ${key} must be a string`);
-  }
-
-  if (value.length > 10000) {
-    throw new Error(`Config value for ${key} too long (max 10000 characters)`);
-  }
-
-  // Check for shell metacharacters that could be used for injection
-  const dangerousPatterns = [/;\s*rm\s/i, /&&\s*\w/, /\|\s*cat/i, /\$\(/, /`[^`]*`/];
-
-  for (const pattern of dangerousPatterns) {
-    if (pattern.test(value)) {
-      throw new Error(`Config value for ${key} contains potentially dangerous characters`);
-    }
-  }
-}
-
-/**
- * Sanitize user input
- * @param input Input string to sanitize
- * @returns Sanitized string
- */
-export function sanitizeInput(input: string): string {
-  if (input === null || input === undefined) {
-    return '';
-  }
-
-  if (typeof input !== 'string') {
-    return '';
-  }
-
-  // Remove null bytes and zero-width characters
-  // NOTE: We use split().join() instead of regex.replace() to satisfy ESLint rules:
-  // - no-control-regex: Disallows control characters in regex (like \x00)
-  // - no-misleading-character-class: Warns about confusing character classes
-  // This approach is slightly less performant but avoids lint warnings and is
-  // more explicit about what characters are being removed.
-  const nullChar = String.fromCharCode(0);
-  let sanitized = input.split(nullChar).join('');
-
-  // Zero-width characters: ZWSP, ZWNJ, ZWJ, BOM
-  sanitized = sanitized
-    .split('\u200B')
-    .join('')
-    .split('\u200C')
-    .join('')
-    .split('\u200D')
-    .join('')
-    .split('\uFEFF')
-    .join('');
-
-  // Trim whitespace
-  sanitized = sanitized.trim();
-
-  // Normalize unicode
-  sanitized = sanitized.normalize('NFC');
-
-  return sanitized;
 }
 
 // ============================================================================

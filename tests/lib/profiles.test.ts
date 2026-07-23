@@ -4,8 +4,10 @@ import { writeFile, mkdir, readFile } from 'fs/promises';
 import { join } from 'path';
 import { TEST_TUCK_DIR, TEST_HOME, TEST_HOME_NATIVE } from '../setup.js';
 import { loadManifest, clearManifestCache } from '../../src/lib/manifest.js';
+import { ManifestError } from '../../src/errors.js';
 import {
   isValidProfileName,
+  assertValidProfileName,
   isUniversalFile,
   fileMatchesProfile,
   fileIsForeignToProfile,
@@ -13,7 +15,6 @@ import {
   removeProfile,
   tagFile,
   untagFile,
-  getFilesByProfile,
   listProfileCounts,
   countUniversalFiles,
   bindProfile,
@@ -76,12 +77,23 @@ describe('profile name validation', () => {
   });
 
   it('rejects unsafe names', () => {
-    for (const name of ['', 'a b', 'a/b', 'a:b', 'a$b', '..']) {
-      // '..' is actually filename-unsafe here because it contains only dots which
-      // ARE allowed by the grammar; assert the clearly-invalid ones.
-      if (name === '..') continue;
+    expect.hasAssertions();
+    for (const name of ['', 'a b', 'a/b', 'a:b', 'a$b']) {
       expect(isValidProfileName(name)).toBe(false);
     }
+  });
+
+  it('rejects path-traversal / dot-only names', () => {
+    // `.` and `..` are the current/parent dir on every filesystem; a profile
+    // named `..` must never be accepted even though it matches the base grammar.
+    for (const name of ['.', '..', '...']) {
+      expect(isValidProfileName(name)).toBe(false);
+    }
+  });
+
+  it('assertValidProfileName throws ManifestError for `..`', () => {
+    expect(() => assertValidProfileName('..')).toThrow(ManifestError);
+    expect(() => assertValidProfileName('.')).toThrow(ManifestError);
   });
 });
 
@@ -159,12 +171,6 @@ describe('profile registry helpers', () => {
     const res = await untagFile(TEST_TUCK_DIR, 'workgit', 'work');
     expect(res.removed).toBe(true);
     expect((await loadManifest(TEST_TUCK_DIR)).files.workgit.tags).toEqual([]);
-  });
-
-  it('getFilesByProfile returns only explicitly tagged files', async () => {
-    await tagFile(TEST_TUCK_DIR, 'workgit', 'work');
-    const files = await getFilesByProfile(TEST_TUCK_DIR, 'work');
-    expect(Object.keys(files)).toEqual(['workgit']);
   });
 
   it('removeProfile strips the tag from every file', async () => {

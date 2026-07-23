@@ -89,16 +89,36 @@ interface JsonOptions {
   json?: boolean;
 }
 
-const runSecretsList = async (options: JsonOptions = {}): Promise<void> => {
-  if (options.json) setJsonMode(true, 'tuck secrets list');
-
-  const tuckDir = getTuckDir();
-
+/**
+ * Ensure tuck is initialized in `tuckDir`; throws NotInitializedError otherwise.
+ * Centralizes the load-manifest-or-throw guard used by every secrets subcommand.
+ */
+const requireInitialized = async (tuckDir: string): Promise<void> => {
   try {
     await loadManifest(tuckDir);
   } catch {
     throw new NotInitializedError();
   }
+};
+
+/** Resolve the target file list: explicit paths, or every tracked file. */
+const resolveTargetFiles = async (paths: string[], tuckDir: string): Promise<string[]> => {
+  if (paths.length > 0) {
+    return paths.map((p) => expandPath(p));
+  }
+  return Array.from(
+    new Set(
+      Object.values(await getAllTrackedFiles(tuckDir)).map((file) => expandPath(file.source))
+    )
+  );
+};
+
+const runSecretsList = async (options: JsonOptions = {}): Promise<void> => {
+  if (options.json) setJsonMode(true, 'tuck secrets list');
+
+  const tuckDir = getTuckDir();
+
+  await requireInitialized(tuckDir);
 
   const secrets = await listSecrets(tuckDir);
 
@@ -162,11 +182,7 @@ const runSecretsSet = async (name: string, options: SecretsSetOptions = {}): Pro
 
   const tuckDir = getTuckDir();
 
-  try {
-    await loadManifest(tuckDir);
-  } catch {
-    throw new NotInitializedError();
-  }
+  await requireInitialized(tuckDir);
 
   // Validate or normalize name
   if (!isValidSecretName(name)) {
@@ -225,11 +241,7 @@ const runSecretsUnset = async (name: string, options: JsonOptions = {}): Promise
 
   const tuckDir = getTuckDir();
 
-  try {
-    await loadManifest(tuckDir);
-  } catch {
-    throw new NotInitializedError();
-  }
+  await requireInitialized(tuckDir);
 
   const removed = await unsetSecret(tuckDir, name);
 
@@ -255,11 +267,7 @@ const runSecretsPath = async (options: JsonOptions = {}): Promise<void> => {
 
   const tuckDir = getTuckDir();
 
-  try {
-    await loadManifest(tuckDir);
-  } catch {
-    throw new NotInitializedError();
-  }
+  await requireInitialized(tuckDir);
 
   const path = getSecretsPath(tuckDir);
 
@@ -291,11 +299,7 @@ interface HistoryScanResult {
 const runScanHistory = async (options: { since?: string; limit?: string }): Promise<void> => {
   const tuckDir = getTuckDir();
 
-  try {
-    await loadManifest(tuckDir);
-  } catch {
-    throw new NotInitializedError();
-  }
+  await requireInitialized(tuckDir);
 
   const limit = options.limit ? parseInt(options.limit, 10) : 50;
 
@@ -468,20 +472,9 @@ const runScanFiles = async (paths: string[], options: ScanFilesOptions = {}): Pr
 
   const tuckDir = getTuckDir();
 
-  try {
-    await loadManifest(tuckDir);
-  } catch {
-    throw new NotInitializedError();
-  }
+  await requireInitialized(tuckDir);
 
-  const expandedPaths =
-    paths.length > 0
-      ? paths.map((path) => expandPath(path))
-      : Array.from(
-          new Set(
-            Object.values(await getAllTrackedFiles(tuckDir)).map((file) => expandPath(file.source))
-          )
-        );
+  const expandedPaths = await resolveTargetFiles(paths, tuckDir);
 
   if (expandedPaths.length === 0) {
     if (isJsonMode()) {
@@ -624,11 +617,7 @@ interface BackendSetOptions {
 const runBackendSet = async (backend: string, options: BackendSetOptions): Promise<void> => {
   const tuckDir = getTuckDir();
 
-  try {
-    await loadManifest(tuckDir);
-  } catch {
-    throw new NotInitializedError();
-  }
+  await requireInitialized(tuckDir);
 
   // Validate backend name using type guard
   if (!isConfiguredBackendName(backend)) {
@@ -714,11 +703,7 @@ const runBackendSet = async (backend: string, options: BackendSetOptions): Promi
 const runBackendStatus = async (): Promise<void> => {
   const tuckDir = getTuckDir();
 
-  try {
-    await loadManifest(tuckDir);
-  } catch {
-    throw new NotInitializedError();
-  }
+  await requireInitialized(tuckDir);
 
   const config = await loadConfig(tuckDir);
   const resolver = createResolver(tuckDir, config.security);
@@ -791,11 +776,7 @@ interface MapOptions {
 const runMap = async (name: string, options: MapOptions): Promise<void> => {
   const tuckDir = getTuckDir();
 
-  try {
-    await loadManifest(tuckDir);
-  } catch {
-    throw new NotInitializedError();
-  }
+  await requireInitialized(tuckDir);
 
   // Validate name
   if (!isValidSecretName(name)) {
@@ -839,11 +820,7 @@ const runMap = async (name: string, options: MapOptions): Promise<void> => {
 const runMappings = async (): Promise<void> => {
   const tuckDir = getTuckDir();
 
-  try {
-    await loadManifest(tuckDir);
-  } catch {
-    throw new NotInitializedError();
-  }
+  await requireInitialized(tuckDir);
 
   const mappings = await listMappings(tuckDir);
   const entries = Object.entries(mappings);
@@ -889,11 +866,7 @@ interface TestOptions {
 const runTest = async (options: TestOptions): Promise<void> => {
   const tuckDir = getTuckDir();
 
-  try {
-    await loadManifest(tuckDir);
-  } catch {
-    throw new NotInitializedError();
-  }
+  await requireInitialized(tuckDir);
 
   const config = await loadConfig(tuckDir);
   const resolver = createResolver(tuckDir, config.security);
@@ -1019,11 +992,7 @@ export const runExtract = async (paths: string[], options: ExtractOptions = {}):
 
   const tuckDir = getTuckDir();
 
-  try {
-    await loadManifest(tuckDir);
-  } catch {
-    throw new NotInitializedError();
-  }
+  await requireInitialized(tuckDir);
 
   // Only MCP extraction is supported today; require --mcp (or explicit paths)
   // so the flag stays meaningful as more extractors are added.
@@ -1312,14 +1281,6 @@ const formatAllowEntry = (entry: AllowlistEntry): void => {
   console.log();
 };
 
-const requireInitialized = async (tuckDir: string): Promise<void> => {
-  try {
-    await loadManifest(tuckDir);
-  } catch {
-    throw new NotInitializedError();
-  }
-};
-
 const runAllowList = async (options: JsonOptions = {}): Promise<void> => {
   if (options.json) setJsonMode(true, 'tuck secrets allow list');
   const tuckDir = getTuckDir();
@@ -1483,11 +1444,7 @@ const runAllowAdd = async (options: AllowAddOptions = {}): Promise<void> => {
     }
     scanPaths = [expanded];
   } else {
-    scanPaths = Array.from(
-      new Set(
-        Object.values(await getAllTrackedFiles(tuckDir)).map((file) => expandPath(file.source))
-      )
-    );
+    scanPaths = await resolveTargetFiles([], tuckDir);
   }
 
   if (scanPaths.length === 0) {
@@ -1669,18 +1626,6 @@ const resolveEncryptionPassphrase = async (
   return entered;
 };
 
-/** Resolve the target file list: explicit paths, or every tracked file. */
-const resolveTargetFiles = async (paths: string[], tuckDir: string): Promise<string[]> => {
-  if (paths.length > 0) {
-    return paths.map((p) => expandPath(p));
-  }
-  return Array.from(
-    new Set(
-      Object.values(await getAllTrackedFiles(tuckDir)).map((file) => expandPath(file.source))
-    )
-  );
-};
-
 interface ValueEncryptOptions {
   json?: boolean;
   yes?: boolean;
@@ -1693,11 +1638,7 @@ export const runSecretsEncryptValues = async (
   if (options.json) setJsonMode(true, 'tuck secrets encrypt');
 
   const tuckDir = getTuckDir();
-  try {
-    await loadManifest(tuckDir);
-  } catch {
-    throw new NotInitializedError();
-  }
+  await requireInitialized(tuckDir);
 
   const interactive = !isJsonMode() && !options.yes && !!process.stdout.isTTY;
   const targets = await resolveTargetFiles(paths, tuckDir);
@@ -1808,11 +1749,7 @@ export const runSecretsDecryptValues = async (
   if (options.json) setJsonMode(true, 'tuck secrets decrypt');
 
   const tuckDir = getTuckDir();
-  try {
-    await loadManifest(tuckDir);
-  } catch {
-    throw new NotInitializedError();
-  }
+  await requireInitialized(tuckDir);
 
   const interactive = !isJsonMode() && !options.yes && !!process.stdout.isTTY;
   const targets = await resolveTargetFiles(paths, tuckDir);

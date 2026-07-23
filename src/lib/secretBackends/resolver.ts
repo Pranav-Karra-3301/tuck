@@ -22,7 +22,7 @@ import { PassBackend } from './pass.js';
 import { SecretCache, getGlobalCache } from './cache.js';
 import { getBackendPath, listMappings } from './mappings.js';
 import { assertNotReadOnly } from '../readOnlyMode.js';
-import { BackendNotAvailableError, BackendAuthenticationError, UnresolvedSecretsError } from '../../errors.js';
+import { BackendNotAvailableError, BackendAuthenticationError } from '../../errors.js';
 
 /**
  * SecretResolver manages secret resolution across multiple backends.
@@ -76,17 +76,6 @@ export class SecretResolver {
   }
 
   /**
-   * Get the primary backend
-   */
-  getPrimaryBackend(): SecretBackend {
-    const backend = this.backends.get(this.primaryBackend);
-    if (!backend) {
-      throw new BackendNotAvailableError(this.primaryBackend, 'Primary backend is not configured');
-    }
-    return backend;
-  }
-
-  /**
    * Get the primary backend name
    */
   getPrimaryBackendName(): BackendName {
@@ -108,48 +97,6 @@ export class SecretResolver {
 
     this.detectedBackend = await this.autoDetectBackend();
     return this.detectedBackend;
-  }
-
-  /**
-   * Check if a backend is available
-   */
-  async isBackendAvailable(name: BackendName): Promise<boolean> {
-    const backend = this.backends.get(name);
-    if (!backend) return false;
-    return backend.isAvailable();
-  }
-
-  /**
-   * Check if a backend is authenticated
-   */
-  async isBackendAuthenticated(name: BackendName): Promise<boolean> {
-    const backend = this.backends.get(name);
-    if (!backend) return false;
-    return backend.isAuthenticated();
-  }
-
-  /**
-   * Authenticate with a backend
-   */
-  async authenticateBackend(name: BackendName): Promise<void> {
-    const backend = this.backends.get(name);
-    if (!backend) {
-      throw new BackendNotAvailableError(name, 'Unknown backend');
-    }
-    await backend.authenticate();
-  }
-
-  /**
-   * Get all available backends
-   */
-  async getAvailableBackends(): Promise<BackendName[]> {
-    const available: BackendName[] = [];
-    for (const [name, backend] of this.backends.entries()) {
-      if (await backend.isAvailable()) {
-        available.push(name);
-      }
-    }
-    return available;
   }
 
   /**
@@ -294,24 +241,6 @@ export class SecretResolver {
   }
 
   /**
-   * Resolve all secrets and throw if any are unresolved
-   * @param names - Array of placeholder names
-   * @param options - Resolution options
-   */
-  async resolveAllOrThrow(
-    names: string[],
-    options?: ResolveOptions
-  ): Promise<Map<string, ResolvedSecret>> {
-    const result = await this.resolveAll(names, options);
-
-    if (result.unresolved.length > 0) {
-      throw new UnresolvedSecretsError(result.unresolved, await this.getEffectiveBackendName());
-    }
-
-    return result.resolved;
-  }
-
-  /**
    * Get secrets as a simple name->value map (for restoration)
    * @param names - Array of placeholder names
    * @param options - Resolution options
@@ -328,14 +257,6 @@ export class SecretResolver {
     }
 
     return map;
-  }
-
-  /**
-   * Invalidate cached secrets
-   * @param name - Optional specific secret to invalidate
-   */
-  invalidateCache(name?: string): void {
-    this.cache.invalidate(name);
   }
 
   /**

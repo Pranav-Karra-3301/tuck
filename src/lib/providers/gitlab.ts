@@ -366,12 +366,14 @@ export class GitLabProvider implements GitProvider {
   }
 
   validateUrl(url: string): boolean {
-    const host = this.host.replace(/\./g, '\\.');
-    const httpsPattern = new RegExp(`^https://${host}/`);
-    const sshPattern = new RegExp(`^git@${host}:`);
-    const sshUrlPattern = new RegExp(`^ssh://git@${host}/`);
-
-    return httpsPattern.test(url) || sshPattern.test(url) || sshUrlPattern.test(url);
+    // Plain prefix checks (mirrors the GitHub provider). startsWith is
+    // metacharacter-agnostic, so a self-hosted `this.host` carrying regex
+    // metacharacters can't alter the match, unlike a hand-rolled escaper.
+    return (
+      url.startsWith(`https://${this.host}/`) ||
+      url.startsWith(`git@${this.host}:`) ||
+      url.startsWith(`ssh://git@${this.host}/`)
+    );
   }
 
   buildRepoUrl(username: string, repoName: string, protocol: 'ssh' | 'https'): string {

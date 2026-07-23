@@ -38,6 +38,7 @@ import {
 } from '../lib/secrets/index.js';
 import type { DiffOptions } from '../types.js';
 import { readFile } from 'fs/promises';
+import { structuredPatch } from '../lib/textDiff.js';
 
 export interface FileDiff {
   source: string;
@@ -400,75 +401,40 @@ const formatUnifiedDiff = (diff: FileDiff): string => {
       lines.push(c.red(`- ${line}`));
     });
   } else if (!systemMissing && !repoMissing) {
-    // Both files exist (may be empty)
-    const CONTEXT_LINES = 3;
-    const systemLines = systemContent!.split('\n');
-    const repoLines = repoContent!.split('\n');
+    // Both files exist (may be empty). Compute the diff with the vendored
+    // Myers-based structuredPatch so inserted/deleted lines are aligned via a
+    // real edit script — a positional (index-aligned) compare mislabels every
+    // line after the first insert/delete and emits bogus `@@` ranges. system is
+    // the "old" (a/) side, repo is the "new" (b/) side. `context: 3` reproduces
+    // the previous 3-line hunk-context window (and keeps a one-line change in a
+    // large dotfile from dumping the whole file as context).
+    const patch = structuredPatch(
+      diff.source,
+      diff.source,
+      systemContent!,
+      repoContent!,
+      undefined,
+      undefined,
+      { context: 3 }
+    );
 
-    const maxLines = Math.max(systemLines.length, repoLines.length);
-
-    let inDiff = false;
-    // Count consecutive equal lines emitted as trailing context inside the
-    // current hunk. Once CONTEXT_LINES equal lines have been shown we CLOSE the
-    // hunk (inDiff = false) so a later change opens a fresh `@@` hunk instead of
-    // dumping the entire remainder of the file as "context" (which flooded the
-    // terminal for a one-line change in a large dotfile).
-    let trailingContext = 0;
-    // Highest source-line index already emitted as context, so a new hunk's
-    // preceding-context window never re-prints lines shown by the previous hunk.
-    let lastEmitted = -1;
-
-    for (let i = 0; i < maxLines; i++) {
-      const sysLine = systemLines[i];
-      const repoLine = repoLines[i];
-
-      if (sysLine !== repoLine) {
-        if (!inDiff) {
-          inDiff = true;
-          const diffStart = i;
-          const startLine = Math.max(0, diffStart - CONTEXT_LINES + 1);
-          const contextLineCount = Math.min(diffStart, CONTEXT_LINES);
-          const endLine = Math.min(maxLines, diffStart + CONTEXT_LINES + 1);
-
-          lines.push(
-            c.cyan(
-              `@@ -${startLine + 1},${contextLineCount + 1} +${startLine + 1},${endLine - startLine} @@`
-            )
-          );
-
-          // Print preceding context, skipping any line already emitted as the
-          // trailing context of an earlier hunk.
-          for (let j = Math.max(startLine, lastEmitted + 1); j < i; j++) {
-            const ctxLine = systemLines[j];
-            if (ctxLine !== undefined) {
-              lines.push(c.dim(`  ${ctxLine}`));
-              lastEmitted = j;
-            }
-          }
-        }
-
-        trailingContext = 0;
-        if (sysLine !== undefined) {
-          lines.push(c.red(`- ${sysLine}`));
-        }
-        if (repoLine !== undefined) {
-          lines.push(c.green(`+ ${repoLine}`));
-        }
-        lastEmitted = i;
-      } else if (inDiff) {
-        // Equal line while inside a hunk — show a bounded amount of trailing
-        // context, then close the hunk so the rest of the file isn't printed.
-        if (trailingContext < CONTEXT_LINES) {
-          if (sysLine !== undefined) {
-            lines.push(c.dim(`  ${sysLine}`));
-            lastEmitted = i;
-          }
-          trailingContext++;
-          if (trailingContext >= CONTEXT_LINES) {
-            inDiff = false;
-          }
+    for (const hunk of patch.hunks) {
+      lines.push(
+        c.cyan(`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`)
+      );
+      for (const line of hunk.lines) {
+        const marker = line[0];
+        const rest = line.slice(1);
+        if (marker === '-') {
+          lines.push(c.red(`- ${rest}`));
+        } else if (marker === '+') {
+          lines.push(c.green(`+ ${rest}`));
+        } else if (marker === '\\') {
+          // The "\ No newline at end of file" marker — informational only.
+          lines.push(c.dim(line));
         } else {
-          inDiff = false;
+          // Context line (jsdiff prefixes it with a single space).
+          lines.push(c.dim(`  ${rest}`));
         }
       }
     }

@@ -84,23 +84,6 @@ export const isTrufflehogInstalled = async (): Promise<boolean> => {
   }
 };
 
-/**
- * Get available scanners
- */
-export const getAvailableScanners = async (): Promise<ExternalScanner[]> => {
-  const available: ExternalScanner[] = ['builtin'];
-
-  if (await isGitleaksInstalled()) {
-    available.push('gitleaks');
-  }
-
-  if (await isTrufflehogInstalled()) {
-    available.push('trufflehog');
-  }
-
-  return available;
-};
-
 // ============================================================================
 // Gitleaks Integration
 // ============================================================================

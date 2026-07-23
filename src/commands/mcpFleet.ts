@@ -62,22 +62,45 @@ const ensureInitialized = async (): Promise<string> => {
 
 const interactive = (): boolean => Boolean(process.stdout.isTTY) && !isJsonMode();
 
-/** Parse repeated `KEY=VALUE` flags into a record, rejecting malformed pairs. */
-const parseKeyValues = (pairs: string[] | undefined, flag: string): Record<string, string> => {
+/**
+ * Parse repeated `KEY=VALUE` flags into a record, rejecting malformed pairs.
+ *
+ * Shared canonical implementation used by `tuck mcp add` (`--env`/`--header`)
+ * and `tuck rules track` (`--var`); callers supply their own error framing so
+ * the thrown message/code/suggestions stay identical to the pre-dedup behavior.
+ */
+export const parseKeyValuePairs = (
+  pairs: string[] | undefined,
+  opts: {
+    /** Build the error message for the offending, malformed pair. */
+    message: (pair: string) => string;
+    /** TuckError code to raise on a malformed pair. */
+    errorCode: string;
+    /** Optional resolution hints attached to the thrown error. */
+    suggestions?: string[];
+    /** Trim surrounding whitespace from the parsed key. */
+    trimKey?: boolean;
+  }
+): Record<string, string> => {
   const out: Record<string, string> = {};
   for (const pair of pairs ?? []) {
     const eq = pair.indexOf('=');
     if (eq <= 0) {
-      throw new TuckError(
-        `Invalid ${flag} value: "${pair}"`,
-        'MCP_ARG_INVALID',
-        [`Use ${flag} KEY=VALUE (e.g. ${flag} API_KEY={{OPENAI_KEY}}).`]
-      );
+      throw new TuckError(opts.message(pair), opts.errorCode, opts.suggestions);
     }
-    out[pair.slice(0, eq)] = pair.slice(eq + 1);
+    const key = opts.trimKey ? pair.slice(0, eq).trim() : pair.slice(0, eq);
+    out[key] = pair.slice(eq + 1);
   }
   return out;
 };
+
+/** Parse repeated `KEY=VALUE` flags into a record, rejecting malformed pairs. */
+const parseKeyValues = (pairs: string[] | undefined, flag: string): Record<string, string> =>
+  parseKeyValuePairs(pairs, {
+    message: (pair) => `Invalid ${flag} value: "${pair}"`,
+    errorCode: 'MCP_ARG_INVALID',
+    suggestions: [`Use ${flag} KEY=VALUE (e.g. ${flag} API_KEY={{OPENAI_KEY}}).`],
+  });
 
 const parseClients = (values: string[] | undefined): McpClientId[] => {
   const out: McpClientId[] = [];

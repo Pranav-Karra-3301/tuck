@@ -156,36 +156,46 @@ describe('diff command', () => {
     });
   });
 
-  describe('FileDiff interface', () => {
-    it('should have required fields', () => {
-      const diff: TestFileDiff = {
-        source: '~/.test.txt',
-        destination: 'files/test.txt',
-        hasChanges: true,
-        systemContent: 'content',
-        repoContent: 'content',
-      };
+  describe('FileDiff shape (real getFileDiff)', () => {
+    const seedPlainText = (repoBody: string, liveBody: string): void => {
+      const manifest = createMockManifest();
+      manifest.files['zshrc'] = createMockTrackedFile({
+        source: '~/.zshrc',
+        destination: 'files/shell/zshrc',
+      });
+      vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest));
+      vol.mkdirSync(join(TEST_TUCK_DIR, 'files/shell'), { recursive: true });
+      vol.writeFileSync(join(TEST_TUCK_DIR, 'files/shell/zshrc'), repoBody);
+      vol.writeFileSync('/test-home/.zshrc', liveBody);
+    };
 
-      expect(diff.source).toBe('~/.test.txt');
-      expect(diff.destination).toBe('files/test.txt');
-      expect(diff.hasChanges).toBe(true);
-      expect(diff.systemContent).toBe('content');
-      expect(diff.repoContent).toBe('content');
+    it('populates the required fields from the manifest entry and live/repo state', async () => {
+      const { getFileDiff } = await import('../../src/commands/diff.js');
+      seedPlainText('repo\n', 'live\n');
+
+      const diff = await getFileDiff(TEST_TUCK_DIR, '~/.zshrc');
+
+      expect(diff).not.toBeNull();
+      // source echoes the requested key; destination comes from the manifest entry.
+      expect(diff?.source).toBe('~/.zshrc');
+      expect(diff?.destination).toBe('files/shell/zshrc');
+      // A real byte difference must be reported as a change with both sides present.
+      expect(diff?.hasChanges).toBe(true);
+      expect(diff?.systemContent).toBe('live\n');
+      expect(diff?.repoContent).toBe('repo\n');
     });
 
-    it('should handle optional fields', () => {
-      const diff: TestFileDiff = {
-        source: '~/.test.txt',
-        destination: 'files/test.txt',
-        hasChanges: false,
-      };
+    it('leaves directory/binary optional fields unset for a plain text file', async () => {
+      const { getFileDiff } = await import('../../src/commands/diff.js');
+      seedPlainText('repo\n', 'live\n');
 
-      expect(diff.source).toBeDefined();
-      expect(diff.destination).toBeDefined();
-      expect(diff.hasChanges).toBe(false);
-      expect(diff.isBinary).toBeUndefined();
-      expect(diff.isDirectory).toBeUndefined();
-      expect(diff.fileCount).toBeUndefined();
+      const diff = await getFileDiff(TEST_TUCK_DIR, '~/.zshrc');
+
+      expect(diff).not.toBeNull();
+      // A plain text change never populates the directory/binary discriminators.
+      expect(diff?.isBinary).toBeUndefined();
+      expect(diff?.isDirectory).toBeUndefined();
+      expect(diff?.fileCount).toBeUndefined();
     });
   });
 
@@ -254,6 +264,57 @@ describe('diff command', () => {
       expect(output).toContain('CHANGED_B');
       const hunks = output.split('\n').filter((l) => l.includes('@@ -'));
       expect(hunks).toHaveLength(2);
+    });
+
+    it('realigns after a prepended line instead of mislabeling the whole tail', async () => {
+      const { formatUnifiedDiff } = await import('../../src/commands/diff.js');
+
+      // One line ('x') prepended: a real Myers diff reports a single insertion,
+      // whereas a positional index-aligned compare would mislabel a/b/c as
+      // changed because every line shifts by one.
+      const output = formatUnifiedDiff({
+        source: '~/.zshrc',
+        destination: 'files/shell/zshrc',
+        hasChanges: true,
+        systemContent: 'a\nb\nc',
+        repoContent: 'x\na\nb\nc',
+      });
+
+      const changeLines = output
+        .split('\n')
+        .filter((l) => /^[+-] /.test(l))
+        .map((l) => l.replace(/^([+-]) /, '$1'));
+
+      // Exactly one added line ('+x') and NO removed lines: a, b, c stay put.
+      // A positional index-aligned compare would instead emit '-a/+x', '-b/+a',
+      // '-c/+b', '+c' — churning the entire tail — so this pins the realignment.
+      expect(changeLines).toEqual(['+x']);
+      // The unchanged tail appears as dimmed context lines ('  a' etc.), which
+      // carry no +/- change marker.
+      expect(output).toContain('  a');
+      expect(output).toContain('  b');
+      expect(output).toContain('  c');
+    });
+
+    it('emits accurate @@ old/new hunk ranges for a single-line modification', async () => {
+      const { formatUnifiedDiff } = await import('../../src/commands/diff.js');
+
+      // Change line 2 of a 4-line file. With 3 lines of context the hunk spans
+      // the whole file: old and new both have 4 lines starting at line 1.
+      const output = formatUnifiedDiff({
+        source: '~/.zshrc',
+        destination: 'files/shell/zshrc',
+        hasChanges: true,
+        systemContent: 'line 1\nline 2\nline 3\nline 4',
+        repoContent: 'line 1\nMODIFIED\nline 3\nline 4',
+      });
+
+      const header = output.split('\n').find((l) => l.includes('@@ -'));
+      expect(header).toBeDefined();
+      // Strip color codes before asserting the exact range string.
+      // eslint-disable-next-line no-control-regex
+      const plain = header!.replace(/\[[0-9;]*m/g, '');
+      expect(plain).toBe('@@ -1,4 +1,4 @@');
     });
   });
 

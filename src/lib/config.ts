@@ -10,6 +10,43 @@ import { BACKUP_DIR } from '../constants.js';
 let cachedConfig: TuckConfigOutput | null = null;
 let cachedTuckDir: string | null = null;
 
+/**
+ * Nested config sections that must be deep-merged (one level) rather than
+ * shallow-replaced. Kept in ONE place so loadConfig and saveConfig can never
+ * drift on which sections preserve their sibling defaults.
+ */
+const NESTED_CONFIG_KEYS = [
+  'repository',
+  'files',
+  'hooks',
+  'templates',
+  'encryption',
+  'ui',
+  'categories',
+  'security',
+  'remote',
+] as const;
+
+/**
+ * Merge a full base config with a partial override, deep-merging each known
+ * nested section so a config file (or update) that omits or partially specifies
+ * a section keeps the documented defaults for its sibling fields instead of
+ * having them replaced with undefined by a shallow spread.
+ */
+const mergeConfigSections = (
+  base: TuckConfigOutput,
+  override: Partial<TuckConfigOutput>
+): TuckConfigOutput => {
+  const merged: TuckConfigOutput = { ...base, ...override };
+  const baseRecord = base as unknown as Record<string, Record<string, unknown> | undefined>;
+  const overrideRecord = override as unknown as Record<string, Record<string, unknown> | undefined>;
+  const mergedRecord = merged as unknown as Record<string, unknown>;
+  for (const key of NESTED_CONFIG_KEYS) {
+    mergedRecord[key] = { ...baseRecord[key], ...overrideRecord[key] };
+  }
+  return merged;
+};
+
 export const loadConfig = async (tuckDir?: string): Promise<TuckConfigOutput> => {
   const dir = tuckDir || getTuckDir();
 
@@ -36,32 +73,16 @@ export const loadConfig = async (tuckDir?: string): Promise<TuckConfigOutput> =>
       throw new ConfigError(`Invalid configuration: ${result.error.message}`);
     }
 
-    // Merge with defaults
-    cachedConfig = {
-      ...defaultConfig,
-      ...result.data,
-      repository: {
-        ...defaultConfig.repository,
-        ...result.data.repository,
-        path: dir,
-      },
-      files: {
-        ...defaultConfig.files,
-        ...result.data.files,
-        backupDir: result.data.files?.backupDir || BACKUP_DIR,
-      },
-      // Deep-merge nested config objects so a config file that omits or only
-      // partially specifies these keys keeps the documented defaults for the
-      // sibling fields (e.g. security.minSeverity, remote.mode) rather than
-      // having them replaced with undefined by a shallow spread.
-      hooks: { ...defaultConfig.hooks, ...result.data.hooks },
-      templates: { ...defaultConfig.templates, ...result.data.templates },
-      encryption: { ...defaultConfig.encryption, ...result.data.encryption },
-      ui: { ...defaultConfig.ui, ...result.data.ui },
-      categories: { ...defaultConfig.categories, ...result.data.categories },
-      security: { ...defaultConfig.security, ...result.data.security },
-      remote: { ...defaultConfig.remote, ...result.data.remote },
-    };
+    // Merge with defaults, deep-merging each nested section (see
+    // mergeConfigSections) so a config file that omits or only partially
+    // specifies a section keeps the documented defaults for its sibling fields
+    // rather than having them replaced with undefined by a shallow spread.
+    const merged = mergeConfigSections(defaultConfig, result.data);
+    // The repository path is always pinned to the resolved tuck dir, and the
+    // backup dir falls back to the documented default when unset.
+    merged.repository.path = dir;
+    merged.files.backupDir = result.data.files?.backupDir || BACKUP_DIR;
+    cachedConfig = merged;
     cachedTuckDir = dir;
 
     return cachedConfig;
@@ -83,48 +104,11 @@ export const saveConfig = async (
   const dir = tuckDir || getTuckDir();
   const configPath = getConfigPath(dir);
 
-  // Load existing config and merge
+  // Load existing config and merge (deep-merging each nested section so a
+  // partial update never drops sibling fields — same section list as loadConfig
+  // via mergeConfigSections).
   const existing = await loadConfig(dir);
-  const merged = {
-    ...existing,
-    ...config,
-    repository: {
-      ...existing.repository,
-      ...config.repository,
-    },
-    files: {
-      ...existing.files,
-      ...config.files,
-    },
-    hooks: {
-      ...existing.hooks,
-      ...config.hooks,
-    },
-    templates: {
-      ...existing.templates,
-      ...config.templates,
-    },
-    encryption: {
-      ...existing.encryption,
-      ...config.encryption,
-    },
-    ui: {
-      ...existing.ui,
-      ...config.ui,
-    },
-    categories: {
-      ...existing.categories,
-      ...config.categories,
-    },
-    security: {
-      ...existing.security,
-      ...config.security,
-    },
-    remote: {
-      ...existing.remote,
-      ...config.remote,
-    },
-  };
+  const merged = mergeConfigSections(existing, config);
 
   // Validate before saving
   const result = tuckConfigSchema.safeParse(merged);

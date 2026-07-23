@@ -30,7 +30,6 @@ import {
   getTrackedFileBySource,
   getAllTrackedFiles,
   isFileTracked,
-  getCategories,
 } from '../../src/lib/manifest.js';
 
 // ============================================================================
@@ -153,11 +152,6 @@ describe('Manifest Benchmarks', () => {
     bench('isFileTracked - not exists (1000 files)', async () => {
       clearManifestCache();
       await isFileTracked(tuckDir1000, '~/.config/nonexistent/config');
-    });
-
-    bench('getCategories (1000 files)', async () => {
-      clearManifestCache();
-      await getCategories(tuckDir1000);
     });
   });
 

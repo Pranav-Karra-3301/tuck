@@ -8,7 +8,6 @@
  */
 import { describe, it, expect } from 'vitest';
 import { clientConfigPathFor, listClients } from '../../src/lib/mcp/clients.js';
-import { MCP_CLIENT_IDS } from '../../src/schemas/mcpServers.schema.js';
 
 const HOME = '/home/u';
 
@@ -72,7 +71,10 @@ describe('clientConfigPathFor — windows', () => {
 describe('listClients', () => {
   it('exposes every supported client id with a display name', () => {
     const ids = listClients().map((client) => client.id);
-    expect(ids).toEqual([...MCP_CLIENT_IDS]);
+    // Assert against an INDEPENDENTLY written literal (not MCP_CLIENT_IDS, which
+    // listClients maps over — that would be a tautology). Adding or removing a
+    // supported client id must break this test on purpose.
+    expect(ids).toEqual(['claude-desktop', 'claude-code', 'cursor', 'windsurf', 'vscode']);
     for (const client of listClients()) {
       expect(client.displayName.length).toBeGreaterThan(0);
     }

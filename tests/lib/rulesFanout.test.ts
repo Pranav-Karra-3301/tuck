@@ -25,6 +25,7 @@ import {
   ALL_TOOLS,
 } from '../../src/lib/rulesFanout.js';
 import type { RuleSet } from '../../src/schemas/rules.schema.js';
+import { FileNotFoundError } from '../../src/errors.js';
 import { defaultTemplateContext } from '../../src/lib/template.js';
 import { resetWriteContext } from '../../src/lib/writeContext.js';
 import { rulesManifestSchema } from '../../src/schemas/rules.schema.js';
@@ -199,7 +200,7 @@ describe('trackRuleSet', () => {
   it('throws FileNotFound for a missing source', async () => {
     await expect(
       trackRuleSet(TEST_TUCK_DIR, join(TEST_HOME, 'nope.md'))
-    ).rejects.toThrow();
+    ).rejects.toThrow(FileNotFoundError);
   });
 
   it('re-tracking updates tools but preserves the original added timestamp', async () => {
@@ -596,6 +597,14 @@ describe('ruleSetId / TOOL_TARGETS invariants', () => {
   it('gives home and repo sources distinct id namespaces', () => {
     const home = ruleSetId({ scope: 'home', source: '~/AGENTS.md' });
     expect(home.startsWith('home__')).toBe(true);
+
+    const repo = ruleSetId({
+      scope: 'repo',
+      source: join(TEST_HOME, 'proj', 'AGENTS.md'),
+      repoRoot: join(TEST_HOME, 'proj'),
+    });
+    expect(repo.startsWith('repo__')).toBe(true);
+    expect(repo).not.toBe(home);
   });
 
   it('maps every tool to a distinct destination', () => {

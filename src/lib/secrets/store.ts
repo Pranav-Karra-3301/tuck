@@ -180,14 +180,6 @@ export const unsetSecret = async (tuckDir: string, name: string): Promise<boolea
   return false;
 };
 
-/**
- * Check if a secret exists
- */
-export const hasSecret = async (tuckDir: string, name: string): Promise<boolean> => {
-  const store = await loadSecretsStore(tuckDir);
-  return name in store.secrets;
-};
-
 // ============================================================================
 // Listing and Querying
 // ============================================================================
@@ -239,59 +231,6 @@ export const getAllSecrets = async (tuckDir: string): Promise<Record<string, str
 export const getSecretCount = async (tuckDir: string): Promise<number> => {
   const store = await loadSecretsStore(tuckDir);
   return Object.keys(store.secrets).length;
-};
-
-// ============================================================================
-// Bulk Operations
-// ============================================================================
-
-/**
- * Add multiple secrets at once
- */
-export const setSecrets = async (
-  tuckDir: string,
-  secrets: Array<{
-    name: string;
-    value: string;
-    description?: string;
-    source?: string;
-  }>
-): Promise<void> => {
-  const store = await loadSecretsStore(tuckDir);
-  const now = new Date().toISOString();
-
-  for (const secret of secrets) {
-    store.secrets[secret.name] = {
-      value: secret.value,
-      placeholder: `{{${secret.name}}}`,
-      description: secret.description,
-      source: secret.source,
-      addedAt: store.secrets[secret.name]?.addedAt || now,
-      lastUsed: now,
-    };
-  }
-
-  await saveSecretsStore(tuckDir, store);
-};
-
-/**
- * Update lastUsed timestamp for secrets that were used
- */
-export const touchSecrets = async (tuckDir: string, names: string[]): Promise<void> => {
-  const store = await loadSecretsStore(tuckDir);
-  const now = new Date().toISOString();
-
-  let changed = false;
-  for (const name of names) {
-    if (name in store.secrets) {
-      store.secrets[name].lastUsed = now;
-      changed = true;
-    }
-  }
-
-  if (changed) {
-    await saveSecretsStore(tuckDir, store);
-  }
 };
 
 // ============================================================================

@@ -4,7 +4,7 @@ import { copy, ensureDir, pathExists } from 'fs-extra';
 import { createHash } from 'crypto';
 import { homedir } from 'os';
 import { expandPath, pathExists as checkPathExists } from './paths.js';
-import { atomicWriteFile } from './files.js';
+import { atomicWriteFile, formatBytes } from './files.js';
 import { BackupError } from '../errors.js';
 import { getLegacySnapshotsDir, getSnapshotsDir } from './state.js';
 import { snapshotMetadataSchema } from '../schemas/snapshot.schema.js';
@@ -293,6 +293,40 @@ export const getLatestSnapshot = async (): Promise<Snapshot | null> => {
 };
 
 /**
+ * Atomically restore a single backup file onto its live path.
+ *
+ * Stages the copy into a uniquely-named temp sibling of the destination, clears
+ * any existing entry at the destination, then renames the staged copy into
+ * place. A rename is atomic, so a mid-copy failure can never leave a half-written
+ * file at the live path. On any failure the staging artifact is cleaned up and
+ * the error rethrown so callers can run their own higher-level rollback.
+ *
+ * `tempTag` distinguishes the staging file per caller (e.g. `tuck-restore` vs
+ * `tuck-undo`) purely for debuggability if one is ever left behind.
+ */
+const restoreFileAtomically = async (
+  backupPath: string,
+  originalPath: string,
+  tempTag: string
+): Promise<void> => {
+  await ensureDir(dirname(originalPath));
+  const stagingPath = `${originalPath}.${tempTag}-${process.pid}-${Date.now()}.tmp`;
+  try {
+    await copy(backupPath, stagingPath, { overwrite: true, preserveTimestamps: true });
+    // If a previous restore left the live path as a directory (or any non-file),
+    // rename() can refuse to overwrite it — clear it first.
+    if (await checkPathExists(originalPath)) {
+      await rm(originalPath, { recursive: true });
+    }
+    await rename(stagingPath, originalPath);
+  } catch (error) {
+    // Clean up the staging artifact so a failed restore leaves no debris.
+    await rm(stagingPath, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+};
+
+/**
  * Restore all files from a snapshot
  */
 export const restoreSnapshot = async (snapshotId: string): Promise<string[]> => {
@@ -333,28 +367,11 @@ export const restoreSnapshot = async (snapshotId: string): Promise<string[]> => 
         continue;
       }
 
-      // Restore the backup. Stage the copy into a temp path alongside the
-      // destination first, then rename it into place. A rename is atomic, so a
-      // mid-copy failure can never leave a half-written file at the live path.
+      // Restore the backup via a staged copy + atomic rename (see
+      // restoreFileAtomically). A mid-copy failure can never leave a half-written
+      // file at the live path.
       if (await pathExists(file.backupPath)) {
-        await ensureDir(dirname(file.originalPath));
-        const stagingPath = `${file.originalPath}.tuck-restore-${process.pid}-${Date.now()}.tmp`;
-        try {
-          await copy(file.backupPath, stagingPath, {
-            overwrite: true,
-            preserveTimestamps: true,
-          });
-          // If a previous restore left the live path as a directory (or any
-          // non-file), rename() can refuse to overwrite it — clear it first.
-          if (await checkPathExists(file.originalPath)) {
-            await rm(file.originalPath, { recursive: true });
-          }
-          await rename(stagingPath, file.originalPath);
-        } catch (error) {
-          // Clean up the staging artifact so a failed restore leaves no debris.
-          await rm(stagingPath, { recursive: true, force: true }).catch(() => {});
-          throw error;
-        }
+        await restoreFileAtomically(file.backupPath, file.originalPath, 'tuck-restore');
         restoredFiles.push(file.originalPath);
       }
     }
@@ -390,14 +407,7 @@ const rollbackToSnapshot = async (preRestore: Snapshot): Promise<void> => {
       }
 
       if (await pathExists(file.backupPath)) {
-        await ensureDir(dirname(file.originalPath));
-        if (await checkPathExists(file.originalPath)) {
-          await rm(file.originalPath, { recursive: true, force: true });
-        }
-        await copy(file.backupPath, file.originalPath, {
-          overwrite: true,
-          preserveTimestamps: true,
-        });
+        await restoreFileAtomically(file.backupPath, file.originalPath, 'tuck-rollback');
       }
     } catch {
       // Best-effort: keep rolling back the remaining paths.
@@ -448,19 +458,13 @@ export const restoreFileFromSnapshot = async (
     throw new BackupError(`Backup file is missing: ${file.backupPath}`);
   }
 
-  // Stage the copy alongside the destination, then rename it into place. A rename
-  // is atomic, so a mid-copy failure can never leave a half-written file at the
-  // live path. On any failure, roll the path back to its pre-undo state.
-  await ensureDir(dirname(file.originalPath));
-  const stagingPath = `${file.originalPath}.tuck-undo-${process.pid}-${Date.now()}.tmp`;
+  // Stage the copy alongside the destination, then rename it into place (see
+  // restoreFileAtomically). A rename is atomic, so a mid-copy failure can never
+  // leave a half-written file at the live path. On any failure, roll the path
+  // back to its pre-undo state.
   try {
-    await copy(file.backupPath, stagingPath, { overwrite: true, preserveTimestamps: true });
-    if (await checkPathExists(file.originalPath)) {
-      await rm(file.originalPath, { recursive: true });
-    }
-    await rename(stagingPath, file.originalPath);
+    await restoreFileAtomically(file.backupPath, file.originalPath, 'tuck-undo');
   } catch (error) {
-    await rm(stagingPath, { recursive: true, force: true }).catch(() => {});
     await rollbackToSnapshot(preRestore);
     throw error;
   }
@@ -477,27 +481,6 @@ export const deleteSnapshot = async (snapshotId: string): Promise<void> => {
       await rm(snapshotPath, { recursive: true });
     }
   }
-};
-
-/**
- * Clean up old snapshots, keeping only the specified number
- */
-export const cleanOldSnapshots = async (keepCount: number): Promise<number> => {
-  const snapshots = await listSnapshots();
-
-  if (snapshots.length <= keepCount) {
-    return 0;
-  }
-
-  const toDelete = snapshots.slice(keepCount);
-  let deletedCount = 0;
-
-  for (const snapshot of toDelete) {
-    await deleteSnapshot(snapshot.id);
-    deletedCount++;
-  }
-
-  return deletedCount;
 };
 
 /**
@@ -533,15 +516,14 @@ export const getSnapshotsSize = async (): Promise<number> => {
 };
 
 /**
- * Format bytes to human readable string
+ * Format bytes to a human readable string (snapshot sizes use 2 decimals).
+ *
+ * Delegates to the single, bounds-safe `formatBytes` in files.ts. The previous
+ * inline copy indexed `sizes[i]` with no clamp, so any size >= 1 TB rendered the
+ * out-of-bounds `undefined` unit (e.g. "1.1 undefined") and NaN/Infinity inputs
+ * produced garbage — `formatBytes` clamps the index and normalizes those inputs.
  */
-export const formatSnapshotSize = (bytes: number): string => {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
-};
+export const formatSnapshotSize = (bytes: number): string => formatBytes(bytes, 2);
 
 /**
  * Format a snapshot ID to a human-readable date string

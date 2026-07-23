@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from 'crypto';
 import {
   readFile,
-  writeFile,
   rename,
   stat,
   lstat,
@@ -10,6 +9,7 @@ import {
   symlink,
   unlink,
   rm,
+  open,
 } from 'fs/promises';
 import { copy, ensureDir } from 'fs-extra';
 import { join, dirname, basename, relative } from 'path';
@@ -77,10 +77,33 @@ export const atomicWriteFile = async (
       }
     }
 
-    const writeOptions: { encoding: 'utf-8'; mode?: number } = { encoding: 'utf-8' };
-    if (typeof mode === 'number') writeOptions.mode = mode;
-    await writeFile(tempPath, content, writeOptions);
+    // Open + write + fsync + close the temp file BEFORE the rename, so the data
+    // blocks are durably on disk when the (atomic) rename publishes them. A bare
+    // writeFile()+rename() can let the rename's metadata reach disk while the
+    // file's data has not, leaving a zero-length or stale target after a crash
+    // or power loss — defeating the "never a truncated fragment" guarantee.
+    const handle = await open(tempPath, 'w', mode);
+    try {
+      await handle.writeFile(content, { encoding: 'utf-8' });
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     await rename(tempPath, filepath);
+
+    // Best-effort: fsync the containing directory so the rename entry itself is
+    // durable. Some platforms (notably Windows) refuse to open a directory for
+    // fsync, so any failure here is non-fatal — the file data is already synced.
+    try {
+      const dirHandle = await open(dirname(filepath), 'r');
+      try {
+        await dirHandle.sync();
+      } finally {
+        await dirHandle.close();
+      }
+    } catch {
+      // Directory fsync unsupported on this platform — ignore.
+    }
   } catch (error) {
     // Best-effort cleanup so a failed write never orphans a temp file.
     try {
@@ -606,45 +629,6 @@ export const ensureDirectory = async (dirpath: string): Promise<void> => {
   await ensureDir(expandedPath);
 };
 
-export const moveFile = async (
-  source: string,
-  destination: string,
-  options?: { overwrite?: boolean }
-): Promise<void> => {
-  await copyFileOrDir(source, destination, options);
-  await deleteFileOrDir(source);
-};
-
-export const hasFileChanged = async (
-  file1: string,
-  file2: string
-): Promise<boolean> => {
-  const expandedFile1 = expandPath(file1);
-  const expandedFile2 = expandPath(file2);
-
-  // If either doesn't exist, they're different
-  if (!(await pathExists(expandedFile1)) || !(await pathExists(expandedFile2))) {
-    return true;
-  }
-
-  const checksum1 = await getFileChecksum(expandedFile1);
-  const checksum2 = await getFileChecksum(expandedFile2);
-
-  return checksum1 !== checksum2;
-};
-
-export const getFilePermissions = async (filepath: string): Promise<string> => {
-  // On Windows, return a sensible default since Unix permissions don't apply
-  if (IS_WINDOWS) {
-    const expandedPath = expandPath(filepath);
-    const stats = await stat(expandedPath);
-    return stats.isDirectory() ? '755' : '644';
-  }
-  const expandedPath = expandPath(filepath);
-  const stats = await stat(expandedPath);
-  return (stats.mode & 0o777).toString(8).padStart(3, '0');
-};
-
 export const setFilePermissions = async (filepath: string, mode: string): Promise<void> => {
   // On Windows, chmod is limited and Unix-style permissions don't apply
   // Skip permission setting gracefully
@@ -656,7 +640,16 @@ export const setFilePermissions = async (filepath: string, mode: string): Promis
   await chmod(expandedPath, parseInt(mode, 8));
 };
 
-export const formatBytes = (bytes: number): string => {
+/**
+ * Format a byte count as a human-readable string (e.g. "50.2 MB").
+ *
+ * This is the single, bounds-safe byte formatter for the whole codebase: the
+ * unit index is clamped to the `sizes` array (so values >= 1 TB render as GB
+ * rather than the out-of-bounds `undefined` unit the old ad-hoc copies produced)
+ * and non-finite/negative/zero inputs collapse to "0 B". `decimals` controls the
+ * fractional precision (trailing zeros are stripped by `parseFloat`).
+ */
+export const formatBytes = (bytes: number, decimals = 1): string => {
   // Handle invalid, negative, or zero values
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   const k = 1024;
@@ -664,7 +657,7 @@ export const formatBytes = (bytes: number): string => {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   // Ensure index is within bounds to prevent undefined access
   const safeIndex = Math.max(0, Math.min(i, sizes.length - 1));
-  return `${parseFloat((bytes / Math.pow(k, safeIndex)).toFixed(1))} ${sizes[safeIndex]}`;
+  return `${parseFloat((bytes / Math.pow(k, safeIndex)).toFixed(decimals))} ${sizes[safeIndex]}`;
 };
 
 // ============================================================================
@@ -690,20 +683,11 @@ export const getFileSizeRecursive = async (filepath: string): Promise<number> =>
     return stats.size;
   }
 
-  // Directory: sum all file sizes
-  const files = await getDirectoryFiles(expandedPath);
-  let totalSize = 0;
-
-  for (const file of files) {
-    try {
-      const fileStats = await stat(file);
-      totalSize += fileStats.size;
-    } catch {
-      // Skip files we can't access
-      continue;
-    }
-  }
-
+  // Directory: sum all file sizes from a SINGLE walk. getDirectoryTreeStats
+  // collects each file's size during the same traversal that builds the file
+  // list, so we avoid re-walking the tree and re-stat()ing every file (the sizes
+  // it reports are identical — symlinks are skipped, so lstat size == stat size).
+  const { totalSize } = await getDirectoryTreeStats(expandedPath);
   return totalSize;
 };
 

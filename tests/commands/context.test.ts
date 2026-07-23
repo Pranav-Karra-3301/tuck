@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { vol } from 'memfs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { Command } from 'commander';
 import {
   assertContextWriteSafe,
@@ -53,6 +53,16 @@ vi.mock('../../src/ui/index.js', () => ({
     red: (x: string) => x,
   },
 }));
+
+// `context apply <user/repo>` must route its clone through the hardened
+// cloneRepo helper (timeout, maxBuffer, non-interactive env, credential
+// scrubbing) rather than a bare simpleGit().clone(). Stub only cloneRepo so we
+// can assert how it is invoked without spawning a real git process.
+const { cloneMock } = vi.hoisted(() => ({ cloneMock: vi.fn() }));
+vi.mock('../../src/lib/git.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/lib/git.js')>();
+  return { ...actual, cloneRepo: cloneMock };
+});
 
 const CLONE = '/test-home/.tuck/.tmp-context/u-r';
 
@@ -233,6 +243,64 @@ describe('importContextFromDir (via context apply <dir>)', () => {
     // Should succeed (valid manifest) but write nothing to home.
     await runApply(APPLY_SRC);
     expect(vol.existsSync(join(TEST_HOME, 'CLAUDE.md'))).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `context apply <user/repo>` github path must route through the hardened
+// cloneRepo helper (NOT a bare simpleGit().clone()) and request a shallow clone.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const runApplyYes = async (ref: string): Promise<void> => {
+  const { contextCommand } = await import('../../src/commands/context.js');
+  const program = new Command('tuck');
+  program.exitOverride();
+  program.configureOutput({ writeOut: () => {}, writeErr: () => {} });
+  program.addCommand(contextCommand);
+  await program.parseAsync(['node', 'tuck', 'context', 'apply', ref, '--yes']);
+};
+
+describe('context apply <user/repo> (github clone routing)', () => {
+  beforeEach(() => {
+    vol.reset();
+    vol.mkdirSync(TEST_HOME, { recursive: true });
+    vol.mkdirSync(TEST_TUCK_DIR, { recursive: true });
+    cloneMock.mockReset();
+    // Emulate a successful clone by materializing a minimal, valid context
+    // manifest at the destination the command hands us.
+    cloneMock.mockImplementation(async (_url: string, dir: string) => {
+      vol.mkdirSync(dir, { recursive: true });
+      vol.writeFileSync(join(dir, 'context.json'), JSON.stringify({ version: '1', entries: {} }));
+    });
+  });
+
+  it('clones through cloneRepo with the github https url and a shallow depth of 1', async () => {
+    await runApplyYes('u/r');
+
+    expect(cloneMock).toHaveBeenCalledTimes(1);
+    // The clone dir is built with path.join (backslashes on Windows) —
+    // compare resolved paths instead of exact strings.
+    const [url, dir, opts] = cloneMock.mock.calls[0];
+    expect(url).toBe('https://github.com/u/r.git');
+    expect(resolve(dir)).toBe(resolve(CLONE));
+    expect(opts).toEqual({ depth: 1 });
+  });
+
+  it('removes the temp clone dir after a successful apply', async () => {
+    await runApplyYes('u/r');
+    expect(vol.existsSync(CLONE)).toBe(false);
+  });
+
+  it('removes the temp clone dir even when the cloned manifest is invalid', async () => {
+    cloneMock.mockImplementation(async (_url: string, dir: string) => {
+      vol.mkdirSync(dir, { recursive: true });
+      // Malformed manifest → importContextFromDir throws; finally must still
+      // clean up the temp clone.
+      vol.writeFileSync(join(dir, 'context.json'), JSON.stringify({ version: '99', entries: {} }));
+    });
+
+    await expect(runApplyYes('u/r')).rejects.toThrow();
+    expect(vol.existsSync(CLONE)).toBe(false);
   });
 });
 

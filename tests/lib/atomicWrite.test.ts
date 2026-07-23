@@ -45,6 +45,50 @@ describe('atomicWriteFile', () => {
     expect(mode).toBe(0o600);
   });
 
+  it('fsyncs the temp file data BEFORE renaming it into place (durability)', async () => {
+    // Regression guard: a bare writeFile()+rename() can let the rename's metadata
+    // reach disk while the file's data blocks have not, leaving a zero-length or
+    // stale target after a crash/power loss. atomicWriteFile must fsync the temp
+    // fd before the rename so the published file is always the full content.
+    const target = `${DIR}/durable-sync.json`;
+    const events: string[] = [];
+
+    const realOpen = memfs.promises.open.bind(memfs.promises);
+    const realRename = memfs.promises.rename.bind(memfs.promises);
+
+    (memfs.promises as { open: unknown }).open = async (
+      ...args: Parameters<typeof realOpen>
+    ) => {
+      const handle = (await realOpen(...args)) as { sync: () => Promise<void> };
+      const realSync = handle.sync.bind(handle);
+      handle.sync = async () => {
+        events.push('sync');
+        return realSync();
+      };
+      return handle;
+    };
+    (memfs.promises as { rename: unknown }).rename = async (
+      ...args: Parameters<typeof realRename>
+    ) => {
+      events.push('rename');
+      return realRename(...args);
+    };
+
+    try {
+      await atomicWriteFile(target, 'DURABLE');
+    } finally {
+      (memfs.promises as { open: unknown }).open = realOpen;
+      (memfs.promises as { rename: unknown }).rename = realRename;
+    }
+
+    expect(readFileSync(target, 'utf-8')).toBe('DURABLE');
+    // The temp file's data must be fsync'd, and that fsync must happen before the
+    // atomic rename publishes it.
+    expect(events).toContain('sync');
+    expect(events).toContain('rename');
+    expect(events.indexOf('sync')).toBeLessThan(events.indexOf('rename'));
+  });
+
   it('preserves the original file and cleans up the temp file when the rename fails', async () => {
     const target = `${DIR}/durable.json`;
     vol.writeFileSync(target, 'ORIGINAL');

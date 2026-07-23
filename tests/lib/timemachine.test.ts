@@ -61,13 +61,9 @@ import {
   restoreSnapshot,
   restoreFileFromSnapshot,
   deleteSnapshot,
-  cleanOldSnapshots,
   formatSnapshotSize,
   formatSnapshotDate,
 } from '../../src/lib/timemachine.js';
-import { getSnapshotsDir } from '../../src/lib/state.js';
-
-const TIMEMACHINE_DIR = getSnapshotsDir();
 
 describe('timemachine', () => {
   beforeEach(() => {
@@ -432,31 +428,6 @@ describe('timemachine', () => {
   });
 
   // ============================================================================
-  // cleanOldSnapshots Tests
-  // ============================================================================
-
-  describe('cleanOldSnapshots', () => {
-    it('should return 0 if fewer snapshots than keep count', async () => {
-      vol.writeFileSync(join(TEST_HOME, '.zshrc'), 'content');
-      await createSnapshot([join(TEST_HOME, '.zshrc')], 'Only one');
-
-      const deleted = await cleanOldSnapshots(5);
-
-      expect(deleted).toBe(0);
-    });
-
-    it('should return number of deleted snapshots', async () => {
-      vol.writeFileSync(join(TEST_HOME, '.zshrc'), 'content');
-      await createSnapshot([join(TEST_HOME, '.zshrc')], 'Test');
-
-      // If we have 1 snapshot and keep 10, nothing is deleted
-      const deleted = await cleanOldSnapshots(10);
-
-      expect(deleted).toBeGreaterThanOrEqual(0);
-    });
-  });
-
-  // ============================================================================
   // formatSnapshotSize Tests
   // ============================================================================
 
@@ -479,6 +450,26 @@ describe('timemachine', () => {
 
     it('should format gigabytes', () => {
       expect(formatSnapshotSize(1073741824)).toBe('1 GB');
+    });
+
+    it('renders terabyte-scale sizes as GB, never an undefined unit', () => {
+      // Regression: the old inline copy indexed sizes[floor(log1024(bytes))] with
+      // no clamp, so any value >= 1 TB rendered "1.1 undefined". It now delegates
+      // to the bounds-safe formatBytes.
+      const result = formatSnapshotSize(1024 ** 4);
+      expect(result).not.toContain('undefined');
+      expect(result).toMatch(/ GB$/);
+    });
+
+    it('normalizes negative and non-finite inputs to 0 B instead of NaN', () => {
+      expect(formatSnapshotSize(-5)).toBe('0 B');
+      expect(formatSnapshotSize(Number.NaN)).toBe('0 B');
+      expect(formatSnapshotSize(Number.POSITIVE_INFINITY)).toBe('0 B');
+    });
+
+    it('keeps two-decimal precision for fractional sizes', () => {
+      // 1500 / 1024 = 1.4648... → 1.46 KB at 2 decimals (preserves prior output).
+      expect(formatSnapshotSize(1500)).toBe('1.46 KB');
     });
   });
 

@@ -23,8 +23,16 @@ export { CustomProvider, customProvider } from './custom.js';
 // Provider Registry
 // ============================================================================
 
-/** All available provider modes */
-export const PROVIDER_MODES: ProviderMode[] = ['github', 'gitlab', 'local', 'custom'];
+/**
+ * Normalize a git host / provider URL to a bare host: strip any `http(s)://`
+ * scheme and a single trailing slash. Inputs may be bare hosts with no scheme
+ * (e.g. `gitlab.example.com`), so `new URL()` is intentionally NOT used — it
+ * rejects scheme-less hosts. Shared so the scheme + trailing-slash policy lives
+ * in one place and cannot drift between call sites.
+ */
+export function normalizeGitHost(url: string): string {
+  return url.replace(/^https?:\/\//, '').replace(/\/$/, '');
+}
 
 /** Provider display info for selection UI */
 export interface ProviderOption {
@@ -50,7 +58,7 @@ export function getProvider(mode: ProviderMode, config?: RemoteConfig): GitProvi
     case 'gitlab':
       // Support self-hosted GitLab
       if (config?.providerUrl) {
-        const host = config.providerUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
+        const host = normalizeGitHost(config.providerUrl);
         return GitLabProvider.forHost(host);
       }
       return gitlabProvider;
@@ -171,7 +179,7 @@ export function describeProviderConfig(config: RemoteConfig): string {
 
     case 'gitlab':
       if (config.providerUrl) {
-        const host = config.providerUrl.replace(/^https?:\/\//, '');
+        const host = normalizeGitHost(config.providerUrl);
         return config.username ? `GitLab ${host} (@${config.username})` : `GitLab (${host})`;
       }
       return config.username ? `GitLab (@${config.username})` : 'GitLab';
@@ -185,26 +193,6 @@ export function describeProviderConfig(config: RemoteConfig): string {
     default:
       return 'Unknown provider';
   }
-}
-
-/**
- * Validate that a provider configuration is complete
- */
-export function validateProviderConfig(config: RemoteConfig): { valid: boolean; errors: string[] } {
-  const errors: string[] = [];
-
-  if (!config.mode) {
-    errors.push('Provider mode is not set');
-  }
-
-  if (config.mode === 'custom' && !config.url) {
-    errors.push('Custom provider requires a remote URL');
-  }
-
-  return {
-    valid: errors.length === 0,
-    errors,
-  };
 }
 
 /**

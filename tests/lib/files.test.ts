@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { vol } from 'memfs';
 import { join } from 'path';
-import { copyFileOrDir, matchesExcludePattern, formatBytes } from '../../src/lib/files.js';
+import {
+  copyFileOrDir,
+  matchesExcludePattern,
+  formatBytes,
+  getFileSizeRecursive,
+  getDirectoryTreeStats,
+} from '../../src/lib/files.js';
 import { TEST_HOME } from '../setup.js';
 
 describe('files', () => {
@@ -106,6 +112,72 @@ describe('files', () => {
 
     it('should format gigabytes', () => {
       expect(formatBytes(1073741824)).toBe('1 GB');
+    });
+
+    it('clamps the unit to GB for terabyte-scale values instead of an undefined unit', () => {
+      // Regression: the old ad-hoc copies indexed sizes[floor(log1024(bytes))]
+      // with no clamp, so any value >= 1 TB rendered the out-of-bounds unit as
+      // "1.1 undefined". formatBytes clamps the index to the sizes array.
+      expect(formatBytes(1024 ** 4)).toBe('1024 GB');
+      const petabyte = formatBytes(5 * 1024 ** 5);
+      expect(petabyte).not.toContain('undefined');
+      expect(petabyte).toMatch(/ GB$/);
+    });
+
+    it('normalizes negative and non-finite inputs to 0 B', () => {
+      expect(formatBytes(-1)).toBe('0 B');
+      expect(formatBytes(Number.NaN)).toBe('0 B');
+      expect(formatBytes(Number.POSITIVE_INFINITY)).toBe('0 B');
+    });
+
+    it('honors the decimals parameter (default 1)', () => {
+      // 1500 / 1024 = 1.4648...
+      expect(formatBytes(1500)).toBe('1.5 KB');
+      expect(formatBytes(1500, 2)).toBe('1.46 KB');
+      expect(formatBytes(1500, 0)).toBe('1 KB');
+    });
+  });
+
+  describe('getFileSizeRecursive', () => {
+    beforeEach(() => {
+      vol.reset();
+      vol.mkdirSync(TEST_HOME, { recursive: true });
+    });
+
+    it('returns 0 for a path that does not exist', async () => {
+      expect(await getFileSizeRecursive(join(TEST_HOME, 'nope'))).toBe(0);
+    });
+
+    it('returns the byte size of a single file', async () => {
+      const f = join(TEST_HOME, '.zshrc');
+      vol.writeFileSync(f, 'hello'); // 5 bytes
+      expect(await getFileSizeRecursive(f)).toBe(5);
+    });
+
+    it('sums file sizes recursively and matches getDirectoryTreeStats (single walk)', async () => {
+      const dir = join(TEST_HOME, '.config');
+      vol.mkdirSync(join(dir, 'nested'), { recursive: true });
+      vol.writeFileSync(join(dir, 'a.txt'), 'aaa'); // 3
+      vol.writeFileSync(join(dir, 'nested', 'b.txt'), 'bbbb'); // 4
+
+      const total = await getFileSizeRecursive(dir);
+      expect(total).toBe(7);
+      // The recursive size must equal the total the shared single-walk helper
+      // reports — they must never drift.
+      const { totalSize } = await getDirectoryTreeStats(dir);
+      expect(total).toBe(totalSize);
+    });
+
+    it('excludes the same skipped names as the directory walk (node_modules, .git)', async () => {
+      const dir = join(TEST_HOME, '.proj');
+      vol.mkdirSync(join(dir, 'node_modules'), { recursive: true });
+      vol.mkdirSync(join(dir, '.git'), { recursive: true });
+      vol.writeFileSync(join(dir, 'real.txt'), 'xy'); // 2 bytes, counted
+      vol.writeFileSync(join(dir, 'node_modules', 'big.js'), 'x'.repeat(1000));
+      vol.writeFileSync(join(dir, '.git', 'index'), 'x'.repeat(1000));
+
+      // Only the real tracked file counts; skipped trees are excluded.
+      expect(await getFileSizeRecursive(dir)).toBe(2);
     });
   });
 });

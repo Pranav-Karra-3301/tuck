@@ -14,11 +14,9 @@ import {
   generateSalt,
   generateVerificationHash,
   verifyPassword,
-  encryptBuffer,
-  decryptBuffer,
 } from './encryption.js';
 import { getKeystore, TUCK_SERVICE, TUCK_ACCOUNT } from './keystore/index.js';
-import { EncryptionError, DecryptionError } from '../../errors.js';
+import { EncryptionError } from '../../errors.js';
 
 interface VerificationData {
   salt: string;
@@ -83,14 +81,6 @@ export const getEncryptionStatus = async (): Promise<EncryptionStatus> => {
 };
 
 /**
- * Check if backup encryption is enabled
- */
-export const isEncryptionEnabled = async (): Promise<boolean> => {
-  const config = await loadConfig(getTuckDir());
-  return config.encryption?.backupsEnabled ?? false;
-};
-
-/**
  * Set up encryption with a new password
  * Stores password in keychain and verification data in config
  */
@@ -148,14 +138,6 @@ export const getStoredPassword = async (): Promise<string | null> => {
 };
 
 /**
- * Store a password in the keychain
- */
-export const storePassword = async (password: string): Promise<void> => {
-  const keystore = await getKeystore();
-  await keystore.store(TUCK_SERVICE, TUCK_ACCOUNT, password);
-};
-
-/**
  * Verify a password against stored verification data
  * Returns true if password is correct
  */
@@ -198,50 +180,4 @@ export const changePassword = async (oldPassword: string, newPassword: string): 
 
   // Set up with new password
   await setupEncryption(newPassword);
-};
-
-/**
- * Encrypt data using stored password or provided password
- */
-export const encryptData = async (data: Buffer, password?: string): Promise<Buffer> => {
-  const pwd = password || (await getStoredPassword());
-  if (!pwd) {
-    throw new EncryptionError('No encryption password available', [
-      'Run `tuck encryption setup` to configure encryption',
-      'Or provide password with --password flag',
-    ]);
-  }
-
-  return encryptBuffer(data, pwd);
-};
-
-/**
- * Decrypt data using stored password or provided password
- */
-export const decryptData = async (encrypted: Buffer, password?: string): Promise<Buffer> => {
-  const pwd = password || (await getStoredPassword());
-  if (!pwd) {
-    throw new DecryptionError('No decryption password available', [
-      'Enter your backup password when prompted',
-      'Or provide password with --password flag',
-    ]);
-  }
-
-  try {
-    return decryptBuffer(encrypted, pwd);
-  } catch (error) {
-    throw new DecryptionError('Wrong password or corrupted data', [
-      'Verify you are using the correct password',
-      'The backup file may have been corrupted',
-    ]);
-  }
-};
-
-/**
- * Get password for encryption/decryption operations
- * Returns stored password or null if not available
- * Caller should prompt user if null is returned
- */
-export const getPasswordOrNull = async (): Promise<string | null> => {
-  return getStoredPassword();
 };
