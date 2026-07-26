@@ -32,6 +32,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
 import { getStateDir } from '../state.js';
+import { atomicWriteFile } from '../files.js';
 import { pathExists } from '../paths.js';
 import { driftCacheSchema, type DriftCache, type DriftEntry } from '../../schemas/driftCache.schema.js';
 
@@ -53,10 +54,14 @@ const getDriftCachePath = (): string => join(getStateDir(), 'drift-cache.json');
  */
 let keyCache: Buffer | null | undefined;
 
-const writeFileSecure = async (filePath: string, data: Buffer | string): Promise<void> => {
+const writeFileSecure = async (filePath: string, data: string): Promise<void> => {
+  // atomicWriteFile writes a sibling temp file then renames, so the parent dir
+  // must already exist — the state dir is not guaranteed to be present yet.
   await mkdir(dirname(filePath), { recursive: true });
   // 0600: the drift key and cache are per-machine secrets-adjacent state.
-  await writeFile(filePath, data, { mode: 0o600 });
+  // Atomic temp+rename so a crash mid-write never leaves a truncated cache
+  // (the standard for every other JSON state file in the repo).
+  await atomicWriteFile(filePath, data, { mode: 0o600 });
 };
 
 /**

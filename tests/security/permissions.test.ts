@@ -2,9 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { vol } from 'memfs';
 import { join } from 'path';
 import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
-import { isReadable, isWritable } from '../../src/lib/paths.js';
 import {
-  getFilePermissions,
   setFilePermissions,
   getFileInfo,
   copyFileOrDir,
@@ -20,20 +18,6 @@ describe('Permissions Security', () => {
 
   afterEach(() => {
     vol.reset();
-  });
-
-  it('detects readable and writable files correctly', async () => {
-    const filePath = join(TEST_HOME, 'rw.txt');
-    vol.writeFileSync(filePath, 'content');
-
-    expect(await isReadable(filePath)).toBe(true);
-    expect(await isWritable(filePath)).toBe(true);
-  });
-
-  it('reports non-existent files as not readable/writable', async () => {
-    const missing = join(TEST_HOME, 'missing.txt');
-    expect(await isReadable(missing)).toBe(false);
-    expect(await isWritable(missing)).toBe(false);
   });
 
   it('returns structured file metadata for valid files', async () => {
@@ -83,15 +67,33 @@ describe('Permissions Security', () => {
     }
   });
 
-  it('exposes and applies permission helpers without crashing', async () => {
-    const filePath = join(TEST_HOME, 'permissions.txt');
-    vol.writeFileSync(filePath, 'secret');
+  // setFilePermissions is a documented no-op on Windows (Unix modes don't
+  // apply), so the observable-change assertion is only meaningful elsewhere.
+  it.skipIf(process.platform === 'win32')(
+    'exposes and applies permission helpers without crashing',
+    async () => {
+      const filePath = join(TEST_HOME, 'permissions.txt');
+      vol.writeFileSync(filePath, 'secret');
 
-    const before = await getFilePermissions(filePath);
-    expect(before).toMatch(/^[0-7]{3}$/);
+      // Seed a known, non-644 mode so the change made below is actually
+      // observable. If setFilePermissions were a no-op the final assertion would
+      // still see 600 and fail, instead of passing vacuously.
+      await setFilePermissions(filePath, '600');
+      const before = (await getFileInfo(filePath)).permissions;
+      expect(before).toBe('600');
 
-    await expect(setFilePermissions(filePath, '644')).resolves.not.toThrow();
-    const after = await getFilePermissions(filePath);
-    expect(after).toMatch(/^[0-7]{3}$/);
-  });
+      await expect(setFilePermissions(filePath, '644')).resolves.not.toThrow();
+      const after = (await getFileInfo(filePath)).permissions;
+      expect(after).toBe('644');
+    }
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'setFilePermissions is a graceful no-op on Windows',
+    async () => {
+      const filePath = join(TEST_HOME, 'permissions.txt');
+      vol.writeFileSync(filePath, 'secret');
+      await expect(setFilePermissions(filePath, '600')).resolves.not.toThrow();
+    }
+  );
 });

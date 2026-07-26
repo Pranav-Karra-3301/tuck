@@ -136,10 +136,3 @@ export type CustomPattern = z.infer<typeof customPatternSchema>;
 export type SecurityConfig = z.infer<typeof securityConfigSchema>;
 export type SecretEntry = z.infer<typeof secretEntrySchema>;
 export type SecretsStore = z.infer<typeof secretsStoreSchema>;
-
-// Backend type exports
-export type BackendName = z.infer<typeof backendNameSchema>;
-export type OnePasswordConfig = z.infer<typeof onePasswordConfigSchema>;
-export type BitwardenConfig = z.infer<typeof bitwardenConfigSchema>;
-export type PassConfig = z.infer<typeof passConfigSchema>;
-export type BackendsConfig = z.infer<typeof backendsConfigSchema>;

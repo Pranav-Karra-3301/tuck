@@ -7,7 +7,7 @@ import updateNotifier from 'update-notifier';
 import { execSync, spawnSync } from 'child_process';
 import chalk from 'chalk';
 import boxen from 'boxen';
-import { createInterface } from 'readline';
+import { confirm, isCancel } from '@clack/prompts';
 import { APP_NAME, VERSION } from '../constants.js';
 import { isNonInteractive } from './agentMode.js';
 
@@ -56,33 +56,32 @@ const getUpdateCommand = (packageManager: 'npm' | 'pnpm'): string => {
 };
 
 /**
- * Wait for user to press Enter or cancel
- * Returns true if Enter pressed, false if cancelled
+ * Ask the user whether to update now.
+ *
+ * Returns true to update, false to skip. Cancelling (Ctrl+C) also returns
+ * false: the update prompt is optional and must let the current command
+ * continue rather than aborting it.
+ *
+ * Uses @clack/prompts, which owns its own stdin/keypress lifecycle and cleans
+ * up after itself. The previous readline implementation registered a
+ * process-level `SIGINT` handler that was never removed, leaking one listener
+ * per invocation.
+ *
+ * Exported for unit testing of the cancel/confirm semantics and to assert the
+ * SIGINT handler no longer leaks.
  */
-const waitForEnterOrCancel = (): Promise<boolean> => {
-  return new Promise((resolve) => {
-    const rl = createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-
-    // Handle Ctrl+C
-    rl.on('close', () => {
-      resolve(false);
-    });
-
-    // Handle Enter
-    rl.on('line', () => {
-      rl.close();
-      resolve(true);
-    });
-
-    // Handle SIGINT (Ctrl+C)
-    process.on('SIGINT', () => {
-      rl.close();
-      resolve(false);
-    });
+export const promptForUpdate = async (): Promise<boolean> => {
+  const answer = await confirm({
+    message: 'Update now?',
+    initialValue: true,
   });
+
+  // Ctrl+C / cancellation: skip the update and continue running the command.
+  if (isCancel(answer)) {
+    return false;
+  }
+
+  return answer;
 };
 
 /**
@@ -137,10 +136,10 @@ export const shouldSkipUpdateCheck = (): boolean => {
   }
 
   // Skip whenever the CLI is running non-interactively: an explicit
-  // `--non-interactive`, `--json`, or a non-TTY stdin. The update prompt uses a
-  // raw readline (waitForEnterOrCancel) that bypasses the clack interactive gate,
-  // so without this an agent driving tuck in a PTY would block forever. This also
-  // subsumes the previous bare `!process.stdin.isTTY` check.
+  // `--non-interactive`, `--json`, or a non-TTY stdin. The update prompt
+  // (promptForUpdate) is interactive, so without this an agent driving tuck in a
+  // PTY would block forever. This also subsumes the previous bare
+  // `!process.stdin.isTTY` check.
   if (isNonInteractive()) {
     return true;
   }
@@ -179,8 +178,6 @@ export const checkForUpdates = async (): Promise<void> => {
     '',
     chalk.bold(`Update available: ${chalk.red(VERSION)} ${chalk.dim('->')} ${chalk.green(latest)}`),
     '',
-    chalk.dim('Press Enter to update, or Ctrl+C to skip'),
-    '',
   ].join('\n');
 
   console.log(
@@ -194,7 +191,7 @@ export const checkForUpdates = async (): Promise<void> => {
   );
 
   // Wait for user input
-  const shouldUpdate = await waitForEnterOrCancel();
+  const shouldUpdate = await promptForUpdate();
 
   if (shouldUpdate) {
     const success = executeUpdate(packageManager);

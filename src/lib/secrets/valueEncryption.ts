@@ -94,20 +94,11 @@ export const parseValueToken = (token: string): string | null => {
   return match ? match[1] : null;
 };
 
-/** True when the whole string is exactly one value-encryption token. */
-export const isValueToken = (value: string): boolean => parseValueToken(value) !== null;
-
 /** True when the content contains at least one value-encryption token. */
 export const hasEncryptedValues = (content: string): boolean => {
   // Fresh instance so the shared regex's lastIndex is never carried across calls.
   const regex = new RegExp(VALUE_TOKEN_REGEX.source, VALUE_TOKEN_REGEX.flags);
   return regex.test(content);
-};
-
-/** Count the value-encryption tokens in the content. */
-export const countEncryptedValues = (content: string): number => {
-  const matches = content.match(VALUE_TOKEN_REGEX);
-  return matches ? matches.length : 0;
 };
 
 /** Return each token string (e.g. `ENC[tuck:v1:...]`) present in the content. */
@@ -170,20 +161,6 @@ const encryptWithKey = (plaintext: string, derived: DerivedKey): string => {
   return formatValueToken(payload.toString('base64'));
 };
 
-/**
- * Encrypt one value into a self-contained token (its own salt + key derivation).
- * Prefer {@link encryptContentValues} for files — it derives the key once for all
- * values. Exposed for tests and single-value callers.
- */
-export const encryptValue = async (plaintext: string, passphrase: string): Promise<string> => {
-  if (typeof passphrase !== 'string' || passphrase.length === 0) {
-    throw new EncryptionError('Passphrase must be a non-empty string');
-  }
-  const salt = randomBytes(SALT_LENGTH);
-  const key = await deriveValueKey(passphrase, salt);
-  return encryptWithKey(plaintext, { key, salt, iterations: PBKDF2_ITERATIONS });
-};
-
 /** The parsed, still-encrypted components of a value token. */
 interface TokenParts {
   iterations: number;
@@ -243,21 +220,6 @@ const decryptTokenParts = (parts: TokenParts, key: Buffer): string => {
       'Ensure the token was not modified',
     ]);
   }
-};
-
-/**
- * Decrypt a single value token back to its plaintext.
- *
- * Throws {@link DecryptionError} on a malformed token, an out-of-range iteration
- * count, or an authentication failure (wrong passphrase / tampered ciphertext).
- */
-export const decryptValue = async (token: string, passphrase: string): Promise<string> => {
-  if (typeof passphrase !== 'string' || passphrase.length === 0) {
-    throw new DecryptionError('Passphrase must be a non-empty string');
-  }
-  const parts = parseTokenPayload(token);
-  const key = await keyDerivation.derive(passphrase, parts.salt, parts.iterations);
-  return decryptTokenParts(parts, key);
 };
 
 // ============================================================================

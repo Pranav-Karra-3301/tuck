@@ -285,16 +285,6 @@ export class SecretBackendError extends TuckError {
   }
 }
 
-export class SecretNotFoundError extends TuckError {
-  constructor(name: string, backend: string) {
-    super(`Secret "${name}" not found in ${backend}`, 'SECRET_NOT_FOUND', [
-      'Check the mapping in secrets.mappings.json',
-      `Run \`tuck secrets map ${name} --${backend} <path>\` to configure`,
-      'Run `tuck secrets list` to see available secrets',
-    ]);
-  }
-}
-
 export class BackendNotAvailableError extends TuckError {
   constructor(backend: string, reason: string) {
     const installHints: Record<string, string> = {
@@ -388,39 +378,6 @@ export class InvalidManifestError extends TuckError {
   }
 }
 
-export class PathTraversalError extends TuckError {
-  constructor(path: string, reason?: string) {
-    super(`Unsafe path detected: ${path}${reason ? ` - ${reason}` : ''}`, 'PATH_TRAVERSAL_ERROR', [
-      'Paths must be within your home directory',
-      'Path traversal (..) is not allowed',
-      'Use absolute paths starting with ~/ or $HOME/',
-    ]);
-  }
-}
-
-export class SecretsStoreError extends TuckError {
-  constructor(message: string, suggestions?: string[]) {
-    super(
-      `Secrets store error: ${message}`,
-      'SECRETS_STORE_ERROR',
-      suggestions || [
-        'Check file permissions on ~/.tuck/secrets.local.json',
-        'Run `tuck secrets list` to verify the secrets store',
-      ]
-    );
-  }
-}
-
-export class ScanLimitError extends TuckError {
-  constructor(fileCount: number, maxFiles: number) {
-    super(`Too many files to scan (${fileCount} > ${maxFiles})`, 'SCAN_LIMIT_ERROR', [
-      'Scan in smaller batches',
-      'Use --exclude patterns to reduce scan scope',
-      'Add large directories to .tuckignore',
-    ]);
-  }
-}
-
 export class JsonKeyError extends TuckError {
   constructor(message: string, suggestions?: string[]) {
     super(message, 'JSON_KEY_ERROR', suggestions || [
@@ -463,19 +420,6 @@ export class CyclicDependencyError extends TuckError {
 export class BootstrapError extends TuckError {
   constructor(message: string, suggestions?: string[]) {
     super(`Bootstrap failed: ${message}`, 'BOOTSTRAP_ERROR', suggestions);
-  }
-}
-
-export class KeystoreError extends TuckError {
-  constructor(keystore: string, message: string, suggestions?: string[]) {
-    super(
-      `${keystore} error: ${message}`,
-      'KEYSTORE_ERROR',
-      suggestions || [
-        'Check your system keychain/credential manager is accessible',
-        'Try running without encryption or use the fallback keystore',
-      ]
-    );
   }
 }
 

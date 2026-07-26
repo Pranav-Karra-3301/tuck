@@ -12,13 +12,9 @@ import {
   addFileToManifest,
   updateFileInManifest,
   removeFileFromManifest,
-  getTrackedFile,
   getTrackedFileBySource,
   getAllTrackedFiles,
-  getTrackedFilesByCategory,
   isFileTracked,
-  getFileCount,
-  getCategories,
   clearManifestCache,
 } from '../../src/lib/manifest.js';
 import { TEST_TUCK_DIR } from '../setup.js';
@@ -301,25 +297,6 @@ describe('manifest', () => {
   // Query Operations
   // ============================================================================
 
-  describe('getTrackedFile', () => {
-    beforeEach(async () => {
-      const manifest = createMockManifest();
-      manifest.files['zshrc'] = createMockTrackedFile({ source: '~/.zshrc' });
-      vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest));
-    });
-
-    it('should return tracked file by ID', async () => {
-      const file = await getTrackedFile(TEST_TUCK_DIR, 'zshrc');
-      expect(file).not.toBeNull();
-      expect(file?.source).toBe('~/.zshrc');
-    });
-
-    it('should return null for unknown ID', async () => {
-      const file = await getTrackedFile(TEST_TUCK_DIR, 'unknown');
-      expect(file).toBeNull();
-    });
-  });
-
   describe('getTrackedFileBySource', () => {
     beforeEach(async () => {
       const manifest = createMockManifest();
@@ -361,29 +338,6 @@ describe('manifest', () => {
     });
   });
 
-  describe('getTrackedFilesByCategory', () => {
-    beforeEach(async () => {
-      const manifest = createMockManifest();
-      manifest.files['zshrc'] = createMockTrackedFile({ source: '~/.zshrc', category: 'shell' });
-      manifest.files['gitconfig'] = createMockTrackedFile({
-        source: '~/.gitconfig',
-        category: 'git',
-      });
-      manifest.files['bashrc'] = createMockTrackedFile({ source: '~/.bashrc', category: 'shell' });
-      vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest));
-    });
-
-    it('should filter files by category', async () => {
-      const shellFiles = await getTrackedFilesByCategory(TEST_TUCK_DIR, 'shell');
-      expect(Object.keys(shellFiles)).toHaveLength(2);
-    });
-
-    it('should return empty for unknown category', async () => {
-      const files = await getTrackedFilesByCategory(TEST_TUCK_DIR, 'unknown');
-      expect(Object.keys(files)).toHaveLength(0);
-    });
-  });
-
   describe('isFileTracked', () => {
     beforeEach(async () => {
       const manifest = createMockManifest();
@@ -400,50 +354,4 @@ describe('manifest', () => {
     });
   });
 
-  describe('getFileCount', () => {
-    it('should return correct file count', async () => {
-      const manifest = createMockManifest();
-      manifest.files['file1'] = createMockTrackedFile();
-      manifest.files['file2'] = createMockTrackedFile();
-      manifest.files['file3'] = createMockTrackedFile();
-      vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest));
-
-      expect(await getFileCount(TEST_TUCK_DIR)).toBe(3);
-    });
-
-    it('should return 0 for empty manifest', async () => {
-      vol.writeFileSync(
-        join(TEST_TUCK_DIR, '.tuckmanifest.json'),
-        JSON.stringify(createMockManifest())
-      );
-
-      expect(await getFileCount(TEST_TUCK_DIR)).toBe(0);
-    });
-  });
-
-  describe('getCategories', () => {
-    it('should return unique categories', async () => {
-      const manifest = createMockManifest();
-      manifest.files['file1'] = createMockTrackedFile({ category: 'shell' });
-      manifest.files['file2'] = createMockTrackedFile({ category: 'git' });
-      manifest.files['file3'] = createMockTrackedFile({ category: 'shell' });
-      vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest));
-
-      const categories = await getCategories(TEST_TUCK_DIR);
-      expect(categories).toHaveLength(2);
-      expect(categories).toContain('shell');
-      expect(categories).toContain('git');
-    });
-
-    it('should return sorted categories', async () => {
-      const manifest = createMockManifest();
-      manifest.files['file1'] = createMockTrackedFile({ category: 'shell' });
-      manifest.files['file2'] = createMockTrackedFile({ category: 'git' });
-      manifest.files['file3'] = createMockTrackedFile({ category: 'editors' });
-      vol.writeFileSync(join(TEST_TUCK_DIR, '.tuckmanifest.json'), JSON.stringify(manifest));
-
-      const categories = await getCategories(TEST_TUCK_DIR);
-      expect(categories).toEqual(['editors', 'git', 'shell']);
-    });
-  });
 });

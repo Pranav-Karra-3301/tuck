@@ -353,3 +353,78 @@ describe('restore command behavior', () => {
     );
   });
 });
+
+describe('fixSensitiveDirPermissions (SSH/GPG permission floor)', () => {
+  beforeEach(() => {
+    vol.reset();
+    vol.mkdirSync('/test-home', { recursive: true });
+  });
+
+  const modeOf = (p: string): number => vol.statSync(p).mode & 0o777;
+
+  it('chmods a .ssh directory to 700', async () => {
+    vol.mkdirSync('/test-home/.ssh', { recursive: true });
+    vol.chmodSync('/test-home/.ssh', 0o755);
+
+    const { fixSensitiveDirPermissions, SENSITIVE_PERMISSION_DIRS } = await import(
+      '../../src/commands/restore.js'
+    );
+    await fixSensitiveDirPermissions('~/.ssh', SENSITIVE_PERMISSION_DIRS);
+
+    expect(modeOf('/test-home/.ssh')).toBe(0o700);
+  });
+
+  it('chmods a private file inside .ssh/ to 600', async () => {
+    vol.mkdirSync('/test-home/.ssh', { recursive: true });
+    vol.writeFileSync('/test-home/.ssh/id_ed25519', 'PRIVATE KEY');
+    vol.chmodSync('/test-home/.ssh/id_ed25519', 0o644);
+
+    const { fixSensitiveDirPermissions, SENSITIVE_PERMISSION_DIRS } = await import(
+      '../../src/commands/restore.js'
+    );
+    await fixSensitiveDirPermissions('~/.ssh/id_ed25519', SENSITIVE_PERMISSION_DIRS);
+
+    expect(modeOf('/test-home/.ssh/id_ed25519')).toBe(0o600);
+  });
+
+  it('still tightens .gnupg files after the SSH/GPG merge', async () => {
+    vol.mkdirSync('/test-home/.gnupg', { recursive: true });
+    vol.writeFileSync('/test-home/.gnupg/secring.gpg', 'SECRET RING');
+    vol.chmodSync('/test-home/.gnupg/secring.gpg', 0o644);
+
+    const { fixSensitiveDirPermissions, SENSITIVE_PERMISSION_DIRS } = await import(
+      '../../src/commands/restore.js'
+    );
+    await fixSensitiveDirPermissions('~/.gnupg/secring.gpg', SENSITIVE_PERMISSION_DIRS);
+
+    expect(modeOf('/test-home/.gnupg/secring.gpg')).toBe(0o600);
+  });
+
+  it('does NOT chmod a non-sensitive path (guard still holds)', async () => {
+    vol.writeFileSync('/test-home/.zshrc', 'export FOO=1');
+    vol.chmodSync('/test-home/.zshrc', 0o644);
+
+    const { fixSensitiveDirPermissions, SENSITIVE_PERMISSION_DIRS } = await import(
+      '../../src/commands/restore.js'
+    );
+    await fixSensitiveDirPermissions('~/.zshrc', SENSITIVE_PERMISSION_DIRS);
+
+    // Untouched: the mode the test set must survive, proving the sensitive-dir
+    // guard did not fall through to chmod arbitrary paths.
+    expect(modeOf('/test-home/.zshrc')).toBe(0o644);
+  });
+
+  it('does not touch a path whose name merely contains .ssh as a substring but not as a dir', async () => {
+    // ".sshconfig" must not match: the guard keys on ".ssh/" or a ".ssh" suffix,
+    // not any occurrence of the substring.
+    vol.writeFileSync('/test-home/my.sshconfig', 'data');
+    vol.chmodSync('/test-home/my.sshconfig', 0o644);
+
+    const { fixSensitiveDirPermissions, SENSITIVE_PERMISSION_DIRS } = await import(
+      '../../src/commands/restore.js'
+    );
+    await fixSensitiveDirPermissions('~/my.sshconfig', SENSITIVE_PERMISSION_DIRS);
+
+    expect(modeOf('/test-home/my.sshconfig')).toBe(0o644);
+  });
+});

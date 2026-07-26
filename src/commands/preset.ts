@@ -125,13 +125,11 @@ const resolvePreset = async (nameOrPath: string): Promise<{ path: string; preset
   ]);
 };
 
-const renderIfTemplate = async (
+const renderTemplateFile = async (
   src: string,
-  isTemplate: boolean | undefined,
   vars: Record<string, string>
-): Promise<string | Buffer> => {
+): Promise<string> => {
   const buf = await readFile(src);
-  if (!isTemplate) return buf;
   return renderTemplate(buf.toString('utf-8'), vars);
 };
 
@@ -162,6 +160,58 @@ export const decidePresetOverwrite = (
   if (existingCount === 0) return 'proceed';
   if (opts.yes) return 'proceed';
   return opts.nonInteractive ? 'refuse' : 'confirm';
+};
+
+/**
+ * Shared overwrite safety gate for preset apply/translate. Runs the two safety
+ * gates identically: (1) confine all targets to allowed roots, then (2) detect
+ * existing files and refuse (non-interactive), prompt (interactive), or proceed
+ * per {@link decidePresetOverwrite}, taking a pre-apply snapshot of survivors so
+ * `tuck undo` can roll the write back. Returns `'proceed'` to continue writing
+ * or `'abort'` when the user declined. The per-flow wording (refuse/confirm
+ * messages, snapshot label) is the only thing that varies between callers.
+ */
+const gateOverwrite = async (
+  entries: Array<{ target: string }>,
+  opts: { yes?: boolean },
+  messages: {
+    refuseMessage: (existingCount: number) => string;
+    confirmMessage: string;
+    snapshotLabel: string;
+  }
+): Promise<'proceed' | 'abort'> => {
+  // Safety gate 1: refuse to write anywhere outside the allowed roots, BEFORE
+  // any mkdir/write.
+  assertPresetTargetsSafe(entries);
+
+  // Safety gate 2: never silently clobber existing files. Snapshot + consent.
+  const existing: string[] = [];
+  for (const e of entries) {
+    if (await pathExists(e.target)) existing.push(e.target);
+  }
+  const nonInteractive = isJsonMode() || !process.stdout.isTTY;
+  const decision = decidePresetOverwrite(existing.length, { yes: opts.yes, nonInteractive });
+
+  if (decision === 'refuse') {
+    throw new TuckError(messages.refuseMessage(existing.length), 'PRESET_OVERWRITE_REFUSED', [
+      'Pass --yes to overwrite (a snapshot is taken first so you can `tuck undo`).',
+    ]);
+  }
+  if (decision === 'confirm') {
+    logger.warning(`This will overwrite ${existing.length} existing file(s):`);
+    for (const t of existing) logger.dim(`  ${collapsePath(t)}`);
+    const confirmed = await prompts.confirm(messages.confirmMessage, false);
+    if (!confirmed) {
+      logger.info('Aborted — no files changed.');
+      return 'abort';
+    }
+  }
+
+  // Snapshot existing targets so `tuck undo` can roll the apply back.
+  if (existing.length > 0) {
+    await createPreApplySnapshot(existing, messages.snapshotLabel);
+  }
+  return 'proceed';
 };
 
 const listAction = async (opts: { json?: boolean }): Promise<void> => {
@@ -266,41 +316,13 @@ export const applyAction = async (
     return;
   }
 
-  // Safety gate 1: refuse to write anywhere outside $HOME, BEFORE any mkdir/write.
-  assertPresetTargetsSafe(planEntries);
-
-  // Safety gate 2: never silently clobber existing files. Snapshot + consent.
-  const existing: string[] = [];
-  for (const e of planEntries) {
-    if (await pathExists(e.target)) existing.push(e.target);
-  }
-  const nonInteractive = isJsonMode() || !process.stdout.isTTY;
-  const decision = decidePresetOverwrite(existing.length, { yes: opts.yes, nonInteractive });
-
-  if (decision === 'refuse') {
-    throw new TuckError(
-      `Applying "${preset.name}" would overwrite ${existing.length} existing file(s). Re-run with --yes to confirm.`,
-      'PRESET_OVERWRITE_REFUSED',
-      ['Pass --yes to overwrite (a snapshot is taken first so you can `tuck undo`).']
-    );
-  }
-  if (decision === 'confirm') {
-    logger.warning(`This will overwrite ${existing.length} existing file(s):`);
-    for (const t of existing) logger.dim(`  ${collapsePath(t)}`);
-    const confirmed = await prompts.confirm(
-      `Apply preset "${preset.name}" and overwrite these files?`,
-      false
-    );
-    if (!confirmed) {
-      logger.info('Aborted — no files changed.');
-      return;
-    }
-  }
-
-  // Snapshot existing targets so `tuck undo` can roll the apply back.
-  if (existing.length > 0) {
-    await createPreApplySnapshot(existing, `preset:${preset.name}`);
-  }
+  const gate = await gateOverwrite(planEntries, opts, {
+    refuseMessage: (count) =>
+      `Applying "${preset.name}" would overwrite ${count} existing file(s). Re-run with --yes to confirm.`,
+    confirmMessage: `Apply preset "${preset.name}" and overwrite these files?`,
+    snapshotLabel: `preset:${preset.name}`,
+  });
+  if (gate === 'abort') return;
 
   for (const e of planEntries) {
     if (!(await pathExists(e.source))) {
@@ -308,8 +330,8 @@ export const applyAction = async (
     }
     await mkdir(dirname(e.target), { recursive: true });
     if (e.template) {
-      const rendered = await renderIfTemplate(e.source, true, vars);
-      await writeFile(e.target, rendered as string, 'utf-8');
+      const rendered = await renderTemplateFile(e.source, vars);
+      await writeFile(e.target, rendered, 'utf-8');
     } else {
       await copyFileOrDir(e.source, e.target, { overwrite: true });
     }
@@ -485,40 +507,13 @@ export const translateAction = async (
     return;
   }
 
-  // Safety gate 1: refuse to write anywhere outside $HOME before any mkdir/write.
-  assertPresetTargetsSafe(entries);
-
-  // Safety gate 2: never silently clobber. Snapshot + consent.
-  const existing: string[] = [];
-  for (const e of entries) {
-    if (await pathExists(e.target)) existing.push(e.target);
-  }
-  const nonInteractive = isJsonMode() || !process.stdout.isTTY;
-  const decision = decidePresetOverwrite(existing.length, { yes: opts.yes, nonInteractive });
-
-  if (decision === 'refuse') {
-    throw new TuckError(
-      `Translating would overwrite ${existing.length} existing file(s). Re-run with --yes to confirm.`,
-      'PRESET_OVERWRITE_REFUSED',
-      ['Pass --yes to overwrite (a snapshot is taken first so you can `tuck undo`).']
-    );
-  }
-  if (decision === 'confirm') {
-    logger.warning(`This will overwrite ${existing.length} existing file(s):`);
-    for (const t of existing) logger.dim(`  ${collapsePath(t)}`);
-    const confirmed = await prompts.confirm(
-      `Translate ${collapsePath(sourcePath)} into these files?`,
-      false
-    );
-    if (!confirmed) {
-      logger.info('Aborted — no files changed.');
-      return;
-    }
-  }
-
-  if (existing.length > 0) {
-    await createPreApplySnapshot(existing, 'preset:translate');
-  }
+  const gate = await gateOverwrite(entries, opts, {
+    refuseMessage: (count) =>
+      `Translating would overwrite ${count} existing file(s). Re-run with --yes to confirm.`,
+    confirmMessage: `Translate ${collapsePath(sourcePath)} into these files?`,
+    snapshotLabel: 'preset:translate',
+  });
+  if (gate === 'abort') return;
 
   const content = await readFile(sourcePath);
   for (const e of entries) {

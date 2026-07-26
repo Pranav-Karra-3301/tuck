@@ -13,7 +13,7 @@
  * due to vitest bench variable sharing issues.
  */
 
-import { describe, bench, beforeEach } from 'vitest';
+import { describe, bench } from 'vitest';
 import { join } from 'path';
 import { writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import { execSync } from 'child_process';
@@ -22,9 +22,7 @@ import { createTempDir, generateDotfileContent } from './setup.js';
 // Import git functions
 import {
   initRepo,
-  isGitRepo,
   getStatus,
-  stageFiles,
   stageAll,
   getLog,
   getDiff,
@@ -71,20 +69,6 @@ initializeGitRepo(repoLarge, 500);
 
 describe('Git Operation Benchmarks', () => {
   // ============================================================================
-  // Repository Detection
-  // ============================================================================
-
-  describe('isGitRepo', () => {
-    bench('check if directory is git repo (positive)', async () => {
-      await isGitRepo(repoSmall);
-    });
-
-    bench('check if directory is git repo (negative)', async () => {
-      await isGitRepo(tempDir);
-    });
-  });
-
-  // ============================================================================
   // Status Benchmarks
   // ============================================================================
 
@@ -125,27 +109,6 @@ describe('Git Operation Benchmarks', () => {
   // ============================================================================
   // Staging Benchmarks
   // ============================================================================
-
-  describe('stageFiles', () => {
-    beforeEach(() => {
-      // Create a modified file for staging tests
-      writeFileSync(join(repoMedium, 'stage_test.txt'), `modified ${Date.now()}`);
-    });
-
-    bench('stage single file', async () => {
-      await stageFiles(repoMedium, ['stage_test.txt']);
-    });
-
-    bench('stage multiple files', async () => {
-      // Create multiple modified files
-      for (let i = 0; i < 10; i++) {
-        writeFileSync(join(repoMedium, `stage_multi_${i}.txt`), `content ${i}`);
-      }
-
-      const files = Array.from({ length: 10 }, (_, i) => `stage_multi_${i}.txt`);
-      await stageFiles(repoMedium, files);
-    });
-  });
 
   describe('stageAll', () => {
     bench('stage all changes', async () => {
@@ -213,7 +176,7 @@ describe('Git Operation Benchmarks', () => {
     bench('status + stage + diff cycle', async () => {
       writeFileSync(join(repoSmall, 'cycle_test.txt'), `cycle ${Date.now()}`);
       await getStatus(repoSmall);
-      await stageFiles(repoSmall, ['cycle_test.txt']);
+      await stageAll(repoSmall);
       await getDiff(repoSmall, { staged: true });
     });
 

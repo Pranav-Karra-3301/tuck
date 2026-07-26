@@ -263,11 +263,3 @@ export const defaultTemplateContext = (extra: TemplateContext = {}): TemplateCon
     ...extra,
   };
 };
-
-/**
- * Heuristic: does this text look like it needs template rendering at all?
- * Used to short-circuit non-template files in the apply path.
- */
-export const looksLikeTemplate = (text: string): boolean => {
-  return /\{\{[^}]+\}\}|tuck:(if|else|endif)/.test(text);
-};

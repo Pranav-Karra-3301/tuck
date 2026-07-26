@@ -113,6 +113,12 @@ const hasGit = async (): Promise<boolean> => {
   }
 };
 
+// Resolve git availability ONCE at module load (top-level await) so the tests
+// can be marked skipped (visible in the reporter) rather than silently passing
+// with zero assertions when git is missing — a green suite that asserted
+// nothing would hide a total loss of coverage.
+const gitAvailable = await hasGit();
+
 describe('mergeConflicts', () => {
   let workDir: string;
 
@@ -130,12 +136,7 @@ describe('mergeConflicts', () => {
     }
   });
 
-  it('detects conflicts produced by a failed rebase', async () => {
-    if (!(await hasGit())) {
-      // Skip silently when git is unavailable in the test environment.
-      return;
-    }
-
+  it.skipIf(!gitAvailable)('detects conflicts produced by a failed rebase', async () => {
     const { local } = await buildConflictingRepos(workDir);
     const conflicts = await detectConflicts(local);
 
@@ -156,9 +157,7 @@ describe('mergeConflicts', () => {
     expect(conflicts[0].theirsDeleted).toBe(false);
   });
 
-  it('applies an "ours" resolution and continues the rebase', async () => {
-    if (!(await hasGit())) return;
-
+  it.skipIf(!gitAvailable)('applies an "ours" resolution and continues the rebase', async () => {
     const { local } = await buildConflictingRepos(workDir);
     const [conflict] = await detectConflicts(local);
 
@@ -174,9 +173,7 @@ describe('mergeConflicts', () => {
     expect(content).toBe(conflict.ours);
   });
 
-  it('applies a "theirs" resolution and continues the rebase', async () => {
-    if (!(await hasGit())) return;
-
+  it.skipIf(!gitAvailable)('applies a "theirs" resolution and continues the rebase', async () => {
     const { local } = await buildConflictingRepos(workDir);
     const [conflict] = await detectConflicts(local);
 
@@ -190,9 +187,7 @@ describe('mergeConflicts', () => {
     expect(content).toBe(conflict.theirs);
   });
 
-  it('applies an "edited" resolution that merges both sides', async () => {
-    if (!(await hasGit())) return;
-
+  it.skipIf(!gitAvailable)('applies an "edited" resolution that merges both sides', async () => {
     const { local } = await buildConflictingRepos(workDir);
     const [conflict] = await detectConflicts(local);
 
@@ -211,9 +206,7 @@ describe('mergeConflicts', () => {
     expect(content).toBe(merged);
   });
 
-  it('aborts the rebase and restores the pre-pull HEAD', async () => {
-    if (!(await hasGit())) return;
-
+  it.skipIf(!gitAvailable)('aborts the rebase and restores the pre-pull HEAD', async () => {
     const { local } = await buildConflictingRepos(workDir);
     expect((await detectConflicts(local)).length).toBeGreaterThan(0);
 
@@ -227,9 +220,7 @@ describe('mergeConflicts', () => {
     expect(content).toBe('local change\n');
   });
 
-  it('keeps the LOCAL edit when resolving "ours" under a rebase (no side inversion)', async () => {
-    if (!(await hasGit())) return;
-
+  it.skipIf(!gitAvailable)('keeps the LOCAL edit when resolving "ours" under a rebase (no side inversion)', async () => {
     const { local } = await buildConflictingRepos(workDir);
     const [conflict] = await detectConflicts(local);
 
@@ -242,9 +233,7 @@ describe('mergeConflicts', () => {
     expect(content).toBe('local change\n');
   });
 
-  it('resolves a modify/delete conflict by removing the file when the deleted side is kept', async () => {
-    if (!(await hasGit())) return;
-
+  it.skipIf(!gitAvailable)('resolves a modify/delete conflict by removing the file when the deleted side is kept', async () => {
     const upstream = join(workDir, 'md-upstream.git');
     const seed = join(workDir, 'md-seed');
     const local = join(workDir, 'md-local');
@@ -309,9 +298,7 @@ describe('mergeConflicts', () => {
     await expect(fs.access(join(local, 'f.txt'))).rejects.toBeTruthy();
   });
 
-  it('detects and resolves a conflict on a unicode (C-quoted) filename', async () => {
-    if (!(await hasGit())) return;
-
+  it.skipIf(!gitAvailable)('detects and resolves a conflict on a unicode (C-quoted) filename', async () => {
     const fileName = 'résumé.txt';
     const upstream = join(workDir, 'uni-upstream.git');
     const seed = join(workDir, 'uni-seed');
@@ -374,9 +361,7 @@ describe('mergeConflicts', () => {
     expect(content).toBe('local change\n');
   });
 
-  it('returns an empty list when no conflicts exist', async () => {
-    if (!(await hasGit())) return;
-
+  it.skipIf(!gitAvailable)('returns an empty list when no conflicts exist', async () => {
     const clean = join(workDir, 'clean');
     await fs.mkdir(clean, { recursive: true });
     const git = simpleGit(clean);

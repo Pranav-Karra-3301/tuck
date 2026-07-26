@@ -3,7 +3,7 @@
  *
  * This file holds real plaintext secret values and is never committed. These
  * tests fill gaps around: 0600 permissions on save, permission auto-repair on
- * load, corrupt-store hard failure vs empty-store defaults, bulk set/touch, the
+ * load, corrupt-store hard failure vs empty-store defaults, the
  * value-vs-metadata listing split, and the name validation/normalization rules.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -17,12 +17,9 @@ import {
   setSecret,
   getSecret,
   unsetSecret,
-  hasSecret,
   listSecrets,
   getAllSecrets,
   getSecretCount,
-  setSecrets,
-  touchSecrets,
   isValidSecretName,
   normalizeSecretName,
 } from '../../src/lib/secrets/store.js';
@@ -88,7 +85,7 @@ describe('secrets store', () => {
   it('unsetSecret removes an existing secret and reports false for a missing one', async () => {
     await setSecret(TEST_TUCK_DIR, 'A', '1');
     expect(await unsetSecret(TEST_TUCK_DIR, 'A')).toBe(true);
-    expect(await hasSecret(TEST_TUCK_DIR, 'A')).toBe(false);
+    expect(await getSecret(TEST_TUCK_DIR, 'A')).toBeUndefined();
     expect(await unsetSecret(TEST_TUCK_DIR, 'GHOST')).toBe(false);
   });
 
@@ -106,38 +103,6 @@ describe('secrets store', () => {
     const all = await getAllSecrets(TEST_TUCK_DIR);
     expect(all).toEqual({ A: 'secret-a', B: 'secret-b' });
     expect(await getSecretCount(TEST_TUCK_DIR)).toBe(2);
-  });
-
-  it('setSecrets bulk-adds multiple secrets in one write', async () => {
-    await setSecrets(TEST_TUCK_DIR, [
-      { name: 'A', value: '1' },
-      { name: 'B', value: '2', description: 'db' },
-    ]);
-    expect(await getAllSecrets(TEST_TUCK_DIR)).toEqual({ A: '1', B: '2' });
-  });
-
-  it('touchSecrets updates lastUsed only for known names', async () => {
-    await setSecret(TEST_TUCK_DIR, 'A', '1');
-    const before = (await loadSecretsStore(TEST_TUCK_DIR)).secrets.A.lastUsed;
-
-    // Advance the clock so the ISO timestamp is guaranteed to differ.
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(Date.now() + 5000));
-    await touchSecrets(TEST_TUCK_DIR, ['A', 'UNKNOWN']);
-    vi.useRealTimers();
-
-    const after = (await loadSecretsStore(TEST_TUCK_DIR)).secrets.A.lastUsed;
-    expect(after).not.toBe(before);
-    // The unknown name did not create an entry.
-    expect(await hasSecret(TEST_TUCK_DIR, 'UNKNOWN')).toBe(false);
-  });
-
-  it('touchSecrets is a no-op (no write) when no names match', async () => {
-    await setSecret(TEST_TUCK_DIR, 'A', '1');
-    const raw = vol.readFileSync(STORE_FILE, 'utf-8');
-    await touchSecrets(TEST_TUCK_DIR, ['NOPE']);
-    // Byte-for-byte unchanged since nothing matched.
-    expect(vol.readFileSync(STORE_FILE, 'utf-8')).toBe(raw);
   });
 
   it('getSecretsPath joins the tuck dir and store filename', () => {

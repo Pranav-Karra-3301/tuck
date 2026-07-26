@@ -11,13 +11,17 @@ import {
   API_TOKEN_PATTERNS,
   PRIVATE_KEY_PATTERNS,
   GENERIC_PATTERNS,
-  getPatternById,
-  getPatternsBySeverity,
   getPatternsAboveSeverity,
   createCustomPattern,
   shouldSkipFile,
   BINARY_EXTENSIONS,
+  type SecretPattern,
 } from '../../src/lib/secrets/patterns.js';
+
+// Local lookup helper: the tests below exercise individual patterns' regexes by
+// id. Production code no longer needs an id lookup, so this stays in the test.
+const getPatternById = (id: string): SecretPattern | undefined =>
+  ALL_SECRET_PATTERNS.find((p) => p.id === id);
 
 describe('patterns', () => {
   // ============================================================================
@@ -138,6 +142,16 @@ describe('patterns', () => {
       const pattern = getPatternById('stripe-test-secret');
       expect(pattern).toBeDefined();
       expect(pattern!.severity).toBe('medium');
+
+      // The name promises matching behavior — exercise the regex, not just the
+      // severity constant, so a broken sk_test_ pattern fails here.
+      const validKey = `sk_test_${'a'.repeat(24)}`;
+      pattern!.pattern.lastIndex = 0;
+      expect(pattern!.pattern.test(validKey)).toBe(true);
+      // A live-key prefix must NOT be caught by the test-key pattern.
+      pattern!.pattern.lastIndex = 0;
+      expect(pattern!.pattern.test(`sk_live_${'a'.repeat(24)}`)).toBe(false);
+      pattern!.pattern.lastIndex = 0;
     });
   });
 
@@ -170,8 +184,14 @@ b3BlbnNzaC1rZXktdjEAAAAA
 
     it('should have length limits on private key patterns', () => {
       PRIVATE_KEY_PATTERNS.forEach((pattern) => {
-        // All private key patterns should have length limits to prevent ReDoS
-        expect(pattern.pattern.source).toMatch(/\{.*,.*\}|\?/);
+        const source = pattern.pattern.source;
+        // Must carry an explicit, FINITE upper-bounded quantifier {min,max}.
+        // `{n,}` (unbounded) or a bare `?` elsewhere must not satisfy this.
+        expect(source).toMatch(/\{\d+,\d+\}/);
+        // And must NOT contain an unbounded body quantifier that reintroduces
+        // ReDoS: `[\s\S]*`, `[\s\S]+`, `.*`, `.+`.
+        expect(source).not.toMatch(/\[\\s\\S\][*+]/);
+        expect(source).not.toMatch(/\.[*+]/);
       });
     });
   });
@@ -231,27 +251,6 @@ b3BlbnNzaC1rZXktdjEAAAAA
   // ============================================================================
   // Pattern Helper Function Tests
   // ============================================================================
-
-  describe('getPatternById', () => {
-    it('should return pattern by ID', () => {
-      const pattern = getPatternById('aws-access-key');
-      expect(pattern).toBeDefined();
-      expect(pattern!.id).toBe('aws-access-key');
-    });
-
-    it('should return undefined for unknown ID', () => {
-      const pattern = getPatternById('nonexistent');
-      expect(pattern).toBeUndefined();
-    });
-  });
-
-  describe('getPatternsBySeverity', () => {
-    it('should filter patterns by severity', () => {
-      const criticalPatterns = getPatternsBySeverity('critical');
-      expect(criticalPatterns.length).toBeGreaterThan(0);
-      expect(criticalPatterns.every((p) => p.severity === 'critical')).toBe(true);
-    });
-  });
 
   describe('getPatternsAboveSeverity', () => {
     it('should return patterns at or above severity', () => {

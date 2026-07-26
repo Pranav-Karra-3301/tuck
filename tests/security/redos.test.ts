@@ -205,6 +205,8 @@ describe('ReDoS Security', () => {
     });
 
     it('should have length limits on variable content matches', () => {
+      expect.hasAssertions();
+
       for (const pattern of ALL_SECRET_PATTERNS) {
         const source = pattern.pattern.source;
 
@@ -212,12 +214,12 @@ describe('ReDoS Security', () => {
         // Most should have explicit bounds like {1,256}
         const hasUnboundedDot = /\.\+(?!\?)/.test(source) && !/\{[0-9,]+\}/.test(source);
 
-        // Private keys are allowed to be longer, but should still have limits
+        // Private keys use bounded [\s\S]{1,10000} bodies rather than `.+`, so
+        // they are not expected to trip this check either; every other pattern
+        // must carry an explicit length bound so a greedy `.+` cannot enable a
+        // ReDoS or an unbounded scan.
         if (!pattern.id.includes('private-key')) {
-          if (hasUnboundedDot) {
-            // This is a potential issue - log for investigation
-            console.warn(`Pattern ${pattern.id} may have unbounded matching`);
-          }
+          expect(hasUnboundedDot, `Pattern ${pattern.id} has an unbounded .+ matcher`).toBe(false);
         }
       }
     });

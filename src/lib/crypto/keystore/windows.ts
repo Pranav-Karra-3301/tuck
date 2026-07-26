@@ -11,33 +11,16 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { Keystore } from './types.js';
+import { validateKeystoreArg } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
 /**
- * Validate that an argument doesn't contain dangerous characters.
- * Defense-in-depth measure for credential arguments.
+ * Validate a credential argument, additionally rejecting the cmdkey-hostile
+ * delimiter characters `< > | & ^` that this backend must guard against.
  */
 function validateArg(arg: string, name: string): void {
-  if (typeof arg !== 'string') {
-    throw new Error(`${name} must be a string`);
-  }
-  if (arg.length === 0) {
-    throw new Error(`${name} cannot be empty`);
-  }
-  if (arg.length > 256) {
-    throw new Error(`${name} too long (max 256 characters)`);
-  }
-  // Reject null bytes and control characters
-  // eslint-disable-next-line no-control-regex
-  if (/[\x00-\x1F\x7F]/.test(arg)) {
-    throw new Error(`${name} contains invalid control characters`);
-  }
-  // Reject characters that could cause issues with cmdkey
-  // cmdkey uses : as a delimiter, so we need to be careful
-  if (/[<>|&^]/.test(arg)) {
-    throw new Error(`${name} contains invalid characters`);
-  }
+  validateKeystoreArg(arg, name, { rejectShellDelimiters: true });
 }
 
 export class WindowsKeystore implements Keystore {

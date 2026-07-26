@@ -86,50 +86,6 @@ ${c.muted('Docs:')} ${c.brand('https://github.com/Pranav-Karra-3301/tuck')}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Styled Boxes
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const welcomeBox = (message: string, title?: string): void => {
-  console.log(
-    boxen(message, {
-      ...boxStyles.info,
-      title,
-      titleAlignment: 'center',
-    })
-  );
-};
-
-export const successBox = (message: string, title?: string): void => {
-  console.log(
-    boxen(message, {
-      ...boxStyles.success,
-      title: title || 'Success',
-      titleAlignment: 'center',
-    })
-  );
-};
-
-export const errorBox = (message: string, title?: string): void => {
-  console.log(
-    boxen(message, {
-      ...boxStyles.error,
-      title: title || 'Error',
-      titleAlignment: 'center',
-    })
-  );
-};
-
-export const infoBox = (message: string, title?: string): void => {
-  console.log(
-    boxen(message, {
-      ...boxStyles.info,
-      title,
-      titleAlignment: 'center',
-    })
-  );
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Next Steps Box
 // ─────────────────────────────────────────────────────────────────────────────
 

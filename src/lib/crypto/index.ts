@@ -31,16 +31,11 @@ export type { Keystore } from './keystore/index.js';
 // High-level encryption manager
 export {
   getEncryptionStatus,
-  isEncryptionEnabled,
   setupEncryption,
   disableEncryption,
   getStoredPassword,
-  storePassword,
   verifyStoredPassword,
   changePassword,
-  encryptData,
-  decryptData,
-  getPasswordOrNull,
 } from './manager.js';
 
 export type { EncryptionStatus } from './manager.js';

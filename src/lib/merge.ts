@@ -52,11 +52,6 @@ const SHELL_FILE_PATTERNS = [
 ];
 
 /**
- * PowerShell file extensions for special handling
- */
-const POWERSHELL_EXTENSIONS = ['.ps1', '.psm1', '.psd1'];
-
-/**
  * Banner that {@link smartMerge} writes above the re-appended local blocks.
  * Kept as constants so the writer (smartMerge) and the stripper
  * ({@link stripPreservedBanner}) can never drift apart. The title line contains
@@ -130,13 +125,6 @@ export interface ParsedAlias {
   fullLine: string;
 }
 
-export interface ParsedFunction {
-  name: string;
-  content: string;
-  lineStart: number;
-  lineEnd: number;
-}
-
 /**
  * Check if a file is a shell configuration file
  */
@@ -145,14 +133,6 @@ export const isShellFile = (filePath: string): boolean => {
   return SHELL_FILE_PATTERNS.some(
     (pattern) => fileName === pattern || fileName.endsWith(pattern)
   );
-};
-
-/**
- * Check if a file is a PowerShell script
- */
-export const isPowerShellFile = (filePath: string): boolean => {
-  const fileName = basename(filePath).toLowerCase();
-  return POWERSHELL_EXTENSIONS.some((ext) => fileName.endsWith(ext));
 };
 
 /**
@@ -274,26 +254,6 @@ export const findPreservedBlocks = (content: string): MergeBlock[] => {
   }
 
   return blocks;
-};
-
-/**
- * Extract PATH modifications from content
- */
-export const extractPathModifications = (content: string): string[] => {
-  const paths: string[] = [];
-  const lines = content.split('\n');
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('#')) continue;
-
-    // Match PATH exports
-    if (trimmed.includes('PATH') && (trimmed.includes('export') || trimmed.includes('='))) {
-      paths.push(line);
-    }
-  }
-
-  return paths;
 };
 
 /**
@@ -447,18 +407,4 @@ export const generateMergePreview = async (
   }
 
   return lines.join('\n');
-};
-
-/**
- * Check if content has any preserve markers
- */
-export const hasPreserveMarkers = (content: string): boolean => {
-  return PRESERVE_MARKERS.some((marker) => content.includes(marker));
-};
-
-/**
- * Add a preserve marker to content
- */
-export const addPreserveMarker = (content: string, marker = '# tuck:preserve'): string => {
-  return `${marker}\n${content}`;
 };

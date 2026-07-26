@@ -60,7 +60,15 @@ const PRIVATE_KEY_PATTERNS = [
   /^.*_key$/,
 ];
 
-const SENSITIVE_FILE_PATTERNS = [
+/**
+ * Pattern matching for sensitive files.
+ *
+ * Canonical definition shared with fileTracking.ts (imports
+ * {@link isSensitiveFile}) so the sensitive-file policy lives in exactly one
+ * place and cannot drift between the track pipeline and the file-tracking
+ * executor.
+ */
+export const SENSITIVE_FILE_PATTERNS = [
   /^\.netrc$/,
   /^\.aws\/credentials$/,
   /^\.docker\/config\.json$/,
@@ -75,6 +83,14 @@ const SENSITIVE_FILE_PATTERNS = [
   /\.env$/,
   /\.env\./,
 ];
+
+/**
+ * Check if a path contains potentially sensitive data.
+ */
+export const isSensitiveFile = (collapsedPath: string): boolean => {
+  const pathToTest = collapsedPath.startsWith('~/') ? collapsedPath.slice(2) : collapsedPath;
+  return SENSITIVE_FILE_PATTERNS.some((pattern) => pattern.test(pathToTest));
+};
 
 export interface TrackPathCandidate {
   path: string;
@@ -160,11 +176,6 @@ const isPrivateKey = (collapsedPath: string): boolean => {
   }
 
   return name.endsWith('.pem') || name.endsWith('.key');
-};
-
-const isSensitiveFile = (collapsedPath: string): boolean => {
-  const pathToTest = collapsedPath.startsWith('~/') ? collapsedPath.slice(2) : collapsedPath;
-  return SENSITIVE_FILE_PATTERNS.some((pattern) => pattern.test(pathToTest));
 };
 
 const displaySecretWarning = (summary: ScanSummary): void => {

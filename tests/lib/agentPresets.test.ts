@@ -29,12 +29,28 @@ describe('agent preset registry', () => {
     );
   });
 
-  it('every preset validates against the schema (non-empty fields)', () => {
-    for (const p of listAgentPresets()) {
-      expect(p.id).toBeTruthy();
-      expect(p.label).toBeTruthy();
-      expect(p.allow.length).toBeGreaterThan(0);
-      expect(p.configDirs.length).toBeGreaterThan(0);
+  it('enforces domain invariants the min(1) schema does not (unique ids, home-relative POSIX paths)', () => {
+    // The import-time presetSchema.parse already guarantees non-empty fields, so
+    // re-asserting toBeTruthy/length>0 proves nothing. Instead pin the invariants
+    // the schema CANNOT express: cross-preset id uniqueness (getAgentPreset and
+    // agentPresetIds depend on it) and home-relative, forward-slash paths (so
+    // expandPath resolves them identically on every platform).
+    const presets = listAgentPresets();
+    expect(presets.length).toBeGreaterThan(0);
+
+    const ids = presets.map((p) => p.id);
+    expect(new Set(ids).size).toBe(ids.length);
+
+    for (const p of presets) {
+      for (const entry of p.allow) {
+        expect(entry.path.startsWith('~/')).toBe(true);
+        // No backslashes — platform-specific dirs must be emitted as POSIX paths.
+        expect(entry.path).not.toMatch(/\\/);
+      }
+      for (const ex of p.exclude) {
+        expect(ex.startsWith('~/')).toBe(true);
+        expect(ex).not.toMatch(/\\/);
+      }
     }
   });
 

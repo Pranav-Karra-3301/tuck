@@ -200,6 +200,41 @@ describe('fileTracking symlink strategy', () => {
     logSpy.mockRestore();
   });
 
+  it('rejects a second destination that differs only in case (case-insensitive fs clobber guard)', async () => {
+    await initTestTuck();
+    // memfs is case-sensitive so both live files exist, but on macOS/Windows
+    // `.../config` and `.../Config` resolve to ONE physical repo file — tracking
+    // both would silently clobber. The guard must reject the second regardless
+    // of the host filesystem's case sensitivity.
+    createTestDotfile('.config/app/config', 'first = 1');
+    createTestDotfile('.config/app/Config', 'second = 2');
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const result = await trackFilesWithProgress(
+      [
+        { path: '~/.config/app/config', category: 'misc' },
+        { path: '~/.config/app/Config', category: 'misc' },
+      ],
+      TEST_TUCK_DIR,
+      { strategy: 'copy', showCategory: false, delayBetween: 0 }
+    );
+
+    // First tracks; second is rejected as a collision (not silently overwriting).
+    expect(result.succeeded).toBe(1);
+    expect(result.failed).toBe(1);
+    expect(result.errors[0].error.message).toMatch(/collision detected/i);
+    expect(result.errors[0].error.message).toContain('~/.config/app/config');
+
+    // Only the first source made it into the manifest.
+    const first = await getTrackedFileBySource(TEST_TUCK_DIR, '~/.config/app/config');
+    const second = await getTrackedFileBySource(TEST_TUCK_DIR, '~/.config/app/Config');
+    expect(first).not.toBeNull();
+    expect(second).toBeNull();
+
+    logSpy.mockRestore();
+  });
+
   it('rejects --key combined with --template up front, leaving no orphan repo file', async () => {
     await initTestTuck();
     createTestDotfile('.claude.json', '{"mcpServers":{"git":{"command":"g"}}}');

@@ -81,17 +81,27 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyf8bqMxLwOdGrF4Z...
       expect(redacted).toContain('REDACTED');
     });
 
-    it('should not leak information through redaction length', () => {
-      // Redaction should not reveal secret length too precisely
-      const short = 'short123';
-      const long = 'a'.repeat(500);
+    it('should not leak exact secret length through redaction', () => {
+      // The security property: redaction must not encode the precise length of
+      // the secret. Two secrets of very different exact lengths that fall in the
+      // same size bucket must redact to the IDENTICAL string; if redaction ever
+      // started embedding the real length (e.g. `[REDACTED len=500]`) these
+      // would diverge and the test would fail.
+      const long100 = 'a'.repeat(100);
+      const long500 = 'a'.repeat(500);
+      expect(redactSecret(long100)).toBe(redactSecret(long500));
 
-      const redactedShort = redactSecret(short);
-      const redactedLong = redactSecret(long);
-
-      // Both should use generic indicators
-      expect(redactedShort.length).toBeLessThan(50);
-      expect(redactedLong.length).toBeLessThan(50);
+      // Every redaction is drawn from a small fixed set of bucket labels, never
+      // a mask that scales with the secret.
+      const buckets = new Set([
+        '[EMPTY]',
+        '[REDACTED]',
+        '[REDACTED SECRET]',
+        '[REDACTED LONG SECRET]',
+        '[REDACTED MULTILINE SECRET]',
+      ]);
+      expect(buckets.has(redactSecret('short123'))).toBe(true);
+      expect(buckets.has(redactSecret(long500))).toBe(true);
     });
   });
 
@@ -183,20 +193,24 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyf8bqMxLwOdGrF4Z...
   // ============================================================================
 
   describe('Error Message Safety', () => {
-    it('should not include secrets in error messages', async () => {
+    it('should keep raw secrets out of scanFile user-facing fields', async () => {
+      // scanFile never throws (it captures failures into a FileScanResult), so
+      // the security-relevant surface is the result's user-facing fields, not an
+      // exception message. Assert the raw secret never appears in redactedValue
+      // or context — the fields that get logged / shown to the user.
       const filePath = join(TEST_HOME, 'secret-file.txt');
       vol.writeFileSync(filePath, 'api_key="secret_value_here"');
 
-      try {
-        const result = await scanFile(filePath);
+      const result = await scanFile(filePath);
 
-        // Even in results, actual values should be redacted in user-facing fields
-        for (const match of result.matches) {
-          expect(match.redactedValue).not.toBe(match.value);
-        }
-      } catch (error) {
-        // Any error message should not contain the secret
-        expect(String(error)).not.toContain('secret_value_here');
+      // The secret must actually be detected, otherwise the invariant below is
+      // vacuous.
+      expect(result.matches.length).toBeGreaterThan(0);
+
+      for (const match of result.matches) {
+        expect(match.redactedValue).not.toBe(match.value);
+        expect(match.redactedValue).not.toContain('secret_value_here');
+        expect(match.context).not.toContain('secret_value_here');
       }
     });
   });
@@ -282,7 +296,11 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyf8bqMxLwOdGrF4Z...
       // Note: Using fake patterns that don't trigger GitHub secret scanning but still test redaction
       { name: 'Password in URL', value: 'https://admin:secretpassword123@example.com/api' },
       { name: 'Password Assignment', value: 'password="my_super_secret_password_12345"' },
-      { name: 'Private Key Header', value: '-----BEGIN RSA PRIVATE KEY-----\nMIIE...' },
+      {
+        name: 'Private Key Header',
+        value:
+          '-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyf8bqMxLwOdGrF4Z\n-----END RSA PRIVATE KEY-----',
+      },
     ];
 
     secretPatterns.forEach(({ name, value }) => {
@@ -290,11 +308,14 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyf8bqMxLwOdGrF4Z...
         const content = `SECRET=${value}`;
         const matches = scanContent(content);
 
-        if (matches.length > 0) {
-          for (const match of matches) {
-            expect(match.redactedValue).toContain('REDACTED');
-            expect(match.context).not.toContain(value.slice(0, 20));
-          }
+        // The pattern must be detected; otherwise a regression that stops
+        // matching this secret would make the redaction assertions vacuous and
+        // the test would pass green.
+        expect(matches.length).toBeGreaterThan(0);
+
+        for (const match of matches) {
+          expect(match.redactedValue).toContain('REDACTED');
+          expect(match.context).not.toContain(value.slice(0, 20));
         }
       });
     });

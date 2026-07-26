@@ -225,39 +225,3 @@ export const hasHook = async (hookType: HookType, tuckDir: string): Promise<bool
   const config = await loadConfig(tuckDir);
   return Boolean(config.hooks[hookType]);
 };
-
-export const getHookCommand = async (
-  hookType: HookType,
-  tuckDir: string
-): Promise<string | undefined> => {
-  const config = await loadConfig(tuckDir);
-  return config.hooks[hookType];
-};
-
-/**
- * Check if any hooks are configured
- */
-export const hasAnyHooks = async (tuckDir: string): Promise<boolean> => {
-  const config = await loadConfig(tuckDir);
-  return Boolean(
-    config.hooks.preSync ||
-    config.hooks.postSync ||
-    config.hooks.preRestore ||
-    config.hooks.postRestore
-  );
-};
-
-/**
- * Get all configured hooks for display
- */
-export const getAllHooks = async (
-  tuckDir: string
-): Promise<Record<HookType, string | undefined>> => {
-  const config = await loadConfig(tuckDir);
-  return {
-    preSync: config.hooks.preSync,
-    postSync: config.hooks.postSync,
-    preRestore: config.hooks.preRestore,
-    postRestore: config.hooks.postRestore,
-  };
-};

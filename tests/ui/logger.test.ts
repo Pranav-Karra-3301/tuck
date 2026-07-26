@@ -27,9 +27,7 @@ describe('logger in JSON mode', () => {
     logger.heading('Applying:');
     logger.file('add', '~/.zshrc');
     logger.dim('hint');
-    logger.step(1, 2, 'step');
     logger.blank();
-    logger.divider();
 
     expect(log).not.toHaveBeenCalled();
   });

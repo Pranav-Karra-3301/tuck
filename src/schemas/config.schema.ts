@@ -106,9 +106,7 @@ export const tuckConfigSchema = z.object({
   remote: remoteConfigSchema,
 });
 
-export type TuckConfigInput = z.input<typeof tuckConfigSchema>;
 export type TuckConfigOutput = z.output<typeof tuckConfigSchema>;
-export type ProviderMode = z.infer<typeof providerModeSchema>;
 export type RemoteConfigOutput = z.output<typeof remoteConfigSchema>;
 
 export const defaultConfig: TuckConfigOutput = {

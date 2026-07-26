@@ -16,7 +16,7 @@
 
 import { Command } from 'commander';
 import { join, relative, resolve, isAbsolute, basename, dirname, posix } from 'path';
-import { readFile, writeFile, mkdir, readdir, stat, rm } from 'fs/promises';
+import { readFile, writeFile, mkdir, rm } from 'fs/promises';
 import { homedir } from 'os';
 import { z } from 'zod';
 import {
@@ -29,7 +29,8 @@ import {
   validatePathWithinRoot,
 } from '../lib/paths.js';
 import { resolveWriteTarget } from '../lib/writeContext.js';
-import { loadManifest, getAllTrackedFiles } from '../lib/manifest.js';
+import { findGitRoot, slugifyPath, repoScopeKey } from '../lib/repoScope.js';
+import { loadManifest } from '../lib/manifest.js';
 import {
   copyFileOrDir,
   getFileChecksum,
@@ -41,7 +42,7 @@ import {
   emitJsonOk,
 } from '../lib/jsonOutput.js';
 import { logger, prompts, colors as c } from '../ui/index.js';
-import simpleGit from 'simple-git';
+import { cloneRepo } from '../lib/git.js';
 
 interface ContextEntry {
   /** Absolute or `~/`-prefixed home-scoped source */
@@ -158,19 +159,6 @@ export const classifyAgentPath = (p: string): string => {
   return 'other';
 };
 
-/** Walk up from `start` looking for a `.git` directory; return repo root or null. */
-const findGitRoot = async (start: string): Promise<string | null> => {
-  let dir = resolve(start);
-  // Bound the walk so we never escape the user's home tree in pathological cases.
-  for (let i = 0; i < 64; i++) {
-    if (await pathExists(join(dir, '.git'))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-  return null;
-};
-
 /**
  * Decide whether a path should be tracked as home-scoped or repo-scoped.
  * Home: anywhere under $HOME that is NOT inside a git working tree.
@@ -194,19 +182,6 @@ const ensureInitialized = async (tuckDir: string): Promise<void> => {
   } catch {
     throw new NotInitializedError();
   }
-};
-
-const slugifyPath = (p: string): string => {
-  return p
-    .replace(/^~?\/+/, '')
-    .replace(/[^a-zA-Z0-9._-]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .toLowerCase();
-};
-
-const repoScopeKey = (repoRoot: string): string => {
-  return slugifyPath(basename(repoRoot)) + '__' + slugifyPath(repoRoot);
 };
 
 const destinationFor = (entry: { scope: 'home' | 'repo'; repoRoot?: string; source: string }): string => {
@@ -520,8 +495,10 @@ const applyAction = async (
     const tmp = join(getTuckDir(), '.tmp-context', `${user}-${repoName}`);
     try {
       await mkdir(dirname(tmp), { recursive: true });
-      const git = simpleGit();
-      await git.clone(`https://github.com/${user}/${repoName}.git`, tmp, ['--depth', '1']);
+      // Route through the hardened cloneRepo helper so this inherits the clone
+      // timeout, output cap, non-interactive git env, and credential scrubbing
+      // instead of a bare simpleGit().clone() that has none of those guards.
+      await cloneRepo(`https://github.com/${user}/${repoName}.git`, tmp, { depth: 1 });
       await importContextFromDir(tmp);
     } finally {
       // Always remove the temp clone, even on failure.
@@ -588,11 +565,6 @@ export const getContextEntries = async (
   const manifest = await loadContextManifest(tuckDir);
   return manifest.entries;
 };
-
-// Suppress unused warnings until these are wired into restore/apply.
-void getAllTrackedFiles;
-void stat;
-void readdir;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Command wiring

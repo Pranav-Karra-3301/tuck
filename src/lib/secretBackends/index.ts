@@ -47,7 +47,7 @@ export { SecretResolver, createResolver } from './resolver.js';
 // Cache
 // ============================================================================
 
-export { SecretCache, getGlobalCache, clearGlobalCache, resetGlobalCache } from './cache.js';
+export { SecretCache, getGlobalCache, resetGlobalCache } from './cache.js';
 
 // ============================================================================
 // Mappings
@@ -59,10 +59,6 @@ export {
   saveMappings,
   getMapping,
   setMapping,
-  removeMapping,
   listMappings,
   getBackendPath,
-  hasBackendMapping,
-  getSecretsForBackend,
-  importMappings,
 } from './mappings.js';

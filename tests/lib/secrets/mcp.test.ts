@@ -288,6 +288,26 @@ describe('extractMcpSecrets', () => {
     expect(result.rewritten).toContain('caf\\u00e9secretvalue123456');
   });
 
+  it('rewrites secret values containing regex metacharacters as literal text', () => {
+    // The value is loaded with regex-special chars (. * + ? [ ] \ | ). A literal
+    // global replace (replaceAll) must match it verbatim; interpreting it as a
+    // pattern would fail to remove the plaintext secret. (Metacharacters that
+    // would trip reference detection like `$(`/`${`/`<` are deliberately avoided.)
+    const secret = 'sk_a.b*c+d?e[f]g\\h|i_realvalue123456';
+    const config = JSON.stringify({
+      mcpServers: { s: { env: { API_KEY: secret } } },
+    });
+    const result = extractMcpSecrets(config);
+    expect(result.changed).toBe(true);
+    expect(result.extractions).toHaveLength(1);
+    expect(result.extractions[0].value).toBe(secret);
+    // Plaintext secret is fully gone; placeholder took its place.
+    expect(result.rewritten).not.toContain(secret);
+    expect(result.rewritten).toContain('{{API_KEY}}');
+    // Result is still valid JSON that resolves the value to the placeholder.
+    expect(JSON.parse(result.rewritten).mcpServers.s.env.API_KEY).toBe('{{API_KEY}}');
+  });
+
   it('reports an empty skipped list when every value is rewritten', () => {
     const config = JSON.stringify({
       mcpServers: { s: { env: { API_KEY: 'realapikeyvalue123456' } } },

@@ -84,16 +84,6 @@ export const parseRequirement = (spec: string): Requirement => {
   return { raw: `${manager}:${name}`, manager, name };
 };
 
-/** Non-throwing predicate: true when {@link parseRequirement} would succeed. */
-export const isValidRequirement = (spec: string): boolean => {
-  try {
-    parseRequirement(spec);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
 /**
  * Parse a comma/whitespace-separated list of requirement specs (as accepted on
  * the `tuck add --requires` flag). Empty segments are ignored; each remaining

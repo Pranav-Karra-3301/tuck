@@ -46,11 +46,6 @@ export class CustomProvider implements GitProvider {
     return provider;
   }
 
-  /** Set the remote URL */
-  setRemoteUrl(url: string): void {
-    this.remoteUrl = url;
-  }
-
   /** Get the configured remote URL */
   getRemoteUrl(): string | undefined {
     return this.remoteUrl;

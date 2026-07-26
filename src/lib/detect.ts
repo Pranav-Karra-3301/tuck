@@ -1,7 +1,7 @@
-import { join, basename, isAbsolute } from 'path';
-import { readdir, stat } from 'fs/promises';
+import { basename, isAbsolute } from 'path';
+import { stat } from 'fs/promises';
 import type { Stats } from 'fs';
-import { pathExists, expandPath, collapsePath } from './paths.js';
+import { expandPath, collapsePath } from './paths.js';
 import { IS_WINDOWS, IS_MACOS, IS_LINUX } from './platform.js';
 import { loadPatterns, type DotfilePattern } from './patternsRegistry.js';
 
@@ -938,83 +938,4 @@ export const detectDotfiles = async (options?: {
   }
 
   return detected;
-};
-
-/**
- * Group detected files by category
- */
-export const groupByCategory = (
-  files: DetectedFile[]
-): Record<string, DetectedFile[]> => {
-  const grouped: Record<string, DetectedFile[]> = {};
-
-  for (const file of files) {
-    if (!grouped[file.category]) {
-      grouped[file.category] = [];
-    }
-    grouped[file.category].push(file);
-  }
-
-  return grouped;
-};
-
-/**
- * Get SSH files that are safe to backup (no private keys)
- */
-export const getSafeSSHFiles = async (): Promise<string[]> => {
-  const sshDir = expandPath('~/.ssh');
-  const safeFiles: string[] = [];
-
-  if (!(await pathExists(sshDir))) {
-    return safeFiles;
-  }
-
-  try {
-    const entries = await readdir(sshDir);
-
-    for (const entry of entries) {
-      // Skip private keys and other sensitive files
-      if (
-        entry.endsWith('.pub') ||
-        entry === 'config' ||
-        entry === 'known_hosts' ||
-        entry === 'authorized_keys' ||
-        entry === 'rc' ||
-        entry === 'environment'
-      ) {
-        safeFiles.push(join('~/.ssh', entry));
-      }
-    }
-  } catch {
-    // Ignore errors
-  }
-
-  return safeFiles;
-};
-
-/**
- * Format file size for display
- */
-export const formatSize = (bytes: number | undefined): string => {
-  if (bytes === undefined) return '';
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
-};
-
-/**
- * Get count of files in each category
- */
-export const getCategoryCounts = (
-  files: DetectedFile[]
-): Record<string, number> => {
-  const counts: Record<string, number> = {};
-
-  for (const file of files) {
-    counts[file.category] = (counts[file.category] || 0) + 1;
-  }
-
-  return counts;
 };

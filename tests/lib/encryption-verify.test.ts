@@ -31,14 +31,28 @@ describe('encryption verification storage', () => {
   });
 
   it('stores verification data off-repo (state dir), never under ~/.tuck', async () => {
+    // Seed a REAL tracked config so the "hash must not land in it" assertion
+    // actually runs (previously the `if (existsSync)` guard was false and the
+    // safety check was skipped entirely).
+    const cfg = '/test-home/.tuck/.tuckrc.json';
+    const originalConfig =
+      JSON.stringify({ version: '1.0.0', encryption: { backupsEnabled: false } }, null, 2) + '\n';
+    vol.writeFileSync(cfg, originalConfig);
+
     await writeEncryptionVerification('pw');
+
     const verifyPath = getEncryptionVerifyPath();
     expect(vol.existsSync(verifyPath)).toBe(true);
     expect(verifyPath).not.toContain('/.tuck/');
-    // and the tracked config must not carry the hash
-    const cfg = '/test-home/.tuck/.tuckrc.json';
-    if (vol.existsSync(cfg)) {
-      expect(vol.readFileSync(cfg, 'utf-8').toString()).not.toContain('_verificationHash');
-    }
+    // The verification salt+hash must be written ONLY off-repo...
+    expect(vol.readFileSync(verifyPath, 'utf-8').toString()).toContain('hash');
+
+    // ...and the tracked, committed config must be left untouched — no hash,
+    // no salt, byte-for-byte identical to what we seeded.
+    expect(vol.existsSync(cfg)).toBe(true);
+    const afterConfig = vol.readFileSync(cfg, 'utf-8').toString();
+    expect(afterConfig).not.toContain('_verificationHash');
+    expect(afterConfig).not.toContain('_verificationSalt');
+    expect(afterConfig).toBe(originalConfig);
   });
 });

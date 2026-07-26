@@ -3,7 +3,14 @@
  * Uses Node.js built-in crypto module - no external dependencies
  */
 
-import { randomBytes, createCipheriv, createDecipheriv, scryptSync, createHash } from 'crypto';
+import {
+  randomBytes,
+  createCipheriv,
+  createDecipheriv,
+  scryptSync,
+  createHash,
+  timingSafeEqual,
+} from 'crypto';
 import { readFile, writeFile } from 'fs/promises';
 
 // Constants
@@ -57,13 +64,15 @@ export const generateVerificationHash = (password: string, salt: Buffer): string
  */
 export const verifyPassword = (password: string, salt: Buffer, expectedHash: string): boolean => {
   const hash = generateVerificationHash(password, salt);
-  // Constant-time comparison to prevent timing attacks
-  if (hash.length !== expectedHash.length) return false;
-  let result = 0;
-  for (let i = 0; i < hash.length; i++) {
-    result |= hash.charCodeAt(i) ^ expectedHash.charCodeAt(i);
-  }
-  return result === 0;
+  // Constant-time comparison to prevent timing attacks. Compare the raw digest
+  // bytes with the builtin. Any length mismatch (including a malformed/non-hex
+  // stored hash, which Buffer.from would decode to a shorter buffer) means the
+  // password can't match, so bail before timingSafeEqual (it throws on
+  // unequal-length buffers).
+  const hashBytes = Buffer.from(hash, 'hex');
+  const expectedBytes = Buffer.from(expectedHash, 'hex');
+  if (hashBytes.length !== expectedBytes.length) return false;
+  return timingSafeEqual(hashBytes, expectedBytes);
 };
 
 /**

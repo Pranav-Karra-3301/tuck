@@ -59,21 +59,6 @@ export const loadTuckignore = async (tuckDir: string): Promise<Set<string>> => {
 };
 
 /**
- * Save paths to .tuckignore file
- * Overwrites the entire file
- */
-export const saveTuckignore = async (tuckDir: string, paths: string[]): Promise<void> => {
-  const ignorePath = getTuckignorePath(tuckDir);
-  
-  // Sort paths for consistent output
-  const sortedPaths = [...paths].sort();
-  
-  const content = TUCKIGNORE_HEADER + '\n' + sortedPaths.join('\n') + '\n';
-  
-  await writeFile(ignorePath, content, 'utf-8');
-};
-
-/**
  * Add a path to .tuckignore file
  * Appends to the file if it exists, creates it if not
  */
@@ -133,33 +118,4 @@ export const isIgnored = async (tuckDir: string, path: string): Promise<boolean>
   return isIgnoredInSet(ignoredPaths, path);
 };
 
-/**
- * Remove a path from .tuckignore
- */
-export const removeFromTuckignore = async (tuckDir: string, path: string): Promise<void> => {
-  const ignorePath = getTuckignorePath(tuckDir);
-  
-  if (!(await pathExists(ignorePath))) {
-    return; // Nothing to remove
-  }
-
-  // Normalize path
-  const expanded = expandPath(path);
-  const collapsed = collapsePath(expanded);
-
-  // Load all paths
-  const ignoredPaths = await loadTuckignore(tuckDir);
-  ignoredPaths.delete(collapsed);
-
-  // Save back
-  await saveTuckignore(tuckDir, Array.from(ignoredPaths));
-};
-
-/**
- * Get all ignored paths
- */
-export const getIgnoredPaths = async (tuckDir: string): Promise<string[]> => {
-  const ignoredPaths = await loadTuckignore(tuckDir);
-  return Array.from(ignoredPaths).sort();
-};
 

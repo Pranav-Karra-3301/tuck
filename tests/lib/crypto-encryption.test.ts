@@ -111,6 +111,24 @@ describe('crypto/encryption (real node crypto)', () => {
       const salt = generateSalt();
       expect(verifyPassword('s3cret', salt, 'deadbeef')).toBe(false);
     });
+
+    it('verifyPassword returns false (never throws) for a non-hex hash of full string length', () => {
+      // 64 chars like a real sha256 hex digest, but not valid hex. The hex
+      // decode yields a short/empty buffer, so the length guard must reject
+      // before timingSafeEqual (which throws on unequal-length buffers).
+      const salt = generateSalt();
+      expect(() => verifyPassword('s3cret', salt, 'z'.repeat(64))).not.toThrow();
+      expect(verifyPassword('s3cret', salt, 'z'.repeat(64))).toBe(false);
+    });
+
+    it('verifyPassword still rejects a hash off by a single byte (constant-time compare stays strict)', () => {
+      const salt = generateSalt();
+      const hash = generateVerificationHash('s3cret', salt);
+      // Flip the last hex nibble → a valid-length, valid-hex, but wrong digest.
+      const lastChar = hash[hash.length - 1];
+      const flipped = hash.slice(0, -1) + (lastChar === '0' ? '1' : '0');
+      expect(verifyPassword('s3cret', salt, flipped)).toBe(false);
+    });
   });
 });
 

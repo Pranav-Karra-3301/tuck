@@ -32,50 +32,6 @@ export interface RemoteConfig {
   repoName?: string;
 }
 
-export interface TuckConfig {
-  repository: {
-    path: string;
-    defaultBranch: string;
-    autoCommit: boolean;
-    autoPush: boolean;
-  };
-  files: {
-    strategy: FileStrategy;
-    backupOnRestore: boolean;
-    backupDir: string;
-  };
-  categories: Record<
-    string,
-    {
-      patterns: string[];
-      icon?: string;
-    }
-  >;
-  ignore: string[];
-  hooks: {
-    preSync?: string;
-    postSync?: string;
-    preRestore?: string;
-    postRestore?: string;
-  };
-  templates: {
-    enabled: boolean;
-    variables: Record<string, string>;
-  };
-  encryption: {
-    enabled: boolean;
-    gpgKey?: string;
-    files: string[];
-  };
-  ui: {
-    colors: boolean;
-    emoji: boolean;
-    verbose: boolean;
-  };
-  /** Remote/provider configuration */
-  remote?: RemoteConfig;
-}
-
 export interface TrackedFile {
   source: string;
   destination: string;

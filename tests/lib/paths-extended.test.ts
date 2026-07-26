@@ -4,31 +4,23 @@
  * Tests for path safety validation and utility functions.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { vol } from 'memfs';
 import { join } from 'path';
 import {
-  expandPath,
-  collapsePath,
   getTuckDir,
   getManifestPath,
   getConfigPath,
   getFilesDir,
   getCategoryDir,
-  getDestinationPath,
   getDestinationPathFromSource,
   getHomeRelativeSourcePath,
-  getRelativeDestination,
   getRelativeDestinationFromSource,
   sanitizeFilename,
   detectCategory,
   pathExists,
   isDirectory,
   isFile,
-  isSymlink,
-  isReadable,
-  isWritable,
-  getRelativePath,
   isPathWithinHome,
   validateSafeSourcePath,
   validateSafeDestinationPath,
@@ -131,62 +123,6 @@ describe('paths-extended', () => {
     });
   });
 
-  describe('isSymlink', () => {
-    it('should return true for symlinks', async () => {
-      const targetPath = join(TEST_HOME, 'target.txt');
-      const linkPath = join(TEST_HOME, 'link.txt');
-      vol.writeFileSync(targetPath, 'content');
-      vol.symlinkSync(targetPath, linkPath);
-
-      const result = await isSymlink(linkPath);
-
-      expect(result).toBe(true);
-    });
-
-    it('should return false for regular files', async () => {
-      const filePath = join(TEST_HOME, 'file.txt');
-      vol.writeFileSync(filePath, 'content');
-
-      const result = await isSymlink(filePath);
-
-      expect(result).toBe(false);
-    });
-  });
-
-  describe('isReadable', () => {
-    it('should return true for readable file', async () => {
-      const filePath = join(TEST_HOME, 'readable.txt');
-      vol.writeFileSync(filePath, 'content');
-
-      const result = await isReadable(filePath);
-
-      expect(result).toBe(true);
-    });
-
-    it('should return false for non-existent file', async () => {
-      const result = await isReadable(join(TEST_HOME, 'nonexistent'));
-
-      expect(result).toBe(false);
-    });
-  });
-
-  describe('isWritable', () => {
-    it('should return true for writable file', async () => {
-      const filePath = join(TEST_HOME, 'writable.txt');
-      vol.writeFileSync(filePath, 'content');
-
-      const result = await isWritable(filePath);
-
-      expect(result).toBe(true);
-    });
-
-    it('should return false for non-existent file', async () => {
-      const result = await isWritable(join(TEST_HOME, 'nonexistent'));
-
-      expect(result).toBe(false);
-    });
-  });
-
   // ============================================================================
   // Path Helper Functions
   // ============================================================================
@@ -238,26 +174,6 @@ describe('paths-extended', () => {
     });
   });
 
-  describe('getDestinationPath', () => {
-    it('should return full destination path', () => {
-      const destPath = getDestinationPath(TEST_TUCK_DIR, 'shell', 'zshrc');
-      expect(destPath).toBe(join(TEST_TUCK_DIR, 'files', 'shell', 'zshrc'));
-    });
-  });
-
-  describe('getRelativeDestination', () => {
-    it('should return relative path within files directory', () => {
-      const relPath = getRelativeDestination('git', 'gitconfig');
-      expect(relPath.replace(/\\/g, '/')).toBe('files/git/gitconfig');
-    });
-
-    it('should always use POSIX separators for manifest paths', () => {
-      const relPath = getRelativeDestination('shell', 'nested\\zshrc');
-      expect(relPath).toBe('files/shell/nested/zshrc');
-      expect(relPath.includes('\\')).toBe(false);
-    });
-  });
-
   describe('getHomeRelativeSourcePath', () => {
     it('should return source path relative to home', () => {
       expect(getHomeRelativeSourcePath('~/.config/nvim/init.vim')).toBe('.config/nvim/init.vim');
@@ -302,18 +218,6 @@ describe('paths-extended', () => {
         'zprofile'
       );
       expect(destination.replace(/\\/g, '/')).toBe(`${TEST_TUCK_DIR}/files/shell/zprofile`);
-    });
-  });
-
-  describe('getRelativePath', () => {
-    it('should return relative path from one file to another', () => {
-      const from = join(TEST_HOME, 'dir1', 'file1.txt');
-      const to = join(TEST_HOME, 'dir2', 'file2.txt');
-
-      const relPath = getRelativePath(from, to);
-
-      expect(relPath).toContain('dir2');
-      expect(relPath).toContain('file2.txt');
     });
   });
 

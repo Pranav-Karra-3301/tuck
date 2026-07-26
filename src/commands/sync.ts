@@ -1,7 +1,6 @@
 import { Command } from 'commander';
 import { join, basename, relative, isAbsolute } from 'path';
 import { realpath, readFile, writeFile } from 'fs/promises';
-import { createHash } from 'node:crypto';
 import { prompts, logger, withSpinner, colors as c } from '../ui/index.js';
 import {
   getTuckDir,
@@ -48,7 +47,7 @@ import { checkLocalMode } from '../lib/remoteChecks.js';
 import { loadConfig } from '../lib/config.js';
 import { assertRemoteAvailable } from '../lib/providers/index.js';
 import { runPreSyncHook, runPostSyncHook, type HookOptions } from '../lib/hooks.js';
-import { extractSubtree, hasSubtree } from '../lib/jsonKey.js';
+import { extractSubtree, hasSubtree, hashSubtree } from '../lib/jsonKey.js';
 import {
   NotInitializedError,
   SecretsDetectedError,
@@ -209,7 +208,7 @@ export const detectChanges = async (tuckDir: string): Promise<TrackedFileChange[
           continue;
         }
         const subtree = extractSubtree(content, file.jsonKey);
-        const subtreeChecksum = createHash('sha256').update(Buffer.from(subtree, 'utf8')).digest('hex');
+        const subtreeChecksum = hashSubtree(subtree);
         if (subtreeChecksum !== file.checksum) {
           changes.push({ path: file.source, status: 'modified', source: file.source, destination: file.destination, id });
         }
@@ -269,10 +268,14 @@ const resolveModifiedChangeTargets = async (
   changes: FileChange[]
 ): Promise<Array<{ change: FileChange; live: string }>> => {
   const trackedFiles = await getAllTrackedFiles(tuckDir);
+  // O(1) source lookup instead of an Object.values().find() scan per change
+  // (which was O(changes × tracked)), mirroring buildSourceIndex's last-wins
+  // semantics — duplicate-source manifests are malformed and never produced.
+  const bySource = new Map(Object.values(trackedFiles).map((f) => [f.source, f]));
   const targets: Array<{ change: FileChange; live: string }> = [];
   for (const change of changes) {
     if (change.status !== 'modified') continue;
-    const entry = Object.values(trackedFiles).find((f) => f.source === change.source);
+    const entry = bySource.get(change.source);
     // JSON-key files are deliberately EXCLUDED from the whole-file secret scan:
     // the live file (e.g. ~/.claude.json) mixes the tracked subtree with OAuth
     // tokens and history that tuck never captures, so scanning the whole file
@@ -811,9 +814,11 @@ const scanJsonKeySubtrees = async (
   // findings) never touches the allowlist file.
   let allowlistEntries: Awaited<ReturnType<typeof loadAllowlist>>['entries'] | null = null;
   const findings: Array<{ source: string; count: number; patterns: string[] }> = [];
+  // O(1) source lookup instead of a per-change Object.values().find() scan.
+  const bySource = new Map(Object.values(trackedFiles).map((f) => [f.source, f]));
   for (const change of changes) {
     if (change.status !== 'modified') continue;
-    const entry = Object.values(trackedFiles).find((f) => f.source === change.source);
+    const entry = bySource.get(change.source);
     if (!entry?.jsonKey) continue;
     const live = await resolveLiveTarget(entry);
     if (live === null || !(await pathExists(live))) continue;
@@ -1974,9 +1979,6 @@ export const syncCommand = new Command('sync')
   )
   .argument('[message]', 'Commit message')
   .option('-m, --message <msg>', 'Commit message')
-  // TODO: --all and --amend are planned for a future version
-  // .option('-a, --all', 'Sync all tracked files, not just changed')
-  // .option('--amend', 'Amend previous commit')
   .option('--no-commit', "Stage changes but don't commit")
   .option('--no-push', "Commit but don't push to remote")
   .option('--no-pull', "Don't pull from remote first")

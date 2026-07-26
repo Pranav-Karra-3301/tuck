@@ -11,12 +11,8 @@ import { join } from 'path';
 import {
   formatValueToken,
   parseValueToken,
-  isValueToken,
   hasEncryptedValues,
-  countEncryptedValues,
   findValueTokens,
-  encryptValue,
-  decryptValue,
   encryptContentValues,
   decryptContentValues,
   encryptFileValues,
@@ -59,69 +55,24 @@ describe('valueEncryption', () => {
       const token = formatValueToken('YWJjMTIz');
       expect(token).toBe('ENC[tuck:v1:YWJjMTIz]');
       expect(parseValueToken(token)).toBe('YWJjMTIz');
-      expect(isValueToken(token)).toBe(true);
     });
 
     it('rejects non-tokens', () => {
       expect(parseValueToken('ENC[other:xyz]')).toBeNull();
       expect(parseValueToken('plain value')).toBeNull();
-      expect(isValueToken('ENC[tuck:v1:]')).toBe(false); // empty payload
-      expect(isValueToken('ENC[tuck:v1:abc] trailing')).toBe(false);
+      expect(parseValueToken('ENC[tuck:v1:]')).toBeNull(); // empty payload
+      expect(parseValueToken('ENC[tuck:v1:abc] trailing')).toBeNull();
     });
 
-    it('detects, counts, and finds tokens in content', () => {
+    it('detects and finds tokens in content', () => {
       const content = 'A=ENC[tuck:v1:AAAA]\nB=plain\nC=ENC[tuck:v1:BBBB]';
       expect(hasEncryptedValues(content)).toBe(true);
-      expect(countEncryptedValues(content)).toBe(2);
       expect(findValueTokens(content)).toEqual(['ENC[tuck:v1:AAAA]', 'ENC[tuck:v1:BBBB]']);
     });
 
     it('reports no tokens for plain content', () => {
       expect(hasEncryptedValues('KEY=value')).toBe(false);
-      expect(countEncryptedValues('KEY=value')).toBe(0);
       expect(findValueTokens('KEY=value')).toEqual([]);
-    });
-  });
-
-  describe('single value encrypt/decrypt', () => {
-    it('round-trips a value', async () => {
-      const token = await encryptValue('s3cr3t-value', PASS);
-      expect(isValueToken(token)).toBe(true);
-      expect(token).not.toContain('s3cr3t-value');
-      expect(await decryptValue(token, PASS)).toBe('s3cr3t-value');
-    });
-
-    it('produces different ciphertext for the same value (fresh salt/IV)', async () => {
-      const a = await encryptValue('same', PASS);
-      const b = await encryptValue('same', PASS);
-      expect(a).not.toBe(b);
-      expect(await decryptValue(a, PASS)).toBe('same');
-      expect(await decryptValue(b, PASS)).toBe('same');
-    });
-
-    it('preserves values containing regex $-sequences verbatim', async () => {
-      const tricky = '$&$1${x}$$literal';
-      const token = await encryptValue(tricky, PASS);
-      expect(await decryptValue(token, PASS)).toBe(tricky);
-    });
-
-    it('fails to decrypt with the wrong passphrase', async () => {
-      const token = await encryptValue('value', PASS);
-      await expect(decryptValue(token, 'wrong')).rejects.toThrow();
-    });
-
-    it('rejects a tampered token', async () => {
-      const token = await encryptValue('value', PASS);
-      const payload = parseValueToken(token)!;
-      const bytes = Buffer.from(payload, 'base64');
-      bytes[bytes.length - 1] ^= 0xff; // flip a ciphertext bit
-      const tampered = formatValueToken(bytes.toString('base64'));
-      await expect(decryptValue(tampered, PASS)).rejects.toThrow();
-    });
-
-    it('rejects empty passphrases', async () => {
-      await expect(encryptValue('x', '')).rejects.toThrow();
-      await expect(decryptValue('ENC[tuck:v1:AAAA]', '')).rejects.toThrow();
     });
   });
 
@@ -286,6 +237,25 @@ describe('valueEncryption', () => {
     it('throws on the first undecryptable token by default', async () => {
       const { content: enc } = await encryptContentValues('A=val111', matchesOf('val111'), PASS);
       await expect(decryptContentValues(enc, 'wrong-pass')).rejects.toThrow();
+    });
+
+    it('rejects a tampered token (AES-GCM auth still holds)', async () => {
+      const { content: enc } = await encryptContentValues('A=val111', matchesOf('val111'), PASS);
+      const payload = parseValueToken(findValueTokens(enc)[0])!;
+      const bytes = Buffer.from(payload, 'base64');
+      bytes[bytes.length - 1] ^= 0xff; // flip a ciphertext bit
+      const tampered = enc.replace(payload, bytes.toString('base64'));
+      await expect(decryptContentValues(tampered, PASS)).rejects.toThrow();
+    });
+
+    it('preserves values containing regex $-sequences verbatim', async () => {
+      const tricky = '$&$1${x}$$literal';
+      const content = `A=${tricky}`;
+      const { content: enc, encrypted } = await encryptContentValues(content, matchesOf(tricky), PASS);
+      expect(encrypted).toBe(1);
+      expect(enc).not.toContain(tricky);
+      const { content: dec } = await decryptContentValues(enc, PASS);
+      expect(dec).toBe(content);
     });
 
     it('integrates with the real scanner to locate spans', async () => {

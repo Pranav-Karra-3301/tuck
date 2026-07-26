@@ -7,13 +7,24 @@ import {
   ensureBundle,
   removeBundle,
   assignFileToBundle,
-  getFilesByBundle,
-  getBundles,
   clearManifestCache,
   DEFAULT_BUNDLE,
 } from '../../src/lib/manifest.js';
 
 const manifestPath = `${TEST_TUCK_DIR}/.tuckmanifest.json`;
+
+// Read bundle state straight off the manifest. (The getBundles/getFilesByBundle
+// query helpers were removed as production-dead; these local readbacks keep the
+// live bundle-mutation assertions honest by inspecting the persisted manifest.)
+const readBundles = async (): Promise<Record<string, { description?: string; created: string }>> =>
+  (await loadManifest(TEST_TUCK_DIR)).bundles;
+
+const readFilesByBundle = async (bundle: string): Promise<Record<string, unknown>> => {
+  const manifest = await loadManifest(TEST_TUCK_DIR);
+  return Object.fromEntries(
+    Object.entries(manifest.files).filter(([, file]) => file.bundle === bundle)
+  );
+};
 
 const writeLegacyManifest = async (): Promise<void> => {
   // Legacy manifest mirrors what v1.x emitted: no `bundles` registry, no
@@ -110,16 +121,16 @@ describe('bundle CRUD helpers', () => {
   it('ensureBundle creates a new bundle', async () => {
     await ensureBundle(TEST_TUCK_DIR, 'work', 'Work machine setup');
 
-    const bundles = await getBundles(TEST_TUCK_DIR);
+    const bundles = await readBundles();
     expect(bundles.work).toBeDefined();
     expect(bundles.work.description).toBe('Work machine setup');
   });
 
   it('ensureBundle is idempotent', async () => {
     await ensureBundle(TEST_TUCK_DIR, 'work');
-    const before = (await getBundles(TEST_TUCK_DIR)).work.created;
+    const before = (await readBundles()).work.created;
     await ensureBundle(TEST_TUCK_DIR, 'work');
-    const after = (await getBundles(TEST_TUCK_DIR)).work.created;
+    const after = (await readBundles()).work.created;
 
     expect(after).toBe(before);
   });
@@ -128,10 +139,10 @@ describe('bundle CRUD helpers', () => {
     await ensureBundle(TEST_TUCK_DIR, 'work');
     await assignFileToBundle(TEST_TUCK_DIR, 'zshrc', 'work');
 
-    const filesInWork = await getFilesByBundle(TEST_TUCK_DIR, 'work');
+    const filesInWork = await readFilesByBundle('work');
     expect(Object.keys(filesInWork)).toEqual(['zshrc']);
 
-    const filesInDefault = await getFilesByBundle(TEST_TUCK_DIR, DEFAULT_BUNDLE);
+    const filesInDefault = await readFilesByBundle(DEFAULT_BUNDLE);
     expect(Object.keys(filesInDefault)).toEqual(['gitconfig']);
   });
 
@@ -142,10 +153,10 @@ describe('bundle CRUD helpers', () => {
     const result = await removeBundle(TEST_TUCK_DIR, 'work');
     expect(result.reassigned).toBe(1);
 
-    const bundles = await getBundles(TEST_TUCK_DIR);
+    const bundles = await readBundles();
     expect(bundles.work).toBeUndefined();
 
-    const filesInDefault = await getFilesByBundle(TEST_TUCK_DIR, DEFAULT_BUNDLE);
+    const filesInDefault = await readFilesByBundle(DEFAULT_BUNDLE);
     expect(Object.keys(filesInDefault).sort()).toEqual(['gitconfig', 'zshrc']);
   });
 

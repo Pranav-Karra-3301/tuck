@@ -479,14 +479,3 @@ export function detectProviderFromUrl(url: string): ProviderMode {
   }
   return 'custom';
 }
-
-/**
- * Get user-friendly message for local mode warning
- */
-export function getLocalModeWarning(operation: string): string {
-  return (
-    `Cannot ${operation}: tuck is configured for local-only mode.\n\n` +
-    `Your dotfiles are tracked locally but not synced to a remote.\n` +
-    `To enable remote sync, run: tuck config remote`
-  );
-}

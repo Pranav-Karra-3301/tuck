@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   parseJsonKeyPath,
   canonicalJson,
-  deepMergeJson,
   extractSubtree,
   hasSubtree,
   mergeSubtreeIntoLive,
@@ -47,34 +46,6 @@ describe('canonicalJson', () => {
 
   it('ends with a trailing newline', () => {
     expect(canonicalJson({ a: 1 }).endsWith('}\n')).toBe(true);
-  });
-});
-
-describe('deepMergeJson', () => {
-  it('recursively merges plain objects, preserving base keys absent from patch', () => {
-    const base = { a: 1, nested: { keep: true, override: 'old' } };
-    const patch = { b: 2, nested: { override: 'new' } };
-    expect(deepMergeJson(base, patch)).toEqual({
-      a: 1,
-      b: 2,
-      nested: { keep: true, override: 'new' },
-    });
-  });
-
-  it('replaces arrays wholesale rather than element-merging', () => {
-    expect(deepMergeJson({ list: [1, 2, 3] }, { list: [9] })).toEqual({ list: [9] });
-  });
-
-  it('replaces a scalar base with a patch object', () => {
-    expect(deepMergeJson(5, { a: 1 })).toEqual({ a: 1 });
-  });
-
-  it('does not mutate its inputs', () => {
-    const base = { nested: { a: 1 } };
-    const patch = { nested: { b: 2 } };
-    deepMergeJson(base, patch);
-    expect(base).toEqual({ nested: { a: 1 } });
-    expect(patch).toEqual({ nested: { b: 2 } });
   });
 });
 
@@ -187,11 +158,25 @@ describe('mergeSubtreeIntoLive', () => {
   });
 
   it('a "__proto__" data key in live JSON never pollutes Object.prototype', () => {
-    const live = JSON.stringify({ '__proto__': { polluted: true }, mcpServers: {} });
+    // Build `live` as a RAW JSON string so it actually carries a `__proto__`
+    // DATA key. An object literal `{ '__proto__': ... }` sets the prototype slot
+    // (a non-enumerable internal), which JSON.stringify drops — so the merge
+    // would never see the key at all and the pollution path would be untested.
+    const live = '{ "__proto__": { "polluted": true }, "mcpServers": {} }';
     const repoSubtree = canonicalJson({ s: { command: 'x' } });
     const merged = mergeSubtreeIntoLive(live, repoSubtree, 'mcpServers');
+
+    // Parsing/navigating a real `__proto__` key must not touch Object.prototype.
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
-    expect(JSON.parse(merged).mcpServers).toEqual({ s: { command: 'x' } });
+    expect(Object.prototype.hasOwnProperty.call(Object.prototype, 'polluted')).toBe(false);
+
+    // The untracked `__proto__` member is outside the tracked path, so the
+    // span-splice preserves its bytes verbatim.
+    expect(merged).toContain('"__proto__"');
+
+    // And the tracked subtree was replaced with the repo copy.
+    const reparsed = JSON.parse(merged) as { mcpServers: unknown };
+    expect(reparsed.mcpServers).toEqual({ s: { command: 'x' } });
   });
 
   it('creates the key (and intermediate objects) when absent from live', () => {

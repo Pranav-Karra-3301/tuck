@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { readdir } from 'fs/promises';
 import {
   getDriftKey,
   computePlaintextHmac,
@@ -8,6 +9,7 @@ import {
   readDriftCache,
   resetDriftKeyCache,
 } from '../../src/lib/crypto/driftCache.js';
+import { getStateDir } from '../../src/lib/state.js';
 
 // memfs + mocked homedir come from tests/setup.ts. The drift key/cache live
 // under the per-machine state dir, which resolves inside the mocked home.
@@ -94,6 +96,16 @@ describe('driftCache', () => {
       const second = await getDriftEntry('file1');
       expect(second!.plaintextHmac).not.toBe(first);
       expect(second!.repoChecksum).toBe('repo-sum-2');
+    });
+
+    it('writes the cache atomically, leaving no temp files behind', async () => {
+      await recordDriftEntry('file1', 'body', 'repo-sum-1');
+      // The entry is persisted (temp+rename completed)...
+      expect((await readDriftCache()).entries.file1).toBeDefined();
+      // ...and the temp file used by atomicWriteFile was renamed away, not orphaned.
+      const entries = await readdir(getStateDir());
+      expect(entries).toContain('drift-cache.json');
+      expect(entries.some((name) => name.includes('.tmp.'))).toBe(false);
     });
   });
 

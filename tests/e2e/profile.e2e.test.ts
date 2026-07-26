@@ -13,6 +13,10 @@ import {
 } from './helpers/runCli.js';
 import { hasGit, gitIdentityEnv } from './helpers/git.js';
 
+// Resolve git availability once (top-level await) so the sync/commit-dependent
+// cases register as genuinely SKIPPED — not silently PASSED — when git is absent.
+const gitAvailable = await hasGit();
+
 /**
  * Profiles / tags end-to-end against the REAL built binary:
  *   - `tuck add --tag` records tags in the shared manifest;
@@ -30,8 +34,7 @@ describe('e2e: profiles / tags', () => {
     await Promise.all(homes.splice(0).map(cleanupHome));
   });
 
-  it('applies only the universal + profile-tagged subset', async () => {
-    if (!(await hasGit())) return;
+  it.skipIf(!gitAvailable)('applies only the universal + profile-tagged subset', async () => {
     const src = await makeHome();
     homes.push(src);
     const env = { ...gitIdentityEnv() };
@@ -91,8 +94,7 @@ describe('e2e: profiles / tags', () => {
     expect(await fileExists(homePath(agentDst, '.work-gitconfig'))).toBe(false);
   });
 
-  it('binds a profile and applies it by default (no --profile flag)', async () => {
-    if (!(await hasGit())) return;
+  it.skipIf(!gitAvailable)('binds a profile and applies it by default (no --profile flag)', async () => {
     const src = await makeHome();
     homes.push(src);
     const env = { ...gitIdentityEnv() };

@@ -13,6 +13,25 @@ vi.mock('child_process', () => ({
   spawn: vi.fn(),
 }));
 
+// The keystores now probe for their CLI (secret-tool / security) via
+// commandExists (a direct PATH scan) instead of a `which` subprocess. Mock it so
+// the tests control binary presence the way they used to control the `which`
+// probe; buildCommandPath is passed through for any transitive importers.
+const commandExistsMock = vi.fn(async () => true);
+
+vi.mock('../../src/lib/commandPath.js', () => ({
+  commandExists: (bin: string) => commandExistsMock(bin),
+  buildCommandPath: (cmd: { name(): string; parent?: unknown }, root = 'tuck') => {
+    const parts: string[] = [];
+    let current: { name(): string; parent?: unknown } | null | undefined = cmd;
+    while (current && current.name() !== root) {
+      parts.unshift(current.name());
+      current = current.parent as typeof current;
+    }
+    return [root, ...parts].join(' ');
+  },
+}));
+
 import { LinuxKeystore } from '../../src/lib/crypto/keystore/linux.js';
 import { WindowsKeystore } from '../../src/lib/crypto/keystore/windows.js';
 import { getKeystore, clearKeystoreCache } from '../../src/lib/crypto/keystore/index.js';
@@ -32,6 +51,9 @@ describe('LinuxKeystore.isAvailable probe', () => {
     execFileMock.mockImplementation((cb: (e: Error | null, r?: unknown) => void) => {
       cb(null, { stdout: '/usr/bin/secret-tool\n', stderr: '' });
     });
+    // Default: secret-tool is present on PATH.
+    commandExistsMock.mockReset();
+    commandExistsMock.mockResolvedValue(true);
   });
 
   afterEach(() => {

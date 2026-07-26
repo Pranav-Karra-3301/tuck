@@ -36,55 +36,41 @@ import { setJsonMode, isJsonMode, emitJsonOk, addJsonWarning } from '../lib/json
 import { restoreFiles as restoreSecrets, restoreContent, getAllSecrets, getSecretCount } from '../lib/secrets/index.js';
 
 /**
- * Fix permissions for SSH files after restore
- * SSH requires strict permissions: 700 for directories, 600 for private files
+ * Directory names whose contents demand strict permissions after restore.
+ * SSH and GPG both refuse to use keys/config that are group- or world-readable,
+ * so we tighten them to 700 for directories and 600 for private files.
  */
-const fixSSHPermissions = async (path: string): Promise<void> => {
-  const expandedPath = expandPath(path);
-
-  // Only fix permissions for SSH files
-  // Check for files inside .ssh/ directory or the .ssh directory itself
-  if (!path.includes('.ssh/') && !path.endsWith('.ssh')) {
-    return;
-  }
-
-  try {
-    const stats = await stat(expandedPath);
-
-    if (stats.isDirectory()) {
-      // Directories should be 700
-      await chmod(expandedPath, 0o700);
-    } else {
-      // Files should be 600
-      await chmod(expandedPath, 0o600);
-    }
-  } catch {
-    // Ignore permission errors (might be on Windows)
-  }
-};
+export const SENSITIVE_PERMISSION_DIRS = ['.ssh', '.gnupg'] as const;
 
 /**
- * Fix GPG permissions after restore
+ * Tighten permissions on restored files that live inside a sensitive directory
+ * (SSH, GPG). Directories are set to 700, files to 600. Paths outside every
+ * `dirNames` entry are left untouched. Best-effort: chmod failures (e.g. on
+ * Windows, which lacks POSIX modes) are swallowed so a restore never fails over
+ * a permission tweak.
+ *
+ * Consolidates the former fixSSHPermissions/fixGPGPermissions pair, which were
+ * byte-for-byte identical apart from the directory substring.
  */
-const fixGPGPermissions = async (path: string): Promise<void> => {
+export const fixSensitiveDirPermissions = async (
+  path: string,
+  dirNames: readonly string[]
+): Promise<void> => {
   const expandedPath = expandPath(path);
 
-  // Only fix permissions for GPG files
-  // Check for files inside .gnupg/ directory or the .gnupg directory itself
-  if (!path.includes('.gnupg/') && !path.endsWith('.gnupg')) {
+  // Only fix permissions for files inside one of the sensitive directories, or
+  // for the sensitive directory itself.
+  const isSensitive = dirNames.some((dir) => path.includes(`${dir}/`) || path.endsWith(dir));
+  if (!isSensitive) {
     return;
   }
 
   try {
     const stats = await stat(expandedPath);
-
-    if (stats.isDirectory()) {
-      await chmod(expandedPath, 0o700);
-    } else {
-      await chmod(expandedPath, 0o600);
-    }
+    // Directories should be 700, private files 600.
+    await chmod(expandedPath, stats.isDirectory() ? 0o700 : 0o600);
   } catch {
-    // Ignore permission errors
+    // Ignore permission errors (might be on Windows).
   }
 };
 
@@ -412,8 +398,7 @@ const restoreFilesInternal = async (
 
       // Fix permissions on the RESOLVED target (the sandbox copy in --root
       // mode), never the real-home path.
-      await fixSSHPermissions(targetPath);
-      await fixGPGPermissions(targetPath);
+      await fixSensitiveDirPermissions(targetPath, SENSITIVE_PERMISSION_DIRS);
     });
 
     // Warm the encrypted-file drift cache with the materialized plaintext we just

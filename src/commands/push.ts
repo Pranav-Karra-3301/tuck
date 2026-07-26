@@ -11,6 +11,7 @@ import {
   getStatus,
   getCurrentBranch,
   addRemote,
+  gitRemoteToWebUrl,
 } from '../lib/git.js';
 import { NotInitializedError, GitError, OperationCancelledError } from '../errors.js';
 import type { PushOptions } from '../types.js';
@@ -138,11 +139,8 @@ const runInteractivePush = async (tuckDir: string): Promise<void> => {
   }
 
   if (remoteUrl) {
-    // Extract repo URL for display
-    let viewUrl = remoteUrl;
-    if (remoteUrl.startsWith('git@github.com:')) {
-      viewUrl = remoteUrl.replace('git@github.com:', 'https://github.com/').replace('.git', '');
-    }
+    // Extract a browsable repo URL for display via the shared helper.
+    const viewUrl = gitRemoteToWebUrl(remoteUrl);
     console.log();
     console.log(c.dim('View at:'), c.cyan(viewUrl));
   }

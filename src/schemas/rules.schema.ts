@@ -102,10 +102,8 @@ export const rulesManifestSchema = z.object({
 });
 
 export type RuleToolName = z.infer<typeof ruleToolNameSchema>;
-export type RuleStrategy = z.infer<typeof ruleStrategySchema>;
 export type RuleToolInput = z.input<typeof ruleToolSchema>;
 export type RuleTool = z.output<typeof ruleToolSchema>;
 export type RuleSetInput = z.input<typeof ruleSetSchema>;
 export type RuleSet = z.output<typeof ruleSetSchema>;
-export type RulesManifestInput = z.input<typeof rulesManifestSchema>;
 export type RulesManifest = z.output<typeof rulesManifestSchema>;

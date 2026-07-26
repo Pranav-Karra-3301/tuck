@@ -26,7 +26,7 @@ import {
 } from './setup.js';
 
 // Import the actual tuck function
-import { getFileChecksum, hasFileChanged } from '../../src/lib/files.js';
+import { getFileChecksum } from '../../src/lib/files.js';
 
 // ============================================================================
 // Create fixtures at module level (synchronously)
@@ -60,16 +60,6 @@ generateDirectoryStructure(dirManyFiles, {
   dirsPerLevel: 5,
   fileSize: 1024,
 });
-
-// Create files for comparison
-const fileA = join(tempDir, 'compare_a.txt');
-const fileB = join(tempDir, 'compare_b.txt');
-const fileC = join(tempDir, 'compare_c.txt');
-
-const compareContent = generateDotfileContent(100);
-writeFileSync(fileA, compareContent);
-writeFileSync(fileB, compareContent); // Same as A
-writeFileSync(fileC, compareContent + '\n# Different'); // Different from A
 
 // Create throughput test files
 for (let j = 0; j < 100; j++) {
@@ -120,24 +110,6 @@ describe('Checksum Benchmarks', () => {
   describe('getFileChecksum - Directories', () => {
     bench('checksum directory with many files', async () => {
       await getFileChecksum(dirManyFiles);
-    });
-  });
-
-  // ============================================================================
-  // File Comparison Benchmarks
-  // ============================================================================
-
-  describe('hasFileChanged', () => {
-    bench('compare identical files', async () => {
-      await hasFileChanged(fileA, fileB);
-    });
-
-    bench('compare different files', async () => {
-      await hasFileChanged(fileA, fileC);
-    });
-
-    bench('compare with non-existent file', async () => {
-      await hasFileChanged(fileA, join(tempDir, 'nonexistent.txt'));
     });
   });
 

@@ -63,6 +63,11 @@ const hasGit = async (): Promise<boolean> => {
   }
 };
 
+// Resolve git availability once (top-level await) so both real-git scenarios
+// register as genuinely SKIPPED — not silently PASSED with zero assertions —
+// when no usable `git` binary is on PATH.
+const gitAvailable = await hasGit();
+
 /** Deterministic, signing-free git identity for a real repo at `dir`. */
 const configureRepo = async (dir: string, who: string): Promise<void> => {
   const git = simpleGit(dir);
@@ -145,9 +150,7 @@ describe('non-GitHub provider e2e', () => {
     }
   });
 
-  it('(a) applies a non-GitHub repo end to end via the CUSTOM file:// provider', async () => {
-    if (!(await hasGit())) return;
-
+  it.skipIf(!gitAvailable)('(a) applies a non-GitHub repo end to end via the CUSTOM file:// provider', async () => {
     const bare = join(workDir, 'upstream.git');
     const sourceMachine = join(workDir, 'source');
     const trackedRelDest = join('files', 'shell', 'zshrc');
@@ -220,9 +223,7 @@ describe('non-GitHub provider e2e', () => {
     expect(applied.replace(/\r\n/g, '\n')).toBe(trackedContent);
   });
 
-  it('(b) commits in LOCAL mode and REFUSES a push (assertRemoteAvailable throws LocalModeError)', async () => {
-    if (!(await hasGit())) return;
-
+  it.skipIf(!gitAvailable)('(b) commits in LOCAL mode and REFUSES a push (assertRemoteAvailable throws LocalModeError)', async () => {
     const tuckDir = join(workDir, 'local-tuck');
 
     // Real on-disk tuck repo via the project's own initRepo (real `git init`).

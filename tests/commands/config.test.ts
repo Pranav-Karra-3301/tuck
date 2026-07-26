@@ -31,10 +31,29 @@ vi.mock('../../src/ui/index.js', () => ({
   banner: vi.fn(),
 }));
 
+const captureStdout = (): { writes: string[]; restore: () => void } => {
+  const writes: string[] = [];
+  const writeSpy = vi
+    .spyOn(process.stdout, 'write')
+    .mockImplementation((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    });
+  return { writes, restore: () => writeSpy.mockRestore() };
+};
+
+const parseEnvelope = (writes: string[]): { ok: boolean; command: string; data: Record<string, unknown> } => {
+  const lines = writes.join('').trim().split('\n').filter(Boolean);
+  expect(lines.length).toBe(1);
+  return JSON.parse(lines[0]);
+};
+
 describe('config command', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vol.reset();
     vi.clearAllMocks();
+    const { clearConfigCache } = await import('../../src/lib/config.js');
+    clearConfigCache();
   });
 
   afterEach(() => {
@@ -60,16 +79,25 @@ describe('config command', () => {
       expect(loadedConfig.repository.autoPush).toBe(false);
     });
 
-    it('should return undefined for non-existent keys', async () => {
-      const config = createMockConfig();
-      await initTestTuck({ config });
+    it('reports value:null for an unknown key via config get --json', async () => {
+      await initTestTuck({ config: createMockConfig() });
 
-      const { loadConfig } = await import('../../src/lib/config.js');
-      const loadedConfig = await loadConfig(TEST_TUCK_DIR);
+      const { configCommand } = await import('../../src/commands/config.js');
+      const { restore, writes } = captureStdout();
+      try {
+        await configCommand.parseAsync(['get', 'does.not.exist', '--json'], {
+          from: 'user',
+        });
+      } finally {
+        restore();
+      }
 
-      // Type-safe way to check for non-existent property
-      const configObj = loadedConfig as unknown as Record<string, unknown>;
-      expect(configObj['nonExistent']).toBeUndefined();
+      // The real `config get` path (runConfigGet) resolves the missing nested key
+      // and must emit an ok envelope carrying value:null — not throw, not omit it.
+      const env = parseEnvelope(writes);
+      expect(env.ok).toBe(true);
+      expect(env.command).toBe('tuck config get');
+      expect(env.data).toEqual({ key: 'does.not.exist', value: null });
     });
   });
 
@@ -167,14 +195,66 @@ describe('config command', () => {
   });
 
   describe('CONFIG_KEYS metadata', () => {
-    it('should have valid structure for all keys', async () => {
-      // Import the config keys
-      const configModule = await import('../../src/commands/config.js');
+    // CONFIG_KEYS is not exported by the command module, so we assert the metadata
+    // stays coherent with the real config schema indirectly: every declared key
+    // path must be resolvable via the production `config get` code path and return
+    // a value of the declared type. A stale/renamed key, or a type that drifted
+    // from the schema, makes the matching case fail here.
+    const DECLARED_KEYS: { path: string; type: 'boolean' | 'string' | 'enum' }[] = [
+      { path: 'repository.defaultBranch', type: 'string' },
+      { path: 'repository.autoCommit', type: 'boolean' },
+      { path: 'repository.autoPush', type: 'boolean' },
+      { path: 'files.strategy', type: 'enum' },
+      { path: 'files.backupOnRestore', type: 'boolean' },
+      { path: 'files.backupDir', type: 'string' },
+      { path: 'ui.colors', type: 'boolean' },
+      { path: 'ui.emoji', type: 'boolean' },
+      { path: 'ui.verbose', type: 'boolean' },
+      { path: 'hooks.preSync', type: 'string' },
+      { path: 'hooks.postSync', type: 'string' },
+      { path: 'hooks.preRestore', type: 'string' },
+      { path: 'hooks.postRestore', type: 'string' },
+      { path: 'encryption.backupsEnabled', type: 'boolean' },
+    ];
 
-      // Access CONFIG_KEYS through the module (it's not exported, so we test indirectly)
-      // The presence of the configCommand validates that the module loads correctly
+    it('loads the command and names it "config"', async () => {
+      const configModule = await import('../../src/commands/config.js');
       expect(configModule.configCommand).toBeDefined();
       expect(configModule.configCommand.name()).toBe('config');
+    });
+
+    it('resolves every declared key to a value of its declared type via config get', async () => {
+      // Fully populate every declared key so `config get` returns a concrete value
+      // (hooks default to unset). Enum/string/boolean all map to JS primitives.
+      const config = createMockConfig({
+        hooks: {
+          preSync: 'echo pre-sync',
+          postSync: 'echo post-sync',
+          preRestore: 'echo pre-restore',
+          postRestore: 'echo post-restore',
+        },
+      });
+      await initTestTuck({ config });
+
+      const { configCommand } = await import('../../src/commands/config.js');
+      const { clearConfigCache } = await import('../../src/lib/config.js');
+
+      for (const { path, type } of DECLARED_KEYS) {
+        clearConfigCache();
+        const { restore, writes } = captureStdout();
+        try {
+          await configCommand.parseAsync(['get', path, '--json'], { from: 'user' });
+        } finally {
+          restore();
+        }
+        const env = parseEnvelope(writes);
+        expect(env.ok, `config get ${path} should succeed`).toBe(true);
+        expect(env.data.key).toBe(path);
+        // A declared key must resolve — never null — against the real config.
+        expect(env.data.value, `${path} should resolve to a value`).not.toBeNull();
+        const jsType = type === 'enum' ? 'string' : type;
+        expect(typeof env.data.value, `${path} should be ${jsType}`).toBe(jsType);
+      }
     });
   });
 
@@ -186,23 +266,6 @@ describe('config command', () => {
       const { clearConfigCache } = await import('../../src/lib/config.js');
       clearConfigCache();
     });
-
-    const captureStdout = (): { writes: string[]; restore: () => void } => {
-      const writes: string[] = [];
-      const writeSpy = vi
-        .spyOn(process.stdout, 'write')
-        .mockImplementation((chunk: string | Uint8Array) => {
-          writes.push(String(chunk));
-          return true;
-        });
-      return { writes, restore: () => writeSpy.mockRestore() };
-    };
-
-    const parseEnvelope = (writes: string[]) => {
-      const lines = writes.join('').trim().split('\n').filter(Boolean);
-      expect(lines.length).toBe(1);
-      return JSON.parse(lines[0]);
-    };
 
     it('emits { key, value } for config get --json', async () => {
       const config = createMockConfig({

@@ -5,7 +5,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseRequirement,
-  isValidRequirement,
   parseRequirementList,
   collectRequirements,
   topologicalSort,
@@ -58,13 +57,6 @@ describe('parseRequirement', () => {
 
   it('throws on an empty spec', () => {
     expect(() => parseRequirement('   ')).toThrow(InvalidRequirementError);
-  });
-});
-
-describe('isValidRequirement', () => {
-  it('mirrors parseRequirement without throwing', () => {
-    expect(isValidRequirement('apt:zsh')).toBe(true);
-    expect(isValidRequirement('nope:zsh')).toBe(false);
   });
 });
 

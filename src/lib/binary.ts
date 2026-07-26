@@ -58,15 +58,7 @@ const WINDOWS_EXECUTABLE_EXTENSIONS = ['.exe', '.com', '.dll'];
  * Check if a buffer starts with a magic number
  */
 const bufferStartsWith = (buffer: Buffer, magic: Buffer): boolean => {
-  if (buffer.length < magic.length) {
-    return false;
-  }
-  for (let i = 0; i < magic.length; i++) {
-    if (buffer[i] !== magic[i]) {
-      return false;
-    }
-  }
-  return true;
+  return buffer.length >= magic.length && buffer.subarray(0, magic.length).equals(magic);
 };
 
 /**
@@ -95,12 +87,7 @@ export const isBinaryBuffer = (buffer: Buffer): boolean => {
   // A NUL byte within the inspected window is the classic "this is binary"
   // signal. Bounded to the leading bytes to stay cheap on large files.
   const scanLen = Math.min(buffer.length, 8000);
-  for (let i = 0; i < scanLen; i++) {
-    if (buffer[i] === 0) {
-      return true;
-    }
-  }
-  return false;
+  return buffer.subarray(0, scanLen).includes(0x00);
 };
 
 /**
@@ -246,15 +233,5 @@ export const shouldExcludeFromBin = async (path: string): Promise<boolean> => {
 
   // If it's a binary executable, exclude it
   return await isBinaryExecutable(expandedPath);
-};
-
-/**
- * Get a human-readable description of why a file is being excluded
- */
-export const getBinaryExclusionReason = async (path: string): Promise<string | null> => {
-  if (await shouldExcludeFromBin(path)) {
-    return 'Binary executable in bin directory';
-  }
-  return null;
 };
 

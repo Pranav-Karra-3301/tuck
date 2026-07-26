@@ -57,11 +57,6 @@ vi.mock('../../src/ui/index.js', () => ({
   },
 }));
 
-// A spy that should NEVER be invoked for non-github providers. If the rerouted
-// code accidentally falls back into GitHub-specific validation, this would be
-// called and the test would catch it.
-const githubValidatorSpy = vi.fn(() => 'Please enter a valid GitHub URL');
-
 /**
  * Build a minimal fake GitProvider for a given mode. Only the methods used by
  * setupRemoteForProvider are implemented; everything else throws so an
@@ -116,19 +111,18 @@ function manualProvider(mode: ProviderMode, overrides: Partial<GitProvider> = {}
 describe('setupRemoteForProvider', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    githubValidatorSpy.mockClear();
     upsertRemoteMock.mockResolvedValue(undefined);
     addRemoteMock.mockResolvedValue(undefined);
     hasRemoteMock.mockResolvedValue(false);
   });
 
-  it('returns {remoteUrl:null, pushed:false} for the local provider without prompting', async () => {
+  it('returns {remoteUrl:null} for the local provider without prompting', async () => {
     const { setupRemoteForProvider } = await import('../../src/lib/remoteSetup.js');
     const local = makeProvider('local', { requiresRemote: false });
 
     const result = await setupRemoteForProvider(local, '/test-home/.tuck');
 
-    expect(result).toEqual({ remoteUrl: null, pushed: false });
+    expect(result).toEqual({ remoteUrl: null });
     // Local mode must not touch git remotes or prompt for a URL.
     expect(addRemoteMock).not.toHaveBeenCalled();
     expect(upsertRemoteMock).not.toHaveBeenCalled();
@@ -156,9 +150,11 @@ describe('setupRemoteForProvider', () => {
     const { setupRemoteForProvider } = await import('../../src/lib/remoteSetup.js');
     const result = await setupRemoteForProvider(gitlab, '/test-home/.tuck');
 
-    // The gitlab validator was consulted; the github validator never was.
+    // The gitlab validator was consulted. That it REJECTS a github URL (asserted
+    // inside the textMock validate check above) is what proves the code did not
+    // fall back to github-specific validation — no separate github spy needed.
     expect(gitlabValidate).toHaveBeenCalled();
-    expect(githubValidatorSpy).not.toHaveBeenCalled();
+    expect(gitlabValidate).toHaveBeenCalledWith('https://github.com/u/d.git');
 
     // Remote was upserted with the gitlab URL (NOT a github.com URL).
     expect(upsertRemoteMock).toHaveBeenCalledWith('/test-home/.tuck', 'origin', gitlabUrl);
@@ -169,7 +165,6 @@ describe('setupRemoteForProvider', () => {
     );
 
     expect(result.remoteUrl).toBe(gitlabUrl);
-    expect(result.pushed).toBe(false);
   });
 
   it('shows the provider-specific setup instructions, not GitHub instructions', async () => {
@@ -185,14 +180,14 @@ describe('setupRemoteForProvider', () => {
     expect(noteMock).toHaveBeenCalledWith('setup instructions for gitlab', expect.any(String));
   });
 
-  it('returns {remoteUrl:null, pushed:false} when the user has not created the repo', async () => {
+  it('returns {remoteUrl:null} when the user has not created the repo', async () => {
     const gitlab = manualProvider('gitlab');
     confirmMock.mockResolvedValue(false); // "Have you created the repository?" -> No
 
     const { setupRemoteForProvider } = await import('../../src/lib/remoteSetup.js');
     const result = await setupRemoteForProvider(gitlab, '/test-home/.tuck');
 
-    expect(result).toEqual({ remoteUrl: null, pushed: false });
+    expect(result).toEqual({ remoteUrl: null });
     expect(addRemoteMock).not.toHaveBeenCalled();
     expect(upsertRemoteMock).not.toHaveBeenCalled();
   });
@@ -268,7 +263,6 @@ describe('setupRemoteForProvider', () => {
 
     expect(result).toEqual({
       remoteUrl: 'git@gitlab.com:me/dotfiles.git',
-      pushed: false,
     });
   });
 

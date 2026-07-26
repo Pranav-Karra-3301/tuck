@@ -2,8 +2,6 @@ import simpleGit, { SimpleGit, StatusResult } from 'simple-git';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { GitError } from '../errors.js';
-import { pathExists } from './paths.js';
-import { join } from 'path';
 import { readdir } from 'fs/promises';
 import { REPO_STAGE_BLOCKLIST } from './state.js';
 import { GIT_OPERATION_TIMEOUTS } from './validation.js';
@@ -82,11 +80,6 @@ const createGit = (dir: string): SimpleGit => {
   return git;
 };
 
-export const isGitRepo = async (dir: string): Promise<boolean> => {
-  const gitDir = join(dir, '.git');
-  return pathExists(gitDir);
-};
-
 export const initRepo = async (dir: string): Promise<void> => {
   try {
     const git = createGit(dir);
@@ -96,7 +89,20 @@ export const initRepo = async (dir: string): Promise<void> => {
   }
 };
 
-export const cloneRepo = async (url: string, dir: string): Promise<void> => {
+export interface CloneOptions {
+  /**
+   * Create a shallow clone truncated to the given number of commits
+   * (`git clone --depth <n>`). Must be a positive integer; anything else is
+   * ignored so a full clone is performed.
+   */
+  depth?: number;
+}
+
+export const cloneRepo = async (
+  url: string,
+  dir: string,
+  options: CloneOptions = {}
+): Promise<void> => {
   try {
     // Bound the clone: a hung or hostile remote must never let `tuck init` /
     // `tuck apply` hang forever, nor buffer unbounded output into memory.
@@ -107,7 +113,14 @@ export const cloneRepo = async (url: string, dir: string): Promise<void> => {
     // `timeout.block` is honored, so the memory bound would silently be a no-op.
     // `execFile`'s own `timeout` kills the process and `maxBuffer` caps output.
     const env = buildNonInteractiveGitEnv();
-    await execFileAsync('git', ['clone', url, dir], {
+    const args = ['clone'];
+    // Only honor a sane positive integer depth; otherwise fall back to a full
+    // clone rather than passing git a malformed `--depth` argument.
+    if (Number.isInteger(options.depth) && (options.depth as number) > 0) {
+      args.push('--depth', String(options.depth));
+    }
+    args.push(url, dir);
+    await execFileAsync('git', args, {
       timeout: GIT_OPERATION_TIMEOUTS.CLONE,
       maxBuffer: CLONE_MAX_BUFFER,
       // In non-interactive mode a clone against a private remote must fail fast
@@ -206,15 +219,6 @@ export const getStatus = async (dir: string): Promise<GitStatus> => {
   }
 };
 
-export const stageFiles = async (dir: string, files: string[]): Promise<void> => {
-  try {
-    const git = createGit(dir);
-    await git.add(files);
-  } catch (error) {
-    throw new GitError('Failed to stage files', String(error));
-  }
-};
-
 export const stageAll = async (dir: string): Promise<void> => {
   try {
     const git = createGit(dir);
@@ -268,15 +272,38 @@ const isHttpsGitHubRemote = (url: string): boolean => {
 };
 
 /**
+ * Convert a git remote URL into a browsable, https "web" URL for display.
+ *
+ * Handles scp-style SSH remotes (`git@host:owner/repo`), `ssh://git@host/owner/repo`,
+ * and plain https remotes. The trailing `.git` suffix is stripped with an ANCHORED
+ * regex (`/\.git$/`) so a repo whose path legitimately contains `.git` mid-string
+ * (e.g. `owner/my.github-config`) is not mangled — an unanchored `.replace('.git','')`
+ * would corrupt such names by removing the first interior `.git` occurrence.
+ *
+ * Exported and shared by `tuck push` and `tuck init` so the SSH→HTTPS view-URL
+ * conversion lives in exactly one place.
+ */
+export const gitRemoteToWebUrl = (url: string): string => {
+  let web = url.trim();
+  // scp-style ssh: git@host:owner/repo -> https://host/owner/repo
+  const scpMatch = web.match(/^git@([^:/]+):(.+)$/);
+  if (scpMatch) {
+    web = `https://${scpMatch[1]}/${scpMatch[2]}`;
+  } else if (web.startsWith('ssh://')) {
+    // ssh://git@host/owner/repo -> https://host/owner/repo
+    web = web.replace(/^ssh:\/\/(git@)?/, 'https://');
+  }
+  // Anchor the suffix strip so only a trailing `.git` is removed.
+  return web.replace(/\.git$/, '');
+};
+
+/**
  * Configure git to use gh CLI credentials if gh is authenticated
  */
 const ensureGitCredentials = async (): Promise<void> => {
   try {
-    // Check if gh is authenticated
-    const { execFile } = await import('child_process');
-    const { promisify } = await import('util');
-    const execFileAsync = promisify(execFile);
-    
+    // Check if gh is authenticated. Reuse the module-level execFileAsync
+    // (defined above) rather than re-importing child_process/util here.
     const { stdout, stderr } = await execFileAsync('gh', ['auth', 'status']);
     // gh auth status writes its output to stderr per gh CLI design
     const output = (stderr || stdout || '').trim();

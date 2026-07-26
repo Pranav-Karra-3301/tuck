@@ -11,6 +11,7 @@ const getStatusMock = vi.fn();
 const getCurrentBranchMock = vi.fn();
 const addRemoteMock = vi.fn();
 const logForcePushMock = vi.fn();
+const gitRemoteToWebUrlMock = vi.fn((url: string) => url);
 
 const promptsIntroMock = vi.fn();
 const promptsOutroMock = vi.fn();
@@ -79,6 +80,10 @@ vi.mock('../../src/lib/git.js', () => ({
   getStatus: getStatusMock,
   getCurrentBranch: getCurrentBranchMock,
   addRemote: addRemoteMock,
+  // Not the unit under test here — provide a call-through stub so the "View at"
+  // display path in runInteractivePush resolves. The real helper is unit-tested
+  // in the "gitRemoteToWebUrl" describe below via importActual.
+  gitRemoteToWebUrl: gitRemoteToWebUrlMock,
 }));
 
 vi.mock('../../src/lib/audit.js', () => ({
@@ -328,5 +333,72 @@ describe('push command', () => {
     expect(env.data.pushed).toBe(true);
     expect(env.data.ahead).toBe(1);
     expect(env.data.branch).toBe('main');
+  });
+
+  it('uses the shared gitRemoteToWebUrl helper to render the "View at" line', async () => {
+    // The interactive success path must delegate the SSH→HTTPS conversion to the
+    // shared helper, not re-inline a bespoke .replace() chain.
+    gitRemoteToWebUrlMock.mockReturnValueOnce('https://github.com/user/dotfiles');
+    getRemoteUrlMock.mockResolvedValue('git@github.com:user/dotfiles.git');
+    const { pushCommand } = await import('../../src/commands/push.js');
+
+    await pushCommand.parseAsync([], { from: 'user' });
+
+    expect(gitRemoteToWebUrlMock).toHaveBeenCalledWith('git@github.com:user/dotfiles.git');
+  });
+});
+
+// The shared SSH→HTTPS "view URL" helper lives in lib/git.ts. Test the REAL
+// implementation (via importActual, bypassing the module mock above) so a
+// regression to the unanchored `.replace('.git','')` that mangles repo names
+// containing an interior `.git` (e.g. a `.github`-style path) fails here.
+describe('gitRemoteToWebUrl', () => {
+  it('converts scp-style SSH remotes to a browsable https URL and strips a trailing .git', async () => {
+    const { gitRemoteToWebUrl } =
+      await vi.importActual<typeof import('../../src/lib/git.js')>('../../src/lib/git.js');
+
+    expect(gitRemoteToWebUrl('git@github.com:user/dotfiles.git')).toBe(
+      'https://github.com/user/dotfiles'
+    );
+    expect(gitRemoteToWebUrl('git@github.com:user/dotfiles')).toBe(
+      'https://github.com/user/dotfiles'
+    );
+  });
+
+  it('strips only a trailing .git from https remotes', async () => {
+    const { gitRemoteToWebUrl } =
+      await vi.importActual<typeof import('../../src/lib/git.js')>('../../src/lib/git.js');
+
+    expect(gitRemoteToWebUrl('https://github.com/user/dotfiles.git')).toBe(
+      'https://github.com/user/dotfiles'
+    );
+  });
+
+  it('does NOT mangle a repo path whose name contains an interior ".git" substring', async () => {
+    const { gitRemoteToWebUrl } =
+      await vi.importActual<typeof import('../../src/lib/git.js')>('../../src/lib/git.js');
+
+    // `my.github-config.git`: an unanchored .replace('.git','') would delete the
+    // FIRST interior `.git` (inside `.github`) yielding `myhub-config.git`.
+    // The anchored /\.git$/ must strip only the trailing suffix.
+    expect(gitRemoteToWebUrl('git@github.com:user/my.github-config.git')).toBe(
+      'https://github.com/user/my.github-config'
+    );
+    expect(gitRemoteToWebUrl('https://github.com/user/my.github-config.git')).toBe(
+      'https://github.com/user/my.github-config'
+    );
+  });
+
+  it('converts ssh:// URLs to https and preserves non-git URLs unchanged', async () => {
+    const { gitRemoteToWebUrl } =
+      await vi.importActual<typeof import('../../src/lib/git.js')>('../../src/lib/git.js');
+
+    expect(gitRemoteToWebUrl('ssh://git@github.com/user/dotfiles.git')).toBe(
+      'https://github.com/user/dotfiles'
+    );
+    // A gitlab SSH remote is converted the same way (host-agnostic).
+    expect(gitRemoteToWebUrl('git@gitlab.example.com:team/repo.git')).toBe(
+      'https://gitlab.example.com/team/repo'
+    );
   });
 });

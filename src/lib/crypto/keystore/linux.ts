@@ -7,7 +7,9 @@ import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import { existsSync } from 'fs';
 import { join } from 'path';
+import { commandExists } from '../../commandPath.js';
 import type { Keystore } from './types.js';
+import { validateKeystoreArg } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -23,27 +25,6 @@ function hasSessionBus(): boolean {
   const xdg = process.env.XDG_RUNTIME_DIR;
   if (xdg && existsSync(join(xdg, 'bus'))) return true;
   return false;
-}
-
-/**
- * Validate that an argument doesn't contain dangerous characters.
- * This is a defense-in-depth measure since we use execFile which doesn't invoke a shell.
- */
-function validateArg(arg: string, name: string): void {
-  if (typeof arg !== 'string') {
-    throw new Error(`${name} must be a string`);
-  }
-  if (arg.length === 0) {
-    throw new Error(`${name} cannot be empty`);
-  }
-  if (arg.length > 256) {
-    throw new Error(`${name} too long (max 256 characters)`);
-  }
-  // Reject null bytes and control characters
-  // eslint-disable-next-line no-control-regex
-  if (/[\x00-\x1F\x7F]/.test(arg)) {
-    throw new Error(`${name} contains invalid control characters`);
-  }
 }
 
 export class LinuxKeystore implements Keystore {
@@ -62,21 +43,16 @@ export class LinuxKeystore implements Keystore {
       return false;
     }
 
-    try {
-      // Confirm the binary exists. Bounded timeout so a wedged environment can't
-      // hang keystore selection.
-      await execFileAsync('which', ['secret-tool'], { timeout: 5000 });
-      return true;
-    } catch {
-      // On any failure the caller must fall back to the file keystore.
-      return false;
-    }
+    // Confirm the binary exists via a direct PATH scan (no `which` subprocess to
+    // hang a wedged environment). On any failure the caller falls back to the
+    // encrypted file keystore.
+    return commandExists('secret-tool');
   }
 
   async store(service: string, account: string, secret: string): Promise<void> {
     // Validate inputs to prevent any potential issues
-    validateArg(service, 'service');
-    validateArg(account, 'account');
+    validateKeystoreArg(service, 'service');
+    validateKeystoreArg(account, 'account');
     if (!secret || typeof secret !== 'string') {
       throw new Error('Secret must be a non-empty string');
     }
@@ -127,8 +103,8 @@ export class LinuxKeystore implements Keystore {
   }
 
   async retrieve(service: string, account: string): Promise<string | null> {
-    validateArg(service, 'service');
-    validateArg(account, 'account');
+    validateKeystoreArg(service, 'service');
+    validateKeystoreArg(account, 'account');
 
     const args = ['lookup', 'service', service, 'account', account];
 
@@ -144,8 +120,8 @@ export class LinuxKeystore implements Keystore {
   }
 
   async delete(service: string, account: string): Promise<void> {
-    validateArg(service, 'service');
-    validateArg(account, 'account');
+    validateKeystoreArg(service, 'service');
+    validateKeystoreArg(account, 'account');
 
     const args = ['clear', 'service', service, 'account', account];
 

@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { vol } from 'memfs';
 import { join } from 'path';
-import { TEST_HOME, TEST_TUCK_DIR } from '../setup.js';
+import { TEST_TUCK_DIR } from '../setup.js';
 
 // Mock the config module dependencies
 vi.mock('../../src/lib/paths.js', async (importOriginal) => {
@@ -99,12 +99,25 @@ describe('config', () => {
       expect(() => clearConfigCache()).not.toThrow();
     });
 
-    it('should be idempotent', () => {
+    it('should be idempotent — extra clears re-read from disk exactly like one clear', async () => {
+      const configPath = join(TEST_TUCK_DIR, 'config.json');
+
+      // Prime the cache with an on-disk value.
+      vol.writeFileSync(configPath, JSON.stringify({ ui: { verbose: false } }) + '\n');
+      const first = await loadConfig(TEST_TUCK_DIR);
+      expect(first.ui.verbose).toBe(false);
+
+      // Mutate the file underneath the cache, then clear the cache repeatedly.
+      vol.writeFileSync(configPath, JSON.stringify({ ui: { verbose: true } }) + '\n');
       clearConfigCache();
       clearConfigCache();
       clearConfigCache();
-      // Should not throw on multiple calls
-      expect(true).toBe(true);
+
+      // A single clear already forces a disk re-read; additional clears must not
+      // change that outcome (idempotent — no state restored or corrupted). If
+      // clearConfigCache regressed to a no-op, this would return the stale false.
+      const reloaded = await loadConfig(TEST_TUCK_DIR);
+      expect(reloaded.ui.verbose).toBe(true);
     });
   });
 

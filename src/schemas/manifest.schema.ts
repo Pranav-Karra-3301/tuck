@@ -199,7 +199,6 @@ export const tuckManifestSchema = z.object({
   profiles: z.record(profileMetadataSchema).default({}),
 });
 
-export type TrackedFileInput = z.input<typeof trackedFileSchema>;
 export type TrackedFileOutput = z.output<typeof trackedFileSchema>;
 export type TuckManifestInput = z.input<typeof tuckManifestSchema>;
 export type TuckManifestOutput = z.output<typeof tuckManifestSchema>;
