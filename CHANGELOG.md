@@ -1,11 +1,11 @@
+<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
+
 ## [1.12.1](https://github.com/Pranav-Karra-3301/tuck/compare/v1.12.0...v1.12.1) (2026-07-26)
 
 
 ### Bug Fixes
 
 * replace bespoke implementations and wire in dormant safety guards (ultracode review) ([58b3ecc](https://github.com/Pranav-Karra-3301/tuck/commit/58b3ecc9aefa40a64ee32f9597617ee875669f5e))
-
-<img src="public/Changelog.png" alt="Changelog" style="width:100%;">
 
 # [1.12.0](https://github.com/Pranav-Karra-3301/tuck/compare/v1.11.0...v1.12.0) (2026-07-09)
 
